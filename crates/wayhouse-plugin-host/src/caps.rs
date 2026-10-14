@@ -95,6 +95,25 @@ pub struct SecretSlot {
     pub hosts: Vec<String>,
 }
 
+/// Splits a secret slot's host binding into the host and the port it names, if any:
+/// `host`, `host:port` or `[v6]:port`. Anything else stays whole, with no port.
+pub fn split_slot_host(binding: &str) -> (&str, Option<u16>) {
+    if let Some((host, port)) = binding
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("]:"))
+    {
+        if let Ok(port) = port.parse() {
+            return (host, Some(port));
+        }
+    }
+    match binding.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') => port
+            .parse()
+            .map_or((binding, None), |port| (host, Some(port))),
+        _ => (binding, None),
+    }
+}
+
 /// Whether `name` is a valid secret slot name.
 pub fn valid_slot_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -293,16 +312,36 @@ impl Capabilities {
                     slot.name
                 ));
             };
-            if slot.hosts.is_empty()
-                || !slot
-                    .hosts
-                    .iter()
-                    .all(|h| http.hosts.iter().any(|a| &a.host == h))
-            {
+            if slot.hosts.is_empty() {
                 return bad(format!(
                     "secret slot {}: hosts must be a non-empty subset of the http hosts",
                     slot.name
                 ));
+            }
+            for binding in &slot.hosts {
+                let (host, port) = split_slot_host(binding);
+                let ports: Vec<u16> = http
+                    .hosts
+                    .iter()
+                    .filter(|a| a.host == host && port.is_none_or(|p| a.port == p))
+                    .map(|a| a.port)
+                    .collect();
+                match (ports.len(), port) {
+                    (0, _) => {
+                        return bad(format!(
+                            "secret slot {}: {binding} is not one of the http hosts",
+                            slot.name
+                        ))
+                    }
+                    (1, _) | (_, Some(_)) => {}
+                    (_, None) => {
+                        return bad(format!(
+                            "secret slot {}: {binding} is approved on several ports; name one \
+                             as {binding}:PORT",
+                            slot.name
+                        ))
+                    }
+                }
             }
         }
         Ok(())
@@ -394,6 +433,37 @@ mod tests {
                 .check_within(&narrow)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn a_slot_host_names_a_port_when_the_host_is_approved_on_several() {
+        let two = |slot: &str| {
+            format!(
+                r#"{{"http":{{"hosts":[{{"host":"a.example","port":443}},{{"host":"a.example","port":8443}},{{"host":"b.example"}}]}},
+                    "secrets":[{{"name":"T","hosts":[{slot}]}}]}}"#
+            )
+        };
+        // A bare host that is approved on two ports is ambiguous.
+        assert!(parse(&two(r#""a.example""#)).is_err());
+        assert!(parse(&two(r#""a.example:8443""#)).is_ok());
+        assert!(parse(&two(r#""a.example:443","b.example""#)).is_ok());
+        // The port must be one the host is approved on, and the host must be listed.
+        assert!(parse(&two(r#""a.example:444""#)).is_err());
+        assert!(parse(&two(r#""b.example:8443""#)).is_err());
+        // Approval is by the exact binding: a wider binding than approved is refused.
+        let narrow = parse(&two(r#""a.example:443""#)).unwrap();
+        let wide = parse(&two(r#""a.example:443","a.example:8443""#)).unwrap();
+        assert!(wide.check_within(&narrow).is_err());
+        assert!(narrow.check_within(&wide).is_ok());
+    }
+
+    #[test]
+    fn slot_hosts_split_into_a_name_and_an_optional_port() {
+        assert_eq!(split_slot_host("a.example"), ("a.example", None));
+        assert_eq!(split_slot_host("a.example:8443"), ("a.example", Some(8443)));
+        assert_eq!(split_slot_host("::1"), ("::1", None));
+        assert_eq!(split_slot_host("[::1]:8443"), ("::1", Some(8443)));
+        assert_eq!(split_slot_host("a.example:x"), ("a.example:x", None));
     }
 
     #[test]

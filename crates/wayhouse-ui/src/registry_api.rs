@@ -170,6 +170,15 @@ fn compatible(entry: &SnifferEntry, env: &Environment) -> serde_json::Value {
     }
 }
 
+/// Whether installing the version that would be chosen verifies a signature: only the
+/// official registry is checked, only when its key is configured, and only for a version
+/// that lists a signature. Everything else installs unverified.
+fn verifiable(reg: &RegistryRef, entry: &SnifferEntry, env: &Environment) -> bool {
+    reg.official
+        && crate::registry_keys::official_key().is_some()
+        && select(entry, env).is_ok_and(|v| v.signature_url.is_some())
+}
+
 async fn list_sniffers(
     State(state): State<AppState>,
     Extension(Actor(actor)): Extension<Actor>,
@@ -189,6 +198,7 @@ async fn list_sniffers(
         .map(|entry| {
             let mut v = serde_json::to_value(entry).expect("index entries serialize");
             v["compatible"] = compatible(entry, &fleet.env);
+            v["verifiable"] = json!(verifiable(&reg, entry, &fleet.env));
             v
         })
         .collect();
@@ -936,6 +946,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["sniffers"][0]["name"], "demo");
         assert_eq!(body["sniffers"][0]["compatible"]["version"], "0.1.0");
+        assert_eq!(body["sniffers"][0]["verifiable"], false);
         assert_eq!(body["min_proxy_checked"], false);
     }
 

@@ -119,6 +119,8 @@ export interface RegistrySniffer {
   license: string;
   homepage?: string;
   versions: RegistryVersion[];
+  /** True when installing the chosen version checks its signature (official registry with a key). */
+  verifiable?: boolean;
   compatible: { version: string } | { reason: string };
 }
 

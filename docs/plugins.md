@@ -63,6 +63,11 @@ other capability. `http.hosts` entries are exact lower-case host names or IP lit
 optional `port` (default 443); `allow_private` must be approved per host to reach private,
 loopback or link-local addresses.
 
+A slot's `hosts` entries are `host` or `host:port` (`[v6]:port` for an IPv6 literal). A `host:port`
+entry binds the slot to that approved port only. A bare `host` binds it to the host's one approved
+port, and a module that lists the host on several ports must name one (`panel.example:8443`), so a
+secret never reaches a second port of the same host by accident.
+
 **The request.** `http_request` takes UTF-8 JSON, `{"method", "url", "headers", "body"}`
 (`body` base64, optional), and `http_read` returns `{"status", "headers", "body"}` (`body`
 base64), or `{"error": "..."}` for a refused or failed call. The host enforces: `https` only; a
@@ -138,13 +143,13 @@ Rules:
 - Exact names match before `*.suffix` patterns, longer suffixes first.
 - Disabling or deleting an install withdraws its routes at once. A plugin whose ticks fail keeps its
   last committed set. (The spec's grace period with an alert is not built; see the follow-up issue.)
-- A controller started without `--plugins` answers `501` and proxies keep their own config; a
-  proxy without `--controller` ignores the overlay.
+- A controller started without `--plugins` answers `501` (`404` on an older build) and proxies drop
+  the plugin routes at once, keeping their own config; a controller that is only unreachable leaves
+  the last overlay in place. A proxy without `--controller` ignores the overlay.
 
 ## Webhooks
 
-A plugin that declares `"triggers": {"on_webhook": true}` (and `on_timer`, which stays required)
-can be called by an outside system. Webhooks are off until the operator starts the controller
+A plugin that declares `"triggers": {"on_webhook": true}` can be called by an outside system. Webhooks are off until the operator starts the controller
 with a **separate listener**, never on the admin port:
 
 ```text
@@ -325,12 +330,20 @@ is a content-addressed blob each replica keeps in its own store and moves over t
   logs a repeated warning, since it would otherwise silently run nothing.
 - Rolling upgrades: a new install is refused with `503` unless every member answers
   `/raft/whoami` with `plugin_support` of at least 2 (a build before module replication leaves it
-  out). Existing installs keep working through an upgrade. Upgrade every replica before the first
+  out). A member started without `--plugins` reports `0`, so every replica needs `--plugins`
+  before plugins are installed or their webhooks, secrets or key rotation change; the same gate
+  covers secret changes. A leader without `--plugins` would otherwise run no ticks and fail
+  webhook forwards silently. Existing installs keep working through an upgrade. Upgrade every replica before the first
   install; the gate does not cover a replica added later with an old build.
 - An install that lands on a leader that has meanwhile lost leadership answers `503 retry` and is
   never forwarded for a second hop.
-- At startup a controller removes the module blobs no install references (uploads that were never
-  installed, and cleanups a crash interrupted), so upload and install belong in one sitting.
+- A controller removes the module blobs no install references (uploads that were never installed,
+  and cleanups a crash interrupted) once at startup, so upload and install belong in one sitting.
+  Under HA the sweep waits until the node knows a leader and has applied its whole log, because a
+  blob pushed for a committed install that is not replayed yet looks unused. Uploads no install
+  uses are capped at 64 MiB in total (`507`), so an open controller cannot be filled with them.
+- A delete that lands between an install's blob check and its commit removes the module on every
+  replica; the leader puts it back and pushes it again once the install is recorded.
 
 **Turning HA on.** Installs, state and modules of a controller that ran standalone are not carried into an HA tier (the tier keeps its own in the Raft state machine's database, and there is no pre-HA import for plugins): install them again.
 

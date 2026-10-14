@@ -178,6 +178,7 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
                 <th className="px-4 py-2 font-medium">name</th>
                 <th className="px-4 py-2 font-medium">description</th>
                 <th className="px-4 py-2 font-medium">version</th>
+                <th className="px-4 py-2 font-medium">signature</th>
                 <th className="px-4 py-2"></th>
               </tr>
             </thead>
@@ -197,6 +198,9 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
                       ) : (
                         <span className="text-warn">{s.compatible.reason}</span>
                       )}
+                    </td>
+                    <td className="px-4 py-2 text-ink-muted">
+                      {s.verifiable ? "verified on install" : "not verified"}
                     </td>
                     <td className="px-4 py-2 text-right">
                       <Button disabled={!ok} onClick={() => setInstalling(s)}>
@@ -291,7 +295,7 @@ function AddRegistryDialog({
   );
 }
 
-function VersionDetails({ version }: { version: RegistryVersion }) {
+function VersionDetails({ version, verifiable }: { version: RegistryVersion; verifiable?: boolean }) {
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
       <dt className="text-ink-faint">Version</dt>
@@ -303,7 +307,7 @@ function VersionDetails({ version }: { version: RegistryVersion }) {
       <dt className="text-ink-faint">Time limit</dt>
       <dd className="text-ink">{version.limits.call_timeout_ms} ms per call</dd>
       <dt className="text-ink-faint">Signature</dt>
-      <dd className="text-ink">{version.signature_url ? "listed, not verified" : "none listed"}</dd>
+      <dd className="text-ink">{!version.signature_url ? "none listed" : verifiable ? "listed, verified on install" : "listed, not verified"}</dd>
       {version.config && (
         <>
           <dt className="text-ink-faint">Config</dt>
@@ -363,7 +367,7 @@ export function InstallDialog({
   const body = (
     <>
       <p className="text-sm text-ink-muted">{sniffer.description}</p>
-      {version && <VersionDetails version={version} />}
+      {version && <VersionDetails version={version} verifiable={sniffer.verifiable} />}
       <p className="text-sm text-ink-muted">
         Installs on every instance, from <span className="font-mono">{registry.name}</span>.
       </p>

@@ -162,8 +162,22 @@ async fn upload_module(
         Ok(i) => i,
         Err(e) => return err(StatusCode::BAD_REQUEST, e),
     };
-    if let Err(e) = st.store.put_blob(&info.sha256, &body) {
-        return internal(e);
+    match st
+        .store
+        .put_upload(&info.sha256, &body, super::MAX_ORPHAN_BYTES)
+    {
+        Ok(()) => {}
+        Err(PluginStoreError::OrphansFull) => {
+            return err(
+                StatusCode::INSUFFICIENT_STORAGE,
+                format!(
+                    "{} MiB of uploaded modules are waiting for an install; install or delete \
+                     them (a restart clears the unused ones) and retry",
+                    super::MAX_ORPHAN_BYTES >> 20
+                ),
+            )
+        }
+        Err(e) => return internal(e),
     }
     (
         StatusCode::CREATED,
@@ -274,6 +288,7 @@ async fn install_inner(
             .map_err(|e| err(StatusCode::SERVICE_UNAVAILABLE, e))?;
     }
     let for_peers = st.ha.is_some().then(|| Bytes::from(bytes.clone()));
+    let module = for_peers.clone();
     let pool = st.pool.clone();
     let approved_for_load = approved.clone();
     tokio::task::spawn_blocking(move || pool.load(bytes, approved_for_load))
@@ -299,7 +314,7 @@ async fn install_inner(
     record
         .validate()
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
-    if let (Some(ha), Some(bytes)) = (&st.ha, for_peers) {
+    if let (Some(ha), Some(bytes), Some(module)) = (&st.ha, for_peers, module) {
         // The record is committed only once a quorum holds the module, so an install
         // cannot be stranded on a node that dies right after the upload.
         super::peer::replicate_to_quorum(ha, &record.sha256, bytes)
@@ -314,6 +329,7 @@ async fn install_inner(
         {
             Ok(done) => Ok(match done.data {
                 WriteResponse::PluginApplied(_) => {
+                    restore_blob_after_commit(&st.store, ha, &record.sha256, module).await;
                     (StatusCode::CREATED, Json(record)).into_response()
                 }
                 other => unexpected(&other),
@@ -332,9 +348,44 @@ async fn install_inner(
             StatusCode::CONFLICT,
             "the module was removed while installing; upload it again",
         ),
+        PluginStoreError::Exists => err(
+            StatusCode::CONFLICT,
+            "that install id is taken; retry the install",
+        ),
         e => internal(e),
     })?;
     Ok((StatusCode::CREATED, Json(record)).into_response())
+}
+
+/// A delete of the last other install using this module can apply between the leader's
+/// blob check and this install's entry, removing the blob on every replica (the quorum
+/// copies included). Once the install is committed, put the module back and push it again
+/// so the record is never left without its bytes.
+async fn restore_blob_after_commit(
+    store: &super::PluginStore,
+    ha: &crate::ha::HaHandle,
+    sha256: &str,
+    module: Bytes,
+) {
+    match store.get_blob(sha256) {
+        Ok(Some(_)) => return,
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(error = %e, "could not check a plugin module after its install");
+            return;
+        }
+    }
+    tracing::warn!(
+        sha256,
+        "a concurrent delete removed the module of a new install; storing it again"
+    );
+    if let Err(e) = store.put_blob(sha256, &module) {
+        tracing::warn!(error = %e, "could not store a plugin module again");
+        return;
+    }
+    if let Err(why) = super::peer::replicate_to_quorum(ha, sha256, module).await {
+        tracing::warn!(%why, "could not push a restored plugin module to the other replicas");
+    }
 }
 
 /// The status and body of a plugin entry the state machine refused or answered oddly.
@@ -693,6 +744,11 @@ async fn put_secret(
         }
     };
     drop(value);
+    if let Some(ha) = &st.ha {
+        if let Err(why) = super::peer::check_support(ha).await {
+            return err(StatusCode::CONFLICT, why);
+        }
+    }
     let (updated_at, actor) = (now(), actor(&headers));
     let result = match &st.ha {
         Some(ha) => {
@@ -740,6 +796,9 @@ async fn delete_secret(
         return r;
     }
     if let Some(ha) = &st.ha {
+        if let Err(why) = super::peer::check_support(ha).await {
+            return err(StatusCode::CONFLICT, why);
+        }
         let path = format!("/plugins/{id}/secrets/{slot}");
         let ha_for_purge = ha.clone();
         return propose_write_as(
@@ -859,6 +918,9 @@ async fn rewrap_secrets(State(st): State<PluginsState>, headers: HeaderMap) -> R
                 StatusCode::CONFLICT,
                 format!("every node needs the active key {active} first: {why}"),
             );
+        }
+        if let Err(why) = super::peer::check_support(ha).await {
+            return err(StatusCode::CONFLICT, why);
         }
     }
     let stored = match st.store.all_secrets() {
@@ -1746,6 +1808,49 @@ mod tests {
         assert_eq!(status, StatusCode::NO_CONTENT);
         assert!(st.store.get_secret(&id, "PANEL_TOKEN").unwrap().is_none());
     }
+    #[tokio::test]
+    async fn under_ha_secret_changes_wait_for_every_member_to_support_plugins() {
+        let (mut st, _d) = ha_state().await;
+        with_key(&mut st, KEY_A);
+        let app = router(st.clone());
+        let id = installed(&app).await;
+        let uri = format!("/plugins/{id}/secrets/PANEL_TOKEN");
+        let (status, v) = call(&app, "PUT", &uri, put(SENTINEL), None).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        // A second member that does not answer (an old build, or down) closes the gate.
+        let ha = st.ha.clone().unwrap();
+        ha.raft
+            .add_learner(2, openraft::BasicNode::new("127.0.0.1:1"), false)
+            .await
+            .unwrap();
+        ha.raft
+            .wait(Some(Duration::from_secs(10)))
+            .metrics(
+                |m| m.membership_config.membership().nodes().count() == 2,
+                "the learner is a member",
+            )
+            .await
+            .unwrap();
+        let (status, v) = call(&app, "PUT", &uri, put(SENTINEL), None).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{v}");
+        let (status, v) = call(&app, "DELETE", &uri, vec![], None).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{v}");
+        assert!(st.store.get_secret(&id, "PANEL_TOKEN").unwrap().is_some());
+        let (status, v) = call(&app, "POST", "/admin/plugins/secrets/rewrap", vec![], None).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{v}");
+    }
+
+    #[tokio::test]
+    async fn an_install_whose_module_was_deleted_meanwhile_gets_it_back() {
+        let (st, _d) = ha_state().await;
+        let ha = st.ha.clone().unwrap();
+        let m = module(CAPS);
+        let sha = wayhouse_plugin_host::inspect(&m).unwrap().sha256;
+        assert!(st.store.get_blob(&sha).unwrap().is_none());
+        restore_blob_after_commit(&st.store, &ha, &sha, Bytes::from(m.clone())).await;
+        assert_eq!(st.store.get_blob(&sha).unwrap().unwrap(), m);
+    }
+
     #[derive(Clone, Default)]
     struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
 
