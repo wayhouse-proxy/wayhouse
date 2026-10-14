@@ -127,6 +127,31 @@ pub fn client() -> Client {
         .expect("the extra roots were validated by init_ca_file, so the client builds")
 }
 
+/// `resp`'s body, at most `max` bytes: `Err(BodyTooLarge)` the moment more
+/// arrives, instead of buffering an unbounded (or endless) stream the way
+/// `Response::bytes` does. A transport error is `Err(Read)`.
+pub async fn read_capped(
+    mut resp: reqwest::Response,
+    max: usize,
+) -> Result<Vec<u8>, ReadCappedError> {
+    let mut out = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(ReadCappedError::Read)? {
+        if out.len() + chunk.len() > max {
+            return Err(ReadCappedError::TooLarge { max });
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReadCappedError {
+    #[error("response body larger than {max} bytes")]
+    TooLarge { max: usize },
+    #[error("reading the response body: {}", error_chain(.0))]
+    Read(reqwest::Error),
+}
+
 /// `e` followed by each of its `source()`s, joined with `": "`. A
 /// `reqwest::Error`'s own `Display` stops at "error sending request for url
 /// (…)", hiding the cause (a refused connection, an untrusted certificate);
@@ -196,5 +221,41 @@ mod version_tests {
             super::LONG_VERSION,
             format!("{} ({})", env!("CARGO_PKG_VERSION"), super::COMMIT)
         );
+    }
+}
+
+#[cfg(all(test, feature = "server"))]
+mod read_capped_tests {
+    use super::*;
+
+    async fn serve(body: Vec<u8>) -> String {
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move { body }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}/")
+    }
+
+    #[tokio::test]
+    async fn a_body_within_the_cap_is_returned_whole() {
+        let url = serve(vec![7; 1000]).await;
+        let resp = client().get(url).send().await.unwrap();
+        assert_eq!(read_capped(resp, 1000).await.unwrap(), vec![7; 1000]);
+    }
+
+    #[tokio::test]
+    async fn a_body_past_the_cap_is_refused() {
+        let url = serve(vec![7; 1001]).await;
+        let resp = client().get(url).send().await.unwrap();
+        assert!(matches!(
+            read_capped(resp, 1000).await,
+            Err(ReadCappedError::TooLarge { max: 1000 })
+        ));
     }
 }

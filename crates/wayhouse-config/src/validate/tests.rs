@@ -758,6 +758,37 @@ listeners:
 }
 
 #[test]
+fn sni_matcher_ignores_one_trailing_dot_on_the_host() {
+    let yaml = r#"
+pools:
+  - name: eu
+    targets: ["127.0.0.1:1"]
+  - name: lobby
+    targets: ["127.0.0.1:2"]
+listeners:
+  - name: l
+    bind: "0.0.0.0:443"
+    routes:
+      - match: { type: sni, host: ["*.eu.example.com", "special.example.net"] }
+        action: { pool: eu }
+      - match: { type: always }
+        action: { pool: lobby }
+"#;
+    let cfg = parse_str(yaml).unwrap();
+    let l = &cfg.listeners[0];
+    let route = |sni: &str| {
+        let ch = client_hello(sni);
+        l.route_for(&ctx("9.9.9.9:5", "1.1.1.1:443", &ch))
+            .map(str::to_string)
+    };
+    assert_eq!(route("special.example.net.").as_deref(), Some("eu"));
+    assert_eq!(route("a.eu.example.com.").as_deref(), Some("eu"));
+    assert_eq!(route("eu.example.com.").as_deref(), Some("lobby"));
+    // only one dot is the root label; a second one is not a hostname
+    assert_eq!(route("special.example.net..").as_deref(), Some("lobby"));
+}
+
+#[test]
 fn rejects_bad_sni_matchers() {
     for bad in [
         // sni on a udp listener

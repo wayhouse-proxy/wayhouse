@@ -128,7 +128,7 @@ async fn plugin_action(
     suffix: &str,
     actor: Option<String>,
 ) -> Response {
-    let Some(segment) = path_segment(id) else {
+    let Some(segment) = crate::proxy_util::path_segment(id) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -257,26 +257,8 @@ async fn release_proxy(
     release(&state, "proxy-peers", &name, actor).await
 }
 
-/// `Path` has already percent-decoded `name`; re-encode it so it stays one
-/// path segment. `None` for the dot segments a URL normalizer would resolve
-/// away from the route they are meant for.
-fn path_segment(name: &str) -> Option<String> {
-    if name == "." || name == ".." {
-        return None;
-    }
-    let mut segment = String::with_capacity(name.len());
-    for b in name.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-            segment.push(b as char);
-        } else {
-            segment.push_str(&format!("%{b:02X}"));
-        }
-    }
-    Some(segment)
-}
-
 async fn release(state: &AppState, base: &str, name: &str, actor: Option<String>) -> Response {
-    let Some(segment) = path_segment(name) else {
+    let Some(segment) = crate::proxy_util::path_segment(name) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -349,12 +331,7 @@ async fn proxy_typed(
     }
 
     match req.send().await {
-        Ok(resp) => {
-            let status = resp.status();
-            let headers = crate::proxy_util::forwardable_headers(resp.headers());
-            let body = resp.bytes().await.unwrap_or_default();
-            (status, headers, body).into_response()
-        }
+        Ok(resp) => crate::proxy_util::relay(resp, "controller").await,
         Err(e) => (
             StatusCode::BAD_GATEWAY,
             Json(ErrorResponse {

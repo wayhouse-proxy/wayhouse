@@ -22,6 +22,44 @@ pub fn forwardable_headers(upstream: &axum::http::HeaderMap) -> axum::http::Head
     headers
 }
 
+/// `Path` has already percent-decoded `name`; re-encode it so it stays one
+/// path segment. `None` for the dot segments a URL normalizer would resolve
+/// away from the route they are meant for.
+pub(crate) fn path_segment(name: &str) -> Option<String> {
+    if name == "." || name == ".." {
+        return None;
+    }
+    let mut segment = String::with_capacity(name.len());
+    for b in name.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            segment.push(b as char);
+        } else {
+            segment.push_str(&format!("%{b:02X}"));
+        }
+    }
+    Some(segment)
+}
+
+/// Most bytes of an upstream reply the UI buffers before answering the browser.
+pub(crate) const MAX_UPSTREAM_BODY: usize = 16 << 20;
+
+/// The upstream reply as the browser's reply: status, forwardable headers and a
+/// body capped at [`MAX_UPSTREAM_BODY`] (a `502` instead when it is larger or the
+/// transfer fails).
+pub(crate) async fn relay(resp: reqwest::Response, who: &str) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let status = resp.status();
+    let headers = forwardable_headers(resp.headers());
+    match wayhouse_http::read_capped(resp, MAX_UPSTREAM_BODY).await {
+        Ok(body) => (status, headers, body).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            axum::Json(serde_json::json!({ "error": format!("{who}: {e}") })),
+        )
+            .into_response(),
+    }
+}
+
 /// Wire-shape contract for *every* route `wayhouse-ui` proxies: whatever the
 /// upstream service answers — status, custom headers — must reach the
 /// browser unchanged, and the hop-by-hop framing headers must not. This bug

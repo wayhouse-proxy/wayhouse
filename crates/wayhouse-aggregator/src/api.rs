@@ -89,10 +89,17 @@ pub struct AppState {
     /// calls *into* this aggregator, the other is what this aggregator
     /// presents *out* to instances that require `settings.admin.auth_token`.
     pub instance_token: Option<String>,
+    /// Most bytes of one instance's reply the fan-out buffers; more is a 502.
+    pub max_instance_response_bytes: usize,
     /// Fires (with no payload — subscribers rebuild the view themselves from
     /// `store`) on every accepted `POST /ingest`, for `/fleet/subscribe`.
     pub updates: broadcast::Sender<()>,
 }
+
+/// Fan-out client deadlines, and the most an instance's reply may weigh.
+const FANOUT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const FANOUT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const MAX_INSTANCE_RESPONSE_BYTES: usize = 8 << 20;
 
 impl AppState {
     pub fn new(store: Arc<IngestStore>) -> Self {
@@ -103,14 +110,24 @@ impl AppState {
             // wherever an instance's admin API points it.
             http: wayhouse_http::builder()
                 .redirect(reqwest::redirect::Policy::none())
+                // An instance that never answers (or never ends) must not hang a
+                // broadcast verb: `join` waits for every instance.
+                .connect_timeout(FANOUT_CONNECT_TIMEOUT)
+                .timeout(FANOUT_TIMEOUT)
                 .build()
                 .expect("the extra roots were validated by init_ca_file, so the client builds"),
             auth_token: None,
             ingest_token: None,
             admin_url_policy: AdminUrlPolicy::default(),
             instance_token: None,
+            max_instance_response_bytes: MAX_INSTANCE_RESPONSE_BYTES,
             updates,
         }
+    }
+
+    pub fn with_max_instance_response_bytes(mut self, max: usize) -> Self {
+        self.max_instance_response_bytes = max;
+        self
     }
 
     pub fn with_auth_token(mut self, auth_token: Option<String>) -> Self {
@@ -139,15 +156,14 @@ pub fn router(state: AppState) -> Router {
     // under `/fleet` only `--auth-token`.
     // Only `/ingest` (a proxy pushing) is component-facing and gated on the
     // protocol header; `/fleet` serves the UI and operators.
-    let ingest = wayhouse_http::protocol::gate(
-        Router::new().route("/ingest", post(ingest)).route_layer(
-            axum::middleware::from_fn_with_state(
+    // The bearer check is the outer layer: an unauthenticated request must not
+    // reach the protocol gate, which counts mismatches into the fleet view.
+    let ingest =
+        wayhouse_http::protocol::gate(Router::new().route("/ingest", post(ingest)), "aggregator")
+            .route_layer(axum::middleware::from_fn_with_state(
                 wayhouse_http::server::BearerAuth::new(state.ingest_token.as_deref()),
                 wayhouse_http::server::require_bearer,
-            ),
-        ),
-        "aggregator",
-    );
+            ));
     let fleet = Router::new()
         .route("/fleet/pools", get(fleet_pools))
         .route("/fleet/sessions", get(fleet_sessions))
@@ -191,8 +207,23 @@ async fn ingest(
         tracing::warn!(instance = %payload.instance, ?peer_ip, admin_url = %payload.admin_url, %why, "rejected an ingest push");
         return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: why })).into_response();
     }
+    if let Err(why) = payload.check_bounds() {
+        return (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: why })).into_response();
+    }
     let instance = payload.instance.clone();
-    state.store.ingest(payload);
+    if state.store.try_ingest(payload).is_err() {
+        tracing::warn!(
+            instance,
+            "ingest store is full of live instances, push refused"
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "too many instances".into(),
+            }),
+        )
+            .into_response();
+    }
     // No subscribers connected right now is not an error — the state is
     // durably held in `store` regardless; a subscriber that connects later
     // just gets it in its initial view.
@@ -697,6 +728,25 @@ mod tests {
             .unwrap();
         let list = body_json(resp).await;
         assert_eq!(list[0]["version"], "0.3.1");
+    }
+
+    #[tokio::test]
+    async fn an_unauthenticated_push_with_another_protocol_major_is_a_401_not_a_426() {
+        // The protocol gate counts a mismatch (and the fleet view then turns this
+        // node red), so it must only ever see requests that passed the token.
+        let state =
+            AppState::new(Arc::new(IngestStore::new())).with_ingest_token(Some("ingest".into()));
+        let resp = router(state)
+            .oneshot(
+                Request::post("/ingest")
+                    .header("content-type", "application/json")
+                    .header(wayhouse_http::protocol::HEADER, "2.0")
+                    .body(Body::from(payload_json("proxy-1")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

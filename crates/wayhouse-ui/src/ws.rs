@@ -9,8 +9,8 @@
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::http::HeaderMap;
-use axum::response::Response;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
 use tokio::sync::broadcast::error::RecvError;
@@ -26,11 +26,24 @@ pub fn router() -> Router<AppState> {
 /// Close code 1008 (policy violation): the session behind this socket is gone.
 const CLOSE_POLICY: u16 = 1008;
 
+/// Most `/ws/fleet` sockets open at once, across all sessions.
+pub const DEFAULT_MAX_SOCKETS: usize = 256;
+
+/// The browser never sends anything meaningful; this bounds what it may.
+const MAX_INCOMING_BYTES: usize = 4096;
+
+/// How long one outgoing message may take before the socket is dropped: a
+/// reader that never drains would otherwise park its task for good.
+const SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 async fn ws_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
+    let Ok(permit) = state.ws_slots.clone().try_acquire_owned() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "too many open sockets").into_response();
+    };
     // `None` when auth is off (nothing to re-check). The upgrade already passed
     // the session gate, so with auth on this is the id of a session that was
     // valid a moment ago.
@@ -38,7 +51,20 @@ async fn ws_handler(
         .auth_configured()
         .then(|| crate::api::session_id_from_headers(&headers))
         .flatten();
-    ws.on_upgrade(move |socket| handle_socket(socket, state, session_id))
+    ws.max_message_size(MAX_INCOMING_BYTES)
+        .max_frame_size(MAX_INCOMING_BYTES)
+        .on_upgrade(move |socket| async move {
+            handle_socket(socket, state, session_id).await;
+            drop(permit);
+        })
+}
+
+/// `socket.send` under [`SEND_TIMEOUT`]; `false` means the socket is gone or stuck.
+async fn send(socket: &mut WebSocket, msg: Message) -> bool {
+    matches!(
+        tokio::time::timeout(SEND_TIMEOUT, socket.send(msg)).await,
+        Ok(Ok(()))
+    )
 }
 
 /// The session was valid at the upgrade; a socket may not outlive it. The check
@@ -54,21 +80,25 @@ fn session_ok(state: &AppState, session_id: &Option<String>) -> bool {
 }
 
 async fn close_policy(socket: &mut WebSocket) {
-    let _ = socket
-        .send(Message::Close(Some(CloseFrame {
+    let _ = send(
+        socket,
+        Message::Close(Some(CloseFrame {
             code: CLOSE_POLICY,
             reason: "session ended".into(),
-        })))
-        .await;
+        })),
+    )
+    .await;
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState, session_id: Option<String>) {
     let Some(feed) = state.fleet_feed.clone() else {
         // No --aggregator-url configured at all: nothing to stream. Tell the
         // browser once and close, rather than leaving it hanging.
-        let _ = socket
-            .send(Message::Text("no aggregator configured".into()))
-            .await;
+        let _ = send(
+            &mut socket,
+            Message::Text("no aggregator configured".into()),
+        )
+        .await;
         return;
     };
 
@@ -79,7 +109,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session_id: Optio
         if !session_ok(&state, &session_id) {
             return close_policy(&mut socket).await;
         }
-        if socket.send(Message::Text(view.into())).await.is_err() {
+        if !send(&mut socket, Message::Text(view.into())).await {
             return;
         }
     }
@@ -99,7 +129,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session_id: Optio
                     if !session_ok(&state, &session_id) {
                         return close_policy(&mut socket).await;
                     }
-                    if socket.send(Message::Text(view.into())).await.is_err() {
+                    if !send(&mut socket, Message::Text(view.into())).await {
                         return;
                     }
                 }
@@ -113,7 +143,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session_id: Optio
                         if !session_ok(&state, &session_id) {
                             return close_policy(&mut socket).await;
                         }
-                        if socket.send(Message::Text(view.into())).await.is_err() {
+                        if !send(&mut socket, Message::Text(view.into())).await {
                             return;
                         }
                     }
@@ -438,5 +468,66 @@ mod tests {
             Some(Ok(m)) => assert!(m.is_close()),
             Some(Err(_)) => {}
         }
+    }
+
+    async fn serve_open(state: crate::api::AppState) -> std::net::SocketAddr {
+        let app = crate::api::router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn the_socket_count_is_capped() {
+        let feed = crate::fleet_feed::FleetFeed::new();
+        let state = crate::api::AppState::new(None)
+            .with_fleet_feed(feed)
+            .with_max_ws_connections(1);
+        let addr = serve_open(state).await;
+        let url = format!("ws://{addr}/ws/fleet");
+        let (first, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        assert!(
+            tokio_tungstenite::connect_async(&url).await.is_err(),
+            "the second socket is refused while the first is open"
+        );
+        drop(first);
+        // The slot comes back once the first socket is gone.
+        let mut admitted = false;
+        for _ in 0..50 {
+            if tokio_tungstenite::connect_async(&url).await.is_ok() {
+                admitted = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(admitted);
+    }
+
+    #[tokio::test]
+    async fn an_oversized_message_from_the_browser_ends_the_socket() {
+        use futures_util::SinkExt;
+        let feed = crate::fleet_feed::FleetFeed::new();
+        let addr = serve_open(crate::api::AppState::new(None).with_fleet_feed(feed)).await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/fleet"))
+            .await
+            .unwrap();
+        let big = "x".repeat(64 * 1024);
+        let _ = ws
+            .send(tokio_tungstenite::tungstenite::Message::Text(big.into()))
+            .await;
+        let end = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match ws.next().await {
+                    None | Some(Err(_)) => return,
+                    Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => return,
+                    Some(Ok(_)) => {}
+                }
+            }
+        })
+        .await;
+        assert!(end.is_ok(), "the server kept reading a 64 KiB message");
     }
 }

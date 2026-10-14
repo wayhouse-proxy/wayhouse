@@ -349,8 +349,16 @@ async fn proxy_to_instance(
         Ok(resp) => {
             let status = resp.status();
             let headers = forwardable_headers(resp.headers());
-            let body = resp.bytes().await.unwrap_or_default();
-            (status, headers, body).into_response()
+            match wayhouse_http::read_capped(resp, state.max_instance_response_bytes).await {
+                Ok(body) => (status, headers, body).into_response(),
+                Err(e) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorResponse {
+                        error: format!("{instance} ({url}): {e}"),
+                    }),
+                )
+                    .into_response(),
+            }
         }
         Err(e) => (
             StatusCode::BAD_GATEWAY,
@@ -396,9 +404,19 @@ struct InstanceResult {
 /// How much of a refusing proxy's reply is passed on as `detail`.
 const DETAIL_BYTES: usize = 200;
 
-/// The first [`DETAIL_BYTES`] of `text`, cut on a character boundary.
-fn detail_of(text: &str) -> String {
-    let mut end = text.len().min(DETAIL_BYTES);
+/// At most the first `max` bytes of `resp`'s body as text (cut on a character
+/// boundary), reading no more than that off the wire: a hostile instance can
+/// stream an endless error body.
+async fn text_prefix(mut resp: reqwest::Response, max: usize) -> String {
+    let mut buf = Vec::new();
+    while buf.len() < max {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => buf.extend_from_slice(&chunk),
+            _ => break,
+        }
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let mut end = text.len().min(max);
     while !text.is_char_boundary(end) {
         end -= 1;
     }
@@ -478,7 +496,7 @@ async fn broadcast_with_content_type(
                     InstanceResult {
                         instance,
                         status: Some(resp.status().as_u16()),
-                        error: Some(resp.text().await.unwrap_or_default()),
+                        error: Some(text_prefix(resp, 1024).await),
                         detail: None,
                     }
                 }
@@ -487,7 +505,7 @@ async fn broadcast_with_content_type(
                     let detail = if status.is_success() {
                         None
                     } else {
-                        resp.text().await.ok().map(|t| detail_of(&t))
+                        Some(text_prefix(resp, DETAIL_BYTES).await)
                     };
                     InstanceResult {
                         instance,
@@ -612,6 +630,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bytes, "draining\n".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn an_instance_response_past_the_cap_is_a_502_not_buffered() {
+        let (base_url, _captured) = spawn_mock_instance(
+            "/admin/drain",
+            Method::POST,
+            StatusCode::OK,
+            "this body is longer than the 8 byte cap",
+        )
+        .await;
+        let state = test_state().with_max_instance_response_bytes(8);
+        state.store.ingest(ingest_payload("proxy-1", &base_url));
+        let resp = crate::api::router(state)
+            .oneshot(
+                Request::post("/fleet/instances/proxy-1/drain")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]

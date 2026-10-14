@@ -523,15 +523,27 @@ impl BackendSource for ConsulSource {
         self.set_index(index);
 
         let mut out = Vec::new();
+        let mut failed = None;
         for e in entries {
             let host = if e.service.address.is_empty() {
                 e.node.address
             } else {
                 e.service.address
             };
-            out.extend(resolve_host_port(&host, e.service.port).await?);
+            // One bad registration must not freeze the pool at its last known
+            // good set; only "nothing resolved at all" fails the fetch.
+            match resolve_host_port(&host, e.service.port).await {
+                Ok(addrs) => out.extend(addrs),
+                Err(err) => {
+                    tracing::warn!(%host, error = %err, "Consul instance does not resolve, skipping");
+                    failed = Some(err);
+                }
+            }
         }
-        Ok(out)
+        match failed {
+            Some(err) if out.is_empty() => Err(err),
+            _ => Ok(out),
+        }
     }
 }
 
@@ -890,10 +902,10 @@ impl BackendSource for KubernetesSource {
                 .filter(|e| e.conditions.ready != Some(false))
             {
                 for addr in &ep.addresses {
-                    let ip = addr.parse().map_err(|_| SourceError::BadResponse {
-                        context: "Kubernetes EndpointSlices".into(),
-                        cause: format!("endpoint address {addr:?} is not an IP"),
-                    })?;
+                    let Ok(ip) = addr.parse() else {
+                        tracing::warn!(%addr, "Kubernetes endpoint address is not an IP, skipping");
+                        continue;
+                    };
                     let sa = SocketAddr::new(ip, port);
                     // A service can list one address in several slices.
                     if !out.contains(&sa) {
@@ -906,19 +918,29 @@ impl BackendSource for KubernetesSource {
     }
 }
 
+/// Longest one A/AAAA lookup for a discovered address may take.
+const DNS_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Parse `host` as an IP, or resolve it (A/AAAA) and pair every result with
 /// `port`.
 async fn resolve_host_port(host: &str, port: u16) -> Result<Vec<SocketAddr>, SourceError> {
     if let Ok(ip) = host.parse() {
         return Ok(vec![SocketAddr::new(ip, port)]);
     }
-    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|e| SourceError::Unreachable {
-            context: format!("resolve {host}:{port}"),
-            cause: e.to_string(),
-        })?
-        .collect();
+    // `lookup_host` has no deadline of its own (the system resolver can take
+    // minutes), and the lookups run one after another.
+    let addrs: Vec<SocketAddr> =
+        tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host((host, port)))
+            .await
+            .map_err(|_| SourceError::Unreachable {
+                context: format!("resolve {host}:{port}"),
+                cause: format!("no answer within {}s", DNS_TIMEOUT.as_secs()),
+            })?
+            .map_err(|e| SourceError::Unreachable {
+                context: format!("resolve {host}:{port}"),
+                cause: e.to_string(),
+            })?
+            .collect();
     if addrs.is_empty() {
         return Err(SourceError::BadResponse {
             context: format!("resolve {host}:{port}"),
@@ -1063,6 +1085,70 @@ mod tests {
                 "10.0.0.9:7778".parse().unwrap(),
                 "10.0.1.1:7777".parse().unwrap(),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn consul_skips_an_instance_that_does_not_resolve() {
+        let body = r#"[
+          {"Node":{"Address":"10.0.0.9"},"Service":{"Address":"no such host.invalid","Port":7777}},
+          {"Node":{"Address":"10.0.0.9"},"Service":{"Address":"10.0.1.1","Port":7778}}
+        ]"#;
+        let server = mock_http::serve_json(body).await;
+        let src = ConsulSource::new(
+            "p".into(),
+            "game".into(),
+            &format!("http://{}", server.addr),
+            None,
+            None,
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(
+            src.fetch().await.unwrap(),
+            vec!["10.0.1.1:7778".parse::<SocketAddr>().unwrap()]
+        );
+    }
+
+    #[tokio::test]
+    async fn consul_fails_the_fetch_when_no_instance_resolves() {
+        let body = r#"[
+          {"Node":{"Address":"10.0.0.9"},"Service":{"Address":"no such host.invalid","Port":7777}}
+        ]"#;
+        let server = mock_http::serve_json(body).await;
+        let src = ConsulSource::new(
+            "p".into(),
+            "game".into(),
+            &format!("http://{}", server.addr),
+            None,
+            None,
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(src.fetch().await.is_err(), "keep the last-known-good pool");
+    }
+
+    #[tokio::test]
+    async fn kubernetes_skips_an_endpoint_address_that_is_not_an_ip() {
+        let body = r#"{"items":[
+          {"addressType":"IPv4",
+           "endpoints":[{"addresses":["not-an-ip"]},{"addresses":["10.2.0.2"]}],
+           "ports":[{"name":"game","port":7777}]}
+        ]}"#;
+        let server = mock_http::serve_json(body).await;
+        let src = KubernetesSource::new(
+            "p".into(),
+            "games".into(),
+            "match".into(),
+            Some("game".into()),
+            format!("http://{}", server.addr),
+            Duration::from_secs(10),
+            KubeAuth::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            src.fetch().await.unwrap(),
+            vec!["10.2.0.2:7777".parse::<SocketAddr>().unwrap()]
         );
     }
 

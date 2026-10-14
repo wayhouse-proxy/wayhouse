@@ -94,13 +94,71 @@ pub struct InstanceState {
     pub mismatch_rose_at_ms: Option<u64>,
 }
 
-/// The whole store: latest-write-wins per `instance`. No history, no
-/// eviction policy yet (an instance that stops pushing just goes stale in
-/// place — slice 8's `/fleet/healthz` is where "stale" gets a meaning and a
-/// threshold, not here).
-#[derive(Default)]
+/// Most distinct instances the store holds; an instance silent for
+/// [`STALE_AFTER_MS`] is evicted to make room once it is full.
+const DEFAULT_MAX_INSTANCES: usize = 10_000;
+/// How long an instance may stay silent before a full store may drop it.
+const STALE_AFTER_MS: u64 = 60 * 60 * 1000;
+/// Longest any self-reported string (instance, URL, names, version) may be.
+const MAX_FIELD_BYTES: usize = 1024;
+/// Most pools one push may carry, and most backends per pool.
+const MAX_POOLS: usize = 1024;
+const MAX_BACKENDS_PER_POOL: usize = 4096;
+
+/// A push the store will not take.
+#[derive(Debug, PartialEq, Eq)]
+pub enum IngestRejected {
+    /// The store is full of instances that are all still reporting.
+    Full,
+}
+
+impl IngestPayload {
+    /// Size limits on what an instance may self-report: the whole payload is
+    /// cloned and serialised on every `/fleet` read, so it must stay bounded.
+    pub fn check_bounds(&self) -> Result<(), String> {
+        let long = |s: &str| s.len() > MAX_FIELD_BYTES;
+        if long(&self.instance)
+            || long(&self.admin_url)
+            || long(&self.version)
+            || long(&self.protocol)
+            || self.group.as_deref().is_some_and(long)
+        {
+            return Err(format!("a field is longer than {MAX_FIELD_BYTES} bytes"));
+        }
+        if self.pools.len() > MAX_POOLS {
+            return Err(format!("more than {MAX_POOLS} pools"));
+        }
+        for p in &self.pools {
+            if long(&p.name) || long(&p.balancer) {
+                return Err(format!("a field is longer than {MAX_FIELD_BYTES} bytes"));
+            }
+            if p.backends.len() > MAX_BACKENDS_PER_POOL {
+                return Err(format!(
+                    "pool {} has more than {MAX_BACKENDS_PER_POOL} backends",
+                    p.name
+                ));
+            }
+            if p.backends.iter().any(|b| long(&b.addr) || long(&b.state)) {
+                return Err(format!("a field is longer than {MAX_FIELD_BYTES} bytes"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The whole store: latest-write-wins per `instance`. No history; an instance
+/// that stops pushing just goes stale in place (slice 8's `/fleet/healthz` is
+/// where "stale" gets a meaning and a threshold), and is only dropped to make
+/// room when the store is full.
 pub struct IngestStore {
     instances: RwLock<HashMap<String, InstanceState>>,
+    max_instances: usize,
+}
+
+impl Default for IngestStore {
+    fn default() -> Self {
+        Self::with_max_instances(DEFAULT_MAX_INSTANCES)
+    }
 }
 
 impl IngestStore {
@@ -108,14 +166,38 @@ impl IngestStore {
         Self::default()
     }
 
+    pub fn with_max_instances(max_instances: usize) -> Self {
+        IngestStore {
+            instances: RwLock::default(),
+            max_instances,
+        }
+    }
+
     /// Records `payload` as the latest state for its `instance`, overwriting
-    /// whatever was there before.
+    /// whatever was there before. A push the store refuses ([`Self::try_ingest`])
+    /// is dropped.
     pub fn ingest(&self, payload: IngestPayload) {
-        let now = unix_ms();
+        let _ = self.try_ingest(payload);
+    }
+
+    /// [`Self::ingest`], but says when a *new* instance does not fit. A known
+    /// instance always updates; when the store is full, instances silent for
+    /// [`STALE_AFTER_MS`] are evicted first.
+    pub fn try_ingest(&self, payload: IngestPayload) -> Result<(), IngestRejected> {
+        self.try_ingest_at(payload, unix_ms())
+    }
+
+    fn try_ingest_at(&self, payload: IngestPayload, now: u64) -> Result<(), IngestRejected> {
         let mut instances = self
             .instances
             .write()
             .unwrap_or_else(PoisonError::into_inner);
+        if !instances.contains_key(&payload.instance) && instances.len() >= self.max_instances {
+            instances.retain(|_, s| now.saturating_sub(s.received_at_ms) <= STALE_AFTER_MS);
+            if instances.len() >= self.max_instances {
+                return Err(IngestRejected::Full);
+            }
+        }
         let prev = instances.get(&payload.instance);
         let mismatch_rose_at_ms = match prev {
             Some(p) if payload.protocol_mismatches > p.payload.protocol_mismatches => Some(now),
@@ -128,6 +210,7 @@ impl IngestStore {
             mismatch_rose_at_ms,
         };
         instances.insert(state.payload.instance.clone(), state);
+        Ok(())
     }
 
     /// One instance's latest state, if it has ever pushed.
@@ -182,6 +265,62 @@ mod tests {
             protocol: String::new(),
             protocol_mismatches: 0,
         }
+    }
+
+    #[test]
+    fn a_full_store_refuses_a_new_instance_but_still_updates_a_known_one() {
+        let store = IngestStore::with_max_instances(2);
+        store.try_ingest_at(payload("a"), 1_000).unwrap();
+        store.try_ingest_at(payload("b"), 1_000).unwrap();
+        assert!(store.try_ingest_at(payload("c"), 1_000).is_err());
+        store.try_ingest_at(payload("a"), 2_000).unwrap();
+        assert!(store.get("c").is_none());
+    }
+
+    #[test]
+    fn a_full_store_evicts_instances_silent_past_the_ttl() {
+        let store = IngestStore::with_max_instances(2);
+        store.try_ingest_at(payload("a"), 1_000).unwrap();
+        store
+            .try_ingest_at(payload("b"), 1_000 + STALE_AFTER_MS / 2)
+            .unwrap();
+        // `a` has been silent for STALE_AFTER_MS + 1: it makes room, `b` does not.
+        store
+            .try_ingest_at(payload("c"), 1_000 + STALE_AFTER_MS + 1)
+            .unwrap();
+        assert!(store.get("a").is_none());
+        assert!(store.get("b").is_some() && store.get("c").is_some());
+    }
+
+    #[test]
+    fn oversized_payloads_are_rejected() {
+        assert!(payload("ok").check_bounds().is_ok());
+        assert!(payload(&"x".repeat(MAX_FIELD_BYTES + 1))
+            .check_bounds()
+            .is_err());
+        let mut p = payload("many-pools");
+        p.pools = (0..=MAX_POOLS)
+            .map(|i| PoolSummary {
+                name: format!("p{i}"),
+                balancer: "rr".into(),
+                backends: vec![],
+            })
+            .collect();
+        assert!(p.check_bounds().is_err());
+        let mut p = payload("many-backends");
+        p.pools = vec![PoolSummary {
+            name: "p".into(),
+            balancer: "rr".into(),
+            backends: (0..=MAX_BACKENDS_PER_POOL)
+                .map(|i| BackendSummary {
+                    addr: format!("10.0.0.1:{i}"),
+                    healthy: true,
+                    state: "enabled".into(),
+                    active: 0,
+                })
+                .collect(),
+        }];
+        assert!(p.check_bounds().is_err());
     }
 
     #[test]

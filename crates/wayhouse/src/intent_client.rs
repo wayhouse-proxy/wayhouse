@@ -211,6 +211,11 @@ fn apply(op: &IntentOp, handle: &RuntimeHandle) -> Result<(), String> {
             ttl_sec,
         } => {
             let ip: IpAddr = src_ip.parse().map_err(|_| "invalid src_ip".to_string())?;
+            // The controller validates 1..=3600 on `POST /intent`; the proxy does
+            // not take its word for it (`Instant + Duration` overflow aborts).
+            if !(1..=3600).contains(ttl_sec) {
+                return Err("ttl_sec must be between 1 and 3600".into());
+            }
             if handle.snapshot().pool(pool).is_none() {
                 return Err(format!("unknown pool {pool}"));
             }
@@ -274,6 +279,36 @@ listeners:
             addr: "127.0.0.1:2".into(),
         };
         assert!(apply(&op, &runtime.handle()).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_route_hint_ttl_outside_the_controllers_bounds_is_refused() {
+        use wayhouse_core::{Runtime, Snapshot};
+
+        const YAML: &str = r#"
+pools:
+  - name: mc
+    targets: ["127.0.0.1:1"]
+listeners:
+  - name: main
+    bind: "127.0.0.1:0"
+    protocol: tcp
+    pool: mc
+"#;
+        let cfg = wayhouse_config::parse_str(YAML).unwrap();
+        let runtime = Runtime::start(Snapshot::from_config(&cfg), std::sync::Arc::default(), 1);
+        let handle = runtime.handle();
+        let hint = |ttl_sec| IntentOp::RouteHint {
+            src_ip: "1.2.3.4".into(),
+            pool: "mc".into(),
+            ttl_sec,
+        };
+        // A rogue or man-in-the-middled controller must not be able to panic the
+        // proxy (`Instant + Duration` overflows) or pin a hint forever.
+        for ttl in [0, 3601, u64::MAX] {
+            assert!(apply(&hint(ttl), &handle).is_err(), "ttl {ttl}");
+        }
+        apply(&hint(3600), &handle).unwrap();
     }
 
     #[tokio::test]

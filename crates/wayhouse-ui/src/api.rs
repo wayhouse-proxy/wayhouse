@@ -97,6 +97,11 @@ pub struct AppState {
     /// changes are lost on restart, which the Sniffers page says.
     pub registries_persistent: bool,
     pub registry_client: crate::registry_client::RegistryClient,
+    /// Refuse any request whose `Host` is not a loopback name or address
+    /// ([`crate::origin_guard`]): DNS-rebinding protection for the open-mode UI.
+    pub loopback_host_only: bool,
+    /// One permit per open `/ws/fleet` socket ([`crate::ws`]).
+    pub ws_slots: Arc<tokio::sync::Semaphore>,
 }
 
 /// Longest username accepted at login; longer is rejected before any
@@ -112,7 +117,13 @@ impl AppState {
             ui_password: ui_password.map(Arc::from),
             users: None,
             sessions: Arc::new(SessionStore::new()),
-            http: wayhouse_http::client(),
+            // Deadlines on the proxied calls: a hung upstream must not pin a
+            // handler (and its session) forever.
+            http: wayhouse_http::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(60))
+                .build()
+                .expect("the extra roots were validated by init_ca_file, so the client builds"),
             aggregator: None,
             controller: None,
             fleet_feed: None,
@@ -126,7 +137,19 @@ impl AppState {
             ),
             registries_persistent: false,
             registry_client: crate::registry_client::RegistryClient::new(),
+            loopback_host_only: false,
+            ws_slots: Arc::new(tokio::sync::Semaphore::new(crate::ws::DEFAULT_MAX_SOCKETS)),
         }
+    }
+
+    pub fn with_max_ws_connections(mut self, max: usize) -> Self {
+        self.ws_slots = Arc::new(tokio::sync::Semaphore::new(max));
+        self
+    }
+
+    pub fn with_loopback_host_only(mut self, on: bool) -> Self {
+        self.loopback_host_only = on;
+        self
     }
 
     pub fn with_registries(
@@ -235,6 +258,10 @@ pub fn router(state: AppState) -> Router {
         .merge(viewer)
         .merge(operator)
         .merge(admin)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::origin_guard::origin_guard,
+        ))
         .with_state(state)
 }
 
@@ -269,10 +296,20 @@ async fn login(
     let ip = peer.map_or(IpAddr::from([0, 0, 0, 0]), |p| (p.0).0 .0.ip());
     // Throttle before any password work. In legacy/open mode there is no
     // username, so only the per-address bucket applies.
-    let username = state.users.as_ref().and(req.username.as_deref());
+    // Only real accounts get a username bucket: a name that isn't in the users
+    // file is throttled by address alone, so spraying names can neither fill the
+    // limiter's map nor lock out a legitimate account it doesn't name.
+    let username = state
+        .users
+        .as_ref()
+        .and_then(|users| req.username.as_deref().filter(|u| users.contains_key(*u)));
     // Usernames key the limiter's map, so bound their size (no real
     // username comes close).
-    if username.is_some_and(|u| u.len() > MAX_USERNAME_BYTES) {
+    if req
+        .username
+        .as_deref()
+        .is_some_and(|u| u.len() > MAX_USERNAME_BYTES)
+    {
         return bad_credentials();
     }
     if let Err(wait) = state.login_limiter.check(ip, username) {
@@ -885,6 +922,16 @@ mod tests {
         // Another username is unaffected.
         let resp = post_login(&app, r#"{"username":"bob","password":"bob-pass"}"#).await;
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn names_that_are_not_accounts_get_no_username_bucket() {
+        let app = router(users_state().with_login_limits(tight_login_limits(100, 1)));
+        // A per-username burst of 1 would 429 the second attempt for a tracked name.
+        for _ in 0..3 {
+            let resp = post_login(&app, r#"{"username":"nobody","password":"x"}"#).await;
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        }
     }
 
     #[tokio::test]
