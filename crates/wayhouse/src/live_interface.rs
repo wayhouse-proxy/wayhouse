@@ -146,7 +146,7 @@ pub(crate) mod testing {
         /// Whether `remove_interface` fails (as it does without a resolver tool).
         pub fail_remove: bool,
         /// Remaining failures of `configure_peer`.
-        pub fail_configure: std::sync::atomic::AtomicUsize,
+        pub fail_configure: Mutex<usize>,
     }
 
     impl WireguardInterfaceApi for Fake {
@@ -181,12 +181,9 @@ pub(crate) mod testing {
             Ok(())
         }
         fn configure_peer(&self, _: &Peer) -> Result<(), WireguardInterfaceError> {
-            use std::sync::atomic::Ordering::SeqCst;
-            if self
-                .fail_configure
-                .fetch_update(SeqCst, SeqCst, |n| n.checked_sub(1))
-                .is_ok()
-            {
+            let mut left = self.fail_configure.lock().unwrap();
+            if *left > 0 {
+                *left -= 1;
                 return Err(WireguardInterfaceError::PeerConfigurationError(
                     "refused".into(),
                 ));
@@ -235,7 +232,7 @@ pub(crate) mod testing {
                 log: log.clone(),
                 fail_assign: fail_assign.iter().map(ToString::to_string).collect(),
                 fail_remove,
-                fail_configure: std::sync::atomic::AtomicUsize::new(0),
+                fail_configure: Mutex::new(0),
             }),
             mask("10.60.0.2/24"),
             Box::new(move |a| {

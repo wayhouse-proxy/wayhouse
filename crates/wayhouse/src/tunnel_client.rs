@@ -478,12 +478,11 @@ mod tests {
     #[test]
     fn a_peer_whose_configure_failed_is_retried_by_the_next_identical_event() {
         use crate::live_interface::testing::Fake;
-        use std::sync::atomic::AtomicUsize;
         let wg = Fake {
             log: std::sync::Arc::default(),
             fail_assign: vec![],
             fail_remove: false,
-            fail_configure: AtomicUsize::new(1),
+            fail_configure: std::sync::Mutex::new(1),
         };
         let reg = PeerRegistration {
             name: "home".into(),
