@@ -165,7 +165,9 @@
 > with `settings.sniffers.modules` pins an unlisted name or a different sha256
 > is `409`. A bad `.wasm` file already in `dir` is logged and skipped by every
 > rescan when `modules` is not set. When `modules` pins are set, a pin
-> violation or a pinned module that fails validation fails the whole scan:
+> violation, a pinned module that fails validation, or a pinned path that is not a
+> readable file (a directory, a dangling symlink) fails the whole scan (a pin whose
+> file has not been uploaded yet is fine):
 > the process refuses to start (naming the module), and a reload keeps the
 > previous sniffer set. Uploads are fanned out fleet-wide via `wayhouse-aggregator`'s
 > `POST/DELETE /fleet/sniffers[/{name}]` and the admin GUI's Sniffers page —

@@ -535,15 +535,23 @@ impl SnifferLoader {
                 continue;
             }
             // Only regular files are modules: a directory named `x.wasm` is not.
-            if !fs::metadata(&path).is_ok_and(|m| m.is_file()) {
-                tracing::warn!(path = %path.display(), "not a regular file, skipping");
-                continue;
-            }
             let name = path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or_default()
                 .to_string();
+            if !fs::metadata(&path).is_ok_and(|m| m.is_file()) {
+                // A pin with no file yet is fine (pin first, then upload), but a
+                // pinned path that exists and is not a file must not vanish silently.
+                if cfg.modules.iter().any(|m| m.name == name) {
+                    bail!(
+                        "sniffer {name}: pinned, but {} is not a readable regular file",
+                        path.display()
+                    );
+                }
+                tracing::warn!(path = %path.display(), "not a regular file, skipping");
+                continue;
+            }
             let bytes = match fs::read(&path) {
                 Ok(bytes) => bytes,
                 // Unpinned: one unreadable file must not block every rescan.
@@ -616,16 +624,6 @@ impl SnifferLoader {
             });
             tracing::info!(sniffer = %name, path = %path.display(), "sniffer loaded");
             modules.insert(name, sniffer);
-        }
-        // A pin with no loaded module (file missing, dangling symlink) would
-        // silently drop a sniffer the config names, so the scan fails instead.
-        if let Some(pin) = cfg.modules.iter().find(|p| !modules.contains_key(&p.name)) {
-            bail!(
-                "sniffer {}: pinned in settings.sniffers.modules but no readable {}.wasm in {:?}",
-                pin.name,
-                pin.name,
-                cfg.dir
-            );
         }
         Ok(modules)
     }
@@ -1942,23 +1940,34 @@ listeners:
         assert_eq!(loader().scan(&c).unwrap().len(), 1);
     }
 
-    /// A pin whose file is gone or whose symlink dangles must not shrink the set silently.
+    /// A pinned path that exists but is not a readable file (dangling link, directory)
+    /// fails the scan; a pin with no file at all is the pin-first flow and still scans.
+    #[cfg(unix)]
     #[test]
-    fn scan_fails_when_a_pinned_module_has_no_file() {
-        let dir = tempdir();
+    fn scan_fails_on_a_pinned_dangling_link_or_directory_but_not_on_an_absent_file() {
         let bytes = wat_bytes(HOST_SNIFFER_WAT);
+        let dir = tempdir();
         std::fs::write(dir.join("good.wasm"), &bytes).unwrap();
         let mut c = cfg(&dir);
         pin(&mut c, "good", &bytes);
-        pin(&mut c, "missing", &bytes);
+        pin(&mut c, "later", &bytes);
+        assert_eq!(
+            loader().scan(&c).unwrap().len(),
+            1,
+            "an absent pin is valid"
+        );
+
+        std::os::unix::fs::symlink(dir.join("gone.bin"), dir.join("later.wasm")).unwrap();
         let e = loader()
             .scan(&c)
             .err()
-            .expect("a pin without a module must fail the scan");
-        assert!(
-            e.to_string().contains("missing"),
-            "error names the pin: {e}"
-        );
+            .expect("dangling pinned link must fail");
+        assert!(e.to_string().contains("later"), "error names the pin: {e}");
+
+        std::fs::remove_file(dir.join("later.wasm")).unwrap();
+        std::fs::create_dir(dir.join("later.wasm")).unwrap();
+        let e = loader().scan(&c).err().expect("pinned directory must fail");
+        assert!(e.to_string().contains("later"), "error names the pin: {e}");
     }
 
     /// What a reload does with the sniffers: scan, and replace the set only on success.
