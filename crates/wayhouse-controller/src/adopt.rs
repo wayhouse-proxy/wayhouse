@@ -85,9 +85,6 @@ struct ErrorResponse {
 }
 
 async fn adopt(State(state): State<AdoptState>, Json(req): Json<AdoptRequest>) -> Response {
-    if state.role.get() == Role::Slave {
-        return conflict("this tier is already a slave");
-    }
     if state.config.ha.is_some() {
         // The role is a per-process cell; flipping it on one replica would
         // leave the others standalone. A replicated role change is not
@@ -97,26 +94,31 @@ async fn adopt(State(state): State<AdoptState>, Json(req): Json<AdoptRequest>) -
              start the tier with --role slave instead",
         );
     }
-    if !is_quiescent(&state) {
-        return conflict(HISTORY_MSG);
+    // Claim the flip before the slow parent fetch. The gate waits for every direct
+    // write that already passed its role check and keeps new ones out until the claim
+    // is made, so the quiescence check cannot be outrun by a write; once the tier is a
+    // slave no direct write can add history, and of several concurrent adoptions
+    // exactly one gets past the role check below.
+    let claim = state.role.adoption_gate().await;
+    if state.role.get() == Role::Slave {
+        return conflict("this tier is already a slave");
     }
-    // Claim the flip before the slow parent fetch: of several concurrent adoptions
-    // exactly one passes this, and once it is a slave no direct write can add history.
-    if !state.role.compare_and_set(Role::Standalone, Role::Slave) {
-        return conflict("this tier is already a slave (or is being adopted)");
+    match is_quiescent(&state) {
+        Ok(true) => {}
+        Ok(false) => return conflict(HISTORY_MSG),
+        Err(e) => return store_error_response(e),
     }
-    // A write may have landed between the check above and the claim.
-    if !is_quiescent(&state) {
-        state.role.set(Role::Standalone);
-        return conflict(HISTORY_MSG);
-    }
+    state.role.set(Role::Slave);
+    drop(claim);
 
     let mut seeded_config_revision = None;
     match crate::parent_client::fetch_initial(&req.parent_url, req.parent_token.as_deref()).await {
         Ok(Some((revision, config))) => {
             seeded_config_revision = Some(revision);
             if let Err(e) = state.config.apply_relayed(config.into_bytes(), revision) {
-                state.role.set(Role::Standalone);
+                // Only this adoption flips Standalone to Slave, so the role is still the
+                // one it claimed; the compare keeps a concurrent change from being undone.
+                state.role.compare_and_set(Role::Slave, Role::Standalone);
                 return store_error_response(e);
             }
         }
@@ -158,9 +160,11 @@ const HISTORY_MSG: &str =
     "adoption requires an empty (quiescent) controller — this tier already has its \
      own revision history that would need reconciling first (docs/10 \"Adoption\")";
 
-fn is_quiescent(state: &AdoptState) -> bool {
-    matches!(state.config.store.current_revision(), Ok(None))
-        && matches!(state.intent.store.current_revision(), Ok(None))
+/// `true` when neither store has any revision. A store that cannot be read is an
+/// error, not history: the caller answers it as a store failure.
+fn is_quiescent(state: &AdoptState) -> Result<bool, crate::store::StoreError> {
+    Ok(state.config.store.current_revision()?.is_none()
+        && state.intent.store.current_revision()?.is_none())
 }
 
 fn conflict(msg: &str) -> Response {
@@ -269,6 +273,39 @@ mod tests {
             .filter(|s| **s == StatusCode::CONFLICT)
             .count();
         assert_eq!((ok, conflicts), (1, 3), "{statuses:?}");
+    }
+
+    #[tokio::test]
+    async fn adoption_waits_for_an_in_flight_direct_write() {
+        let (state, _c, _i) = test_state();
+        let role = state.role.clone();
+        let config = state.config.clone();
+        let parent_url = spawn_mock_parent().await;
+        let app = router(state);
+
+        // A direct write that has passed its role check but not yet committed.
+        let in_flight = role.write_gate().await;
+        let adopting = tokio::spawn(async move {
+            app.oneshot(
+                HttpRequest::post("/admin/adopt")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"parent_url":"{parent_url}"}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !adopting.is_finished(),
+            "adoption must wait for the in-flight write"
+        );
+
+        config.store.put(b"pools: []".to_vec()).unwrap(); // the write commits
+        drop(in_flight);
+        assert_eq!(adopting.await.unwrap(), StatusCode::CONFLICT);
+        assert_eq!(role.get(), Role::Standalone);
     }
 
     #[tokio::test]
