@@ -256,6 +256,15 @@ independently move traffic (see the authority model above — it can only
 *nudge* a decision local checks already gate), so a shared-secret HMAC is the
 right amount of ceremony for what's at stake, not the maximum available.
 
+What the shared key does *not* give is a per-instance identity, so the vote
+registers are bounded rather than authenticated: a register counts only if its
+origin is a member the mesh currently knows (this instance included), its
+`changed_at` may sit at most a minute ahead of the local clock, and the map
+holds at most 256 origins per backend and 8192 backends. A holder of the key
+who also joins the mesh under several identities can still vote with each of
+them, so treat the key like the other fleet secrets and keep it out of
+instances you do not trust.
+
 **Config schema** (built exactly as designed — `settings.gossip.psk` is a
 plain string, not env-substituted like the `${GOSSIP_PSK}` sketch below;
 this codebase has no env-substitution mechanism anywhere else in
@@ -267,7 +276,8 @@ settings:
   failure_domain: "eu-west-1a"     # optional; omitted = gossip fully disabled,
                                     # byte-for-byte today's behaviour
   gossip:
-    bind: "0.0.0.0:7946"
+    bind: "10.0.1.4:7946"           # this instance's own reachable address (its
+                                    # identity and vote origin; 0.0.0.0 is refused)
     seeds: ["10.0.1.5:7946", "10.0.1.6:7946"]
     quorum_fraction: 0.66           # default; the ">⅔" from the authority model
     psk: "${GOSSIP_PSK}"

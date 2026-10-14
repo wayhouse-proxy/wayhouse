@@ -557,11 +557,11 @@ mod tests {
     }
 
     fn peer(name: &str, backends: &[&str]) -> Value {
-        json!({ "name": name, "pubkey": KEY, "backends": backends })
+        json!({ "name": name, "pubkey": crate::registry::test_pubkey(name), "backends": backends })
     }
 
     fn proxy(name: &str, boot_id: &str) -> Value {
-        json!({ "name": name, "pubkey": KEY, "endpoint": "198.51.100.7:51820", "boot_id": boot_id })
+        json!({ "name": name, "pubkey": crate::registry::test_pubkey(name), "endpoint": "198.51.100.7:51820", "boot_id": boot_id })
     }
 
     #[test]

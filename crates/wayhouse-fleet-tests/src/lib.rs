@@ -25,6 +25,21 @@ use anyhow::{bail, ensure, Context, Result};
 use tokio::process::{Child, Command};
 use tokio::time::Instant;
 
+/// A valid WireGuard public key that is distinct per `name`: the controller
+/// refuses one key under two names, so tests registering several names need
+/// several keys. (Not a real key, only well-formed.)
+pub fn test_key(name: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    name.hash(&mut hasher);
+    let h = hasher.finish();
+    let head: String = (0..10)
+        .map(|i| ALPHABET[((h >> (6 * i)) & 63) as usize] as char)
+        .collect();
+    format!("{head}AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+}
+
 pub mod echo;
 pub mod netns;
 pub mod tls_front;

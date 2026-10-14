@@ -269,12 +269,34 @@ fn apply_locked(
     match plan(applied, ev) {
         Action::Skip => {}
         Action::Reconcile(reg) => {
+            let replaced = replaced_pubkey(applied, reg).is_some();
             if let Some(old) = replaced_pubkey(applied, reg) {
                 remove_peer(wg, &reg.name, old);
                 forget(live, old);
             }
-            reconcile_peer(wg, reg);
-            applied.insert(reg.name.clone(), reg.clone());
+            // Recorded only once the peer is configured: an identical
+            // registration is skipped by `plan`, so one recorded after a failed
+            // configure would never be retried.
+            match reconcile_peer(wg, reg) {
+                Reconciled::Configured => {
+                    applied.insert(reg.name.clone(), reg.clone());
+                }
+                Reconciled::ConfigureFailed => {
+                    // Nothing is recorded for a later removal to find, so a lost
+                    // entry for this key must not outlive it: repair would bring
+                    // a removed proxy back. The next identical event retries.
+                    forget(live, &reg.pubkey);
+                    applied.remove(&reg.name);
+                }
+                // Nothing on the device was touched for an unchanged key, so
+                // the installed peer keeps its record and a later removal still
+                // finds it. A replaced key's peer is already gone with its record.
+                Reconciled::Malformed => {
+                    if replaced {
+                        applied.remove(&reg.name);
+                    }
+                }
+            }
         }
         Action::Remove(pubkey) => {
             if let Event::Removed(name) = ev {
@@ -295,7 +317,19 @@ fn forget(live: &LiveInterface, pubkey: &str) {
 /// Removes then adds — see `wayhouse::tunnel_client::reconcile_peer`'s doc for
 /// why that's required, not defensive, on `defguard_boringtun`'s userspace
 /// backend.
-fn reconcile_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), reg: &ProxyRegistration) {
+/// What `reconcile_peer` did to the device.
+enum Reconciled {
+    Configured,
+    /// The old peer was removed and the new one could not be added.
+    ConfigureFailed,
+    /// The registration could not be turned into a peer; the device is untouched.
+    Malformed,
+}
+
+fn reconcile_peer(
+    wg: &(dyn WireguardInterfaceApi + Send + Sync),
+    reg: &ProxyRegistration,
+) -> Reconciled {
     match to_wg_peer(reg) {
         Ok(peer) => {
             if let Err(e) = wg.remove_peer(&peer.public_key) {
@@ -318,23 +352,61 @@ fn reconcile_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), reg: &ProxyReg
                     if let Some(ip) = reg.tunnel_address.as_deref().and_then(|a| a.parse().ok()) {
                         crate::interface::kick_handshake(ip);
                     }
+                    Reconciled::Configured
                 }
-                Err(e) => tracing::error!(
-                    proxy = %reg.name, error = %e,
-                    "failed to configure wireguard peer for edge proxy"
-                ),
+                Err(e) => {
+                    tracing::error!(
+                        proxy = %reg.name, error = %e,
+                        "failed to configure wireguard peer for edge proxy"
+                    );
+                    Reconciled::ConfigureFailed
+                }
             }
         }
-        Err(e) => tracing::error!(
-            proxy = %reg.name, error = %e,
-            "skipping a malformed proxy registration"
-        ),
+        Err(e) => {
+            tracing::error!(
+                proxy = %reg.name, error = %e,
+                "skipping a malformed proxy registration"
+            );
+            Reconciled::Malformed
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failed configure must not be recorded as applied: `plan` skips an
+    /// identical registration, so the peer would stay missing (#311).
+    #[test]
+    fn a_peer_whose_configure_failed_is_retried_by_the_next_identical_event() {
+        use crate::live_interface::testing::{live, Fake};
+        use std::sync::Mutex;
+        let log = std::sync::Arc::default();
+        let wg = Fake {
+            log: std::sync::Arc::default(),
+            fail_assign: vec![],
+            fail_remove: false,
+            peers: Mutex::new(vec![]),
+            fail_configure: Mutex::new(HashMap::from([(
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+                1,
+            )])),
+            after_read: std::sync::Arc::default(),
+        };
+        let live = live(&[], &[], &log);
+        let r = reg(Some("10.60.0.3"));
+        let ev = Event::Registered(r.clone());
+        let mut applied = HashMap::new();
+
+        apply_locked(&wg, &live, &mut applied, &ev);
+        assert!(applied.is_empty(), "a failed configure is not applied");
+
+        apply_locked(&wg, &live, &mut applied, &ev);
+        assert_eq!(applied.get("edge-1"), Some(&r));
+        assert_eq!(wg.peers.lock().unwrap().len(), 1);
+    }
 
     fn reg(addr: Option<&str>) -> ProxyRegistration {
         ProxyRegistration {
@@ -527,6 +599,68 @@ mod tests {
             .unwrap()
             .peers
             .contains_key(&key));
+    }
+
+    #[test]
+    fn a_removal_after_a_failed_reconfigure_is_not_undone_by_a_later_repair() {
+        use crate::live_interface::testing::*;
+        let key = Key::new([1; 32]);
+        let mut proxy = reg(Some("fd00::1"));
+        proxy.pubkey = key.to_string();
+        let log = Log::default();
+        // The renewal loses the peer (it retries once, so two failures); the
+        // reconfigure below fails a third time, then the device accepts it.
+        let live = live_with_flaky_peers(&[to_wg_peer(&proxy).unwrap()], &[(&key, 3)], &log);
+        live.renew_peers().unwrap();
+        let mut applied = HashMap::new();
+        applied.insert(proxy.name.clone(), proxy.clone());
+        let mut changed = proxy.clone();
+        changed.endpoint = "203.0.113.10:51820".into();
+        let api = live.api();
+        apply(
+            api.as_ref(),
+            &live,
+            &mut applied,
+            &Event::Registered(changed),
+        );
+        assert!(applied.is_empty(), "the failed configure is not recorded");
+        apply(
+            api.as_ref(),
+            &live,
+            &mut applied,
+            &Event::Removed(proxy.name.clone()),
+        );
+        assert!(live.repair_peers().is_empty());
+        assert!(!api.read_interface_data().unwrap().peers.contains_key(&key));
+    }
+
+    #[test]
+    fn a_malformed_update_keeps_the_installed_peers_record_for_a_later_removal() {
+        use crate::live_interface::testing::*;
+        let key = Key::new([1; 32]);
+        let mut proxy = reg(Some("fd00::1"));
+        proxy.pubkey = key.to_string();
+        let log = Log::default();
+        let live = live_with_flaky_peers(&[to_wg_peer(&proxy).unwrap()], &[], &log);
+        let mut applied = HashMap::new();
+        applied.insert(proxy.name.clone(), proxy.clone());
+        let mut broken = proxy.clone();
+        broken.tunnel_address = Some("not-an-address".into());
+        let api = live.api();
+        apply(
+            api.as_ref(),
+            &live,
+            &mut applied,
+            &Event::Registered(broken),
+        );
+        assert_eq!(applied.get(&proxy.name), Some(&proxy));
+        apply(
+            api.as_ref(),
+            &live,
+            &mut applied,
+            &Event::Removed(proxy.name.clone()),
+        );
+        assert!(!api.read_interface_data().unwrap().peers.contains_key(&key));
     }
 
     #[test]

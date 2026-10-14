@@ -92,6 +92,9 @@ pub trait Registration:
     const ROLE: Role;
     /// The registration's stable identity (the `current` key).
     fn name(&self) -> &str;
+    /// The registrant's WireGuard public key, base64. One key belongs to one
+    /// name: a second name presenting it is refused (#311).
+    fn pubkey(&self) -> &str;
     /// The tunnel address the registration pins, if it names one.
     fn requested_address(&self) -> Option<IpAddr>;
     /// The fronted backends, expanded against the granted address before
@@ -116,6 +119,41 @@ pub trait Registration:
     /// The Raft entry that registers `self`, stamped with the proposing
     /// leader's clock.
     fn register_request(self, now: u64) -> crate::ha::WriteRequest;
+}
+
+/// Longest registration name.
+const NAME_MAX: usize = 64;
+
+/// Names a registration may carry: 1-64 of `[A-Za-z0-9._-]`, and not
+/// `subscribe`, which the `{base}/subscribe` route shadows (#310, #311). Keeps
+/// control characters out of logs and the name addressable in `GET`/`DELETE`.
+pub(crate) fn validate_name(name: &str) -> Result<(), String> {
+    let well_formed = !name.is_empty()
+        && name.len() <= NAME_MAX
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !well_formed {
+        return Err(format!(
+            "name must be 1-{NAME_MAX} ASCII letters, digits, '.', '_' or '-'"
+        ));
+    }
+    if name == "subscribe" {
+        return Err("name \"subscribe\" is reserved".into());
+    }
+    Ok(())
+}
+
+/// A valid, per-name WireGuard key for tests, so registrations do not collide on
+/// the one-key-one-name rule.
+#[cfg(test)]
+pub(crate) fn test_pubkey(name: &str) -> String {
+    use base64::Engine;
+    let mut key = [7u8; 32];
+    for (i, b) in name.bytes().enumerate() {
+        key[i % 32] = key[i % 32].wrapping_mul(31).wrapping_add(b);
+    }
+    base64::engine::general_purpose::STANDARD.encode(key)
 }
 
 /// The words one registry's responses and logs use.
@@ -172,7 +210,32 @@ pub struct RegistryState<R: Registration> {
     /// after a start compacts a log a restart would otherwise leave long.
     writes_since_compaction: Arc<AtomicU64>,
     compact_every: u64,
+    /// Which name holds which WireGuard key, rebuilt from `current` on open and
+    /// on a snapshot install and kept in step by every applied write. Shared by
+    /// clones, like the trees.
+    pubkeys: Arc<std::sync::Mutex<PubkeyIndex>>,
     registration: PhantomData<R>,
+}
+
+/// `pubkey <-> name`, both ways, so a write can drop the name's old key.
+#[derive(Default)]
+struct PubkeyIndex {
+    holder: std::collections::HashMap<String, String>,
+    key_of: std::collections::HashMap<String, String>,
+}
+
+impl PubkeyIndex {
+    fn set(&mut self, name: &str, pubkey: &str) {
+        self.remove(name);
+        self.holder.insert(pubkey.to_owned(), name.to_owned());
+        self.key_of.insert(name.to_owned(), pubkey.to_owned());
+    }
+
+    fn remove(&mut self, name: &str) {
+        if let Some(old) = self.key_of.remove(name) {
+            self.holder.remove(&old);
+        }
+    }
 }
 
 impl<R: Registration> RegistryState<R> {
@@ -193,8 +256,41 @@ impl<R: Registration> RegistryState<R> {
             now_fn: Arc::new(unix_secs),
             writes_since_compaction: Arc::new(AtomicU64::new(COMPACT_EVERY)),
             compact_every: COMPACT_EVERY,
+            pubkeys: Arc::default(),
             registration: PhantomData,
         }
+        .with_rebuilt_pubkeys()
+    }
+
+    /// Reloads the pubkey index from `current`.
+    fn with_rebuilt_pubkeys(self) -> Self {
+        self.rebuild_pubkeys();
+        self
+    }
+
+    fn rebuild_pubkeys(&self) {
+        let mut index = PubkeyIndex::default();
+        match self.all_current() {
+            Ok(regs) => {
+                for reg in &regs {
+                    index.set(reg.name(), reg.pubkey());
+                }
+            }
+            Err(e) => tracing::error!(
+                error = %e,
+                registry = wording(R::ROLE).log,
+                "reading the registry to index its public keys failed; duplicate keys go unchecked"
+            ),
+        }
+        *self.pubkeys.lock().unwrap_or_else(PoisonError::into_inner) = index;
+    }
+
+    /// The name that holds `pubkey` if it is not `name` itself. A pure function
+    /// of the registry's contents, so every replica applying the same log
+    /// agrees on it.
+    pub(crate) fn pubkey_holder(&self, pubkey: &str, name: &str) -> Option<String> {
+        let index = self.pubkeys.lock().unwrap_or_else(PoisonError::into_inner);
+        index.holder.get(pubkey).filter(|h| *h != name).cloned()
     }
 
     /// Compacts after every `writes` writes instead of the default (tests).
@@ -224,13 +320,23 @@ impl<R: Registration> RegistryState<R> {
     /// ([`Applied::AlreadyApplied`]); `None` (non-HA) always writes.
     pub fn register_applied(&self, reg: &R, index: Option<u64>) -> Result<Applied, StoreError> {
         let bytes = serde_json::to_vec(reg).expect("a registration always serializes");
-        self.append(bytes, reg.name(), true, index)
+        let applied = self.append(bytes, reg.name(), true, index)?;
+        if matches!(applied, Applied::Written(_)) {
+            let mut idx = self.pubkeys.lock().unwrap_or_else(PoisonError::into_inner);
+            idx.set(reg.name(), reg.pubkey());
+        }
+        Ok(applied)
     }
 
     /// Logs a tombstone for `name` and drops it from `current`, in one
     /// transaction — `index` as for [`RegistryState::register_applied`].
     pub fn remove_applied(&self, name: &str, index: Option<u64>) -> Result<Applied, StoreError> {
-        self.append(tombstone_bytes(name), name, false, index)
+        let applied = self.append(tombstone_bytes(name), name, false, index)?;
+        if matches!(applied, Applied::Written(_)) {
+            let mut idx = self.pubkeys.lock().unwrap_or_else(PoisonError::into_inner);
+            idx.remove(name);
+        }
+        Ok(applied)
     }
 
     /// The shared write: `bytes` as the next revision, plus `current[name]`
@@ -442,6 +548,7 @@ impl<R: Registration> RegistryState<R> {
             &[&self.current],
             siblings,
         )?;
+        self.rebuild_pubkeys();
         if let Some((revision, _)) = snapshot.revisions.last() {
             let _ = self.updates.send(*revision);
         }
@@ -568,6 +675,12 @@ async fn register<R: Registration>(
         .write_lock
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
+    if let Some(holder) = state.pubkey_holder(reg.pubkey(), reg.name()) {
+        return claim_error_response(&ClaimError::Rejected(Rejection::PubkeyHeld {
+            role: R::ROLE,
+            name: holder,
+        }));
+    }
     let assignment = match state.book.claim(
         R::ROLE,
         reg.name(),
@@ -851,6 +964,58 @@ mod tests {
         let store = Arc::new(Store::open(&dir.path().join("peers")).unwrap());
         let book = Arc::new(AddressBook::open(&dir.path().join("addresses"), None).unwrap());
         (RegistryState::new(store, None, book), dir)
+    }
+
+    fn reg_with_key(name: &str, key_byte: u8) -> PeerRegistration {
+        use base64::Engine;
+        let mut r = reg(name);
+        r.pubkey = base64::engine::general_purpose::STANDARD.encode([key_byte; 32]);
+        r
+    }
+
+    #[test]
+    fn a_pubkey_is_held_by_the_name_that_registered_it() {
+        let (state, _dir) = state();
+        let a = reg_with_key("a", 1);
+        state.register_applied(&a, None).unwrap();
+        assert_eq!(state.pubkey_holder(&a.pubkey, "b"), Some("a".into()));
+        assert_eq!(state.pubkey_holder(&a.pubkey, "a"), None);
+        // A name that moves to a new key frees the old one.
+        state.register_applied(&reg_with_key("a", 2), None).unwrap();
+        assert_eq!(state.pubkey_holder(&a.pubkey, "b"), None);
+        // Deleting the registration frees its key.
+        let b = reg_with_key("b", 3);
+        state.register_applied(&b, None).unwrap();
+        state.remove_applied("b", None).unwrap();
+        assert_eq!(state.pubkey_holder(&b.pubkey, "c"), None);
+    }
+
+    #[test]
+    fn the_pubkey_index_survives_a_reopen_and_a_snapshot_install() {
+        let (state, dir) = state();
+        let a = reg_with_key("a", 1);
+        state.register_applied(&a, None).unwrap();
+
+        let reopened = RegistryState::<PeerRegistration>::new(
+            state.store.clone(),
+            None,
+            Arc::new(AddressBook::open(&dir.path().join("addresses2"), None).unwrap()),
+        );
+        assert_eq!(reopened.pubkey_holder(&a.pubkey, "b"), Some("a".into()));
+
+        let (fresh, _dir2) = self::state();
+        fresh.replace(&state.snapshot().unwrap()).unwrap();
+        assert_eq!(fresh.pubkey_holder(&a.pubkey, "b"), Some("a".into()));
+    }
+
+    #[test]
+    fn names_are_restricted() {
+        for ok in ["home", "a.b_c-1", &"x".repeat(64)] {
+            assert!(validate_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", " web", "a/b", "a\nb", "subscribe", &"x".repeat(65)] {
+            assert!(validate_name(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

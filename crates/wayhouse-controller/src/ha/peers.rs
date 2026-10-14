@@ -75,6 +75,18 @@ pub fn parse_peers(raw: &[String]) -> anyhow::Result<BTreeMap<NodeId, BasicNode>
     Ok(peers)
 }
 
+/// Whether `addr` is something to send the `--ha-token` to: `host:port` or an
+/// `http(s)://host[:port]` base URL, with no user info, path, query or
+/// fragment (`http://host/x?` would hand the caller the request path).
+pub fn validate_addr(addr: &str) -> Result<(), String> {
+    let as_url = if addr.contains("://") {
+        addr.to_owned()
+    } else {
+        format!("http://{addr}")
+    };
+    normalise_url(&as_url).map(|_| ())
+}
+
 /// `scheme://host[:port]` with no trailing slash, or why `addr` can't be one.
 fn normalise_url(addr: &str) -> Result<String, String> {
     let url = Url::parse(addr).map_err(|e| format!("not a valid URL: {e}"))?;
@@ -99,6 +111,30 @@ fn normalise_url(addr: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_member_address_is_a_bare_host_port_or_a_base_url() {
+        for ok in [
+            "10.0.0.1:8443",
+            "ctl-2:8443",
+            "https://ctl-2:8443",
+            "http://[::1]:80/",
+        ] {
+            assert!(validate_addr(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "http://host/x?",
+            "https://host/path",
+            "http://user:pw@host:1",
+            "ftp://host:1",
+            "host:1/x",
+            "host:1?q=1",
+            "",
+            "://",
+        ] {
+            assert!(validate_addr(bad).is_err(), "{bad}");
+        }
+    }
 
     fn raw(entries: &[&str]) -> Vec<String> {
         entries

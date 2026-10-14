@@ -71,7 +71,7 @@ mod tests {
     fn body_with(name: &str, backends: &[&str], tunnel_address: Option<&str>) -> String {
         let mut v = serde_json::json!({
             "name": name,
-            "pubkey": KEY,
+            "pubkey": crate::registry::test_pubkey(name),
             "endpoint": "203.0.113.7:51820",
             "backends": backends,
         });
@@ -84,7 +84,7 @@ mod tests {
     fn reg_body(name: &str, backends: &[&str]) -> String {
         serde_json::json!({
             "name": name,
-            "pubkey": KEY,
+            "pubkey": crate::registry::test_pubkey(name),
             "endpoint": "203.0.113.7:51820",
             "backends": backends,
         })
@@ -105,6 +105,56 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_second_name_with_the_same_pubkey_is_refused_with_a_409() {
+        let (state, book, _dir) = test_state();
+        let app = router(state);
+        let post = |name: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::post("/peers")
+                        .header(wayhouse_http::protocol::HEADER, "1.0")
+                        .body(Body::from(
+                            serde_json::json!({ "name": name, "pubkey": KEY }).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+        assert_eq!(post("first").await, StatusCode::OK);
+        assert_eq!(post("second").await, StatusCode::CONFLICT);
+        // The refused name never claimed an address.
+        assert!(book
+            .get(crate::addresses::Role::Origin, "second")
+            .unwrap()
+            .is_none());
+        // The holder re-registering with its own key is still fine.
+        assert_eq!(post("first").await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_name_that_cannot_be_addressed_is_refused() {
+        let (state, _book, _dir) = test_state();
+        let app = router(state);
+        for name in ["subscribe", "a/b", " web"] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::post("/peers")
+                        .header(wayhouse_http::protocol::HEADER, "1.0")
+                        .body(Body::from(reg_body(name, &[])))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY, "{name:?}");
+        }
     }
 
     #[tokio::test]

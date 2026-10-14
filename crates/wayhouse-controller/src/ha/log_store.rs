@@ -157,9 +157,14 @@ impl RaftLogStorage<TypeConfig> for LogStore {
                 buf
             })
             .collect();
+        // One atomic batch: removing the keys one at a time, lowest first, lets a
+        // crash part-way keep the high entries and drop the low ones, a hole
+        // below the stale tail that `get_log_state` would report as the log's end.
+        let mut batch = sled::Batch::default();
         for k in keys {
-            self.entries.remove(k).map_err(Self::io_err)?;
+            batch.remove(&k);
         }
+        self.entries.apply_batch(batch).map_err(Self::io_err)?;
         self.entries.flush_async().await.map_err(Self::io_err)?;
         Ok(())
     }

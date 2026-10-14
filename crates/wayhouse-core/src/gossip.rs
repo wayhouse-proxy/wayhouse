@@ -23,7 +23,7 @@
 //! `remove_down_after` allows.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -57,6 +57,16 @@ const GOSSIP_MAGIC: u8 = 0xA7;
 /// (`wayhouse_http::protocol`, #185). A datagram carrying another value is dropped
 /// before its payload is decoded.
 const GOSSIP_VERSION: u8 = 1;
+/// How many instances may hold a register about one backend, and how many
+/// backends the map tracks. A register is only ever stored for an origin and a
+/// backend within these, so a flood of forged ones cannot grow the map without
+/// bound (#305). Far above any real failure domain.
+const MAX_ORIGINS_PER_BACKEND: usize = 256;
+const MAX_BACKENDS: usize = 8192;
+/// How far ahead of our wall clock a register's `changed_at` may sit. A forged
+/// value near `u64::MAX` would otherwise pin its origin's register for ever,
+/// because only a newer `changed_at` replaces it (#305).
+const MAX_VERSION_SKEW_MS: u64 = 60_000;
 /// How far a datagram's sender timestamp may sit from our clock before it is
 /// dropped as a replay (security review O4). Also the clock skew the mesh
 /// tolerates between instances; a replay inside the window is still possible.
@@ -112,13 +122,23 @@ impl foca::BroadcastHandler<SocketAddr> for BroadcastMerger {
         _sender: Option<&SocketAddr>,
     ) -> Result<Option<Self::Key>, Self::Error> {
         let reg: BackendHealthRegister = postcard::from_bytes(data)?;
+        if reg.changed_at > wall_ms().saturating_add(MAX_VERSION_SKEW_MS) {
+            tracing::debug!(origin = %reg.origin, "gossip: dropping a register stamped in the future");
+            return Ok(None);
+        }
         let key = BackendHealthKey {
             addr: reg.addr,
             origin: reg.origin,
             changed_at: reg.changed_at,
         };
         let mut domain = self.domain.lock().unwrap_or_else(PoisonError::into_inner);
+        if !domain.contains_key(&reg.addr) && domain.len() >= MAX_BACKENDS {
+            return Ok(None);
+        }
         let per_origin = domain.entry(reg.addr).or_default();
+        if !per_origin.contains_key(&reg.origin) && per_origin.len() >= MAX_ORIGINS_PER_BACKEND {
+            return Ok(None);
+        }
         let is_new = per_origin
             .get(&reg.origin)
             .is_none_or(|cur| cur.changed_at < reg.changed_at);
@@ -136,6 +156,9 @@ impl foca::BroadcastHandler<SocketAddr> for BroadcastMerger {
 #[derive(Clone)]
 pub struct GossipHandle {
     members: Arc<AtomicUsize>,
+    /// Gossip identities of the live members (and this instance), refreshed by
+    /// [`run`]; only registers whose origin is in here are counted as votes.
+    member_ids: Arc<Mutex<HashSet<SocketAddr>>>,
     domain: DomainMap,
     publish_tx: mpsc::UnboundedSender<(SocketAddr, bool)>,
 }
@@ -163,6 +186,7 @@ impl GossipHandle {
         (
             Self {
                 members: Arc::new(AtomicUsize::new(0)),
+                member_ids: Arc::new(Mutex::new(HashSet::new())),
                 domain: Arc::new(Mutex::new(HashMap::new())),
                 publish_tx: tx,
             },
@@ -188,13 +212,24 @@ impl GossipHandle {
     /// instance) has ever published about it.
     pub fn domain_votes(&self, addr: SocketAddr) -> (usize, usize) {
         let domain = self.domain.lock().unwrap_or_else(PoisonError::into_inner);
-        match domain.get(&addr) {
-            None => (0, 0),
-            Some(regs) => {
-                let down = regs.values().filter(|r| !r.up).count();
-                (regs.len() - down, down)
+        let members = self
+            .member_ids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // Only instances the mesh knows as members vote: an origin that never
+        // joined cannot be counted, however many registers claim it (#305).
+        let Some(regs) = domain.get(&addr) else {
+            return (0, 0);
+        };
+        let (mut up, mut down) = (0, 0);
+        for reg in regs.values().filter(|r| members.contains(&r.origin)) {
+            if reg.up {
+                up += 1;
+            } else {
+                down += 1;
             }
         }
+        (up, down)
     }
 
     /// Whether at least `quorum_fraction` of the instances that have voted on
@@ -275,7 +310,7 @@ pub async fn run(
         }
     }
     drain_to_wire(&mut runtime, &socket, &cfg.psk, &mut timers).await;
-    publish_member_count(&foca, &handle);
+    publish_member_count(&foca, &handle, identity);
 
     loop {
         let next_deadline = timers.peek().map(|Reverse(TimerEntry(at, _))| *at);
@@ -357,7 +392,7 @@ pub async fn run(
             }
         }
         drain_to_wire(&mut runtime, &socket, &cfg.psk, &mut timers).await;
-        publish_member_count(&foca, &handle);
+        publish_member_count(&foca, &handle, identity);
     }
 }
 
@@ -390,8 +425,17 @@ async fn sleep_until_opt(deadline: Option<Instant>) {
     }
 }
 
-fn publish_member_count(foca: &FocaInstance, handle: &GossipHandle) {
+fn publish_member_count(foca: &FocaInstance, handle: &GossipHandle, identity: SocketAddr) {
     let n = foca.num_members();
+    {
+        let mut ids = handle
+            .member_ids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        ids.clear();
+        ids.insert(identity);
+        ids.extend(foca.iter_members().map(|m| *m.id()));
+    }
     handle.members.store(n, Ordering::Relaxed);
     metrics::gauge!(m::GOSSIP_MEMBERS).set(n as f64);
 }
@@ -797,6 +841,72 @@ mod tests {
         let _ = tb.await;
     }
 
+    fn now_reg(addr: SocketAddr, origin: SocketAddr, changed_at: u64) -> BackendHealthRegister {
+        BackendHealthRegister {
+            addr,
+            up: false,
+            changed_at,
+            origin,
+        }
+    }
+
+    /// #305: a forged `changed_at` far ahead of the wall clock would pin the
+    /// victim origin's register and suppress its real votes for ever.
+    #[test]
+    fn a_register_far_in_the_future_is_dropped() {
+        let (mut m, domain) = merger();
+        let addr: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        let origin: SocketAddr = "10.0.0.2:1".parse().unwrap();
+        assert!(receive(&mut m, now_reg(addr, origin, u64::MAX)).is_none());
+        assert!(receive(&mut m, now_reg(addr, origin, wall_ms() + 3_600_000)).is_none());
+        assert_eq!(votes(&domain, addr), (0, 0));
+        // A register within the tolerated skew is kept.
+        assert!(receive(&mut m, now_reg(addr, origin, wall_ms() + 1_000)).is_some());
+        assert_eq!(votes(&domain, addr), (1, 0));
+    }
+
+    /// #305: the register map must not grow by one entry per forged origin.
+    #[test]
+    fn origins_per_backend_are_capped() {
+        let (mut m, domain) = merger();
+        let addr: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        for i in 0..(MAX_ORIGINS_PER_BACKEND + 50) {
+            let origin = SocketAddr::from(([10, 1, (i / 250) as u8, (i % 250) as u8], 1));
+            receive(&mut m, now_reg(addr, origin, wall_ms()));
+        }
+        let total = votes(&domain, addr);
+        assert_eq!(total.0 + total.1, MAX_ORIGINS_PER_BACKEND);
+    }
+
+    #[test]
+    fn backends_tracked_are_capped() {
+        let (mut m, domain) = merger();
+        let origin: SocketAddr = "10.0.0.2:1".parse().unwrap();
+        for i in 0..(MAX_BACKENDS + 50) {
+            let addr = SocketAddr::from(([10, 2, (i / 250) as u8, (i % 250) as u8], 1));
+            receive(&mut m, now_reg(addr, origin, wall_ms()));
+        }
+        assert_eq!(domain.lock().unwrap().len(), MAX_BACKENDS);
+    }
+
+    /// #305: only instances foca knows as members vote, so a forged origin that
+    /// never joined the mesh cannot fake a quorum.
+    #[test]
+    fn votes_from_origins_that_are_not_members_are_not_counted() {
+        let (handle, _inbox) = GossipHandle::new();
+        let addr: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        let member: SocketAddr = "10.0.0.2:1".parse().unwrap();
+        let ghost: SocketAddr = "10.0.0.3:1".parse().unwrap();
+        {
+            let mut domain = handle.domain.lock().unwrap();
+            let regs = domain.entry(addr).or_default();
+            regs.insert(member, now_reg(addr, member, 1));
+            regs.insert(ghost, now_reg(addr, ghost, 1));
+        }
+        handle.member_ids.lock().unwrap().insert(member);
+        assert_eq!(handle.domain_votes(addr), (0, 1));
+    }
+
     #[test]
     fn quorum_down_is_false_with_no_votes() {
         let (handle, _inbox) = GossipHandle::new();
@@ -831,6 +941,11 @@ mod tests {
             },
         );
         drop(domain);
+        handle
+            .member_ids
+            .lock()
+            .unwrap()
+            .extend([voter(2), voter(3)]);
 
         // 1/2 down: below a 0.66 quorum, at/above a 0.5 one.
         assert_eq!(handle.domain_votes(addr), (1, 1));

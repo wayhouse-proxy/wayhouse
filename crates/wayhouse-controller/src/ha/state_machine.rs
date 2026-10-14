@@ -1506,12 +1506,11 @@ mod tests {
     // ---- Registry entries (Task 5) ----
 
     const NOW: u64 = 1_000;
-    const PUBKEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
     fn origin(name: &str, address: Option<&str>, backends: &[&str]) -> PeerRegistration {
         PeerRegistration {
             name: name.into(),
-            pubkey: PUBKEY.into(),
+            pubkey: crate::registry::test_pubkey(name),
             endpoint: None,
             backends: backends
                 .iter()
@@ -1524,7 +1523,7 @@ mod tests {
     fn proxy(name: &str, address: Option<&str>) -> ProxyRegistration {
         ProxyRegistration {
             name: name.into(),
-            pubkey: PUBKEY.into(),
+            pubkey: crate::registry::test_pubkey(name),
             endpoint: "203.0.113.1:51820".into(),
             tunnel_address: address.map(Into::into),
             boot_id: None,
@@ -1746,6 +1745,30 @@ mod tests {
         assert!(result.is_err(), "expected a StorageError, got {result:?}");
         assert_eq!(sm.peers.store.applied_index().unwrap(), None);
         assert_eq!(sm.peers.current_for("a").unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_register_with_a_key_another_name_holds_is_rejected_without_a_claim() {
+        let (mut sm, _d) = sm_with_network("10.60.0.0/24").await;
+        apply_one(&mut sm, 2, register_origin(origin("first", None, &[]), NOW)).await;
+        let entries = || {
+            let mut second = origin("second", None, &[]);
+            second.pubkey = origin("first", None, &[]).pubkey;
+            vec![normal_entry(3, register_origin(second, NOW))]
+        };
+        let responses = sm.apply(entries()).await.unwrap();
+        assert!(matches!(
+            responses[0],
+            WriteResponse::Rejected(Rejection::PubkeyHeld { .. })
+        ));
+        assert_eq!(sm.peers.current_for("second").unwrap(), None);
+        assert!(sm.book.get(AddrRole::Origin, "second").unwrap().is_none());
+        assert_eq!(sm.peers.store.applied_index().unwrap(), Some(3));
+        assert_eq!(sm.book.applied_index().unwrap(), Some(3));
+        // A replay changes nothing.
+        sm.apply(entries()).await.unwrap();
+        assert_eq!(sm.peers.current_for("second").unwrap(), None);
+        assert!(sm.book.get(AddrRole::Origin, "second").unwrap().is_none());
     }
 
     #[tokio::test]
