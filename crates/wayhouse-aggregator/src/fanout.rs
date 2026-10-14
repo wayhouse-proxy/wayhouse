@@ -404,9 +404,19 @@ struct InstanceResult {
 /// How much of a refusing proxy's reply is passed on as `detail`.
 const DETAIL_BYTES: usize = 200;
 
-/// The first [`DETAIL_BYTES`] of `text`, cut on a character boundary.
-fn detail_of(text: &str) -> String {
-    let mut end = text.len().min(DETAIL_BYTES);
+/// At most the first `max` bytes of `resp`'s body as text (cut on a character
+/// boundary), reading no more than that off the wire: a hostile instance can
+/// stream an endless error body.
+async fn text_prefix(mut resp: reqwest::Response, max: usize) -> String {
+    let mut buf = Vec::new();
+    while buf.len() < max {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => buf.extend_from_slice(&chunk),
+            _ => break,
+        }
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let mut end = text.len().min(max);
     while !text.is_char_boundary(end) {
         end -= 1;
     }
@@ -486,7 +496,7 @@ async fn broadcast_with_content_type(
                     InstanceResult {
                         instance,
                         status: Some(resp.status().as_u16()),
-                        error: Some(resp.text().await.unwrap_or_default()),
+                        error: Some(text_prefix(resp, 1024).await),
                         detail: None,
                     }
                 }
@@ -495,7 +505,7 @@ async fn broadcast_with_content_type(
                     let detail = if status.is_success() {
                         None
                     } else {
-                        resp.text().await.ok().map(|t| detail_of(&t))
+                        Some(text_prefix(resp, DETAIL_BYTES).await)
                     };
                     InstanceResult {
                         instance,
