@@ -228,7 +228,7 @@ pub async fn run_tcp_listener(
                 let hints = hints.clone();
                 let resolvers = resolvers.clone();
                 let sniffers = sniffers.clone();
-                let local = stream.local_addr().unwrap_or(cfg.bind);
+                let local = crate::util::canonical_addr(stream.local_addr().unwrap_or(cfg.bind));
                 let conn_guard = conns.track(crate::drain::SessionMeta {
                     proto: crate::drain::Proto::Tcp,
                     listener: listener_name.clone(),
