@@ -495,6 +495,17 @@ async fn main() -> anyhow::Result<()> {
             pre_ha,
             secret_keys: plugin_keys.clone(),
         });
+        // A Raft core that stopped after a storage error leaves this node unable to
+        // commit while `/healthz` still answers: exit so the orchestrator restarts
+        // it and the other replicas carry on (#303).
+        let watched = handle.raft.clone();
+        tokio::spawn(async move {
+            ha::core_stopped(&watched).await;
+            tracing::error!(
+                "the raft core stopped (a storage error it cannot recover from); exiting"
+            );
+            std::process::exit(1);
+        });
         config_state = config_state.with_ha(Some(handle.clone()));
         intent_state_val = intent_state_val.with_ha(Some(handle.clone()));
         if args.ha_join {
