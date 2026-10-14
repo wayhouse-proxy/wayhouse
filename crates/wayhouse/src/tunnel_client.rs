@@ -323,16 +323,28 @@ fn apply_event(
     match plan(last_applied, ev) {
         Action::Skip => {}
         Action::Reconcile(reg) => {
+            let replaced = replaced_pubkey(last_applied, reg).is_some();
             if let Some(old) = replaced_pubkey(last_applied, reg) {
                 remove_peer(wg, &reg.name, old);
             }
             // Recorded only once the peer is configured: an identical
             // registration is skipped by `plan`, so one recorded after a failed
             // configure would never be retried.
-            if reconcile_peer(wg, reg) {
-                last_applied.insert(reg.name.clone(), reg.clone());
-            } else {
-                last_applied.remove(&reg.name);
+            match reconcile_peer(wg, reg) {
+                Reconciled::Configured => {
+                    last_applied.insert(reg.name.clone(), reg.clone());
+                }
+                Reconciled::ConfigureFailed => {
+                    last_applied.remove(&reg.name);
+                }
+                // The device is untouched for an unchanged key, so the installed
+                // peer keeps its record and a later removal still finds it. A
+                // replaced key's peer is already gone with its record.
+                Reconciled::Malformed => {
+                    if replaced {
+                        last_applied.remove(&reg.name);
+                    }
+                }
             }
         }
         Action::Remove(pubkey) => {
@@ -417,6 +429,15 @@ fn remove_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), name: &str, pubke
     }
 }
 
+/// What `reconcile_peer` did to the device.
+enum Reconciled {
+    Configured,
+    /// The old peer was removed and the new one could not be added.
+    ConfigureFailed,
+    /// The registration could not be turned into a peer; the device is untouched.
+    Malformed,
+}
+
 /// Removes any existing peer under this pubkey before adding it back with
 /// the latest fields — found by live end-to-end testing (`docs/08` phase 14
 /// slice 6) to be required, not just defensive: `defguard_boringtun`'s
@@ -427,8 +448,11 @@ fn remove_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), name: &str, pubke
 /// is safe to do unconditionally on every registration, including the
 /// first one for a given origin.
 ///
-/// Returns whether the peer is now configured.
-fn reconcile_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), reg: &PeerRegistration) -> bool {
+/// Returns what happened to the device.
+fn reconcile_peer(
+    wg: &(dyn WireguardInterfaceApi + Send + Sync),
+    reg: &PeerRegistration,
+) -> Reconciled {
     match to_wg_peer(reg) {
         Ok(peer) => {
             if let Err(e) = wg.remove_peer(&peer.public_key) {
@@ -447,14 +471,14 @@ fn reconcile_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), reg: &PeerRegi
                         has_endpoint = reg.endpoint.is_some(),
                         "reconciled wireguard peer for origin"
                     );
-                    true
+                    Reconciled::Configured
                 }
                 Err(e) => {
                     tracing::error!(
                         origin = %reg.name, error = %e,
                         "failed to configure wireguard peer for origin"
                     );
-                    false
+                    Reconciled::ConfigureFailed
                 }
             }
         }
@@ -463,7 +487,7 @@ fn reconcile_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), reg: &PeerRegi
                 origin = %reg.name, error = %e,
                 "skipping a malformed peer registration"
             );
-            false
+            Reconciled::Malformed
         }
     }
 }
@@ -500,6 +524,35 @@ mod tests {
 
         apply_event(&wg, &mut applied, &ev);
         assert_eq!(applied.get("home"), Some(&reg));
+    }
+
+    /// A malformed update leaves the device alone, so the installed peer keeps
+    /// its record and a later removal still finds it.
+    #[test]
+    fn a_malformed_update_keeps_the_installed_peers_record() {
+        use crate::live_interface::testing::Fake;
+        let wg = Fake {
+            log: std::sync::Arc::default(),
+            fail_assign: vec![],
+            fail_remove: false,
+            fail_configure: std::sync::Mutex::new(0),
+        };
+        let reg = PeerRegistration {
+            name: "home".into(),
+            pubkey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+            endpoint: None,
+            backends: vec![],
+            tunnel_address: Some("10.60.0.2".into()),
+        };
+        let mut applied = HashMap::new();
+        apply_event(&wg, &mut applied, &Event::Registered(reg.clone()));
+        let mut broken = reg.clone();
+        broken.tunnel_address = Some("not-an-address".into());
+
+        apply_event(&wg, &mut applied, &Event::Registered(broken));
+        assert_eq!(applied.get("home"), Some(&reg));
+        apply_event(&wg, &mut applied, &Event::Removed("home".into()));
+        assert!(applied.is_empty());
     }
 
     #[cfg(unix)]
