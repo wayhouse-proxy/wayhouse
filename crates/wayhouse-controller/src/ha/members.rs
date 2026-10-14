@@ -375,6 +375,9 @@ fn check_addr(addr: &str) -> Result<(), Response> {
     if addr.trim().is_empty() {
         return Err(error(StatusCode::UNPROCESSABLE_ENTITY, "addr is empty"));
     }
+    // Before anything is sent: the whoami request carries the --ha-token.
+    super::peers::validate_addr(addr)
+        .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, format!("addr: {e}")))?;
     Ok(())
 }
 
@@ -399,6 +402,7 @@ async fn add(State(state): State<MembersState>, headers: HeaderMap, body: String
         );
     }
     let already_learner = members.learners.contains_key(&req.id);
+    super::peers::warn_if_plain_remote(&req.addr);
     if let Err(e) = verify_identity(
         &ha.forward,
         &req.addr,
@@ -410,7 +414,6 @@ async fn add(State(state): State<MembersState>, headers: HeaderMap, body: String
     {
         return e.into_response();
     }
-    super::peers::warn_if_plain_remote(&req.addr);
     tracing::info!(actor = actor(&headers), id = req.id, addr = %req.addr, "adding an HA member");
     // Blocking: returns once the learner has caught up, by log or snapshot.
     if let Err(e) = ha
@@ -485,11 +488,11 @@ async fn readdress(
     if !members.voters.contains_key(&id) && !members.learners.contains_key(&id) {
         return error(StatusCode::NOT_FOUND, format!("node {id} is not a member"));
     }
+    super::peers::warn_if_plain_remote(&req.addr);
     if let Err(e) = verify_identity(&ha.forward, &req.addr, id, ha.ha_token.as_deref(), false).await
     {
         return e.into_response();
     }
-    super::peers::warn_if_plain_remote(&req.addr);
     tracing::info!(actor = actor(&headers), id, addr = %req.addr, "re-addressing an HA member");
     let nodes = BTreeMap::from([(id, BasicNode::new(req.addr))]);
     match ha
@@ -680,6 +683,13 @@ mod tests {
         let app = router(ha, Some(Arc::from("s3cret")));
         let (status, _) = call(&app, "GET", "/admin/ha/members", serde_json::json!({})).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn check_addr_refuses_an_address_with_a_path_before_anything_is_sent() {
+        assert!(check_addr("https://ctl-2:8443").is_ok());
+        assert!(check_addr("http://attacker.example/x?").is_err());
+        assert!(check_addr("   ").is_err());
     }
 
     #[test]

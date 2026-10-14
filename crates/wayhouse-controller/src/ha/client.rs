@@ -144,8 +144,16 @@ async fn handle_write_error(
     body: String,
     headers: &ForwardHeaders,
 ) -> Response {
-    let openraft::error::RaftError::APIError(api_err) = err else {
-        return service_unavailable("raft internal error; retry shortly");
+    let api_err = match err {
+        openraft::error::RaftError::APIError(api_err) => api_err,
+        // The Raft core has stopped for good (#303): retrying this node is futile.
+        openraft::error::RaftError::Fatal(fatal) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("raft core stopped: {fatal}"),
+            )
+                .into_response();
+        }
     };
 
     let (leader_id, leader_node) = match api_err {
@@ -289,6 +297,21 @@ fn error_response(status: StatusCode, msg: &str) -> Response {
 mod tests {
     use super::*;
     use openraft::BasicNode;
+
+    #[tokio::test]
+    async fn a_fatal_raft_error_is_a_500_not_a_retry_hint() {
+        let (ha, _cluster, _dir) = crate::ha::test_support::single_node(1, "127.0.0.1:1").await;
+        let resp = handle_write_error(
+            &ha,
+            openraft::error::RaftError::Fatal(openraft::error::Fatal::Stopped),
+            Method::POST,
+            "/config",
+            String::new(),
+            &ForwardHeaders::default(),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
 
     #[test]
     fn a_leader_naming_this_node_is_never_forwarded_to_even_under_another_address() {

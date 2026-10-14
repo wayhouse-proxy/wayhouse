@@ -255,10 +255,12 @@ jobs:
   # The loader against the official sniffers, built and released by wayhouse-proxy/sniffers
   # and pinned by tag + sha256 in sniffers.lock: the #[ignore]d wayhouse tests (the ABI
   # contract, every sniffer through the real loader, the N1 latency gate) run on exactly
-  # those bytes. NOT in `ci-ok.needs`: an outage of the sniffers repo or a release asset
-  # must not block ordinary PRs. It runs when wayhouse or sniffers.lock changes, and in the
-  # nightly run (like every other job), so a host change that breaks an official sniffer
-  # shows up here within a day. wasmtime generates native code per architecture, hence
+  # those bytes. In `ci-ok.needs` (#296): a PR that changes the loader or `sniffers.lock`
+  # must not merge with it red. It is path-scoped and a skipped job counts as passed, so
+  # ordinary PRs are unaffected; the price is that an outage of the sniffers repo or a
+  # release asset blocks the PRs that do run it (re-run once, like any flake). It runs
+  # when wayhouse or sniffers.lock changes, on the merge queue and in the nightly run
+  # (like every other job). wasmtime generates native code per architecture, hence
   # both runners. A hash mismatch or a missing asset fails the fetch step loudly.
   sniffers-e2e:
     name: sniffers e2e (${{ matrix.arch }})
@@ -773,7 +775,7 @@ jobs:
   # passed, a failed or cancelled one fails the gate.
   ci-ok:
     if: always()
-    needs: [changes, test, musl, build-release, build-release-arm64, ui, tunnel, deploy, deploy-arm64, audit, trivy, trivy-arm64, fuzz, docs, release-policy]
+    needs: [changes, test, musl, build-release, build-release-arm64, ui, tunnel, deploy, deploy-arm64, audit, trivy, trivy-arm64, fuzz, docs, release-policy, sniffers-e2e]
     runs-on: ubuntu-24.04   # pinned: see the comment above `jobs:`
     timeout-minutes: 5   # a stuck step must not hold the gate for the 6 h default (#254)
     steps:

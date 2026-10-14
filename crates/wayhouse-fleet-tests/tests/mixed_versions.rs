@@ -14,8 +14,6 @@ use wayhouse_fleet_tests::{
 };
 use wayhouse_http::protocol::{ProtocolVersion, HEADER};
 
-const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-
 async fn controller() -> Result<(Proc, tempfile::TempDir, String)> {
     build_fleet_bins()?;
     let dir = tempfile::tempdir()?;
@@ -35,7 +33,7 @@ async fn register(base: &str, name: &str, protocol: &str) -> Result<(u16, Option
     let resp = reqwest::Client::new()
         .post(format!("{base}/proxy-peers"))
         .header(HEADER, protocol)
-        .json(&json!({"name": name, "pubkey": KEY, "endpoint": "203.0.113.9:51820"}))
+        .json(&json!({"name": name, "pubkey": wayhouse_fleet_tests::test_key(name), "endpoint": "203.0.113.9:51820"}))
         .send()
         .await?;
     let status = resp.status().as_u16();

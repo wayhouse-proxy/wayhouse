@@ -56,6 +56,30 @@ fn restrict_permissions(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Tightens an existing key file that is readable by group or others to 0600
+/// and says so; a failure only warns, since the key is usable either way.
+#[cfg(unix)]
+fn tighten_if_loose(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.permissions().mode() & 0o077 == 0 {
+        return;
+    }
+    match restrict_permissions(path) {
+        Ok(()) => {
+            tracing::warn!(path = %path.display(), "the WireGuard private key file was readable by others; restricted it to 0600")
+        }
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "the WireGuard private key file is readable by others and could not be restricted")
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn tighten_if_loose(_path: &Path) {}
+
 /// Loads this proxy's own WireGuard private key, or generates and persists
 /// one on first run — the identical shape `wayhouse-agent::keypair` uses,
 /// duplicated rather than shared (there is no `wayhouse-agent` library to depend
@@ -69,18 +93,27 @@ pub fn load_or_generate_key(path: &Path) -> anyhow::Result<Key> {
     if path.exists() {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading private key from {}", path.display()))?;
-        return Key::try_from(text.trim()).map_err(|e| {
+        let key = Key::try_from(text.trim()).map_err(|e| {
             anyhow::anyhow!(
                 "{} does not hold a valid WireGuard key: {e}",
                 path.display()
             )
-        });
+        })?;
+        tighten_if_loose(path);
+        return Ok(key);
     }
 
     let key = Key::generate();
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // Born 0600: a chmod after the write leaves a window in which another local
+    // user can open the file, and an fd opened then stays readable.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
         .open(path)
         .with_context(|| format!("creating private key file {}", path.display()))?;
     file.write_all(key.to_string().as_bytes())
@@ -275,22 +308,37 @@ async fn subscribe_once(
 
         while let Some(event) = buf.next_event() {
             if let Some(ev) = parse_sse_event(&event) {
-                match plan(last_applied, &ev) {
-                    Action::Skip => {}
-                    Action::Reconcile(reg) => {
-                        if let Some(old) = replaced_pubkey(last_applied, reg) {
-                            remove_peer(wg, &reg.name, old);
-                        }
-                        reconcile_peer(wg, reg);
-                        last_applied.insert(reg.name.clone(), reg.clone());
-                    }
-                    Action::Remove(pubkey) => {
-                        if let Event::Removed(name) = &ev {
-                            remove_peer(wg, name, &pubkey);
-                            last_applied.remove(name);
-                        }
-                    }
-                }
+                apply_event(wg, last_applied, &ev);
+            }
+        }
+    }
+}
+
+/// Applies one event to the WireGuard device and records what it applied.
+fn apply_event(
+    wg: &(dyn WireguardInterfaceApi + Send + Sync),
+    last_applied: &mut HashMap<String, PeerRegistration>,
+    ev: &Event,
+) {
+    match plan(last_applied, ev) {
+        Action::Skip => {}
+        Action::Reconcile(reg) => {
+            if let Some(old) = replaced_pubkey(last_applied, reg) {
+                remove_peer(wg, &reg.name, old);
+            }
+            // Recorded only once the peer is configured: an identical
+            // registration is skipped by `plan`, so one recorded after a failed
+            // configure would never be retried.
+            if reconcile_peer(wg, reg) {
+                last_applied.insert(reg.name.clone(), reg.clone());
+            } else {
+                last_applied.remove(&reg.name);
+            }
+        }
+        Action::Remove(pubkey) => {
+            if let Event::Removed(name) = ev {
+                remove_peer(wg, name, &pubkey);
+                last_applied.remove(name);
             }
         }
     }
@@ -378,7 +426,9 @@ fn remove_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), name: &str, pubke
 /// that isn't configured yet is a harmless no-op on both backends, so this
 /// is safe to do unconditionally on every registration, including the
 /// first one for a given origin.
-fn reconcile_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), reg: &PeerRegistration) {
+///
+/// Returns whether the peer is now configured.
+fn reconcile_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), reg: &PeerRegistration) -> bool {
     match to_wg_peer(reg) {
         Ok(peer) => {
             if let Err(e) = wg.remove_peer(&peer.public_key) {
@@ -389,29 +439,85 @@ fn reconcile_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), reg: &PeerRegi
                 );
             }
             match wg.configure_peer(&peer) {
-                Ok(()) => tracing::info!(
-                    origin = %reg.name,
-                    address = ?reg.tunnel_address,
-                    backends = ?reg.backends,
-                    has_endpoint = reg.endpoint.is_some(),
-                    "reconciled wireguard peer for origin"
-                ),
-                Err(e) => tracing::error!(
-                    origin = %reg.name, error = %e,
-                    "failed to configure wireguard peer for origin"
-                ),
+                Ok(()) => {
+                    tracing::info!(
+                        origin = %reg.name,
+                        address = ?reg.tunnel_address,
+                        backends = ?reg.backends,
+                        has_endpoint = reg.endpoint.is_some(),
+                        "reconciled wireguard peer for origin"
+                    );
+                    true
+                }
+                Err(e) => {
+                    tracing::error!(
+                        origin = %reg.name, error = %e,
+                        "failed to configure wireguard peer for origin"
+                    );
+                    false
+                }
             }
         }
-        Err(e) => tracing::error!(
-            origin = %reg.name, error = %e,
-            "skipping a malformed peer registration"
-        ),
+        Err(e) => {
+            tracing::error!(
+                origin = %reg.name, error = %e,
+                "skipping a malformed peer registration"
+            );
+            false
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failed configure must not be recorded as applied: `plan` skips an
+    /// identical registration, so the peer would stay missing until its
+    /// content changed or the process restarted (#311).
+    #[test]
+    fn a_peer_whose_configure_failed_is_retried_by_the_next_identical_event() {
+        use crate::live_interface::testing::Fake;
+        use std::sync::atomic::AtomicUsize;
+        let wg = Fake {
+            log: std::sync::Arc::default(),
+            fail_assign: vec![],
+            fail_remove: false,
+            fail_configure: AtomicUsize::new(1),
+        };
+        let reg = PeerRegistration {
+            name: "home".into(),
+            pubkey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+            endpoint: None,
+            backends: vec![],
+            tunnel_address: Some("10.60.0.2".into()),
+        };
+        let ev = Event::Registered(reg.clone());
+        let mut applied = HashMap::new();
+
+        apply_event(&wg, &mut applied, &ev);
+        assert!(applied.is_empty(), "a failed configure is not applied");
+        assert_eq!(plan(&applied, &ev), Action::Reconcile(&reg));
+
+        apply_event(&wg, &mut applied, &ev);
+        assert_eq!(applied.get("home"), Some(&reg));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_loose_existing_key_file_is_tightened_on_load() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private.key");
+        let key = load_or_generate_key(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let again = load_or_generate_key(&path).unwrap();
+        assert_eq!(again.to_string(), key.to_string());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "mode is {mode:o}");
+    }
 
     #[test]
     fn parses_a_well_formed_data_event() {

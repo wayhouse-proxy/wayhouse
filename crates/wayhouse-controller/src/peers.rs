@@ -75,9 +75,7 @@ impl PeerRegistration {
     /// posture `crate::intent::IntentOp::validate` uses — there's no
     /// `wayhouse_config::validate()` equivalent for a bare registration either.
     pub fn validate(&self) -> Result<(), String> {
-        if self.name.trim().is_empty() {
-            return Err("name must not be empty".into());
-        }
+        crate::registry::validate_name(&self.name)?;
         if base64_decode_32(&self.pubkey).is_none() {
             return Err("pubkey must be a base64-encoded 32-byte WireGuard key".into());
         }
@@ -104,6 +102,10 @@ impl Registration for PeerRegistration {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn pubkey(&self) -> &str {
+        &self.pubkey
     }
 
     fn requested_address(&self) -> Option<IpAddr> {

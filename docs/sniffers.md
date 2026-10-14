@@ -247,9 +247,11 @@ Main builds no sniffer. The loader's own tests use small WAT modules (accept, re
 timeout, memory cap, wrong ABI version). On top of that, `sniffers.lock` pins the official releases
 by tag and sha256, and the `sniffers-e2e` CI job (`make sniffers-fetch`, then the `#[ignore]`d
 `wayhouse` tests) loads exactly those bytes through the real loader on amd64 and arm64: the ABI
-check, every sniffer's recognition, and the latency gate. It is deliberately **not** a required
-check, so an outage of the sniffers repository never blocks a PR; it runs when `wayhouse` or
-`sniffers.lock` changes and in the nightly run. Community sniffers are tested by the CI of the
+check, every sniffer's recognition, and the latency gate. It is part of the required `ci-ok`
+gate (#296), so a PR that changes the loader or `sniffers.lock` cannot merge with it red; it is
+skipped, and counts as passed, on PRs that touch neither. The price is that an outage of the
+sniffers repository blocks the PRs that do run it (re-run once, like any flake). It runs when
+`wayhouse` or `sniffers.lock` changes, on the merge queue and in the nightly run. Community sniffers are tested by the CI of the
 repository that hosts them, not here.
 
 When the ABI changes (`HOST_ABI`, the wire format): update `crates/wayhouse-sniffer-abi`, bump the revision

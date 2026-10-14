@@ -379,13 +379,59 @@ pub struct HaHandle {
 impl HaHandle {
     /// Whether this node is currently the Raft leader.
     pub fn is_leader(&self) -> bool {
-        self.raft.metrics().borrow().current_leader == Some(self.node_id)
+        // `current_leader` keeps its last value once the core has stopped, so a
+        // dead former leader must not read as one (#303).
+        let m = self.raft.metrics();
+        let m = m.borrow();
+        m.state != openraft::ServerState::Shutdown && m.current_leader == Some(self.node_id)
+    }
+}
+
+/// Resolves once the Raft core has stopped: after a storage error it cannot
+/// recover from (disk full, corrupt log entry, failed apply) or a shutdown.
+/// The node is useless from then on, so `main` exits on it and lets the
+/// orchestrator restart it (#303).
+pub async fn core_stopped(raft: &Raft) {
+    let mut metrics = raft.metrics();
+    loop {
+        if metrics.borrow().state == openraft::ServerState::Shutdown {
+            return;
+        }
+        // The core owns the sender: it is gone once the core has stopped.
+        if metrics.changed().await.is_err() {
+            return;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn core_stopped_resolves_when_the_raft_core_shuts_down() {
+        let (handle, _cluster, _dir) = test_support::single_node(1, "127.0.0.1:1").await;
+        assert!(handle.is_leader());
+        let waiter = tokio::spawn({
+            let raft = handle.raft.clone();
+            async move { core_stopped(&raft).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!waiter.is_finished(), "a running core is not stopped");
+        handle.raft.shutdown().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("core_stopped must resolve after the core stopped")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stopped_core_is_not_the_leader() {
+        let (handle, _cluster, _dir) = test_support::single_node(1, "127.0.0.1:1").await;
+        assert!(handle.is_leader());
+        handle.raft.shutdown().await.unwrap();
+        assert!(!handle.is_leader());
+    }
 
     #[test]
     fn ha_join_and_ha_peers_together_are_refused() {

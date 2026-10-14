@@ -273,8 +273,14 @@ fn apply_locked(
                 remove_peer(wg, &reg.name, old);
                 forget(live, old);
             }
-            reconcile_peer(wg, reg);
-            applied.insert(reg.name.clone(), reg.clone());
+            // Recorded only once the peer is configured: an identical
+            // registration is skipped by `plan`, so one recorded after a failed
+            // configure would never be retried.
+            if reconcile_peer(wg, reg) {
+                applied.insert(reg.name.clone(), reg.clone());
+            } else {
+                applied.remove(&reg.name);
+            }
         }
         Action::Remove(pubkey) => {
             if let Event::Removed(name) = ev {
@@ -295,7 +301,8 @@ fn forget(live: &LiveInterface, pubkey: &str) {
 /// Removes then adds — see `wayhouse::tunnel_client::reconcile_peer`'s doc for
 /// why that's required, not defensive, on `defguard_boringtun`'s userspace
 /// backend.
-fn reconcile_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), reg: &ProxyRegistration) {
+/// Whether the peer is now configured.
+fn reconcile_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), reg: &ProxyRegistration) -> bool {
     match to_wg_peer(reg) {
         Ok(peer) => {
             if let Err(e) = wg.remove_peer(&peer.public_key) {
@@ -318,23 +325,61 @@ fn reconcile_peer(wg: &(dyn WireguardInterfaceApi + Send + Sync), reg: &ProxyReg
                     if let Some(ip) = reg.tunnel_address.as_deref().and_then(|a| a.parse().ok()) {
                         crate::interface::kick_handshake(ip);
                     }
+                    true
                 }
-                Err(e) => tracing::error!(
-                    proxy = %reg.name, error = %e,
-                    "failed to configure wireguard peer for edge proxy"
-                ),
+                Err(e) => {
+                    tracing::error!(
+                        proxy = %reg.name, error = %e,
+                        "failed to configure wireguard peer for edge proxy"
+                    );
+                    false
+                }
             }
         }
-        Err(e) => tracing::error!(
-            proxy = %reg.name, error = %e,
-            "skipping a malformed proxy registration"
-        ),
+        Err(e) => {
+            tracing::error!(
+                proxy = %reg.name, error = %e,
+                "skipping a malformed proxy registration"
+            );
+            false
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failed configure must not be recorded as applied: `plan` skips an
+    /// identical registration, so the peer would stay missing (#311).
+    #[test]
+    fn a_peer_whose_configure_failed_is_retried_by_the_next_identical_event() {
+        use crate::live_interface::testing::{live, Fake};
+        use std::sync::Mutex;
+        let log = std::sync::Arc::default();
+        let wg = Fake {
+            log: std::sync::Arc::default(),
+            fail_assign: vec![],
+            fail_remove: false,
+            peers: Mutex::new(vec![]),
+            fail_configure: Mutex::new(HashMap::from([(
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+                1,
+            )])),
+            after_read: std::sync::Arc::default(),
+        };
+        let live = live(&[], &[], &log);
+        let r = reg(Some("10.60.0.3"));
+        let ev = Event::Registered(r.clone());
+        let mut applied = HashMap::new();
+
+        apply_locked(&wg, &live, &mut applied, &ev);
+        assert!(applied.is_empty(), "a failed configure is not applied");
+
+        apply_locked(&wg, &live, &mut applied, &ev);
+        assert_eq!(applied.get("edge-1"), Some(&r));
+        assert_eq!(wg.peers.lock().unwrap().len(), 1);
+    }
 
     fn reg(addr: Option<&str>) -> ProxyRegistration {
         ProxyRegistration {

@@ -69,10 +69,20 @@ pub(super) fn register<R: Registration>(
     now: u64,
     index: u64,
 ) -> ApplyResult {
+    // A key another name holds is refused before the book is consulted, so no
+    // address is claimed for it. Decided from the registry's contents alone,
+    // like every other rejection, so replicas agree on it.
+    let key_held = registry
+        .pubkey_holder(reg.pubkey(), reg.name())
+        .map(|name| Rejection::PubkeyHeld {
+            role: R::ROLE,
+            name,
+        });
     // Book step.
-    let outcome = match cluster.network().map_err(io)? {
-        None => book.reject_at(Rejection::NotInitialized, index),
-        Some(network) => book.claim_at(
+    let outcome = match (key_held, cluster.network().map_err(io)?) {
+        (Some(rejection), _) => book.reject_at(rejection, index),
+        (None, None) => book.reject_at(Rejection::NotInitialized, index),
+        (None, Some(network)) => book.claim_at(
             R::ROLE,
             reg.name(),
             reg.requested_address(),

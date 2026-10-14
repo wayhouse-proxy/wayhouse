@@ -513,7 +513,7 @@ CI runs Rust tests under `cargo nextest` (each test in its own process) — see
   `docs/04`.
 - The UDP `prefix:` e2e needs a Linux host with `IP_PKTINFO` and loopback
   `127.0.0.2` / `127.0.0.3`; not portable to macOS/Windows CI.
-- `#[ignore]`d, run in the `sniffers-e2e` CI job (not required) after `make sniffers-fetch`, on the
+- `#[ignore]`d, run in the `sniffers-e2e` CI job (in `ci-ok.needs`, #296) after `make sniffers-fetch`, on the
   official sniffers pinned in `sniffers.lock`: the ABI check, the `.wasm` artifact round-trip and
   the WASM-boundary N1 latency bench.
 - `wasmtime` is a normal `cargo` dep — it does **not** need the

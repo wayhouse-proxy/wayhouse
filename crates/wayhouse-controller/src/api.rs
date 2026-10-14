@@ -524,6 +524,9 @@ struct SubmitParams {
     group: Option<String>,
 }
 
+/// Longest canary group name.
+const MAX_GROUP_LEN: usize = 128;
+
 /// `POST /config[?stage=canary&group=<name>]` — body is a raw YAML config
 /// document, the same shape a proxy's `--config` file has. Validates, then
 /// persists on success.
@@ -539,12 +542,18 @@ async fn submit_config(
     let stage = match params.stage.as_deref() {
         None => Stage::promoted(),
         Some("canary") => match params.group {
-            Some(group) if !group.trim().is_empty() => Stage::canary(group),
+            Some(group) if !group.trim().is_empty() && group.trim().len() <= MAX_GROUP_LEN => {
+                // Stored trimmed: a typo like " web" would stage a revision no
+                // subscriber of group "web" ever sees.
+                Stage::canary(group.trim().to_owned())
+            }
             _ => {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
-                        error: "stage=canary requires a non-empty group".into(),
+                        error: format!(
+                        "stage=canary requires a non-empty group of at most {MAX_GROUP_LEN} bytes"
+                    ),
                     }),
                 )
                     .into_response()
@@ -1666,6 +1675,38 @@ listeners:
             .await
             .unwrap();
         assert_eq!(resp.headers().get("X-Config-Revision").unwrap(), "2");
+    }
+
+    #[tokio::test]
+    async fn a_canary_group_is_stored_trimmed_and_length_capped() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        submit(&app, VALID_CONFIG).await;
+        let post = |group: String| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::post(format!("/config?stage=canary&group={group}"))
+                        .body(Body::from(OTHER_VALID_CONFIG))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+        assert_eq!(post("%20region-a%20".into()).await, StatusCode::OK);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/config?group=region-a")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.headers().get("X-Config-Revision").unwrap(), "2");
+        assert_eq!(post("g".repeat(129)).await, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

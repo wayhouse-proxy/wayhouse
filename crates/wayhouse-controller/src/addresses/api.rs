@@ -65,14 +65,16 @@ struct ErrorBody {
     error: String,
 }
 
-/// `409` address held / owner has a different one, `422` invalid address, no
+/// `409` address held / owner has a different one / public key held by another name, `422` invalid address, no
 /// network configured, backends off the claimed address or an unparsable
 /// replicated network, `503` network
 /// exhausted, book full or registries still initializing, `500` storage.
 pub fn claim_error_response(e: &ClaimError) -> Response {
     let status = match e {
         ClaimError::Rejected(r) => match r {
-            Rejection::Held { .. } | Rejection::OwnerHasDifferent { .. } => StatusCode::CONFLICT,
+            Rejection::Held { .. }
+            | Rejection::OwnerHasDifferent { .. }
+            | Rejection::PubkeyHeld { .. } => StatusCode::CONFLICT,
             Rejection::OutsideNetwork { .. }
             | Rejection::NotHost(_)
             | Rejection::NoNetwork
