@@ -44,13 +44,32 @@ pub fn is_public(ip: IpAddr) -> bool {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_public(IpAddr::V4(v4));
             }
-            let s0 = v6.segments()[0];
+            let seg = v6.segments();
+            // Forms that carry an IPv4 address: judge the address inside. IPv4-compatible
+            // (`::a.b.c.d`), NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`).
+            if seg[..6] == [0; 6] {
+                return is_public(IpAddr::V4(std::net::Ipv4Addr::from(
+                    u32::from(seg[6]) << 16 | u32::from(seg[7]),
+                )));
+            }
+            if seg[0] == 0x64 && seg[1] == 0xff9b && seg[2..6] == [0; 4] {
+                return is_public(IpAddr::V4(std::net::Ipv4Addr::from(
+                    u32::from(seg[6]) << 16 | u32::from(seg[7]),
+                )));
+            }
+            if seg[0] == 0x2002 {
+                return is_public(IpAddr::V4(std::net::Ipv4Addr::from(
+                    u32::from(seg[1]) << 16 | u32::from(seg[2]),
+                )));
+            }
+            let s0 = seg[0];
             !(v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (s0 & 0xfe00) == 0xfc00 // fc00::/7 unique local
                 || (s0 & 0xffc0) == 0xfe80 // fe80::/10 link local
-                || (s0 == 0x2001 && v6.segments()[1] == 0x0db8)) // documentation
+                || (s0 == 0x2001 && seg[1] == 0x0db8) // documentation
+                || (s0 == 0x2001 && seg[1] == 0)) // Teredo, which hides an IPv4 address
         }
     }
 }
@@ -263,6 +282,8 @@ mod tests {
             "93.184.216.34",
             "2606:4700:4700::1111",
             "::ffff:8.8.8.8",
+            "64:ff9b::808:808",
+            "2002:808:808::1",
         ] {
             assert!(is_public(ip(public)), "{public}");
         }
@@ -288,6 +309,14 @@ mod tests {
             "::ffff:10.0.0.1",
             "::ffff:127.0.0.1",
             "2001:db8::1",
+            "64:ff9b::a00:1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a9fe:a9fe",
+            "2002:a00:1::1",
+            "2002:7f00:1::",
+            "::10.0.0.1",
+            "::a9fe:a9fe",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
         ] {
             assert!(!is_public(ip(private)), "{private}");
         }

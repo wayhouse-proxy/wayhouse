@@ -66,6 +66,8 @@ pub enum ModuleError {
     UndeclaredTickInterval,
     #[error("`tick_interval_secs` is {0}, below the 10 second minimum")]
     TickIntervalTooShort(u64),
+    #[error("`tick_interval_secs` is {0}, above the one week maximum")]
+    TickIntervalTooLong(u64),
     #[error("the module is too complex to compile safely: {0}")]
     TooComplex(String),
     #[error("the module does not compile: {0}")]

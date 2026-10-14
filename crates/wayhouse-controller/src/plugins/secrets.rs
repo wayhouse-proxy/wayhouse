@@ -129,12 +129,13 @@ impl Keyring {
                 .try_into()
                 .map_err(|_| KeyringError::BadKey(i + 1))?;
             let id = key_id(&bytes);
-            if !keys.iter().any(|k: &Key| k.id == id) {
-                keys.push(Key {
-                    id,
-                    bytes: Zeroizing::new(bytes),
-                });
-            }
+            // The last occurrence of a repeated key decides its place, so the active
+            // key (the last line) is the one the file ends with.
+            keys.retain(|k: &Key| k.id != id);
+            keys.push(Key {
+                id,
+                bytes: Zeroizing::new(bytes),
+            });
         }
         if keys.is_empty() {
             return Err(KeyringError::Empty);
@@ -418,6 +419,14 @@ mod tests {
         );
         let r = Keyring::parse(&format!("# old\n{}\n\n{}\n{}\n", key(1), key(2), key(2))).unwrap();
         assert_eq!(r.key_ids().len(), 2, "a repeated key counts once");
+        let r = Keyring::parse(&format!("{}\n{}\n{}\n", key(1), key(2), key(1))).unwrap();
+        assert_eq!(r.key_ids().len(), 2);
+        let want = Keyring::parse(&key(1)).unwrap().key_ids();
+        assert_eq!(
+            r.active_id(),
+            Some(want[0].as_str()),
+            "the last line is active"
+        );
     }
 
     #[cfg(unix)]

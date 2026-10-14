@@ -33,7 +33,7 @@ pub struct Merged {
 /// The pool a plugin backend gets.
 pub fn pool_name(backend: &str) -> String {
     let digest = Sha256::digest(backend.as_bytes());
-    let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    let hex: String = digest.iter().take(16).map(|b| format!("{b:02x}")).collect();
     format!("plugin-{hex}")
 }
 
@@ -44,7 +44,10 @@ fn key(s: &str) -> Value {
 fn listeners_with_opt_in(doc: &Value) -> bool {
     doc.get("listeners")
         .and_then(Value::as_sequence)
-        .is_some_and(|ls| ls.iter().any(|l| l.get("plugin_routes").is_some()))
+        .is_some_and(|ls| {
+            ls.iter()
+                .any(|l| l.get("plugin_routes").is_some_and(Value::is_mapping))
+        })
 }
 
 /// Whether any listener of `text` opted in to plugin routes. A document that does not parse
@@ -100,7 +103,7 @@ pub fn merge_text(text: &str, routes: &[PluginRoute]) -> Result<Merged, ConfigEr
         return Ok(unchanged());
     };
     for l in listeners {
-        let Some(mode) = l.get("plugin_routes").cloned() else {
+        let Some(mode) = l.get("plugin_routes").filter(|m| m.is_mapping()).cloned() else {
             continue;
         };
         let Some(map) = l.as_mapping_mut() else {
@@ -250,6 +253,20 @@ listeners:
         assert_eq!((m.text.as_str(), m.applied), (plain.as_str(), 0));
         assert!(wants_plugin_routes(BASE));
         assert!(!wants_plugin_routes(&plain));
+    }
+
+    #[test]
+    fn a_null_plugin_routes_value_is_not_an_opt_in() {
+        let nulled = BASE.replace("plugin_routes: { type: sni }", "plugin_routes: ~");
+        assert!(!wants_plugin_routes(&nulled));
+        let m = merge_text(&nulled, &[r("a.example.com", "10.0.1.1:1")]).unwrap();
+        assert_eq!((m.text.as_str(), m.applied), (nulled.as_str(), 0));
+    }
+
+    #[test]
+    fn pool_names_keep_128_bits_of_the_hash() {
+        let name = pool_name("10.0.1.1:25565");
+        assert_eq!(name.len(), "plugin-".len() + 32, "{name}");
     }
 
     #[test]

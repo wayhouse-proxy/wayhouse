@@ -26,7 +26,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use wayhouse_plugin_host::{
     CallError, CompilePool, Effects, LogLevel, Plugin, PoolError, StateSnapshot, WebhookRequest,
-    WebhookResponse,
+    WebhookResponse, MAX_TICK_INTERVAL_SECS,
 };
 
 use super::secrets::KeyringHandle;
@@ -285,24 +285,39 @@ impl Runner {
                 };
             }
             let live = |r: &&InstallRecord| r.enabled && r.approved.triggers.on_timer;
+            // A plugin that only has a webhook or event hook is cached too, so each hook
+            // does not compile the module and run `init` again.
+            let hooked = |r: &&InstallRecord| {
+                r.enabled && (r.approved.triggers.on_timer || r.approved.triggers.on_webhook)
+            };
             let ids: Vec<&str> = installs
                 .iter()
                 .filter(live)
                 .map(|r| r.id.as_str())
                 .collect();
-            sched.loaded.retain(|id, _| ids.contains(&id.as_str()));
+            let cached: Vec<&str> = installs
+                .iter()
+                .filter(hooked)
+                .map(|r| r.id.as_str())
+                .collect();
+            sched.loaded.retain(|id, _| cached.contains(&id.as_str()));
             sched.next_due.retain(|id, _| ids.contains(&id.as_str()));
             let all: Vec<&str> = installs.iter().map(|r| r.id.as_str()).collect();
             self.lock_status()
                 .retain(|id, _| all.contains(&id.as_str()));
             for rec in installs.iter().filter(live) {
-                let interval = Duration::from_secs(rec.approved.tick_interval_secs);
-                let at = *sched
-                    .next_due
-                    .entry(rec.id.clone())
-                    .or_insert_with(|| now + interval);
+                // Stored records are replicated state, so a value above the parse limit
+                // must not be able to overflow `Instant` and abort the controller.
+                let secs = rec.approved.tick_interval_secs.min(MAX_TICK_INTERVAL_SECS);
+                let interval = Duration::from_secs(secs);
+                let Some(first) = now.checked_add(interval) else {
+                    continue;
+                };
+                let at = *sched.next_due.entry(rec.id.clone()).or_insert(first);
                 if now >= at {
-                    sched.next_due.insert(rec.id.clone(), now + interval);
+                    if let Some(next) = now.checked_add(interval) {
+                        sched.next_due.insert(rec.id.clone(), next);
+                    }
                     due.push((rec.clone(), now));
                 }
             }
@@ -344,6 +359,11 @@ impl Runner {
 
     async fn tick(self: Arc<Self>, rec: InstallRecord, at: Instant, term: Option<u64>) {
         let _turn = self.install_lock(&rec.id).await;
+        // Leadership may have moved while this tick waited for its turn; same check as
+        // `run_hook`, so a deposed node does not run the guest's external effects.
+        if self.lead() != Some(term) {
+            return;
+        }
         let outcome = self.call(&rec, term).await;
         if matches!(outcome, Outcome::Busy) {
             // Retry at the next scan instead of waiting a whole interval, so the
@@ -1167,6 +1187,83 @@ mod tests {
             body: vec![],
             idempotency_key: "k".into(),
         }
+    }
+
+    const HOOK_ONLY: &str =
+        r#"{"triggers":{"on_webhook":true},"log":true,"state":{"max_bytes":64}}"#;
+
+    #[tokio::test]
+    async fn a_webhook_only_plugin_stays_cached_across_scans() {
+        let (r, store, _d) = fixture(1, 4);
+        let module = guest(
+            HOOK_ONLY,
+            r#"(data (i32.const 200) "{\"status\":201}")
+               (func (export "init") (param i32 i32))
+               (func (export "on_webhook") (param i32 i32)
+                 (drop (call $respond (i32.const 200) (i32.const 14))))"#,
+        );
+        let sha = "a".repeat(64);
+        store.put_blob(&sha, &module).unwrap();
+        store
+            .create(&InstallRecord {
+                id: HID.into(),
+                name: "demo".into(),
+                sha256: sha,
+                size: module.len(),
+                approved: inspect(&module).unwrap().caps,
+                config: serde_json::json!({}),
+                enabled: true,
+                created_at: 1,
+                created_by: None,
+                webhook: None,
+            })
+            .unwrap();
+        store.set_webhook(HID, Some(&"0".repeat(64))).unwrap();
+        r.run_hook(HID, Hook::Webhook(request())).await.unwrap();
+        assert!(r.schedule.lock().await.loaded.contains_key(HID));
+        r.run_due(Instant::now()).await;
+        assert!(
+            r.schedule.lock().await.loaded.contains_key(HID),
+            "the scan evicted a plugin that only has a webhook"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tick_that_waited_for_its_turn_does_not_run_after_leadership_moved() {
+        let (r, store, _d) = fixture(1, 4);
+        install(&store, "a", &counter());
+        let rec = store.list().unwrap().remove(0);
+        // Standalone, the only valid term is `None`; a tick scheduled under term 5 is stale.
+        r.clone().tick(rec.clone(), Instant::now(), Some(5)).await;
+        assert_eq!(counter_value(&store, "a"), None);
+        r.clone().tick(rec, Instant::now(), None).await;
+        assert_eq!(counter_value(&store, "a"), Some(1));
+    }
+
+    #[tokio::test]
+    async fn a_stored_huge_tick_interval_does_not_panic_the_scan() {
+        let (r, store, _d) = fixture(1, 4);
+        let module = counter();
+        store.put_blob("sha-a", &module).unwrap();
+        let mut approved = inspect(&module).unwrap().caps;
+        approved.tick_interval_secs = u64::MAX;
+        store
+            .create(&InstallRecord {
+                id: "a".into(),
+                name: "demo".into(),
+                sha256: "sha-a".into(),
+                size: module.len(),
+                approved,
+                config: serde_json::json!({}),
+                enabled: true,
+                created_at: 1,
+                created_by: None,
+                webhook: None,
+            })
+            .unwrap();
+        let t0 = Instant::now();
+        r.run_due(t0).await;
+        r.run_due(secs(t0, 3600)).await;
     }
 
     #[tokio::test]

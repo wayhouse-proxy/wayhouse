@@ -25,6 +25,9 @@ use crate::module::{inspect, ModuleError, ModuleInfo};
 const EPOCH_DEADLINE_TICKS: u64 = 2;
 /// Longest state key the host accepts.
 pub const MAX_KEY_BYTES: usize = 256;
+/// Most keys a plugin's state may hold. The byte cap alone lets tiny keys pile up, which
+/// inflates the per-call clone of the state and every snapshot.
+pub const MAX_STATE_ENTRIES: usize = 1024;
 /// Largest `routes_set` document accepted (the entry cap bounds it further).
 const MAX_ROUTES_DOC: usize = 64 * 1024;
 
@@ -113,6 +116,8 @@ struct CallState {
     puts: BTreeMap<String, Vec<u8>>,
     /// Sum of key and value bytes of the merged (snapshot plus puts) state.
     state_bytes: usize,
+    /// Keys in the merged (snapshot plus puts) state.
+    state_entries: usize,
     state_ops: usize,
     logs: Vec<LogLine>,
     logs_dropped: usize,
@@ -354,6 +359,7 @@ impl Plugin {
     }
 
     fn store(&self, snapshot: Arc<StateSnapshot>) -> Store<CallState> {
+        let state_entries = snapshot.len();
         let state_bytes = snapshot.iter().map(|(k, v)| k.len() + v.len()).sum();
         let state = CallState {
             limits: StoreLimitsBuilder::new()
@@ -369,6 +375,7 @@ impl Plugin {
             snapshot,
             puts: BTreeMap::new(),
             state_bytes,
+            state_entries,
             state_ops: 0,
             logs: Vec::new(),
             logs_dropped: 0,
@@ -573,12 +580,17 @@ fn linker(engine: &Engine) -> Linker<CallState> {
                 if key.len() > MAX_KEY_BYTES || st.state_ops >= st.run.max_state_ops {
                     return Ok(-1);
                 }
+                let existing = st.current(&key).is_some();
+                if !existing && st.state_entries >= MAX_STATE_ENTRIES {
+                    return Ok(-1);
+                }
                 let old = st.current(&key).map_or(0, |v| key.len() + v.len());
                 let new_total = st.state_bytes - old + key.len() + value.len();
                 if new_total > cap.max_bytes {
                     return Ok(-1);
                 }
                 st.state_ops += 1;
+                st.state_entries += usize::from(!existing);
                 st.state_bytes = new_total;
                 st.puts.insert(key, value);
                 Ok(0)
