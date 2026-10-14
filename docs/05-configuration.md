@@ -113,7 +113,7 @@
 > until some expire, which can also turn away legitimate new clients while the flood
 > lasts. Those refusals are counted as `rate_ip` / `rate_net` like any other
 > over-rate drop, and the proxy logs a `rate limiter table is full` warning (at most
-> once a minute per listener) so the two can be told apart.
+> once a minute per listener and table) so the two can be told apart.
 >
 > **Per-source concurrent cap:** `per_source: { max_per_ip, max_per_net }` (at
 > least one) bounds how many connections / UDP sessions are *live at once* from

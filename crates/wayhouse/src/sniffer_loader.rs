@@ -617,6 +617,16 @@ impl SnifferLoader {
             tracing::info!(sniffer = %name, path = %path.display(), "sniffer loaded");
             modules.insert(name, sniffer);
         }
+        // A pin with no loaded module (file missing, dangling symlink) would
+        // silently drop a sniffer the config names, so the scan fails instead.
+        if let Some(pin) = cfg.modules.iter().find(|p| !modules.contains_key(&p.name)) {
+            bail!(
+                "sniffer {}: pinned in settings.sniffers.modules but no readable {}.wasm in {:?}",
+                pin.name,
+                pin.name,
+                cfg.dir
+            );
+        }
         Ok(modules)
     }
 }
@@ -1930,6 +1940,25 @@ listeners:
         let mut c = cfg(&dir);
         pin(&mut c, "good", &bytes);
         assert_eq!(loader().scan(&c).unwrap().len(), 1);
+    }
+
+    /// A pin whose file is gone or whose symlink dangles must not shrink the set silently.
+    #[test]
+    fn scan_fails_when_a_pinned_module_has_no_file() {
+        let dir = tempdir();
+        let bytes = wat_bytes(HOST_SNIFFER_WAT);
+        std::fs::write(dir.join("good.wasm"), &bytes).unwrap();
+        let mut c = cfg(&dir);
+        pin(&mut c, "good", &bytes);
+        pin(&mut c, "missing", &bytes);
+        let e = loader()
+            .scan(&c)
+            .err()
+            .expect("a pin without a module must fail the scan");
+        assert!(
+            e.to_string().contains("missing"),
+            "error names the pin: {e}"
+        );
     }
 
     /// What a reload does with the sniffers: scan, and replace the set only on success.

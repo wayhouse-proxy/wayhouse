@@ -100,7 +100,8 @@ struct State {
     ips: HashMap<IpAddr, Bucket>,
     nets: HashMap<NetKey, Bucket>,
     last_prune_ms: Option<u64>,
-    last_cap_warn_ms: Option<u64>,
+    /// Per bucket (`per_ip`, `per_net`), so one full table never hides the other.
+    last_cap_warn_ms: [Option<u64>; 2],
     /// How many times a hard-cap refusal was logged (the log is throttled).
     cap_warnings: u32,
 }
@@ -207,13 +208,11 @@ impl RateLimiter {
     /// `wayhouse_filter_blocked_total{filter="rate_ip"|"rate_net"}`, which is
     /// indistinguishable from an ordinary over-rate drop.
     fn warn_cap(st: &mut State, now: u64, bucket: &'static str) {
-        if st
-            .last_cap_warn_ms
-            .is_some_and(|t| now.saturating_sub(t) < CAP_WARN_EVERY_MS)
-        {
+        let slot = usize::from(bucket == "per_net");
+        if st.last_cap_warn_ms[slot].is_some_and(|t| now.saturating_sub(t) < CAP_WARN_EVERY_MS) {
             return;
         }
-        st.last_cap_warn_ms = Some(now);
+        st.last_cap_warn_ms[slot] = Some(now);
         st.cap_warnings += 1;
         tracing::warn!(
             bucket,
@@ -379,5 +378,17 @@ mod tests {
         let st = l.state.lock().unwrap_or_else(PoisonError::into_inner);
         assert!(st.ips.len() >= HARD_CAP, "the flood did not reach the cap");
         assert_eq!(st.cap_warnings, 1, "5000 refusals, one log line");
+    }
+
+    #[test]
+    fn a_full_ip_table_does_not_silence_the_net_table_warning() {
+        let mut st = State::default();
+        RateLimiter::warn_cap(&mut st, 1_000, "per_ip");
+        RateLimiter::warn_cap(&mut st, 1_001, "per_net");
+        RateLimiter::warn_cap(&mut st, 1_002, "per_ip");
+        RateLimiter::warn_cap(&mut st, 1_003, "per_net");
+        assert_eq!(st.cap_warnings, 2, "one line per bucket per interval");
+        RateLimiter::warn_cap(&mut st, 1_000 + CAP_WARN_EVERY_MS, "per_ip");
+        assert_eq!(st.cap_warnings, 3);
     }
 }
