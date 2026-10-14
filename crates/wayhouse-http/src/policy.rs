@@ -56,6 +56,42 @@ pub fn check_exposure(
     ))
 }
 
+/// Warn when `token` would travel over plain `http://` to a non-loopback host:
+/// an on-path attacker could read it (and then impersonate this process to the
+/// peer). Only a warning: a trusted overlay network is a legitimate deployment.
+/// `flag` names the URL option, for the message.
+pub fn warn_plaintext_bearer(flag: &str, url: &str, has_token: bool) {
+    if has_token && sends_bearer_in_clear(url) {
+        tracing::warn!(
+            flag,
+            url,
+            "bearer token is sent over plain http to a non-loopback host; use https:// unless this network is trusted"
+        );
+    }
+}
+
+fn sends_bearer_in_clear(url: &str) -> bool {
+    let Some(rest) = url
+        .get(..7)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("http://"))
+        .map(|_| &url[7..])
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority.rsplit('@').next().unwrap_or_default();
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        v6.split(']').next().unwrap_or_default()
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.to_canonical().is_loopback());
+    !loopback
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,5 +135,27 @@ mod tests {
     fn exposure_non_loopback_with_token_or_optout_ok() {
         assert!(check_exposure("c", addr("0.0.0.0:1"), true, false).is_ok());
         assert!(check_exposure("c", addr("0.0.0.0:1"), false, true).is_ok());
+    }
+
+    #[test]
+    fn plaintext_bearer_is_flagged_only_for_non_loopback_http() {
+        for clear in [
+            "http://controller.example:8080",
+            "http://10.0.0.5:8080/path",
+            "HTTP://[2001:db8::1]:8080",
+            "http://user@host.example",
+        ] {
+            assert!(super::sends_bearer_in_clear(clear), "{clear}");
+        }
+        for fine in [
+            "https://controller.example",
+            "http://127.0.0.1:8080",
+            "http://localhost:8080",
+            "http://[::1]:8080/x",
+            "http://[::ffff:127.0.0.1]:80",
+            "unix:///run/wayhouse.sock",
+        ] {
+            assert!(!super::sends_bearer_in_clear(fine), "{fine}");
+        }
     }
 }

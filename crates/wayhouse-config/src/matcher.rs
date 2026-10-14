@@ -16,6 +16,9 @@ pub enum HostPattern {
 
 impl HostPattern {
     fn matches(&self, host: &str) -> bool {
+        // `example.com.` is the same name as `example.com` (the root label); a
+        // client or sniffer may send either form.
+        let host = host.strip_suffix('.').unwrap_or(host);
         match self {
             HostPattern::Exact(e) => host == e,
             HostPattern::Suffix(s) => host.ends_with(s.as_str()),

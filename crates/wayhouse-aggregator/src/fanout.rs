@@ -349,8 +349,16 @@ async fn proxy_to_instance(
         Ok(resp) => {
             let status = resp.status();
             let headers = forwardable_headers(resp.headers());
-            let body = resp.bytes().await.unwrap_or_default();
-            (status, headers, body).into_response()
+            match wayhouse_http::read_capped(resp, state.max_instance_response_bytes).await {
+                Ok(body) => (status, headers, body).into_response(),
+                Err(e) => (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorResponse {
+                        error: format!("{instance} ({url}): {e}"),
+                    }),
+                )
+                    .into_response(),
+            }
         }
         Err(e) => (
             StatusCode::BAD_GATEWAY,
@@ -612,6 +620,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bytes, "draining\n".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn an_instance_response_past_the_cap_is_a_502_not_buffered() {
+        let (base_url, _captured) = spawn_mock_instance(
+            "/admin/drain",
+            Method::POST,
+            StatusCode::OK,
+            "this body is longer than the 8 byte cap",
+        )
+        .await;
+        let state = test_state().with_max_instance_response_bytes(8);
+        state.store.ingest(ingest_payload("proxy-1", &base_url));
+        let resp = crate::api::router(state)
+            .oneshot(
+                Request::post("/fleet/instances/proxy-1/drain")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]

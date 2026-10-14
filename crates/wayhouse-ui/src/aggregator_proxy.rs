@@ -91,10 +91,10 @@ async fn get_instance_sniffers(
     Extension(Actor(actor)): Extension<Actor>,
     Path(instance): Path<String>,
 ) -> Response {
-    proxy(
+    proxy_segments(
         &state,
         Method::GET,
-        &format!("/fleet/instances/{instance}/sniffers"),
+        &["instances",&instance,"sniffers"],
         None,
         actor,
     )
@@ -106,10 +106,10 @@ async fn drain_instance(
     Extension(Actor(actor)): Extension<Actor>,
     Path(instance): Path<String>,
 ) -> Response {
-    proxy(
+    proxy_segments(
         &state,
         Method::POST,
-        &format!("/fleet/instances/{instance}/drain"),
+        &["instances",&instance,"drain"],
         None,
         actor,
     )
@@ -121,10 +121,10 @@ async fn undrain_instance(
     Extension(Actor(actor)): Extension<Actor>,
     Path(instance): Path<String>,
 ) -> Response {
-    proxy(
+    proxy_segments(
         &state,
         Method::POST,
-        &format!("/fleet/instances/{instance}/undrain"),
+        &["instances",&instance,"undrain"],
         None,
         actor,
     )
@@ -137,10 +137,10 @@ async fn add_backend(
     Path(pool): Path<String>,
     body: Bytes,
 ) -> Response {
-    proxy(
+    proxy_segments(
         &state,
         Method::POST,
-        &format!("/fleet/pools/{pool}/backends"),
+        &["pools",&pool,"backends"],
         Some(body),
         actor,
     )
@@ -153,10 +153,10 @@ async fn patch_backend(
     Path((pool, addr)): Path<(String, String)>,
     body: Bytes,
 ) -> Response {
-    proxy(
+    proxy_segments(
         &state,
         Method::PATCH,
-        &format!("/fleet/pools/{pool}/backends/{addr}"),
+        &["pools",&pool,"backends",&addr],
         Some(body),
         actor,
     )
@@ -168,10 +168,10 @@ async fn delete_backend(
     Extension(Actor(actor)): Extension<Actor>,
     Path((pool, addr)): Path<(String, String)>,
 ) -> Response {
-    proxy(
+    proxy_segments(
         &state,
         Method::DELETE,
-        &format!("/fleet/pools/{pool}/backends/{addr}"),
+        &["pools",&pool,"backends",&addr],
         None,
         actor,
     )
@@ -197,10 +197,13 @@ async fn upload_sniffer(
     Query(q): Query<SnifferUploadQuery>,
     body: Bytes,
 ) -> Response {
+    let Some(name) = crate::proxy_util::path_segment(&q.name) else {
+        return bad_segment();
+    };
     proxy_raw(
         &state,
         Method::POST,
-        &format!("/fleet/sniffers?name={}", q.name),
+        &format!("/fleet/sniffers?name={name}"),
         Some(body),
         "application/octet-stream",
         actor,
@@ -213,10 +216,10 @@ async fn delete_sniffer(
     Extension(Actor(actor)): Extension<Actor>,
     Path(name): Path<String>,
 ) -> Response {
-    proxy(
+    proxy_segments(
         &state,
         Method::DELETE,
-        &format!("/fleet/sniffers/{name}"),
+        &["sniffers",&name],
         None,
         actor,
     )
@@ -228,10 +231,10 @@ async fn rollback_sniffer(
     Extension(Actor(actor)): Extension<Actor>,
     Path(name): Path<String>,
 ) -> Response {
-    proxy(
+    proxy_segments(
         &state,
         Method::POST,
-        &format!("/fleet/sniffers/{name}/rollback"),
+        &["sniffers",&name,"rollback"],
         None,
         actor,
     )
@@ -241,6 +244,37 @@ async fn rollback_sniffer(
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+/// [`proxy`] for `/fleet/{segments…}`, each segment percent-encoded so a decoded
+/// path parameter (`..%2F..%2Fmetrics%3F`) stays one segment of the route it was
+/// meant for instead of steering the call to another aggregator route.
+async fn proxy_segments(
+    state: &AppState,
+    method: Method,
+    segments: &[&str],
+    body: Option<Bytes>,
+    actor: Option<String>,
+) -> Response {
+    let mut path = String::from("/fleet");
+    for segment in segments {
+        let Some(segment) = crate::proxy_util::path_segment(segment) else {
+            return bad_segment();
+        };
+        path.push('/');
+        path.push_str(&segment);
+    }
+    proxy(state, method, &path, body, actor).await
+}
+
+fn bad_segment() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: "invalid path parameter".into(),
+        }),
+    )
+        .into_response()
 }
 
 /// Forwards one call to the configured aggregator, passing its response
@@ -296,8 +330,10 @@ pub(crate) async fn proxy_raw(
         Ok(resp) => {
             let status = resp.status();
             let headers = crate::proxy_util::forwardable_headers(resp.headers());
-            let body = resp.bytes().await.unwrap_or_default();
-            (status, headers, body).into_response()
+            match crate::proxy_util::upstream_body(resp, "aggregator").await {
+                Ok(body) => (status, headers, body).into_response(),
+                Err(e) => e,
+            }
         }
         Err(e) => (
             StatusCode::BAD_GATEWAY,
@@ -375,6 +411,98 @@ mod tests {
 
     fn cookie(session_id: &str) -> String {
         format!("{}={session_id}", crate::api::SESSION_COOKIE)
+    }
+
+    #[tokio::test]
+    async fn path_parameters_cannot_steer_a_call_to_another_aggregator_route() {
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let upstream = Router::new().fallback(move |uri: axum::http::Uri| {
+            let seen = seen2.clone();
+            async move {
+                seen.lock().unwrap().push(uri.to_string());
+                "{}"
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let (app, session) = logged_in_app(format!("http://{addr}"), Some("tok".into()));
+
+        let hostile = [
+            "..%2F..%2F..%2Fmetrics%3F",
+            "..",
+            "%2E%2E",
+            "a%2Fb",
+            "a%3Fb%23c",
+        ];
+        for name in hostile {
+            for (method, path) in [
+                ("GET", format!("/api/fleet/instances/{name}/sniffers")),
+                ("POST", format!("/api/fleet/instances/{name}/drain")),
+                ("DELETE", format!("/api/fleet/sniffers/{name}")),
+                ("POST", format!("/api/fleet/sniffers/{name}/rollback")),
+                ("DELETE", format!("/api/fleet/pools/{name}/backends/{name}")),
+            ] {
+                let resp = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(&path)
+                            .header(header::COOKIE, cookie(&session))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(
+                    resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::OK,
+                    "{method} {path}: {}",
+                    resp.status()
+                );
+            }
+        }
+        for uri in seen.lock().unwrap().iter() {
+            assert!(
+                uri.starts_with("/fleet/instances/")
+                    || uri.starts_with("/fleet/sniffers/")
+                    || uri.starts_with("/fleet/pools/"),
+                "escaped to {uri}"
+            );
+            assert!(!uri.contains("/../") && !uri.contains('?'), "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn sniffer_upload_name_cannot_inject_query_parameters() {
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        let upstream = Router::new().fallback(move |uri: axum::http::Uri| {
+            let seen = seen2.clone();
+            async move {
+                seen.lock().unwrap().push(uri.to_string());
+                "{}"
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let (app, session) = logged_in_app(format!("http://{addr}"), None);
+        let resp = app
+            .oneshot(
+                Request::post("/api/fleet/sniffers?name=evil%26force%3Dtrue%23x")
+                    .header(header::COOKIE, cookie(&session))
+                    .body(Body::from("wasm"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(!seen[0].contains("&force"), "{}", seen[0]);
+        assert!(seen[0].contains("name=evil%26force%3Dtrue%23x"), "{}", seen[0]);
     }
 
     #[tokio::test]

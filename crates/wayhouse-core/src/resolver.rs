@@ -258,6 +258,14 @@ enum Entry {
     Negative { expires: Instant },
 }
 
+/// Longest a cached answer may live, whatever the resolver or the config says;
+/// also keeps `Instant::now() + ttl` far from overflowing.
+const MAX_CACHE_TTL: Duration = Duration::from_secs(24 * 3600);
+
+fn expiry_after(ttl: Duration) -> Instant {
+    Instant::now() + ttl.min(MAX_CACHE_TTL)
+}
+
 /// Wraps a [`Resolver`] with a TTL'd LRU result cache. The cache key is built
 /// from the configured [`CacheKeyPart`]s; a request missing a required part
 /// (e.g. `sni` with no SNI) is not cached and passes straight through.
@@ -380,7 +388,7 @@ impl Resolver for CachedResolver {
                         key,
                         Entry::Positive {
                             res: res.clone(),
-                            expires: Instant::now() + ttl,
+                            expires: expiry_after(ttl),
                         },
                     );
                 Ok(res)
@@ -392,7 +400,7 @@ impl Resolver for CachedResolver {
                     .put(
                         key,
                         Entry::Negative {
-                            expires: Instant::now() + self.negative_ttl,
+                            expires: expiry_after(self.negative_ttl),
                         },
                     );
                 Ok(empty)
@@ -416,7 +424,7 @@ impl Resolver for CachedResolver {
                     .put(
                         key,
                         Entry::Negative {
-                            expires: Instant::now() + self.negative_ttl,
+                            expires: expiry_after(self.negative_ttl),
                         },
                     );
                 Err(e)
@@ -918,6 +926,47 @@ listeners:
             first_bytes: vec![],
             routing_key: None,
         }
+    }
+
+    #[tokio::test]
+    async fn huge_ttls_are_clamped_instead_of_overflowing_the_clock() {
+        struct Forever;
+        #[async_trait]
+        impl Resolver for Forever {
+            fn name(&self) -> &str {
+                "forever"
+            }
+            fn on_error(&self) -> OnError {
+                OnError::Reject
+            }
+            async fn resolve(&self, _req: ResolveRequest) -> Result<Resolution, ResolveError> {
+                Ok(Resolution {
+                    pool: Some("p".into()),
+                    ttl_sec: Some(u64::MAX),
+                    ..Default::default()
+                })
+            }
+        }
+        let mut cfg = cache_cfg(vec![CacheKeyPart::SrcIp]);
+        cfg.positive_ttl = Duration::from_secs(u64::MAX);
+        cfg.negative_ttl = Duration::from_secs(u64::MAX);
+        let c = CachedResolver::new(Arc::new(Forever), &cfg);
+        assert!(c.resolve(req("10.0.0.1:1", None)).await.is_ok());
+        // Served from the cache the second time: the entry was stored, not lost.
+        assert!(c.resolve(req("10.0.0.1:1", None)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn huge_negative_ttl_does_not_panic() {
+        let mut cfg = cache_cfg(vec![CacheKeyPart::SrcIp]);
+        cfg.negative_ttl = Duration::from_secs(u64::MAX);
+        let inner = Arc::new(Counting {
+            calls: AtomicUsize::new(0),
+            mode: Mode::Empty,
+            on_error: OnError::Reject,
+        });
+        let c = CachedResolver::new(inner, &cfg);
+        assert!(c.resolve(req("10.0.0.1:1", None)).await.is_ok());
     }
 
     #[tokio::test]

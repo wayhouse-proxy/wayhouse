@@ -190,8 +190,16 @@ impl WasmSniffer {
 /// module is vetted under cannot drift from the ones it runs under.
 fn new_store(engine: &Engine, max_memory_bytes: usize) -> Store<StoreState> {
     let state = StoreState {
+        // One linear memory, one table, one instance, as in the plugin host:
+        // wasmtime's defaults allow 10 000 of each and unbounded table growth,
+        // which would make `memory_size` a per-memory cap, not a process bound.
         limits: StoreLimitsBuilder::new()
             .memory_size(max_memory_bytes)
+            .memories(1)
+            .tables(1)
+            .instances(1)
+            .table_elements(MAX_TABLE_ELEMENTS)
+            .trap_on_grow_failure(true)
             .build(),
     };
     let mut store = Store::new(engine, state);
@@ -199,6 +207,9 @@ fn new_store(engine: &Engine, max_memory_bytes: usize) -> Store<StoreState> {
     store.set_epoch_deadline(EPOCH_DEADLINE_TICKS);
     store
 }
+
+/// Most elements a sniffer's (single) table may hold.
+const MAX_TABLE_ELEMENTS: usize = 10_000;
 
 /// Largest module the loader and the admin upload accept.
 pub const MAX_MODULE_BYTES: usize = wayhouse_http::MAX_SNIFFER_MODULE_BYTES;
@@ -498,8 +509,21 @@ impl SnifferLoader {
         let entries = fs::read_dir(&cfg.dir)
             .with_context(|| format!("settings.sniffers.dir {:?}", cfg.dir))?;
         for entry in entries {
-            let path = entry?.path();
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) if cfg.modules.is_empty() => {
+                    tracing::error!(error = %e, "unreadable sniffer directory entry, skipping");
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
+            let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("wasm") {
+                continue;
+            }
+            // Only regular files are modules: a directory named `x.wasm` is not.
+            if !entry.file_type().is_ok_and(|t| t.is_file()) {
+                tracing::warn!(path = %path.display(), "not a regular file, skipping");
                 continue;
             }
             let name = path
@@ -507,7 +531,18 @@ impl SnifferLoader {
                 .and_then(|s| s.to_str())
                 .unwrap_or_default()
                 .to_string();
-            let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                // Unpinned: one unreadable file must not block every rescan.
+                Err(e) if cfg.modules.is_empty() => {
+                    tracing::error!(path = %path.display(), error = %e, "unreadable sniffer module, skipping");
+                    continue;
+                }
+                Err(e) => {
+                    return Err(anyhow::Error::new(e)
+                        .context(format!("reading {}", path.display())))
+                }
+            };
 
             let pin = cfg.modules.iter().find(|m| m.name == name);
             let config = pin
@@ -936,6 +971,22 @@ mod tests {
         let (_loader, reg) = build_sniffers(&c).unwrap();
         let hint = reg.get("cfg-echo").unwrap().sniff(b"x").unwrap();
         assert_eq!(hint.host.as_deref(), Some("lobby-a"));
+    }
+
+    #[test]
+    fn scan_skips_an_unreadable_wasm_entry_when_nothing_is_pinned() {
+        let dir = tempdir();
+        std::fs::write(
+            dir.join("test-host.wasm"),
+            wat::parse_str(HOST_SNIFFER_WAT).unwrap(),
+        )
+        .unwrap();
+        let (loader, _registry) = build_sniffers(&cfg(&dir)).unwrap();
+        // A directory with a `.wasm` name can't be read as a module.
+        std::fs::create_dir(dir.join("not-a-file.wasm")).unwrap();
+        let map = loader.scan(&cfg(&dir)).unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key("test-host"));
     }
 
     #[test]
@@ -1443,6 +1494,32 @@ listeners:
         loader()
             .validate(&wat_bytes(HOST_SNIFFER_WAT), MEM)
             .unwrap();
+    }
+
+    /// A valid sniffer plus `extra` module fields (extra memories, tables, ...).
+    fn module_with(extra: &str) -> Vec<u8> {
+        wat_bytes(&format!(
+            r#"(module
+              (@custom "wayhouse.abi" "\00\00\01\00")
+              (memory (export "memory") 1)
+              {extra}
+              (func (export "alloc") (param i32) (result i32) (i32.const 0))
+              (func (export "sniff") (param i32 i32 i32 i32) (result i64) (i64.const 0)))"#
+        ))
+    }
+
+    #[test]
+    fn validate_rejects_extra_memories_and_huge_tables() {
+        loader().validate(&module_with(""), MEM).unwrap();
+        assert!(loader()
+            .validate(&module_with("(memory 1)"), MEM)
+            .is_err());
+        assert!(loader()
+            .validate(&module_with("(table 100000 funcref)"), MEM)
+            .is_err());
+        assert!(loader()
+            .validate(&module_with("(table 1 funcref) (table 1 funcref)"), MEM)
+            .is_err());
     }
 
     #[test]

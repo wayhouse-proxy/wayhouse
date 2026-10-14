@@ -86,6 +86,7 @@ impl BackendSource for DnsSrvSource {
                 })?;
 
         let mut out = Vec::new();
+        let mut failed = None;
         for record in lookup.answers() {
             let hickory_resolver::proto::rr::RData::SRV(srv) = &record.data else {
                 continue;
@@ -93,22 +94,35 @@ impl BackendSource for DnsSrvSource {
             let port = srv.port;
             let target = srv.target.to_utf8();
             let target = target.trim_end_matches('.');
+            // Port 0 is not dialable, and a "." target is RFC 2782's "this
+            // service is not available here": neither is a backend.
+            if port == 0 || target.is_empty() {
+                continue;
+            }
             match target.parse() {
                 Ok(ip) => out.push(SocketAddr::new(ip, port)),
-                Err(_) => {
-                    let ips = self.resolver.lookup_ip(target).await.map_err(|e| {
-                        SourceError::Unreachable {
+                Err(_) => match self.resolver.lookup_ip(target).await {
+                    Ok(ips) => {
+                        for ip in ips.iter() {
+                            out.push(SocketAddr::new(ip, port));
+                        }
+                    }
+                    // One bad target must not freeze the whole pool at its last
+                    // known good set; only "nothing resolved" is a failure.
+                    Err(e) => {
+                        tracing::warn!(record = %self.record, %target, error = %e, "SRV target does not resolve, skipping");
+                        failed = Some(SourceError::Unreachable {
                             context: format!("A/AAAA lookup for SRV target {target}"),
                             cause: e.to_string(),
-                        }
-                    })?;
-                    for ip in ips.iter() {
-                        out.push(SocketAddr::new(ip, port));
+                        });
                     }
-                }
+                },
             }
         }
-        Ok(out)
+        match failed {
+            Some(e) if out.is_empty() => Err(e),
+            _ => Ok(out),
+        }
     }
 }
 
@@ -149,6 +163,23 @@ mod tests {
             ),
             0,
         );
+        // Records a sane client skips instead of failing the whole fetch on: a
+        // target that does not resolve, the RFC 2782 "." (service unavailable)
+        // target, and port 0.
+        for (port, target) in [
+            (7778, "missing.example.com."),
+            (7779, "."),
+            (0, "host1.example.com."),
+        ] {
+            auth.upsert_mut(
+                Record::from_rdata(
+                    Name::from_ascii("_game._udp.example.com.").unwrap(),
+                    60,
+                    RData::SRV(SRV::new(0, 0, port, Name::from_ascii(target).unwrap())),
+                ),
+                0,
+            );
+        }
 
         let mut catalog = Catalog::new();
         catalog.upsert(LowerName::from(origin), vec![Arc::new(auth)]);

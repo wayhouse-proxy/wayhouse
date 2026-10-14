@@ -75,17 +75,20 @@ fn router(state: AdminState) -> Router {
                 )),
         )
         .route("/admin/sniffers/{name}", delete(delete_sniffer))
-        .route("/admin/sniffers/{name}/rollback", post(rollback_sniffer))
-        .route_layer(middleware::from_fn_with_state(
-            wayhouse_http::server::BearerAuth::new(state.auth_token.as_deref())
-                .with_body("unauthorized\n"),
-            wayhouse_http::server::require_bearer,
-        ));
+        .route("/admin/sniffers/{name}/rollback", post(rollback_sniffer));
 
     // The aggregator's fan-out (and the controller's tooling) call these with the
     // protocol header; operators also call them by hand, so a missing header is
-    // fine but another major is refused.
-    let gated = wayhouse_http::protocol::gate_lenient(gated, "proxy");
+    // fine but another major is refused. The bearer check is the outer layer: the
+    // gate counts mismatches into the fleet view, so an unauthenticated request
+    // must not reach it.
+    let gated = wayhouse_http::protocol::gate_lenient(gated, "proxy").route_layer(
+        middleware::from_fn_with_state(
+            wayhouse_http::server::BearerAuth::new(state.auth_token.as_deref())
+                .with_body("unauthorized\n"),
+            wayhouse_http::server::require_bearer,
+        ),
+    );
     Router::new()
         .route("/healthz", get(healthz))
         .merge(gated)
@@ -1723,6 +1726,28 @@ mod tests {
             .await
             .unwrap();
         assert!(health.status().is_success());
+        runtime
+            .shutdown_with_grace(std::time::Duration::from_millis(100))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_tokenless_request_with_another_protocol_major_is_a_401_not_a_426() {
+        let proxy = free_port();
+        let yaml = format!(
+            "pools:\n  - name: p\n    targets: [\"127.0.0.1:9\"]\n    health_check:\n      type: none\n\
+             listeners:\n  - name: l\n    bind: \"{proxy}\"\n    pool: p\n"
+        );
+        let (base, runtime) = spawn_admin_with_token(&yaml, Some("tok")).await;
+        // The protocol gate counts mismatches into the fleet view, so only an
+        // authenticated caller may reach it.
+        let resp = reqwest::Client::new()
+            .get(format!("{base}/pools"))
+            .header(wayhouse_http::protocol::HEADER, "2.0")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
         runtime
             .shutdown_with_grace(std::time::Duration::from_millis(100))
             .await;

@@ -169,6 +169,10 @@ async fn main() -> anyhow::Result<()> {
 
     let login_required = args.ui_password.is_some() || args.users_file.is_some();
     let mut state = AppState::new(args.ui_password)
+        // Open mode on a loopback bind is the DNS-rebinding setting: only answer
+        // requests addressed to a loopback name. (`--insecure-no-auth` on another
+        // address has no name to check against.)
+        .with_loopback_host_only(!login_required && args.listen.ip().is_loopback())
         .with_secure_cookie(tls_cert.is_some())
         .with_session_limits(wayhouse_ui::session::SessionLimits {
             idle_timeout: std::time::Duration::from_secs(args.session_idle_timeout_secs),
@@ -222,9 +226,10 @@ async fn main() -> anyhow::Result<()> {
     } else {
         tracing::info!("/metrics is not served: a login is configured and no --metrics-token");
     }
-    let app = app
-        .merge(api::router(state))
-        .fallback_service(ServeDir::new(&args.static_dir));
+    let app = wayhouse_ui::origin_guard::with_security_headers(
+        app.merge(api::router(state))
+            .fallback_service(ServeDir::new(&args.static_dir)),
+    );
 
     wayhouse_http::tls::serve(args.listen, app, tls_cert, args.tls.limits(), "wayhouse-ui").await?;
 

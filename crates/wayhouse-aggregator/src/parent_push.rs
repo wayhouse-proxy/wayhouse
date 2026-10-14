@@ -48,7 +48,7 @@ pub async fn run(cfg: PushConfig, store: Arc<IngestStore>) {
         token,
     } = cfg;
     let client = wayhouse_http::client();
-    let url = format!("{base_url}/ingest");
+    let url = ingest_url(&base_url);
     let mut ticker = tokio::time::interval(interval);
     ticker.tick().await; // fire on the first *real* interval, not immediately
 
@@ -67,7 +67,7 @@ pub async fn run(cfg: PushConfig, store: Arc<IngestStore>) {
                     "relayed an instance summary to the parent aggregator"
                 ),
                 Ok(resp) => tracing::warn!(
-                    parent = %base_url, status = %resp.status(),
+                    parent = %base_url, url = %url, status = %resp.status(),
                     "parent aggregator rejected a relayed instance summary"
                 ),
                 Err(e) => tracing::warn!(
@@ -77,6 +77,11 @@ pub async fn run(cfg: PushConfig, store: Arc<IngestStore>) {
             }
         }
     }
+}
+
+/// `{parent-url}/ingest`, whether or not `--parent-url` ends in a slash.
+fn ingest_url(base_url: &str) -> String {
+    format!("{}/ingest", base_url.trim_end_matches('/'))
 }
 
 fn namespaced(tier_name: &str, mut payload: IngestPayload) -> IngestPayload {
@@ -111,6 +116,13 @@ mod tests {
             version: String::new(),
             protocol: String::new(),
             protocol_mismatches: 0,
+        }
+    }
+
+    #[test]
+    fn ingest_url_tolerates_trailing_slashes() {
+        for base in ["http://parent:8082", "http://parent:8082/", "http://parent:8082//"] {
+            assert_eq!(ingest_url(base), "http://parent:8082/ingest");
         }
     }
 

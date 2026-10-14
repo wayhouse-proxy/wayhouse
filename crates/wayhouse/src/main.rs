@@ -223,6 +223,19 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn async_main(args: Args) -> anyhow::Result<()> {
+    for (flag, url, token) in [
+        ("--controller", &args.controller, &args.controller_token),
+        ("--aggregator", &args.aggregator, &args.aggregator_token),
+        (
+            "--tunnel-controller-url",
+            &args.tunnel_controller_url,
+            &args.tunnel_controller_token,
+        ),
+    ] {
+        if let Some(url) = url {
+            wayhouse_http::policy::warn_plaintext_bearer(flag, url, token.is_some());
+        }
+    }
     let tunnel_config = tunnel_boot::config(&args)?;
 
     let (config_source, cfg, initial_revision) = match &args.controller {

@@ -24,6 +24,9 @@ struct Entry {
     expiry: Instant,
 }
 
+/// No hint outlives this, so a huge `ttl` can't overflow `Instant + Duration`.
+const MAX_TTL: Duration = Duration::from_secs(24 * 3600);
+
 #[derive(Default)]
 pub struct RouteHints {
     table: ArcSwap<HashMap<IpAddr, Entry>>,
@@ -38,7 +41,8 @@ impl RouteHints {
     #[allow(clippy::needless_pass_by_value)] // the table takes ownership of what it stores
     pub fn set(&self, ip: IpAddr, pool: String, ttl: Duration) {
         let ip = ip.to_canonical();
-        let expiry = Instant::now() + ttl;
+        // A ttl too big for the clock is "as long as we ever hold a hint".
+        let expiry = Instant::now() + ttl.min(MAX_TTL);
         self.table.rcu(|cur| {
             let now = Instant::now();
             let mut next: HashMap<IpAddr, Entry> = cur
@@ -95,6 +99,14 @@ mod tests {
             h.lookup("::ffff:203.0.113.7".parse().unwrap()).as_deref(),
             Some("survival")
         );
+    }
+
+    #[test]
+    fn a_ttl_too_big_for_the_clock_is_clamped_not_a_panic() {
+        let h = RouteHints::new();
+        let ip: IpAddr = "203.0.113.7".parse().unwrap();
+        h.set(ip, "survival".into(), Duration::from_secs(u64::MAX));
+        assert_eq!(h.lookup(ip).as_deref(), Some("survival"));
     }
 
     #[test]

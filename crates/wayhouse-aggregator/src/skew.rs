@@ -85,7 +85,10 @@ pub fn classify(fleet: &[Reported<'_>]) -> Vec<Skew> {
             }
             match (product(r.version), newest) {
                 (Some(v), Some(n)) if v == n => Skew::None,
-                (Some((vm, vi)), Some((nm, ni))) if vm == nm && ni - vi <= 1 => Skew::WithinWindow,
+                // `abs_diff`: a stale instance can be *newer* than the fresh baseline.
+                (Some((vm, vi)), Some((nm, ni))) if vm == nm && ni.abs_diff(vi) <= 1 => {
+                    Skew::WithinWindow
+                }
                 (Some(_), Some(_)) => Skew::OutsideWindow,
                 _ => Skew::None,
             }
@@ -112,6 +115,14 @@ mod tests {
         gone.fresh = false;
         let f = [gone, r("0.2.0", "1.0"), r("0.2.0", "1.0")];
         assert_eq!(classify(&f)[1..], [Skew::None, Skew::None]);
+    }
+
+    #[test]
+    fn a_stale_instance_newer_than_the_fresh_baseline_does_not_underflow() {
+        let mut ahead = r("0.4.0", "1.0");
+        ahead.fresh = false;
+        let f = [r("0.3.0", "1.0"), ahead];
+        assert_eq!(classify(&f), [Skew::None, Skew::WithinWindow]);
     }
 
     #[test]
