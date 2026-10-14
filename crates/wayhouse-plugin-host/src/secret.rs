@@ -57,6 +57,36 @@ impl SecretSource for NoSecrets {
     }
 }
 
+const UNRESERVED: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+const URI_COMPONENT: &percent_encoding::AsciiSet = &UNRESERVED
+    .remove(b'!')
+    .remove(b'*')
+    .remove(b'\'')
+    .remove(b'(')
+    .remove(b')');
+
+/// `%2F` becomes `%2f`, the other case of every percent escape.
+fn lower_hex_escapes(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            out.push('%');
+            out.push_str(&s[i + 1..i + 3].to_ascii_lowercase());
+            i += 3;
+        } else {
+            out.push(b[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Replaces every form of the secrets it was built from.
 #[derive(Default)]
 pub struct Scrubber {
@@ -75,11 +105,25 @@ impl Scrubber {
         for engine in [&STANDARD, &STANDARD_NO_PAD, &URL_SAFE, &URL_SAFE_NO_PAD] {
             forms.push(engine.encode(raw).into_bytes());
         }
-        forms.push(
-            percent_encoding::percent_encode(raw, percent_encoding::NON_ALPHANUMERIC)
-                .to_string()
-                .into_bytes(),
-        );
+        // Percent forms: everything escaped, the RFC 3986 unreserved set kept, and what
+        // `encodeURIComponent` keeps, each in upper and lower case hex.
+        for set in [
+            percent_encoding::NON_ALPHANUMERIC,
+            UNRESERVED,
+            URI_COMPONENT,
+        ] {
+            let upper = percent_encoding::percent_encode(raw, set).to_string();
+            forms.push(lower_hex_escapes(&upper).into_bytes());
+            forms.push(upper.into_bytes());
+        }
+        // The JSON string form (`/` is escaped as `\/` by some encoders).
+        if let Ok(text) = std::str::from_utf8(raw) {
+            if let Ok(json) = serde_json::to_string(text) {
+                let inner = &json[1..json.len() - 1];
+                forms.push(inner.as_bytes().to_vec());
+                forms.push(inner.replace('/', "\\/").into_bytes());
+            }
+        }
         for form in forms {
             if !self.patterns.iter().any(|p| p.as_slice() == form) {
                 self.patterns.push(Zeroizing::new(form));
@@ -153,6 +197,25 @@ mod tests {
             assert_eq!(out, "echo: [redacted]; again [redacted]", "{form}");
         }
         assert_eq!(s.scrub_str("nothing to see"), "nothing to see");
+    }
+
+    #[test]
+    fn json_escaped_and_other_percent_forms_are_scrubbed() {
+        let mut s = Scrubber::default();
+        let raw = "tok/en-va.lue~1234";
+        s.add(&secret(raw));
+        let json = raw.replace('/', "\\/");
+        let pct_unreserved = raw.replace('/', "%2F");
+        let pct_lower = raw.replace('/', "%2f");
+        for form in [&json, &pct_unreserved, &pct_lower] {
+            let out = s.scrub_str(&format!("echo: {form}"));
+            assert_eq!(out, "echo: [redacted]", "{form}");
+        }
+        let full_lower =
+            percent_encoding::percent_encode(raw.as_bytes(), percent_encoding::NON_ALPHANUMERIC)
+                .to_string()
+                .to_ascii_lowercase();
+        assert_eq!(s.scrub_str(&full_lower), "[redacted]");
     }
 
     #[test]

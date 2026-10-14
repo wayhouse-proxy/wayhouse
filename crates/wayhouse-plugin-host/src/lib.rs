@@ -12,13 +12,17 @@ pub mod secret;
 pub mod webhook;
 
 pub use bounds::Bounds;
-pub use caps::{Capabilities, HttpCap, HttpHost, SecretSlot, StateCap, Triggers, MAX_STATE_BYTES};
+pub use caps::{
+    Capabilities, HttpCap, HttpHost, SecretSlot, StateCap, Triggers, MAX_STATE_BYTES,
+    MAX_TICK_INTERVAL_SECS,
+};
 pub use http::{HttpEngine, Transport};
 pub use module::{inspect, AbiVersion, ModuleError, ModuleInfo, HOST_ABI, MAX_MODULE_BYTES};
 pub use pool::{CompilePool, PoolError};
 pub use routes::{RouteCap, RouteEntry};
 pub use runtime::{
-    CallError, Effects, Limits, LogLevel, LogLine, Plugin, PluginHost, StateSnapshot, MAX_KEY_BYTES,
+    CallError, Effects, Limits, LogLevel, LogLine, Plugin, PluginHost, StateSnapshot,
+    MAX_KEY_BYTES, MAX_STATE_ENTRIES,
 };
 pub use secret::{SecretSource, SecretValue};
 pub use webhook::{WebhookRequest, WebhookResponse};

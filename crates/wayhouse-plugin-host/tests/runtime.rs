@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use wayhouse_plugin_host::{
     inspect, CallError, Capabilities, Limits, LogLevel, ModuleError, PluginHost, StateSnapshot,
+    MAX_STATE_ENTRIES,
 };
 
 const ABI: &str = "\\00\\00\\01\\00";
@@ -137,6 +138,31 @@ fn state_put_over_the_cap_returns_minus_one() {
     let plugin = host().load(&m, &approved(&m)).unwrap();
     let fx = plugin.on_timer(&StateSnapshot::new()).unwrap();
     assert!(fx.state_puts.is_empty());
+}
+
+#[test]
+fn state_put_refuses_a_new_key_past_the_entry_cap() {
+    let m = guest(
+        r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"state":{"max_bytes":1048576}}"#,
+        r#"(func (export "init") (param i32 i32))
+           (func (export "on_timer")
+             ;; "k" is already stored, so overwriting it is fine
+             (if (i32.ne (call $put (i32.const 16) (i32.const 1) (i32.const 32) (i32.const 2))
+                         (i32.const 0))
+               (then unreachable))
+             ;; "r" would be one entry too many
+             (if (i32.ne (call $put (i32.const 48) (i32.const 1) (i32.const 32) (i32.const 2))
+                         (i32.const -1))
+               (then unreachable)))"#,
+    );
+    let plugin = host().load(&m, &approved(&m)).unwrap();
+    let mut snap = StateSnapshot::new();
+    snap.insert("k".into(), vec![]);
+    for i in 1..MAX_STATE_ENTRIES {
+        snap.insert(format!("key{i}"), vec![]);
+    }
+    let fx = plugin.on_timer(&snap).unwrap();
+    assert_eq!(fx.state_puts.len(), 1);
 }
 
 #[test]

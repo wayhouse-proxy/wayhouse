@@ -11,6 +11,10 @@ use crate::module::ModuleError;
 /// The shortest timer interval the host accepts (spec: minimum 10 s).
 pub const MIN_TICK_INTERVAL_SECS: u64 = 10;
 
+/// The longest timer interval the host accepts (one week). A larger value would overflow
+/// `Instant` arithmetic in the scheduler.
+pub const MAX_TICK_INTERVAL_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// Host ceiling on a declared `state.max_bytes` (1 MiB).
 pub const MAX_STATE_BYTES: usize = 1024 * 1024;
 
@@ -210,6 +214,9 @@ impl Capabilities {
             if caps.tick_interval_secs < MIN_TICK_INTERVAL_SECS {
                 return Err(ModuleError::TickIntervalTooShort(caps.tick_interval_secs));
             }
+            if caps.tick_interval_secs > MAX_TICK_INTERVAL_SECS {
+                return Err(ModuleError::TickIntervalTooLong(caps.tick_interval_secs));
+            }
         }
         if !caps.triggers.on_event.is_empty() {
             if !caps.triggers.on_timer {
@@ -311,6 +318,19 @@ mod tests {
 
     fn parse(json: &str) -> Result<Capabilities, ModuleError> {
         Capabilities::parse(json.as_bytes())
+    }
+
+    #[test]
+    fn a_tick_interval_above_the_ceiling_is_refused() {
+        let json =
+            |n: u64| format!(r#"{{"triggers":{{"on_timer":true}},"tick_interval_secs":{n}}}"#);
+        assert!(parse(&json(MAX_TICK_INTERVAL_SECS)).is_ok());
+        for n in [MAX_TICK_INTERVAL_SECS + 1, u64::MAX] {
+            assert!(
+                matches!(parse(&json(n)), Err(ModuleError::TickIntervalTooLong(_))),
+                "{n}"
+            );
+        }
     }
 
     #[test]

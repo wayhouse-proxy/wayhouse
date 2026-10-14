@@ -37,7 +37,7 @@ without running the module and approvals are recorded against the module's sha25
 ```
 
 Unknown fields are an error. `tick_interval_secs` is required with `on_timer` and at
-least 10.
+least 10 and at most 604800 (one week).
 
 Exports: `memory`, `alloc(i32) -> i32`, `init(config_ptr, config_len)`, and `on_timer()` when
 declared. The only imports allowed are these, in the `wayhouse` namespace:
@@ -228,7 +228,7 @@ behind a bounded queue: a full queue answers `Busy` at once and a slow compile a
 `TimedOut` (the compile itself cannot be interrupted, so it keeps its worker until done).
 The controller must load modules through the pool, never on its main loop. The workspace sets `panic = "abort"` for the release profile, so a panic in a compile worker (for example a wasmtime bug) ends the process rather than silently shrinking the pool; the bounds exist to keep hostile input away from that path.
 
-A declared `state.max_bytes` above 1 MiB is rejected, and `PluginHost::new` refuses a zero
+A plugin's state holds at most 1024 keys (a `state_put` of a new key past that returns -1). A declared `state.max_bytes` above 1 MiB is rejected, and `PluginHost::new` refuses a zero
 `call_timeout`.
 
 ## Checking a built plugin
