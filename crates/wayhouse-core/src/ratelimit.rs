@@ -34,6 +34,8 @@ const PRUNE_EVERY_MS: u64 = 1_000;
 /// Hard bound on each map. At the cap (after a prune attempt) a source with no
 /// bucket yet is refused rather than tracked.
 const HARD_CAP: usize = 2 * PRUNE_AT;
+/// Minimum gap between two "table is full" log lines.
+const CAP_WARN_EVERY_MS: u64 = 60_000;
 
 #[derive(Clone, Copy)]
 struct Bucket {
@@ -98,6 +100,9 @@ struct State {
     ips: HashMap<IpAddr, Bucket>,
     nets: HashMap<NetKey, Bucket>,
     last_prune_ms: Option<u64>,
+    last_cap_warn_ms: Option<u64>,
+    /// How many times a hard-cap refusal was logged (the log is throttled).
+    cap_warnings: u32,
 }
 
 pub struct RateLimiter {
@@ -139,6 +144,7 @@ impl RateLimiter {
         if self.per_ip.is_some() && !st.ips.contains_key(&ip) && st.ips.len() >= HARD_CAP {
             self.prune(&mut st, now, true);
             if st.ips.len() >= HARD_CAP {
+                Self::warn_cap(&mut st, now, "per_ip");
                 return Some("rate_ip");
             }
         }
@@ -147,6 +153,7 @@ impl RateLimiter {
             if !st.nets.contains_key(&key) && st.nets.len() >= HARD_CAP {
                 self.prune(&mut st, now, true);
                 if st.nets.len() >= HARD_CAP {
+                    Self::warn_cap(&mut st, now, "per_net");
                     return Some("rate_net");
                 }
             }
@@ -193,6 +200,26 @@ impl RateLimiter {
         }
         self.prune(&mut st, now, false);
         None
+    }
+
+    /// Log that the hard cap is refusing new sources, at most once per
+    /// [`CAP_WARN_EVERY_MS`]: the refusals themselves land in
+    /// `wayhouse_filter_blocked_total{filter="rate_ip"|"rate_net"}`, which is
+    /// indistinguishable from an ordinary over-rate drop.
+    fn warn_cap(st: &mut State, now: u64, bucket: &'static str) {
+        if st
+            .last_cap_warn_ms
+            .is_some_and(|t| now.saturating_sub(t) < CAP_WARN_EVERY_MS)
+        {
+            return;
+        }
+        st.last_cap_warn_ms = Some(now);
+        st.cap_warnings += 1;
+        tracing::warn!(
+            bucket,
+            cap = HARD_CAP,
+            "rate limiter table is full: new sources are refused until idle ones expire (a flood of distinct sources?)"
+        );
     }
 
     /// Bounded-memory guard: drop buckets that have refilled to capacity
@@ -339,5 +366,18 @@ mod tests {
         let st = l.state.lock().unwrap_or_else(PoisonError::into_inner);
         assert!(st.ips.len() <= HARD_CAP, "ips {}", st.ips.len());
         assert!(st.nets.len() <= HARD_CAP, "nets {}", st.nets.len());
+    }
+
+    #[test]
+    fn hitting_the_hard_cap_is_logged_once_per_interval_not_per_refusal() {
+        let l = rl(Some((1, 1)), None);
+        let n = HARD_CAP as u32 + 5_000;
+        for i in 0..n {
+            let ip = IpAddr::from(std::net::Ipv4Addr::from(0x0100_0000 + i * 256));
+            let _ = l.permit(ip);
+        }
+        let st = l.state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(st.ips.len() >= HARD_CAP, "the flood did not reach the cap");
+        assert_eq!(st.cap_warnings, 1, "5000 refusals, one log line");
     }
 }

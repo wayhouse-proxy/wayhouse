@@ -106,7 +106,14 @@
 > client's /24 (IPv4) or /64 (IPv6). A permit is taken only when every configured
 > bucket can afford it; excess is dropped silently and counted by
 > `wayhouse_filter_blocked_total{listener,filter="rate_ip"|"rate_net"}`. Bucket state
-> is per proxy instance (size it per node behind anycast HA).
+> is per proxy instance (size it per node behind anycast HA). Each table is capped at
+> 200 000 buckets (one for IPs, one for networks) to bound memory; idle buckets are
+> pruned first, but if a flood of distinct sources (an IPv6 /64 sweep, spoofed UDP)
+> fills a table with live buckets, a source with no bucket yet is refused (fail closed)
+> until some expire, which can also turn away legitimate new clients while the flood
+> lasts. Those refusals are counted as `rate_ip` / `rate_net` like any other
+> over-rate drop, and the proxy logs a `rate limiter table is full` warning (at most
+> once a minute per listener) so the two can be told apart.
 >
 > **Per-source concurrent cap:** `per_source: { max_per_ip, max_per_net }` (at
 > least one) bounds how many connections / UDP sessions are *live at once* from
