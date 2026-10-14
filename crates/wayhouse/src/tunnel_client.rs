@@ -395,12 +395,24 @@ enum Action<'a> {
 fn plan<'a>(applied: &HashMap<String, PeerRegistration>, event: &'a Event) -> Action<'a> {
     match event {
         Event::Registered(reg) if applied.get(&reg.name) == Some(reg) => Action::Skip,
+        // The controller refuses a pubkey held under another name; a stream that carries
+        // one anyway must not make this registration replace or remove that peer.
+        Event::Registered(reg) if pubkey_held_by_another(applied, reg) => Action::Skip,
         Event::Registered(reg) => Action::Reconcile(reg),
         Event::Removed(name) => match applied.get(name) {
             Some(old) => Action::Remove(old.pubkey.clone()),
             None => Action::Skip,
         },
     }
+}
+
+fn pubkey_held_by_another(
+    applied: &HashMap<String, PeerRegistration>,
+    reg: &PeerRegistration,
+) -> bool {
+    applied
+        .iter()
+        .any(|(name, other)| *name != reg.name && other.pubkey == reg.pubkey)
 }
 
 /// The pubkey of a peer that `reg` supersedes: the same name now registered
@@ -689,6 +701,25 @@ mod tests {
         assert_eq!(
             plan(&applied, &Event::Removed("other".into())),
             Action::Skip
+        );
+    }
+
+    #[test]
+    fn a_registration_reusing_another_names_pubkey_is_skipped() {
+        let mut applied = HashMap::new();
+        let first = reg(Some("10.60.0.5"));
+        applied.insert(first.name.clone(), first.clone());
+        let mut dup = reg(Some("10.60.0.6"));
+        dup.name = "other".into();
+        assert_eq!(dup.pubkey, first.pubkey);
+        assert_eq!(
+            plan(&applied, &Event::Registered(dup.clone())),
+            Action::Skip
+        );
+        dup.pubkey = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into();
+        assert_eq!(
+            plan(&applied, &Event::Registered(dup.clone())),
+            Action::Reconcile(&dup)
         );
     }
 

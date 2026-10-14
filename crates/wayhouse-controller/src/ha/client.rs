@@ -161,6 +161,13 @@ async fn handle_write_error(
         openraft::error::ClientWriteError::ChangeMembershipError(_) => (None, None),
     };
 
+    // A write already forwarded once is never forwarded again: the leader changed
+    // between hops, and a second hop could bounce between replicas (#309).
+    if headers.forwarded {
+        return service_unavailable(
+            "the leader changed while the request was forwarded; retry shortly",
+        );
+    }
     match forward_target(leader_id, leader_node, ha.node_id) {
         Ok(leader) => {
             forward_to_leader(&ha.forward, &leader.addr, method, path, body, headers).await
@@ -311,6 +318,29 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_write_that_cannot_commit_is_not_forwarded_again() {
+        let (ha, _cluster, _dir) = crate::ha::test_support::single_node(1, "127.0.0.1:1").await;
+        let fwd = openraft::error::ForwardToLeader {
+            leader_id: Some(2),
+            leader_node: Some(BasicNode::new("127.0.0.1:1")),
+        };
+        let err = openraft::error::RaftError::APIError(
+            openraft::error::ClientWriteError::ForwardToLeader(fwd),
+        );
+        let headers = ForwardHeaders {
+            forwarded: true,
+            ..Default::default()
+        };
+        let resp =
+            handle_write_error(&ha, err, Method::POST, "/config", String::new(), &headers).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("leader changed"));
     }
 
     #[test]

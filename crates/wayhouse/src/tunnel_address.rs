@@ -50,11 +50,86 @@ pub fn interface_cidr(
              prefix could be used for the interface"
         ),
     };
-    let prefix = source
-        .rsplit_once('/')
-        .map(|(_, p)| p)
+    let ip = tunnel_ip(assigned_ip).map_err(anyhow::Error::msg)?;
+    refuse_special_use(ip).map_err(anyhow::Error::msg)?;
+    let (net_ip, prefix) = source
+        .split_once('/')
         .with_context(|| format!("{source:?} has no /prefix"))?;
+    let prefix: u8 = prefix
+        .parse()
+        .with_context(|| format!("{source:?} has no valid /prefix"))?;
+    if network.is_some() {
+        check_in_network(ip, net_ip, prefix)?;
+    }
     Ok(format!("{assigned_ip}/{prefix}"))
+}
+
+/// The controller's own bounds for a tunnel network: IPv4 `/16`..`/30`, IPv6 `/64`..`/120`.
+const V4_PREFIX: std::ops::RangeInclusive<u8> = 16..=30;
+const V6_PREFIX: std::ops::RangeInclusive<u8> = 64..=120;
+
+/// An address the interface must never be given, whatever a controller reports.
+fn refuse_special_use(ip: std::net::IpAddr) -> Result<(), String> {
+    let special = match ip {
+        std::net::IpAddr::V4(a) => {
+            a.is_unspecified()
+                || a.is_loopback()
+                || a.is_multicast()
+                || a.is_link_local()
+                || a.is_broadcast()
+        }
+        std::net::IpAddr::V6(a) => {
+            a.is_unspecified()
+                || a.is_loopback()
+                || a.is_multicast()
+                || a.segments()[0] & 0xffc0 == 0xfe80
+        }
+    };
+    if special {
+        Err(format!(
+            "{ip} is a special-use address, not a tunnel address"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Checks the reported `network` has an allowed prefix and holds `ip` as a host
+/// (neither the network's own nor its all-ones address).
+fn check_in_network(ip: std::net::IpAddr, net_ip: &str, prefix: u8) -> anyhow::Result<()> {
+    let net: std::net::IpAddr = net_ip
+        .parse()
+        .with_context(|| format!("tunnel network {net_ip:?} is not an IP address"))?;
+    refuse_special_use(net).map_err(anyhow::Error::msg)?;
+    let (bits, allowed, width) = match (ip, net) {
+        (std::net::IpAddr::V4(a), std::net::IpAddr::V4(n)) => (
+            (u128::from(u32::from(a)), u128::from(u32::from(n))),
+            V4_PREFIX,
+            32u32,
+        ),
+        (std::net::IpAddr::V6(a), std::net::IpAddr::V6(n)) => {
+            ((u128::from(a), u128::from(n)), V6_PREFIX, 128u32)
+        }
+        _ => anyhow::bail!("tunnel address {ip} is not in the same family as network {net}"),
+    };
+    anyhow::ensure!(
+        allowed.contains(&prefix),
+        "tunnel network prefix /{prefix} is outside the allowed /{}../{}",
+        allowed.start(),
+        allowed.end()
+    );
+    let host_bits = width - u32::from(prefix);
+    let all_ones = (1u128 << host_bits) - 1;
+    let (ip_bits, net_bits) = bits;
+    anyhow::ensure!(
+        ip_bits >> host_bits == net_bits >> host_bits,
+        "tunnel address {ip} is not inside network {net}/{prefix}"
+    );
+    anyhow::ensure!(
+        ip_bits & all_ones != 0 && ip_bits & all_ones != all_ones,
+        "tunnel address {ip} is the network or broadcast address of {net}/{prefix}"
+    );
+    Ok(())
 }
 
 pub fn load(path: &Path) -> Option<String> {
@@ -178,6 +253,53 @@ mod tests {
             tunnel_address: ip.into(),
             tunnel_network: net.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn a_controller_reported_address_outside_the_network_is_refused() {
+        assert!(interface_cidr("10.99.0.5", Some("10.60.0.0/16"), None).is_err());
+        assert!(interface_cidr("fd49::5", Some("10.60.0.0/16"), None).is_err());
+        assert!(interface_cidr("10.60.0.5", Some("10.60.0.0/16"), None).is_ok());
+    }
+
+    #[test]
+    fn the_networks_own_and_broadcast_addresses_are_refused() {
+        assert!(interface_cidr("10.60.0.0", Some("10.60.0.0/16"), None).is_err());
+        assert!(interface_cidr("10.60.255.255", Some("10.60.0.0/16"), None).is_err());
+    }
+
+    #[test]
+    fn a_too_short_or_too_long_prefix_is_refused() {
+        assert!(interface_cidr("10.0.0.5", Some("10.0.0.0/8"), None).is_err());
+        assert!(interface_cidr("10.60.0.1", Some("10.60.0.0/31"), None).is_err());
+        assert!(interface_cidr("fd49::5", Some("fd49::/48"), None).is_err());
+        assert!(interface_cidr("fd49::5", Some("fd49::/64"), None).is_ok());
+    }
+
+    #[test]
+    fn special_use_addresses_and_networks_are_refused() {
+        for ip in [
+            "127.0.0.1",
+            "0.0.0.0",
+            "224.0.0.5",
+            "169.254.1.1",
+            "fe80::5",
+            "ff02::5",
+            "::1",
+        ] {
+            assert!(
+                interface_cidr(ip, None, Some("10.60.0.5/16")).is_err(),
+                "{ip}"
+            );
+        }
+        assert!(interface_cidr("127.0.0.5", Some("127.0.0.0/16"), None).is_err());
+    }
+
+    #[test]
+    fn a_non_ip_address_or_a_malformed_network_is_refused() {
+        assert!(interface_cidr("not-an-ip", Some("10.60.0.0/16"), None).is_err());
+        assert!(interface_cidr("10.60.0.5", Some("10.60.0.0/x"), None).is_err());
+        assert!(interface_cidr("::ffff:10.60.0.5", Some("10.60.0.0/16"), None).is_err());
     }
 
     #[test]

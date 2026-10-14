@@ -65,6 +65,10 @@ pub struct PeerRegistration {
     pub tunnel_address: Option<String>,
 }
 
+/// How many backend entries one origin may register. Far above any real origin
+/// (one entry per fronted port), and keeps a stored registration small (#319).
+pub const MAX_BACKENDS: usize = 64;
+
 impl PeerRegistration {
     /// The address this registration asks for, if it names one.
     pub fn requested_address(&self) -> Option<IpAddr> {
@@ -78,6 +82,17 @@ impl PeerRegistration {
         crate::registry::validate_name(&self.name)?;
         if base64_decode_32(&self.pubkey).is_none() {
             return Err("pubkey must be a base64-encoded 32-byte WireGuard key".into());
+        }
+        if let Some(e) = &self.endpoint {
+            if e.parse::<std::net::SocketAddr>().is_err() {
+                return Err(format!("endpoint {e:.64?} is not a valid ip:port"));
+            }
+        }
+        if self.backends.len() > MAX_BACKENDS {
+            return Err(format!(
+                "at most {MAX_BACKENDS} backends may be registered, got {}",
+                self.backends.len()
+            ));
         }
         for b in &self.backends {
             let ok = match b.strip_prefix(':') {
@@ -145,6 +160,28 @@ mod tests {
             backends: vec!["10.60.0.2:25565".into()],
             tunnel_address: None,
         }
+    }
+
+    #[test]
+    fn an_endpoint_must_be_ip_and_port() {
+        let mut reg = valid();
+        reg.endpoint = Some("home.example.com:51820".into());
+        assert!(reg.validate().is_err());
+        reg.endpoint = Some("x".repeat(100_000));
+        assert!(reg.validate().is_err());
+        reg.endpoint = Some("[2001:db8::7]:51820".into());
+        assert!(reg.validate().is_ok());
+        reg.endpoint = None;
+        assert!(reg.validate().is_ok());
+    }
+
+    #[test]
+    fn the_backends_count_is_bounded() {
+        let mut reg = valid();
+        reg.backends = vec![":25565".into(); MAX_BACKENDS];
+        assert!(reg.validate().is_ok());
+        reg.backends = vec![":25565".into(); MAX_BACKENDS + 1];
+        assert!(reg.validate().is_err());
     }
 
     #[test]
