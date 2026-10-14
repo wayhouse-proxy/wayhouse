@@ -11,8 +11,11 @@
 //!
 //! First cut, each a drop-in replacement later: a single `Mutex<HashMap>` (brief
 //! lock, never held across `.await`, like `Backend::observe`); lazy pruning of
-//! idle (full) buckets when the map grows past a cap. A sharded map / timing
-//! wheel can come in a perf pass.
+//! idle buckets (those that would have refilled to capacity by now) once a map
+//! grows past [`PRUNE_AT`], at most once per [`PRUNE_EVERY_MS`], and a hard
+//! cap ([`HARD_CAP`]) past which new sources are refused (fail closed) so
+//! memory stays bounded under a flood of distinct sources. A sharded map /
+//! timing wheel can come in a perf pass.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -25,6 +28,12 @@ use crate::util::mono_ms;
 /// Drop the network-bucket map / IP-bucket map once either exceeds this many
 /// entries, evicting buckets that have refilled to capacity (idle sources).
 const PRUNE_AT: usize = 100_000;
+/// Minimum gap between two prune scans, so a map full of live buckets does not
+/// cost a full `retain` on every permit.
+const PRUNE_EVERY_MS: u64 = 1_000;
+/// Hard bound on each map. At the cap (after a prune attempt) a source with no
+/// bucket yet is refused rather than tracked.
+const HARD_CAP: usize = 2 * PRUNE_AT;
 
 #[derive(Clone, Copy)]
 struct Bucket {
@@ -47,8 +56,11 @@ impl Bucket {
         self.tokens = (self.tokens + dt * cfg.rate as f64).min(cfg.burst as f64);
     }
 
-    fn is_full(&self, cfg: &BucketCfg) -> bool {
-        self.tokens >= cfg.burst as f64
+    /// Would this bucket be back at capacity at `now`? Evaluated without
+    /// mutating, since the stored `tokens` lag behind until the next `refill`.
+    fn is_idle(&self, cfg: &BucketCfg, now: u64) -> bool {
+        let dt = now.saturating_sub(self.last_ms) as f64 / 1000.0;
+        self.tokens + dt * cfg.rate as f64 >= cfg.burst as f64
     }
 }
 
@@ -67,6 +79,11 @@ impl NetKey {
                 NetKey::V4([o[0], o[1], o[2]])
             }
             IpAddr::V6(a) => {
+                // A dual-stack listener reports IPv4 clients as ::ffff:a.b.c.d;
+                // key them by their IPv4 /24, not the all-zero v6 /64.
+                if let Some(v4) = a.to_ipv4_mapped() {
+                    return Self::of(IpAddr::V4(v4));
+                }
                 let o = a.octets();
                 let mut p = [0u8; 8];
                 p.copy_from_slice(&o[..8]);
@@ -80,6 +97,7 @@ impl NetKey {
 struct State {
     ips: HashMap<IpAddr, Bucket>,
     nets: HashMap<NetKey, Bucket>,
+    last_prune_ms: Option<u64>,
 }
 
 pub struct RateLimiter {
@@ -113,7 +131,26 @@ impl RateLimiter {
             return None;
         }
         let now = mono_ms();
+        let ip = ip.to_canonical();
         let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+
+        // At the hard cap a source with no bucket yet is refused (after one
+        // prune attempt) instead of growing the map.
+        if self.per_ip.is_some() && !st.ips.contains_key(&ip) && st.ips.len() >= HARD_CAP {
+            self.prune(&mut st, now, true);
+            if st.ips.len() >= HARD_CAP {
+                return Some("rate_ip");
+            }
+        }
+        if self.per_net.is_some() {
+            let key = NetKey::of(ip);
+            if !st.nets.contains_key(&key) && st.nets.len() >= HARD_CAP {
+                self.prune(&mut st, now, true);
+                if st.nets.len() >= HARD_CAP {
+                    return Some("rate_net");
+                }
+            }
+        }
 
         // Refill (creating a full bucket on first sight) and check affordability
         // for both buckets before consuming from either.
@@ -136,11 +173,11 @@ impl RateLimiter {
         };
 
         if !ip_ok {
-            self.maybe_prune(&mut st);
+            self.prune(&mut st, now, false);
             return Some("rate_ip");
         }
         if !net_ok {
-            self.maybe_prune(&mut st);
+            self.prune(&mut st, now, false);
             return Some("rate_net");
         }
 
@@ -154,22 +191,30 @@ impl RateLimiter {
                 b.tokens -= 1.0;
             }
         }
-        self.maybe_prune(&mut st);
+        self.prune(&mut st, now, false);
         None
     }
 
-    /// Bounded-memory guard: when a map gets large, drop the buckets that have
-    /// refilled to capacity (sources that have gone quiet).
-    fn maybe_prune(&self, st: &mut State) {
-        if let Some(cfg) = &self.per_ip {
-            if st.ips.len() > PRUNE_AT {
-                st.ips.retain(|_, b| !b.is_full(cfg));
+    /// Bounded-memory guard: drop buckets that have refilled to capacity
+    /// (sources that went quiet). Runs when a map exceeds [`PRUNE_AT`] (or is at
+    /// [`HARD_CAP`], `force`), at most once per [`PRUNE_EVERY_MS`].
+    fn prune(&self, st: &mut State, now: u64, force: bool) {
+        let over = |n: usize| n > PRUNE_AT;
+        let needed = force || over(st.ips.len()) || over(st.nets.len());
+        if !needed {
+            return;
+        }
+        if let Some(last) = st.last_prune_ms {
+            if now.saturating_sub(last) < PRUNE_EVERY_MS {
+                return;
             }
         }
+        st.last_prune_ms = Some(now);
+        if let Some(cfg) = &self.per_ip {
+            st.ips.retain(|_, b| !b.is_idle(cfg, now));
+        }
         if let Some(cfg) = &self.per_net {
-            if st.nets.len() > PRUNE_AT {
-                st.nets.retain(|_, b| !b.is_full(cfg));
-            }
+            st.nets.retain(|_, b| !b.is_idle(cfg, now));
         }
     }
 }
@@ -240,5 +285,59 @@ mod tests {
         // proving the earlier refusal didn't also consume the net token twice.
         let b: IpAddr = "172.16.5.6".parse().unwrap();
         assert_eq!(l.permit(b), Some("rate_net"));
+    }
+
+    #[test]
+    fn ipv4_mapped_clients_get_their_own_ipv4_net_bucket() {
+        // Two different /24s reaching a dual-stack listener as ::ffff:a.b.c.d
+        // must not share a bucket (they used to collapse into NetKey::V6([0;8])).
+        let l = rl(None, Some((1, 1)));
+        assert_eq!(l.permit("::ffff:10.0.0.1".parse().unwrap()), None);
+        assert_eq!(l.permit("::ffff:10.0.1.1".parse().unwrap()), None);
+        // Same /24 as the first, whether spelled mapped or plain, is refused.
+        assert_eq!(
+            l.permit("::ffff:10.0.0.2".parse().unwrap()),
+            Some("rate_net")
+        );
+        assert_eq!(l.permit("10.0.0.3".parse().unwrap()), Some("rate_net"));
+    }
+
+    #[test]
+    fn netkey_of_mapped_equals_netkey_of_plain_ipv4() {
+        assert_eq!(
+            NetKey::of("::ffff:192.0.2.7".parse().unwrap()),
+            NetKey::of("192.0.2.7".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn prune_evicts_buckets_that_have_refilled_since_last_use() {
+        let l = rl(Some((1, 2)), Some((1, 2)));
+        for i in 0..(PRUNE_AT as u32 + 10) {
+            let ip = IpAddr::from(std::net::Ipv4Addr::from(0x0100_0000 + i * 256));
+            assert_eq!(l.permit(ip), None);
+        }
+        // Everything above was debited once; a minute later all of it has
+        // refilled to capacity.
+        {
+            let mut st = l.state.lock().unwrap_or_else(PoisonError::into_inner);
+            l.prune(&mut st, mono_ms() + 60_000, true);
+        }
+        let st = l.state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(st.ips.len(), 0, "idle ip buckets pruned");
+        assert_eq!(st.nets.len(), 0, "idle net buckets pruned");
+    }
+
+    #[test]
+    fn maps_stay_bounded_under_a_flood_of_distinct_sources() {
+        let l = rl(Some((1, 1)), Some((1, 1)));
+        let n = HARD_CAP as u32 + 5_000;
+        for i in 0..n {
+            let ip = IpAddr::from(std::net::Ipv4Addr::from(0x0100_0000 + i * 256));
+            let _ = l.permit(ip);
+        }
+        let st = l.state.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(st.ips.len() <= HARD_CAP, "ips {}", st.ips.len());
+        assert!(st.nets.len() <= HARD_CAP, "nets {}", st.nets.len());
     }
 }

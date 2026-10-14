@@ -28,13 +28,30 @@ impl Cidr {
         Ok(Self { base, prefix })
     }
 
-    /// Does `ip` fall within this block? (No v4-in-v6 normalisation.)
+    /// Does `ip` fall within this block? An IPv4-mapped IPv6 address
+    /// (`::ffff:a.b.c.d`) is matched as the IPv4 address it carries.
     pub fn contains(&self, ip: IpAddr) -> bool {
-        match (self.base, ip) {
+        match (self.canonical().base, ip.to_canonical()) {
             (IpAddr::V4(b), IpAddr::V4(x)) => bits_match(&b.octets(), &x.octets(), self.prefix),
             (IpAddr::V6(b), IpAddr::V6(x)) => bits_match(&b.octets(), &x.octets(), self.prefix),
             _ => false,
         }
+    }
+}
+
+impl Cidr {
+    /// A mapped-range block (`::ffff:a.b.c.d/p`, p >= 96) as the equivalent IPv4
+    /// block, so it matches the canonical IPv4 form clients are seen as.
+    fn canonical(&self) -> Self {
+        if let IpAddr::V6(a) = self.base {
+            if let (Some(v4), true) = (a.to_ipv4_mapped(), self.prefix >= 96) {
+                return Self {
+                    base: IpAddr::V4(v4),
+                    prefix: self.prefix - 96,
+                };
+            }
+        }
+        self.clone()
     }
 }
 
@@ -78,6 +95,7 @@ impl CidrSet {
     pub fn build(cidrs: &[Cidr]) -> Self {
         let mut set = Self::default();
         for c in cidrs {
+            let c = c.canonical();
             match c.base {
                 IpAddr::V4(a) => Self::insert(&mut set.v4, &a.octets(), c.prefix),
                 IpAddr::V6(a) => Self::insert(&mut set.v6, &a.octets(), c.prefix),
@@ -97,7 +115,7 @@ impl CidrSet {
 
     /// Does any prefix in the set cover `ip`?
     pub fn contains(&self, ip: IpAddr) -> bool {
-        match ip {
+        match ip.to_canonical() {
             IpAddr::V4(a) => Self::walk(&self.v4, &a.octets()),
             IpAddr::V6(a) => Self::walk(&self.v6, &a.octets()),
         }
@@ -266,5 +284,54 @@ mod tests {
         let all_v4 = CidrSet::build(&[Cidr::parse("0.0.0.0/0").unwrap()]);
         assert!(all_v4.contains("1.2.3.4".parse().unwrap()));
         assert!(!all_v4.contains("::1".parse().unwrap()));
+    }
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn ipv4_mapped_spellings_hit_ipv4_deny_and_allow_lists() {
+        let acl = Acl::new(
+            vec![Cidr::parse("10.0.0.0/8").unwrap()],
+            vec![Cidr::parse("10.9.0.0/16").unwrap()],
+        );
+        for denied in [
+            "::ffff:10.9.1.2",
+            "::FFFF:0a09:0102",
+            "0:0:0:0:0:ffff:10.9.1.2",
+        ] {
+            assert!(!acl.permits(ip(denied)), "{denied} must be denied");
+        }
+        for allowed in ["::ffff:10.1.2.3", "::ffff:0a01:0203"] {
+            assert!(acl.permits(ip(allowed)), "{allowed} must be allowed");
+        }
+        assert!(!acl.permits(ip("::ffff:192.0.2.1")), "outside allow list");
+    }
+
+    #[test]
+    fn cidr_contains_sees_through_ipv4_mapped_addresses() {
+        let c = Cidr::parse("203.0.113.0/24").unwrap();
+        assert!(c.contains(ip("::ffff:203.0.113.9")));
+        assert!(!c.contains(ip("::ffff:203.0.114.9")));
+    }
+
+    #[test]
+    fn mapped_form_cidr_in_config_matches_plain_ipv4_clients() {
+        let acl = Acl::new(vec![], vec![Cidr::parse("::ffff:203.0.113.0/120").unwrap()]);
+        assert!(!acl.permits(ip("203.0.113.9")));
+        assert!(!acl.permits(ip("::ffff:203.0.113.9")));
+        assert!(acl.permits(ip("203.0.114.9")));
+    }
+
+    #[test]
+    fn non_mapped_ipv6_is_untouched_by_canonicalisation() {
+        let acl = Acl::new(vec![], vec![Cidr::parse("2001:db8::/32").unwrap()]);
+        assert!(!acl.permits(ip("2001:db8::1")));
+        assert!(acl.permits(ip("::1")));
+        assert!(
+            acl.permits(ip("::203.0.113.9")),
+            "IPv4-compatible is not mapped"
+        );
     }
 }

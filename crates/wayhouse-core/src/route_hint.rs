@@ -37,6 +37,7 @@ impl RouteHints {
     /// Insert / replace the hint for `ip`, and drop any expired entries.
     #[allow(clippy::needless_pass_by_value)] // the table takes ownership of what it stores
     pub fn set(&self, ip: IpAddr, pool: String, ttl: Duration) {
+        let ip = ip.to_canonical();
         let expiry = Instant::now() + ttl;
         self.table.rcu(|cur| {
             let now = Instant::now();
@@ -59,7 +60,7 @@ impl RouteHints {
     /// The hinted pool for `ip`, if a non-expired hint exists.
     pub fn lookup(&self, ip: IpAddr) -> Option<String> {
         let t = self.table.load();
-        t.get(&ip)
+        t.get(&ip.to_canonical())
             .filter(|e| e.expiry > Instant::now())
             .map(|e| e.pool.clone())
     }
@@ -77,6 +78,24 @@ impl RouteHints {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mapped_and_plain_ipv4_share_one_hint() {
+        let h = RouteHints::new();
+        h.set(
+            "::ffff:203.0.113.7".parse().unwrap(),
+            "survival".into(),
+            Duration::from_secs(30),
+        );
+        assert_eq!(
+            h.lookup("203.0.113.7".parse().unwrap()).as_deref(),
+            Some("survival")
+        );
+        assert_eq!(
+            h.lookup("::ffff:203.0.113.7".parse().unwrap()).as_deref(),
+            Some("survival")
+        );
+    }
 
     #[test]
     fn set_lookup_and_expiry() {

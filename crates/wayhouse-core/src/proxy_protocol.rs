@@ -26,6 +26,12 @@ const V2_SIG: [u8; 12] = [
 /// Encode the header for `mode`. `mode == None` yields an empty vec (nothing to
 /// send). `V2` uses the STREAM transport byte, `V2Udp` the DGRAM one.
 pub fn header(mode: ProxyProtocol, src: SocketAddr, dst: SocketAddr) -> Vec<u8> {
+    // IPv4-mapped IPv6 on either end is encoded as IPv4; mixing a V4 and a V6
+    // end would otherwise fall through to UNKNOWN / LOCAL.
+    let (src, dst) = (
+        crate::util::canonical_addr(src),
+        crate::util::canonical_addr(dst),
+    );
     match mode {
         ProxyProtocol::None => Vec::new(),
         ProxyProtocol::V1 => v1(src, dst).into_bytes(),
@@ -93,6 +99,36 @@ mod tests {
 
     fn a(s: &str) -> SocketAddr {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn mapped_addresses_are_encoded_as_ipv4() {
+        // A dual-stack listener reports both ends of an IPv4 flow as ::ffff:a.b.c.d;
+        // the backend must still get a TCP4 / AF_INET header, not UNKNOWN / LOCAL.
+        let (src, dst) = (
+            a("[::ffff:192.0.2.1]:56324"),
+            a("[::ffff:198.51.100.7]:443"),
+        );
+        assert_eq!(
+            header(ProxyProtocol::V1, src, dst),
+            b"PROXY TCP4 192.0.2.1 198.51.100.7 56324 443\r\n"
+        );
+        assert_eq!(
+            header(ProxyProtocol::V2, src, dst),
+            header(
+                ProxyProtocol::V2,
+                a("192.0.2.1:56324"),
+                a("198.51.100.7:443")
+            )
+        );
+        assert_eq!(
+            header(ProxyProtocol::V2Udp, src, dst),
+            header(
+                ProxyProtocol::V2Udp,
+                a("192.0.2.1:56324"),
+                a("198.51.100.7:443")
+            )
+        );
     }
 
     #[test]

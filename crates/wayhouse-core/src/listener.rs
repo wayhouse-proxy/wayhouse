@@ -118,9 +118,11 @@ pub async fn run_tcp_listener(
             }
             accepted = listener.accept() => {
                 let (stream, peer) = match accepted {
-                    Ok(v) => {
+                    Ok((stream, peer)) => {
                         accept_errors.reset();
-                        v
+                        // A `[::]` listener reports IPv4 clients as ::ffff:a.b.c.d;
+                        // every filter / matcher / PROXY header below sees plain IPv4.
+                        (stream, crate::util::canonical_addr(peer))
                     }
                     Err(e) => {
                         metrics::counter!(m::ACCEPT_ERRORS_TOTAL, "listener" => cfg.name.clone())
@@ -226,7 +228,7 @@ pub async fn run_tcp_listener(
                 let hints = hints.clone();
                 let resolvers = resolvers.clone();
                 let sniffers = sniffers.clone();
-                let local = stream.local_addr().unwrap_or(cfg.bind);
+                let local = crate::util::canonical_addr(stream.local_addr().unwrap_or(cfg.bind));
                 let conn_guard = conns.track(crate::drain::SessionMeta {
                     proto: crate::drain::Proto::Tcp,
                     listener: listener_name.clone(),
