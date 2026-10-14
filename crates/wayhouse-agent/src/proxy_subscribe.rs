@@ -279,6 +279,10 @@ fn apply_locked(
             if reconcile_peer(wg, reg) {
                 applied.insert(reg.name.clone(), reg.clone());
             } else {
+                // Nothing is recorded for a later removal to find, so a lost
+                // entry for this key must not outlive it: repair would bring a
+                // removed proxy back. The next identical event retries instead.
+                forget(live, &reg.pubkey);
                 applied.remove(&reg.name);
             }
         }
@@ -572,6 +576,39 @@ mod tests {
             .unwrap()
             .peers
             .contains_key(&key));
+    }
+
+    #[test]
+    fn a_removal_after_a_failed_reconfigure_is_not_undone_by_a_later_repair() {
+        use crate::live_interface::testing::*;
+        let key = Key::new([1; 32]);
+        let mut proxy = reg(Some("fd00::1"));
+        proxy.pubkey = key.to_string();
+        let log = Log::default();
+        // The renewal loses the peer (it retries once, so two failures); the
+        // reconfigure below fails a third time, then the device accepts it.
+        let live = live_with_flaky_peers(&[to_wg_peer(&proxy).unwrap()], &[(&key, 3)], &log);
+        live.renew_peers().unwrap();
+        let mut applied = HashMap::new();
+        applied.insert(proxy.name.clone(), proxy.clone());
+        let mut changed = proxy.clone();
+        changed.endpoint = "203.0.113.10:51820".into();
+        let api = live.api();
+        apply(
+            api.as_ref(),
+            &live,
+            &mut applied,
+            &Event::Registered(changed),
+        );
+        assert!(applied.is_empty(), "the failed configure is not recorded");
+        apply(
+            api.as_ref(),
+            &live,
+            &mut applied,
+            &Event::Removed(proxy.name.clone()),
+        );
+        assert!(live.repair_peers().is_empty());
+        assert!(!api.read_interface_data().unwrap().peers.contains_key(&key));
     }
 
     #[test]
