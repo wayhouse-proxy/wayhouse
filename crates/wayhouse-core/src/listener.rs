@@ -118,9 +118,11 @@ pub async fn run_tcp_listener(
             }
             accepted = listener.accept() => {
                 let (stream, peer) = match accepted {
-                    Ok(v) => {
+                    Ok((stream, peer)) => {
                         accept_errors.reset();
-                        v
+                        // A `[::]` listener reports IPv4 clients as ::ffff:a.b.c.d;
+                        // every filter / matcher / PROXY header below sees plain IPv4.
+                        (stream, crate::util::canonical_addr(peer))
                     }
                     Err(e) => {
                         metrics::counter!(m::ACCEPT_ERRORS_TOTAL, "listener" => cfg.name.clone())

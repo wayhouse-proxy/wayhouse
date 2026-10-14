@@ -411,7 +411,8 @@ pub async fn run_udp_listener(
                     // Filter chain (phase 7): a new session from a denied source
                     // IP is dropped before session allocation. Established
                     // sessions keep their steady-state path scan-free.
-                    if !cfg.acl.permits(client.ip()) {
+                    let client_ip = client.ip().to_canonical();
+                    if !cfg.acl.permits(client_ip) {
                         metrics::counter!(
                             m::FILTER_BLOCKED,
                             "listener" => cfg.name.clone(), "filter" => "acl",
@@ -421,7 +422,7 @@ pub async fn run_udp_listener(
                     if let Some(geo_acl) = &cfg.geo {
                         let admitted = geo
                             .as_deref()
-                            .map(|db| geo_acl.permits(db.country_code(client.ip())))
+                            .map(|db| geo_acl.permits(db.country_code(client_ip)))
                             .unwrap_or(false); // fail closed if the DB did not load
                         if !admitted {
                             metrics::counter!(
@@ -431,7 +432,7 @@ pub async fn run_udp_listener(
                             continue;
                         }
                     }
-                    if let Some(which) = limiter.permit(client.ip()) {
+                    if let Some(which) = limiter.permit(client_ip) {
                         metrics::counter!(
                             m::FILTER_BLOCKED,
                             "listener" => cfg.name.clone(), "filter" => which,
@@ -448,7 +449,7 @@ pub async fn run_udp_listener(
                         continue;
                     }
                     // Per-source concurrent cap (per listener).
-                    let src_guard = match src_limiter.acquire(client.ip()) {
+                    let src_guard = match src_limiter.acquire(client_ip) {
                         Ok(g) => g,
                         Err(which) => {
                             metrics::counter!(
@@ -858,7 +859,7 @@ fn prepare_route(
     let snap = snapshot.load_full();
     let hit = crate::sniff::sniff_first(&cfg.sniffers, sniffers, first);
     let mctx = wayhouse_config::MatchContext {
-        src: client,
+        src: crate::util::canonical_addr(client),
         local,
         first_bytes: first,
         sniff: hit.as_ref().map(|(n, h)| (*n, h)),
@@ -880,7 +881,7 @@ fn prepare_route(
 
     let hinted = cfg
         .route_hint
-        .then(|| hints.lookup(client.ip()))
+        .then(|| hints.lookup(client.ip().to_canonical()))
         .flatten()
         .filter(|p| snap.pool(p).is_some());
     if let Some(p) = hinted {
@@ -908,7 +909,7 @@ async fn resolve_pending(
     hit: Option<&(String, RouteHint)>,
 ) -> Option<Routed> {
     let mctx = wayhouse_config::MatchContext {
-        src: client,
+        src: crate::util::canonical_addr(client),
         local,
         first_bytes: first,
         sniff: hit.map(|(n, h)| (n.as_str(), h)),
