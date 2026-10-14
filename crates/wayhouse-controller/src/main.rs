@@ -494,7 +494,12 @@ async fn main() -> anyhow::Result<()> {
             forward: ha::client::forward_client(ha::client::FORWARD_TIMEOUT),
             pre_ha,
             secret_keys: plugin_keys.clone(),
-            plugins_enabled: args.plugins,
+            // A slave serves only the disabled router, whatever `--plugins` says.
+            plugins_enabled: wayhouse_controller::plugins::availability(
+                args.plugins,
+                args.role == Role::Slave,
+            )
+            .is_ok(),
         });
         // A Raft core that stopped after a storage error leaves this node unable to
         // commit while `/healthz` still answers: exit so the orchestrator restarts

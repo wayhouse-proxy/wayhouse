@@ -108,6 +108,8 @@ export interface RegistryVersion {
   sha256: string;
   size: number;
   signature_url?: string;
+  /** True when installing this version checks its signature (official registry with a key). */
+  verifiable?: boolean;
   limits: { max_memory_bytes: number; call_timeout_ms: number };
   config?: string;
 }

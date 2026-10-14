@@ -20,7 +20,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use wayhouse_registry::{
     abi_matches, check_min_proxy, select, verify_artifact, Environment, Index, SnifferEntry,
-    MAX_MODULE_BYTES,
+    VersionEntry, MAX_MODULE_BYTES,
 };
 
 use crate::api::AppState;
@@ -170,13 +170,18 @@ fn compatible(entry: &SnifferEntry, env: &Environment) -> serde_json::Value {
     }
 }
 
-/// Whether installing the version that would be chosen verifies a signature: only the
-/// official registry is checked, only when its key is configured, and only for a version
-/// that lists a signature. Everything else installs unverified.
-fn verifiable(reg: &RegistryRef, entry: &SnifferEntry, env: &Environment) -> bool {
+/// Whether installing `version` verifies a signature: only the official registry is
+/// checked, only when its key is configured, and only for a version that lists a signature.
+/// Everything else installs unverified.
+fn version_verifiable(reg: &RegistryRef, version: &VersionEntry) -> bool {
     reg.official
         && crate::registry_keys::official_key().is_some()
-        && select(entry, env).is_ok_and(|v| v.signature_url.is_some())
+        && version.signature_url.is_some()
+}
+
+/// The same for the version an install without an explicit version would choose.
+fn verifiable(reg: &RegistryRef, entry: &SnifferEntry, env: &Environment) -> bool {
+    select(entry, env).is_ok_and(|v| version_verifiable(reg, v))
 }
 
 async fn list_sniffers(
@@ -199,6 +204,9 @@ async fn list_sniffers(
             let mut v = serde_json::to_value(entry).expect("index entries serialize");
             v["compatible"] = compatible(entry, &fleet.env);
             v["verifiable"] = json!(verifiable(&reg, entry, &fleet.env));
+            for (j, version) in entry.versions.iter().enumerate() {
+                v["versions"][j]["verifiable"] = json!(version_verifiable(&reg, version));
+            }
             v
         })
         .collect();
@@ -947,6 +955,7 @@ mod tests {
         assert_eq!(body["sniffers"][0]["name"], "demo");
         assert_eq!(body["sniffers"][0]["compatible"]["version"], "0.1.0");
         assert_eq!(body["sniffers"][0]["verifiable"], false);
+        assert_eq!(body["sniffers"][0]["versions"][0]["verifiable"], false);
         assert_eq!(body["min_proxy_checked"], false);
     }
 

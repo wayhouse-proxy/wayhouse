@@ -67,8 +67,9 @@ pub struct Whoami {
     pub secret_key_ids: Vec<String>,
 }
 
-/// The plugin replication level this build speaks (a node started without `--plugins`
-/// reports `0` instead, so the install gate refuses while it is a member): `1` replicated installs and state, `2`
+/// The plugin replication level this build speaks (a node without plugins, started without
+/// `--plugins` or as a slave, reports `0` instead, so the install gate refuses while it is a
+/// member): `1` replicated installs and state, `2`
 /// adds module blob replication (`/raft/plugin-blob`), `3` adds webhooks
 /// (`PluginSetWebhook`, `/raft/plugin-hook`). A leader proposes a new plugin install, or a
 /// webhook change, only when every member reports at least this.

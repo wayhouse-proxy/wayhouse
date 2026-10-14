@@ -295,7 +295,7 @@ function AddRegistryDialog({
   );
 }
 
-function VersionDetails({ version, verifiable }: { version: RegistryVersion; verifiable?: boolean }) {
+function VersionDetails({ version }: { version: RegistryVersion }) {
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
       <dt className="text-ink-faint">Version</dt>
@@ -307,7 +307,7 @@ function VersionDetails({ version, verifiable }: { version: RegistryVersion; ver
       <dt className="text-ink-faint">Time limit</dt>
       <dd className="text-ink">{version.limits.call_timeout_ms} ms per call</dd>
       <dt className="text-ink-faint">Signature</dt>
-      <dd className="text-ink">{!version.signature_url ? "none listed" : verifiable ? "listed, verified on install" : "listed, not verified"}</dd>
+      <dd className="text-ink">{!version.signature_url ? "none listed" : version.verifiable ? "listed, verified on install" : "listed, not verified"}</dd>
       {version.config && (
         <>
           <dt className="text-ink-faint">Config</dt>
@@ -367,7 +367,7 @@ export function InstallDialog({
   const body = (
     <>
       <p className="text-sm text-ink-muted">{sniffer.description}</p>
-      {version && <VersionDetails version={version} verifiable={sniffer.verifiable} />}
+      {version && <VersionDetails version={version} />}
       <p className="text-sm text-ink-muted">
         Installs on every instance, from <span className="font-mono">{registry.name}</span>.
       </p>

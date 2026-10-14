@@ -149,8 +149,9 @@ Rules:
 
 ## Webhooks
 
-A plugin that declares `"triggers": {"on_webhook": true}` can be called by an outside system. Webhooks are off until the operator starts the controller
-with a **separate listener**, never on the admin port:
+A plugin that declares `"triggers": {"on_webhook": true}` can be called by an outside system.
+Webhooks are off until the operator starts the controller with a **separate listener**, never on
+the admin port:
 
 ```text
 --plugin-webhook-listen 0.0.0.0:8444 --plugin-webhook-tls-cert hooks.pem --plugin-webhook-tls-key hooks.key
@@ -329,11 +330,14 @@ is a content-addressed blob each replica keeps in its own store and moves over t
   Until it has the module a node runs nothing for that install; a leader that cannot find one
   logs a repeated warning, since it would otherwise silently run nothing.
 - Rolling upgrades: a new install is refused with `503` unless every member answers
-  `/raft/whoami` with `plugin_support` of at least 2 (a build before module replication leaves it
-  out). A member started without `--plugins` reports `0`, so every replica needs `--plugins`
-  before plugins are installed or their webhooks, secrets or key rotation change; the same gate
-  covers secret changes. A leader without `--plugins` would otherwise run no ticks and fail
-  webhook forwards silently. Existing installs keep working through an upgrade. Upgrade every replica before the first
+  `/raft/whoami` with the current `plugin_support` level (3; a build before module replication
+  leaves it out). A member started without `--plugins`, or as a slave, reports `0`, so every
+  replica needs `--plugins` before plugins are installed or their webhooks, secrets or key
+  rotation change. A leader without `--plugins` would otherwise run no ticks and fail webhook
+  forwards silently.
+- The same gate covers secret changes, so setting, deleting or rewrapping a secret answers `409`
+  while any cluster member (voter or learner) is unreachable. Revoking one credential therefore
+  needs every member up; disabling or deleting the install still works as emergency containment. Existing installs keep working through an upgrade. Upgrade every replica before the first
   install; the gate does not cover a replica added later with an old build.
 - An install that lands on a leader that has meanwhile lost leadership answers `503 retry` and is
   never forwarded for a second hop.

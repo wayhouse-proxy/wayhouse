@@ -364,6 +364,21 @@ async fn a_secret_and_a_webhook_go_through_a_follower_and_no_node_stores_the_sec
         .context("id")?
         .to_string();
 
+    // The follower answers 404 for an install it has not applied yet, so wait for it.
+    wait_until(
+        || async {
+            let got = http
+                .get(format!("{}/plugins/{id}", bases[follower]))
+                .bearer_auth(AUTH_TOKEN)
+                .send()
+                .await?;
+            Ok(got.status() == 200)
+        },
+        Duration::from_secs(15),
+        "the follower applied the install",
+    )
+    .await?;
+
     // The secret is sealed on the follower that got the request and replicated as ciphertext.
     let put = http
         .put(format!(

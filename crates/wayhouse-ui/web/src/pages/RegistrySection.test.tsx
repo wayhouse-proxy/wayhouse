@@ -139,17 +139,23 @@ describe("RegistrySection", () => {
     expect(dlg).not.toHaveTextContent("listed in the registry");
   });
 
-  it("the table has a signature column that says whether the install verifies", async () => {
+  it("the table has a signature column that says the install is not verified", async () => {
     render(<RegistrySection />);
     const row = (await screen.findByText("demo")).closest("tr")!;
     expect(row).toHaveTextContent("not verified");
     expect(row).not.toHaveTextContent("verified on install");
+  });
+
+  it("a verifiable version shows in the column and in the dialog for that version", async () => {
     api.listRegistrySniffers.mockResolvedValue({
       ...listing(),
-      sniffers: [{ ...listing().sniffers[0], verifiable: true }],
+      sniffers: [{ ...listing().sniffers[0], verifiable: true, versions: [version({ verifiable: true })] }],
     });
     render(<RegistrySection />);
-    expect(await screen.findAllByText("verified on install")).not.toHaveLength(0);
+    const row = (await screen.findByText("demo")).closest("tr")!;
+    expect(row).toHaveTextContent("verified on install");
+    const dlg = await openInstall();
+    expect(dlg).toHaveTextContent("listed, verified on install");
   });
 
   it("an external install dialog shows the risk text and needs it confirmed", async () => {

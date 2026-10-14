@@ -329,7 +329,11 @@ async fn install_inner(
         {
             Ok(done) => Ok(match done.data {
                 WriteResponse::PluginApplied(_) => {
-                    restore_blob_after_commit(&st.store, ha, &record.sha256, module).await;
+                    if let Err(why) =
+                        restore_blob_after_commit(&st.store, ha, &record.sha256, module).await
+                    {
+                        return Err(err(StatusCode::SERVICE_UNAVAILABLE, why));
+                    }
                     (StatusCode::CREATED, Json(record)).into_response()
                 }
                 other => unexpected(&other),
@@ -360,19 +364,22 @@ async fn install_inner(
 /// A delete of the last other install using this module can apply between the leader's
 /// blob check and this install's entry, removing the blob on every replica (the quorum
 /// copies included). Once the install is committed, put the module back and push it again
-/// so the record is never left without its bytes.
+/// so the record is never left without its bytes. `Err` carries the answer for an operator
+/// whose install is recorded but whose module could not be stored again.
 async fn restore_blob_after_commit(
     store: &super::PluginStore,
     ha: &crate::ha::HaHandle,
     sha256: &str,
     module: Bytes,
-) {
+) -> Result<(), String> {
+    const AGAIN: &str = "the install is recorded, but its module could not be stored; \
+                         upload the module again";
     match store.get_blob(sha256) {
-        Ok(Some(_)) => return,
+        Ok(Some(_)) => return Ok(()),
         Ok(None) => {}
         Err(e) => {
             tracing::warn!(error = %e, "could not check a plugin module after its install");
-            return;
+            return Err(AGAIN.into());
         }
     }
     tracing::warn!(
@@ -381,11 +388,12 @@ async fn restore_blob_after_commit(
     );
     if let Err(e) = store.put_blob(sha256, &module) {
         tracing::warn!(error = %e, "could not store a plugin module again");
-        return;
+        return Err(AGAIN.into());
     }
     if let Err(why) = super::peer::replicate_to_quorum(ha, sha256, module).await {
         tracing::warn!(%why, "could not push a restored plugin module to the other replicas");
     }
+    Ok(())
 }
 
 /// The status and body of a plugin entry the state machine refused or answered oddly.
@@ -1847,8 +1855,14 @@ mod tests {
         let m = module(CAPS);
         let sha = wayhouse_plugin_host::inspect(&m).unwrap().sha256;
         assert!(st.store.get_blob(&sha).unwrap().is_none());
-        restore_blob_after_commit(&st.store, &ha, &sha, Bytes::from(m.clone())).await;
+        restore_blob_after_commit(&st.store, &ha, &sha, Bytes::from(m.clone()))
+            .await
+            .unwrap();
         assert_eq!(st.store.get_blob(&sha).unwrap().unwrap(), m);
+        // With the module present again there is nothing to do.
+        restore_blob_after_commit(&st.store, &ha, &sha, Bytes::from(m))
+            .await
+            .unwrap();
     }
 
     #[derive(Clone, Default)]
