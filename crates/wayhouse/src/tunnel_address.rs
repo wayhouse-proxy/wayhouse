@@ -75,8 +75,8 @@ fn check_pinned_prefix(ip: std::net::IpAddr, prefix: u8) -> anyhow::Result<()> {
         std::net::IpAddr::V6(a) => (u128::from(a), 128u32),
     };
     anyhow::ensure!(
-        u32::from(prefix) <= width,
-        "pinned prefix /{prefix} does not fit the {width}-bit address {ip}"
+        (1..=width).contains(&u32::from(prefix)),
+        "pinned prefix /{prefix} is not a usable prefix for the {width}-bit address {ip}"
     );
     let host_bits = width - u32::from(prefix);
     if host_bits >= 2 {
@@ -360,6 +360,13 @@ mod tests {
         // A /32 or /31 has no network or broadcast address to refuse.
         assert!(interface_cidr("10.60.0.5", None, Some("10.60.0.5/32")).is_ok());
         assert!(interface_cidr("10.60.0.4", None, Some("10.60.0.5/31")).is_ok());
+    }
+
+    /// A pinned `/0` is no tunnel network, and for IPv6 it would shift a `u128` by 128.
+    #[test]
+    fn a_pinned_zero_prefix_is_an_error_not_a_panic() {
+        assert!(interface_cidr("fd49::5", None, Some("fd49::5/0")).is_err());
+        assert!(interface_cidr("10.60.0.5", None, Some("10.60.0.5/0")).is_err());
     }
 
     #[test]
