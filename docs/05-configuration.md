@@ -106,7 +106,14 @@
 > client's /24 (IPv4) or /64 (IPv6). A permit is taken only when every configured
 > bucket can afford it; excess is dropped silently and counted by
 > `wayhouse_filter_blocked_total{listener,filter="rate_ip"|"rate_net"}`. Bucket state
-> is per proxy instance (size it per node behind anycast HA).
+> is per proxy instance (size it per node behind anycast HA). Each table is capped at
+> 200 000 buckets (one for IPs, one for networks) to bound memory; idle buckets are
+> pruned first, but if a flood of distinct sources (an IPv6 /64 sweep, spoofed UDP)
+> fills a table with live buckets, a source with no bucket yet is refused (fail closed)
+> until some expire, which can also turn away legitimate new clients while the flood
+> lasts. Those refusals are counted as `rate_ip` / `rate_net` like any other
+> over-rate drop, and the proxy logs a `rate limiter table is full` warning (at most
+> once a minute per listener and table) so the two can be told apart.
 >
 > **Per-source concurrent cap:** `per_source: { max_per_ip, max_per_net }` (at
 > least one) bounds how many connections / UDP sessions are *live at once* from
@@ -158,7 +165,9 @@
 > with `settings.sniffers.modules` pins an unlisted name or a different sha256
 > is `409`. A bad `.wasm` file already in `dir` is logged and skipped by every
 > rescan when `modules` is not set. When `modules` pins are set, a pin
-> violation or a pinned module that fails validation fails the whole scan:
+> violation, a pinned module that fails validation, or a pinned path that is not a
+> readable file (a directory, a dangling symlink) fails the whole scan (a pin whose
+> file has not been uploaded yet is fine):
 > the process refuses to start (naming the module), and a reload keeps the
 > previous sniffer set. Uploads are fanned out fleet-wide via `wayhouse-aggregator`'s
 > `POST/DELETE /fleet/sniffers[/{name}]` and the admin GUI's Sniffers page —

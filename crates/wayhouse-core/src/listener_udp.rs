@@ -936,6 +936,10 @@ async fn open_session(
 ) -> Result<Session, &'static str> {
     let snap = snapshot.load_full();
     let local = local_addr(cfg, down, dst);
+    // Policy (affinity, the admin `/sessions` peer) sees plain IPv4 for a client of a
+    // dual-stack `[::]` socket, as on TCP; `client` itself stays raw for the
+    // transparent bind and replies. The PROXY header canonicalises on its own.
+    let policy_client = crate::util::canonical_addr(client);
 
     // Resolve the route to a concrete backend address, plus (for a pool) a
     // `BackendGuard` holding the session slot. A `target` has neither pool nor
@@ -956,7 +960,7 @@ async fn open_session(
         ),
         Routed::Pool(name) => {
             let pool = snap.pool(&name).ok_or("no_route")?;
-            let g = pool.acquire_for(Some(client)).map_err(|e| {
+            let g = pool.acquire_for(Some(policy_client)).map_err(|e| {
                 tracing::warn!(listener = %cfg.name, %client, error = %e, "no backend for udp session");
                 "no_backend"
             })?;
@@ -1058,7 +1062,7 @@ async fn open_session(
     let conn_guard = conns.track(crate::drain::SessionMeta {
         proto: crate::drain::Proto::Udp,
         listener: cfg.name.clone(),
-        peer: client,
+        peer: policy_client,
         local,
     });
     conn_guard.set_target(Some(pool_label.as_str()), backend);
@@ -1593,6 +1597,76 @@ mod tests {
             _reply_sock: None,
             reply_task: tokio::spawn(async {}),
         }
+    }
+
+    /// A dual-stack `[::]` socket reports an IPv4 client as `::ffff:a.b.c.d`. The
+    /// parts that are policy (backend affinity, the admin `/sessions` peer) must see
+    /// plain IPv4, like TCP does; the session key and replies keep the raw address.
+    #[tokio::test]
+    async fn a_mapped_ipv6_client_is_canonical_for_affinity_and_session_meta() {
+        // Real sockets: a refused send would eject a backend through passive health.
+        let mut sinks = Vec::new();
+        for _ in 0..4 {
+            sinks.push(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        }
+        let targets: Vec<_> = sinks
+            .iter()
+            .map(|s| s.local_addr().unwrap().to_string())
+            .collect();
+        let yaml = format!(
+            r#"
+pools:
+  - name: p
+    targets: {targets:?}
+    health_check:
+      type: none
+    balancer: consistent_hash
+    hash_on: src_ip
+listeners:
+  - name: l
+    bind: "127.0.0.1:0"
+    protocol: udp
+    pool: p
+"#
+        );
+        let config = wayhouse_config::parse_str(&yaml).unwrap();
+        let cfg = config.listeners[0].clone();
+        let snapshot = Arc::new(ArcSwap::new(Snapshot::from_config(&config)));
+        let down = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let conns = ConnTracker::new();
+        let limits = GlobalLimits::new(&wayhouse_config::GlobalLimits::default());
+        let src = SourceLimiter::new(None);
+        let mut live = Vec::new();
+        for last in 1..=24u8 {
+            let plain = SocketAddr::from(([203, 0, 113, last], 4000));
+            let IpAddr::V4(v4) = plain.ip() else {
+                unreachable!()
+            };
+            let mapped = SocketAddr::new(IpAddr::V6(v4.to_ipv6_mapped()), 4000);
+            let mut backends = Vec::new();
+            for client in [plain, mapped] {
+                let s = open_session(
+                    &cfg,
+                    &snapshot,
+                    &conns,
+                    &down,
+                    src.acquire(client.ip()).unwrap(),
+                    limits.acquire_udp().unwrap(),
+                    client,
+                    None,
+                    Routed::Pool("p".into()),
+                    b"x",
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{client}: {e}"));
+                backends.push(s.backend);
+                live.push(s);
+            }
+            assert_eq!(backends[0], backends[1], "affinity differs for .{last}");
+        }
+        let peers: Vec<_> = conns.sessions().into_iter().map(|i| i.peer).collect();
+        assert_eq!(peers.len(), 48);
+        assert!(peers.iter().all(SocketAddr::is_ipv4), "{peers:?}");
     }
 
     fn slot_of(w: &IdleWheel, key: &SessionKey) -> Option<usize> {

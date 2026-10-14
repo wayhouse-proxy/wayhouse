@@ -142,6 +142,21 @@ pub(crate) async fn apply_config(
     for w in cfg.warnings() {
         tracing::warn!(source = source_desc, "{w}");
     }
+    // Scan first: if a pinned module no longer validates, keep the previous config
+    // and sniffer set together instead of activating routes that name sniffers the
+    // old set cannot serve.
+    let scanned = match scan_sniffers(&cfg, sniffer_loader) {
+        Ok(scanned) => scanned,
+        Err(e) => {
+            metrics::counter!(m::CONFIG_RELOAD, "result" => "failed").increment(1);
+            tracing::error!(
+                source = source_desc,
+                error = %e,
+                "sniffer rescan failed; reload rejected, keeping the current configuration and sniffer set"
+            );
+            return;
+        }
+    };
     let prev = handle.current();
     let listeners_changed = cfg.listeners != prev.listeners;
     let resolvers_changed = cfg.resolvers != prev.resolvers;
@@ -153,6 +168,12 @@ pub(crate) async fn apply_config(
     );
     let sources_changed = next.sources != prev.sources;
     handle.store(next);
+    // Straight after the snapshot swap, with no await in between.
+    if let Some(map) = scanned {
+        let count = map.len();
+        sniffers.replace(map);
+        tracing::info!(count, "sniffers rescanned");
+    }
     metrics::counter!(m::CONFIG_RELOAD, "result" => "ok").increment(1);
     metrics::gauge!(m::CONFIG_VERSION).set(unix_now());
     // Always reconcile, not only when the listener definitions changed: the
@@ -186,7 +207,6 @@ pub(crate) async fn apply_config(
     if resolvers_changed {
         rebuild_resolvers(&cfg, resolvers);
     }
-    rescan_sniffers(&cfg, sniffer_loader, sniffers);
     tracing::info!(source = %source_desc, "configuration reloaded");
 }
 
@@ -210,7 +230,7 @@ fn rebuild_resolvers(cfg: &wayhouse_config::Config, resolvers: &Resolvers) {
     }
 }
 
-/// Phase 9 slice 4: `settings.sniffers.dir` is rescanned on every reload — an
+/// Phase 9 slice 4: `settings.sniffers.dir` is scanned on every reload — an
 /// added module loads, a removed one drops, a changed one recompiles (its
 /// hash no longer matches whatever's already registered under that name, so
 /// it's simply a fresh `WasmSniffer`). The engine itself (hence
@@ -218,27 +238,24 @@ fn rebuild_resolvers(cfg: &wayhouse_config::Config, resolvers: &Resolvers) {
 /// `settings.workers` — `sniffer_loader` is `None` unless `settings.sniffers`
 /// was present at process start, and enabling/disabling the block itself
 /// still needs a restart.
-pub(crate) fn rescan_sniffers(
+///
+/// The scan runs *before* the new snapshot is activated (#214): a failing scan (a
+/// pinned module that no longer validates) rejects the whole reload, so the new
+/// routes never run against the old sniffer set.
+pub(crate) fn scan_sniffers(
     cfg: &wayhouse_config::Config,
     sniffer_loader: Option<&SnifferLoader>,
-    sniffers: &Sniffers,
-) {
+) -> anyhow::Result<Option<std::collections::HashMap<String, Arc<dyn wayhouse_core::sniff::Sniffer>>>>
+{
     match (sniffer_loader, &cfg.sniffers) {
-        (Some(loader), Some(sc)) => match loader.scan(sc) {
-            Ok(map) => {
-                let n = map.len();
-                sniffers.replace(map);
-                tracing::info!(count = n, dir = %sc.dir, "sniffers rescanned");
-            }
-            Err(e) => tracing::error!(
-                error = %e,
-                "sniffer rescan failed; keeping the previous sniffer set"
-            ),
-        },
-        (None, Some(_)) | (Some(_), None) => tracing::warn!(
-            "settings.sniffers presence changed; a restart is needed for that to take effect"
-        ),
-        (None, None) => {}
+        (Some(loader), Some(sc)) => loader.scan(sc).map(Some),
+        (None, Some(_)) | (Some(_), None) => {
+            tracing::warn!(
+                "settings.sniffers presence changed; a restart is needed for that to take effect"
+            );
+            Ok(None)
+        }
+        (None, None) => Ok(None),
     }
 }
 

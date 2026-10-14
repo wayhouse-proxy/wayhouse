@@ -501,6 +501,19 @@ impl SnifferLoader {
     /// string, if any, is baked onto its `WasmSniffer` here and handed to the
     /// guest on every `sniff` call.
     pub fn scan(&self, cfg: &SniffersConfig) -> Result<HashMap<String, Arc<dyn Sniffer>>> {
+        let before = self.pins();
+        let scanned = self.scan_with_pins(cfg);
+        if scanned.is_err() {
+            // A rejected scan is a rejected reload: the running config's pins stay.
+            *self
+                .pins
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = before;
+        }
+        scanned
+    }
+
+    fn scan_with_pins(&self, cfg: &SniffersConfig) -> Result<HashMap<String, Arc<dyn Sniffer>>> {
         *self
             .pins
             .lock()
@@ -522,15 +535,23 @@ impl SnifferLoader {
                 continue;
             }
             // Only regular files are modules: a directory named `x.wasm` is not.
-            if !fs::metadata(&path).is_ok_and(|m| m.is_file()) {
-                tracing::warn!(path = %path.display(), "not a regular file, skipping");
-                continue;
-            }
             let name = path
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or_default()
                 .to_string();
+            if !fs::metadata(&path).is_ok_and(|m| m.is_file()) {
+                // A pin with no file yet is fine (pin first, then upload), but a
+                // pinned path that exists and is not a file must not vanish silently.
+                if cfg.modules.iter().any(|m| m.name == name) {
+                    bail!(
+                        "sniffer {name}: pinned, but {} is not a readable regular file",
+                        path.display()
+                    );
+                }
+                tracing::warn!(path = %path.display(), "not a regular file, skipping");
+                continue;
+            }
             let bytes = match fs::read(&path) {
                 Ok(bytes) => bytes,
                 // Unpinned: one unreadable file must not block every rescan.
@@ -986,6 +1007,26 @@ mod tests {
         let map = loader.scan(&cfg(&dir)).unwrap();
         assert_eq!(map.len(), 1);
         assert!(map.contains_key("test-host"));
+    }
+
+    /// Mounted volumes (a Kubernetes ConfigMap) deliver files as symlinks: a link to a
+    /// module is loaded, a dangling one or a link to a directory is skipped.
+    #[cfg(unix)]
+    #[test]
+    fn scan_follows_a_symlink_to_a_module_and_skips_broken_or_directory_links() {
+        let dir = tempdir();
+        let store = tempdir();
+        std::fs::write(
+            store.join("real.bin"),
+            wat::parse_str(HOST_SNIFFER_WAT).unwrap(),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(store.join("real.bin"), dir.join("linked.wasm")).unwrap();
+        std::os::unix::fs::symlink(store.join("gone.bin"), dir.join("dangling.wasm")).unwrap();
+        std::os::unix::fs::symlink(&store, dir.join("dirlink.wasm")).unwrap();
+        let (loader, _registry) = build_sniffers(&cfg(&dir)).unwrap();
+        let map = loader.scan(&cfg(&dir)).unwrap();
+        assert_eq!(map.keys().collect::<Vec<_>>(), ["linked"]);
     }
 
     #[test]
@@ -1899,7 +1940,49 @@ listeners:
         assert_eq!(loader().scan(&c).unwrap().len(), 1);
     }
 
-    /// The reload path (`rescan_sniffers`) keeps the last good registry when a
+    /// A pinned path that exists but is not a readable file (dangling link, directory)
+    /// fails the scan; a pin with no file at all is the pin-first flow and still scans.
+    #[cfg(unix)]
+    #[test]
+    fn scan_fails_on_a_pinned_dangling_link_or_directory_but_not_on_an_absent_file() {
+        let bytes = wat_bytes(HOST_SNIFFER_WAT);
+        let dir = tempdir();
+        std::fs::write(dir.join("good.wasm"), &bytes).unwrap();
+        let mut c = cfg(&dir);
+        pin(&mut c, "good", &bytes);
+        pin(&mut c, "later", &bytes);
+        assert_eq!(
+            loader().scan(&c).unwrap().len(),
+            1,
+            "an absent pin is valid"
+        );
+
+        std::os::unix::fs::symlink(dir.join("gone.bin"), dir.join("later.wasm")).unwrap();
+        let e = loader()
+            .scan(&c)
+            .err()
+            .expect("dangling pinned link must fail");
+        assert!(e.to_string().contains("later"), "error names the pin: {e}");
+
+        std::fs::remove_file(dir.join("later.wasm")).unwrap();
+        std::fs::create_dir(dir.join("later.wasm")).unwrap();
+        let e = loader().scan(&c).err().expect("pinned directory must fail");
+        assert!(e.to_string().contains("later"), "error names the pin: {e}");
+    }
+
+    /// What a reload does with the sniffers: scan, and replace the set only on success.
+    fn rescan(
+        config: &wayhouse_config::Config,
+        l: &SnifferLoader,
+        sniffers: &Sniffers,
+    ) -> anyhow::Result<()> {
+        if let Some(map) = crate::reload::scan_sniffers(config, Some(l))? {
+            sniffers.replace(map);
+        }
+        Ok(())
+    }
+
+    /// The reload path (`scan_sniffers`) keeps the last good registry when a
     /// pinned module stops validating, and picks up a repaired one.
     #[test]
     fn reload_keeps_the_last_good_registry_when_a_pinned_module_breaks() {
@@ -1916,7 +1999,7 @@ listeners:
         .unwrap();
         config.sniffers = Some(c.clone());
         let sniffers = Sniffers::default();
-        crate::reload::rescan_sniffers(&config, Some(&l), &sniffers);
+        rescan(&config, &l, &sniffers).unwrap();
         assert_eq!(sniffers.names(), ["good"]);
 
         // The pinned file is replaced by an ABI-less module, re-pinned so
@@ -1926,7 +2009,7 @@ listeners:
         let mut c2 = cfg(&dir);
         pin(&mut c2, "good", &bad);
         config.sniffers = Some(c2);
-        crate::reload::rescan_sniffers(&config, Some(&l), &sniffers);
+        assert!(rescan(&config, &l, &sniffers).is_err());
         assert_eq!(sniffers.names(), ["good"], "the previous registry is kept");
         assert!(
             sniffers.get("good").is_some(),
@@ -1937,18 +2020,81 @@ listeners:
     #[test]
     fn scan_records_the_live_pins() {
         let dir = tempdir();
+        let good = wat_bytes(HOST_SNIFFER_WAT);
+        std::fs::write(dir.join("x.wasm"), &good).unwrap();
         let l = loader();
         assert!(l.pins().is_empty());
         let mut c = cfg(&dir);
-        c.modules.push(wayhouse_config::SnifferModulePin {
-            name: "x".into(),
-            sha256: "1".repeat(64),
-            config: None,
-        });
-        let _ = l.scan(&c);
+        pin(&mut c, "x", &good);
+        l.scan(&c).unwrap();
         assert_eq!(l.pins().len(), 1);
-        let _ = l.scan(&cfg(&dir));
+        l.scan(&cfg(&dir)).unwrap();
         assert!(l.pins().is_empty(), "a reload that drops the pins is seen");
+    }
+
+    /// A rejected scan is a rejected reload: the running config's pins stay the
+    /// ones the admin upload checks against.
+    #[test]
+    fn a_failed_scan_keeps_the_previous_pins() {
+        let dir = tempdir();
+        let good = wat_bytes(HOST_SNIFFER_WAT);
+        std::fs::write(dir.join("x.wasm"), &good).unwrap();
+        let l = loader();
+        let mut c = cfg(&dir);
+        pin(&mut c, "x", &good);
+        l.scan(&c).unwrap();
+        let mut broken = cfg(&dir);
+        pin(&mut broken, "x", b"some other bytes");
+        assert!(l.scan(&broken).is_err());
+        assert_eq!(l.pins(), c.modules, "the pins of the accepted scan remain");
+    }
+
+    /// #214: a reload whose sniffer scan fails is rejected as a whole, so the new
+    /// routes never run against the old sniffer set.
+    #[tokio::test]
+    async fn a_reload_with_a_broken_pinned_module_keeps_the_old_routes_and_sniffers() {
+        let dir = tempdir();
+        let good = wat_bytes(HOST_SNIFFER_WAT);
+        std::fs::write(dir.join("good.wasm"), &good).unwrap();
+        let l = loader();
+        let yaml = |name: &str| {
+            format!(
+                "pools:\n  - name: p\n    targets: [\"127.0.0.1:9\"]\n    health_check:\n      type: none\n\
+                 listeners:\n  - name: {name}\n    bind: \"127.0.0.1:0\"\n    pool: p\n"
+            )
+        };
+        let mut first = wayhouse_config::parse_str(&yaml("old")).unwrap();
+        let mut pinned = cfg(&dir);
+        pin(&mut pinned, "good", &good);
+        first.sniffers = Some(pinned);
+        let runtime = wayhouse_core::Runtime::start(
+            wayhouse_core::Snapshot::from_config(&first),
+            Arc::default(),
+            1,
+        );
+        let handle = runtime.handle();
+        let sniffers = Sniffers::default();
+        let resolvers = wayhouse_core::Resolvers::default();
+        crate::reload::apply_config(first, &handle, &resolvers, Some(&l), &sniffers, "test").await;
+        assert_eq!(sniffers.names(), ["good"]);
+        assert_eq!(handle.snapshot().listeners[0].name, "old");
+
+        // The next config renames the listener and re-pins `good` to other bytes.
+        let mut second = wayhouse_config::parse_str(&yaml("new")).unwrap();
+        let mut repinned = cfg(&dir);
+        pin(&mut repinned, "good", b"not what is on disk");
+        second.sniffers = Some(repinned);
+        crate::reload::apply_config(second, &handle, &resolvers, Some(&l), &sniffers, "test").await;
+
+        assert_eq!(
+            handle.snapshot().listeners[0].name,
+            "old",
+            "the routes of the rejected config are not active"
+        );
+        assert_eq!(sniffers.names(), ["good"], "the sniffer set is unchanged");
+        runtime
+            .shutdown_with_grace(std::time::Duration::from_millis(100))
+            .await;
     }
 
     /// A tiny per-test-process unique scratch dir under the system temp dir.

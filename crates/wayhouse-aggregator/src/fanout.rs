@@ -411,16 +411,18 @@ async fn text_prefix(mut resp: reqwest::Response, max: usize) -> String {
     let mut buf = Vec::new();
     while buf.len() < max {
         match resp.chunk().await {
-            Ok(Some(chunk)) => buf.extend_from_slice(&chunk),
+            // Keep no more than `max` bytes even when one chunk overshoots.
+            Ok(Some(chunk)) => buf.extend_from_slice(&chunk[..chunk.len().min(max - buf.len())]),
             _ => break,
         }
     }
-    let text = String::from_utf8_lossy(&buf);
-    let mut end = text.len().min(max);
-    while !text.is_char_boundary(end) {
-        end -= 1;
+    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    // A character cut in half at `max` decodes to U+FFFD, which is longer than the
+    // bytes it replaced: drop the tail until the text fits.
+    while text.len() > max {
+        text.pop();
     }
-    text[..end].to_string()
+    text
 }
 
 /// Calls every known instance's admin API at once, concurrently (a
@@ -607,6 +609,24 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         (format!("http://{addr}"), captured)
+    }
+
+    #[tokio::test]
+    async fn text_prefix_never_exceeds_max_even_for_one_huge_chunk_of_multibyte_text() {
+        let body: &'static str = Box::leak("é".repeat(5000).into_boxed_str());
+        let app = Router::new().route("/", axum::routing::get(move || async move { body }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        for max in [1, 199, 200, 201] {
+            let resp = reqwest::get(format!("http://{addr}/")).await.unwrap();
+            let got = text_prefix(resp, max).await;
+            assert!(got.len() <= max, "max {max}: {} bytes", got.len());
+            assert!(got.chars().all(|c| c == 'é'), "max {max}: {got:?}");
+            assert_eq!(got.len(), max / 2 * 2, "max {max}");
+        }
     }
 
     #[tokio::test]

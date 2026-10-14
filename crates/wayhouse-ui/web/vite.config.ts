@@ -12,6 +12,8 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    // The CSP (`default-src 'self'`) refuses `data:` fonts, so never inline them.
+    assetsInlineLimit: 0,
   },
   test: {
     environment: "jsdom",

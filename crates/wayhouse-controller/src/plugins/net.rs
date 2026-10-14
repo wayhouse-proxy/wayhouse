@@ -21,58 +21,7 @@ use wayhouse_plugin_host::{HttpEngine, SecretSource, SecretValue, Transport};
 use super::secrets::KeyringHandle;
 use super::{InstallRecord, PluginStore};
 
-/// Whether `ip` is a public destination: not private, loopback, link-local, unspecified,
-/// multicast, shared (carrier-grade NAT), unique-local or documentation space. An
-/// IPv4-mapped IPv6 address is judged as the IPv4 address it wraps.
-pub fn is_public(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            let o = v4.octets();
-            !(v4.is_private()
-                || v4.is_loopback()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_multicast()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                || (o[0] == 100 && (64..128).contains(&o[1])) // 100.64.0.0/10
-                || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0.0/24
-                || o[0] == 0
-                || o[0] >= 240)
-        }
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_public(IpAddr::V4(v4));
-            }
-            let seg = v6.segments();
-            // Forms that carry an IPv4 address: judge the address inside. IPv4-compatible
-            // (`::a.b.c.d`), NAT64 (`64:ff9b::/96`) and 6to4 (`2002::/16`).
-            if seg[..6] == [0; 6] {
-                return is_public(IpAddr::V4(std::net::Ipv4Addr::from(
-                    u32::from(seg[6]) << 16 | u32::from(seg[7]),
-                )));
-            }
-            if seg[0] == 0x64 && seg[1] == 0xff9b && seg[2..6] == [0; 4] {
-                return is_public(IpAddr::V4(std::net::Ipv4Addr::from(
-                    u32::from(seg[6]) << 16 | u32::from(seg[7]),
-                )));
-            }
-            if seg[0] == 0x2002 {
-                return is_public(IpAddr::V4(std::net::Ipv4Addr::from(
-                    u32::from(seg[1]) << 16 | u32::from(seg[2]),
-                )));
-            }
-            let s0 = seg[0];
-            !(v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_multicast()
-                || (s0 & 0xfe00) == 0xfc00 // fc00::/7 unique local
-                || (s0 & 0xffc0) == 0xfe80 // fe80::/10 link local
-                || (s0 == 0x2001 && seg[1] == 0x0db8) // documentation
-                || (s0 == 0x2001 && seg[1] == 0)) // Teredo, which hides an IPv4 address
-        }
-    }
-}
+pub use wayhouse_http::public_ip::is_public;
 
 /// The addresses of `resolved` the connection may use: all of them for a host approved for
 /// private ranges, otherwise the public ones.

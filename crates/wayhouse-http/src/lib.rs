@@ -34,6 +34,7 @@ pub mod peers;
 #[cfg(feature = "server")]
 pub mod policy;
 pub mod protocol;
+pub mod public_ip;
 pub mod sse;
 #[cfg(feature = "server")]
 pub mod tls;

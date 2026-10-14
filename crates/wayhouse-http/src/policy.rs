@@ -71,14 +71,15 @@ pub fn warn_plaintext_bearer(flag: &str, url: &str, has_token: bool) {
     }
 }
 
-/// `url` without any `user[:password]@` in its authority, safe to log.
+/// Only `scheme://host[:port]` of `url`: no userinfo, path, query or fragment,
+/// any of which may carry a credential. Safe to log.
 fn redact_userinfo(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return url.to_string();
     };
-    let (authority, tail) = rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len()));
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     let host = authority.rsplit('@').next().unwrap_or_default();
-    format!("{scheme}://{host}{tail}")
+    format!("{scheme}://{host}")
 }
 
 fn sends_bearer_in_clear(url: &str) -> bool {
@@ -173,12 +174,12 @@ mod tests {
     #[test]
     fn logged_urls_carry_no_credentials() {
         assert_eq!(
-            super::redact_userinfo("http://user:pw@host.example:8080/a?b#c"),
-            "http://host.example:8080/a?b#c"
+            super::redact_userinfo("http://user:pw@host.example:8080/a?token=s3cret#c"),
+            "http://host.example:8080"
         );
         assert_eq!(
             super::redact_userinfo("http://host.example/x@y"),
-            "http://host.example/x@y"
+            "http://host.example"
         );
         assert_eq!(super::redact_userinfo("not a url"), "not a url");
     }

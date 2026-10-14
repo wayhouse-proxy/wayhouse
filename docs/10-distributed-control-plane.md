@@ -1025,7 +1025,13 @@ operators and the UI and are never gated.
 new required field, a changed raft RPC payload) bumps `PROTOCOL_MAJOR`
 (`crates/wayhouse-http/src/protocol.rs`), even while the product is 0.x; an additive
 one (new optional field or route) bumps `PROTOCOL_MINOR`. Protocol numbers are
-independent of the product version. A refused request counts into
+independent of the product version. The gossip frame is versioned on its own: a
+breaking gossip change bumps `GOSSIP_VERSION` (`crates/wayhouse-core/src/gossip.rs`)
+and not `PROTOCOL_MAJOR`, since it does not touch any HTTP route; an additive one
+needs no bump if older nodes ignore it. A datagram with another gossip version is
+dropped, so there is no N / N-1 window for gossip: during a rolling upgrade nodes of
+different gossip versions stop sharing health and fall back to their own checks
+(the data plane is unaffected). A refused request counts into
 `wayhouse_protocol_mismatch_total{route_group="controller"|"aggregator"|"raft"|"proxy"}`.
 
 Peers remember the protocol version each other answered with and gate newer optional

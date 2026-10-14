@@ -54,8 +54,10 @@ const FRAME_OVERHEAD: usize = TIMESTAMP_LEN + 2 + HMAC_TAG_LEN;
 const GOSSIP_MAGIC: u8 = 0xA7;
 /// The gossip wire version, the second field of every datagram. Bump it on an
 /// incompatible gossip format change; it is independent of the HTTP protocol major
-/// (`wayhouse_http::protocol`, #185). A datagram carrying another value is dropped
-/// before its payload is decoded.
+/// (`wayhouse_http::protocol`, #185, #238), which a gossip-only change does not touch.
+/// A datagram carrying another value is dropped before its payload is decoded, so
+/// there is no N / N-1 window for gossip: mixed versions simply do not exchange
+/// health during a rolling upgrade (each node keeps its own checks).
 const GOSSIP_VERSION: u8 = 1;
 /// How many instances may hold a register about one backend, and how many
 /// backends the map tracks. A register is only ever stored for an origin and a

@@ -15,8 +15,10 @@
 //!
 //! * `Sec-Fetch-Site`, when the browser sends it, must be `same-origin` or
 //!   `none` (a user-typed URL); `cross-site` and `same-site` are refused.
-//! * `Origin`, when present, must name the host the request was addressed to.
-//!   `null` is refused.
+//! * `Origin`, when present and `Sec-Fetch-Site` is absent, must name the host the
+//!   request was addressed to. `null` is refused. When `Sec-Fetch-Site` says
+//!   `same-origin`/`none` the browser has already decided, so a `Host` rewritten by a
+//!   reverse proxy cannot turn a legitimate request into a 403.
 //!
 //! A request with neither header (curl, scripts, the e2e tests) is not a
 //! browser-driven cross-site request and passes. With [`crate::api::AppState::loopback_host_only`]
@@ -72,6 +74,9 @@ fn cross_site(headers: &HeaderMap, host: Option<&str>) -> Option<&'static str> {
         if !matches!(site.as_bytes(), b"same-origin" | b"none") {
             return Some("cross-site request refused");
         }
+        // The browser vouches for the request; a Host a reverse proxy rewrote must
+        // not turn it into a 403, so the Origin/Host comparison is the fallback only.
+        return None;
     }
     if let Some(origin) = headers.get(header::ORIGIN) {
         let Ok(origin) = origin.to_str() else {
@@ -202,6 +207,31 @@ mod tests {
         assert_ne!(status(open(), same).await, StatusCode::FORBIDDEN);
         let curl = post("localhost:7000").body(Body::empty()).unwrap();
         assert_ne!(status(open(), curl).await, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn same_origin_fetch_metadata_wins_over_a_rewritten_host() {
+        // Behind nginx with a rewritten Host the browser's Origin no longer
+        // matches Host; Sec-Fetch-Site: same-origin is the trustworthy answer.
+        let req = post("backend.internal:7000")
+            .header("sec-fetch-site", "same-origin")
+            .header(header::ORIGIN, "https://wayhouse.example.com")
+            .body(Body::empty())
+            .unwrap();
+        assert_ne!(status(open(), req).await, StatusCode::FORBIDDEN);
+        // Without the header the Origin/Host comparison still applies.
+        let req = post("backend.internal:7000")
+            .header(header::ORIGIN, "https://wayhouse.example.com")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status(open(), req).await, StatusCode::FORBIDDEN);
+        // A cross-site marker still wins over a matching Origin.
+        let req = post("wayhouse.example.com")
+            .header("sec-fetch-site", "cross-site")
+            .header(header::ORIGIN, "https://wayhouse.example.com")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status(open(), req).await, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
