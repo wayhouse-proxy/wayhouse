@@ -62,12 +62,23 @@ pub fn check_exposure(
 /// `flag` names the URL option, for the message.
 pub fn warn_plaintext_bearer(flag: &str, url: &str, has_token: bool) {
     if has_token && sends_bearer_in_clear(url) {
+        let url = redact_userinfo(url);
         tracing::warn!(
             flag,
-            url,
+            url = %url,
             "bearer token is sent over plain http to a non-loopback host; use https:// unless this network is trusted"
         );
     }
+}
+
+/// `url` without any `user[:password]@` in its authority, safe to log.
+fn redact_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let (authority, tail) = rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len()));
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    format!("{scheme}://{host}{tail}")
 }
 
 fn sends_bearer_in_clear(url: &str) -> bool {
@@ -157,5 +168,18 @@ mod tests {
         ] {
             assert!(!super::sends_bearer_in_clear(fine), "{fine}");
         }
+    }
+
+    #[test]
+    fn logged_urls_carry_no_credentials() {
+        assert_eq!(
+            super::redact_userinfo("http://user:pw@host.example:8080/a?b#c"),
+            "http://host.example:8080/a?b#c"
+        );
+        assert_eq!(
+            super::redact_userinfo("http://host.example/x@y"),
+            "http://host.example/x@y"
+        );
+        assert_eq!(super::redact_userinfo("not a url"), "not a url");
     }
 }

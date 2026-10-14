@@ -522,7 +522,7 @@ impl SnifferLoader {
                 continue;
             }
             // Only regular files are modules: a directory named `x.wasm` is not.
-            if !entry.file_type().is_ok_and(|t| t.is_file()) {
+            if !fs::metadata(&path).is_ok_and(|m| m.is_file()) {
                 tracing::warn!(path = %path.display(), "not a regular file, skipping");
                 continue;
             }
