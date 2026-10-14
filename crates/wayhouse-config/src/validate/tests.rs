@@ -1975,12 +1975,12 @@ fn absent_gossip_is_none() {
 fn parses_gossip_settings_with_defaults() {
     let yaml = gossip_fixture(
         "  failure_domain: \"eu-west-1a\"\n\
-         \x20 gossip:\n    bind: \"0.0.0.0:7946\"\n    psk: \"secret\"\n",
+         \x20 gossip:\n    bind: \"10.0.0.9:7946\"\n    psk: \"secret\"\n",
     );
     let cfg = parse_str(&yaml).unwrap();
     assert_eq!(cfg.failure_domain.as_deref(), Some("eu-west-1a"));
     let g = cfg.gossip.unwrap();
-    assert_eq!(g.bind, "0.0.0.0:7946".parse().unwrap());
+    assert_eq!(g.bind, "10.0.0.9:7946".parse().unwrap());
     assert!(g.seeds.is_empty());
     assert_eq!(g.quorum_fraction, 0.66);
     assert_eq!(g.psk, "secret");
@@ -1990,7 +1990,7 @@ fn parses_gossip_settings_with_defaults() {
 fn parses_gossip_seeds_and_quorum_fraction() {
     let yaml = gossip_fixture(
         "  failure_domain: \"eu-west-1a\"\n\
-         \x20 gossip:\n    bind: \"0.0.0.0:7946\"\n    psk: \"secret\"\n    \
+         \x20 gossip:\n    bind: \"10.0.0.9:7946\"\n    psk: \"secret\"\n    \
          quorum_fraction: 0.75\n    seeds: [\"10.0.0.1:7946\", \"10.0.0.2:7946\"]\n",
     );
     let g = parse_str(&yaml).unwrap().gossip.unwrap();
@@ -2005,9 +2005,21 @@ fn parses_gossip_seeds_and_quorum_fraction() {
 }
 
 #[test]
+fn rejects_an_unspecified_gossip_bind() {
+    // 0.0.0.0 / [::] would become every instance's identity and vote origin (#304).
+    for bind in ["0.0.0.0:7946", "[::]:7946"] {
+        let yaml = gossip_fixture(&format!(
+            "  failure_domain: \"eu-west-1a\"\n  gossip:\n    bind: \"{bind}\"\n    psk: \"secret\"\n"
+        ));
+        let err = parse_str(&yaml).unwrap_err().to_string();
+        assert!(err.contains("settings.gossip.bind"), "{bind}: {err}");
+    }
+}
+
+#[test]
 fn rejects_gossip_without_failure_domain_and_vice_versa() {
     let gossip_only =
-        gossip_fixture("  gossip:\n    bind: \"0.0.0.0:7946\"\n    psk: \"secret\"\n");
+        gossip_fixture("  gossip:\n    bind: \"10.0.0.9:7946\"\n    psk: \"secret\"\n");
     assert!(parse_str(&gossip_only).is_err());
 
     let domain_only = gossip_fixture("  failure_domain: \"eu-west-1a\"\n");
@@ -2023,21 +2035,21 @@ fn rejects_bad_gossip_settings() {
         ),
         // bad seed address
         gossip_fixture(
-            "  failure_domain: \"d\"\n  gossip:\n    bind: \"0.0.0.0:7946\"\n    \
+            "  failure_domain: \"d\"\n  gossip:\n    bind: \"10.0.0.9:7946\"\n    \
              psk: \"secret\"\n    seeds: [\"nope\"]\n",
         ),
         // empty psk
         gossip_fixture(
-            "  failure_domain: \"d\"\n  gossip:\n    bind: \"0.0.0.0:7946\"\n    psk: \"\"\n",
+            "  failure_domain: \"d\"\n  gossip:\n    bind: \"10.0.0.9:7946\"\n    psk: \"\"\n",
         ),
         // quorum_fraction too low
         gossip_fixture(
-            "  failure_domain: \"d\"\n  gossip:\n    bind: \"0.0.0.0:7946\"\n    \
+            "  failure_domain: \"d\"\n  gossip:\n    bind: \"10.0.0.9:7946\"\n    \
              psk: \"secret\"\n    quorum_fraction: 0.5\n",
         ),
         // quorum_fraction too high
         gossip_fixture(
-            "  failure_domain: \"d\"\n  gossip:\n    bind: \"0.0.0.0:7946\"\n    \
+            "  failure_domain: \"d\"\n  gossip:\n    bind: \"10.0.0.9:7946\"\n    \
              psk: \"secret\"\n    quorum_fraction: 1.5\n",
         ),
     ] {

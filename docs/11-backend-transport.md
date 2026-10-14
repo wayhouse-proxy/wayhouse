@@ -219,6 +219,12 @@ IPv6 (built 2026-10-03):
   the controller is pin-only: it enforces uniqueness but allocates nothing, and accepts
   pins of either family (mixing them is the operator's responsibility: peers of
   different families cannot reach each other).
+- **Names and keys.** A registration name is 1 to 64 characters of `A-Za-z0-9._-`
+  (`subscribe` is reserved), so it can always be fetched and deleted by name. One
+  WireGuard public key belongs to one name within a registry: a second name presenting
+  a key that another name holds is refused with `409`, because peers are keyed by
+  public key and the two registrations would overwrite each other's routes. Re-register
+  under the same name to move to a new key; deleting a name frees its key.
 - **Underlay.** Independent of the tunnel's family: WireGuard endpoints
   (`--endpoint`, `--tunnel-endpoint`, `--peer-endpoint`, written `[2001:db8::7]:51820`
   for IPv6) and the controller URL (`http://[fd99::1]:7070`) may be IPv4 or IPv6.

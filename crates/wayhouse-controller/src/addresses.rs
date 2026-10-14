@@ -323,6 +323,10 @@ pub enum Rejection {
     /// parse (the message is `Network::parse`'s).
     #[error("invalid tunnel network: {0}")]
     InvalidNetwork(String),
+    /// The registration's WireGuard public key is already held by another
+    /// name of the same registry (#311).
+    #[error("this public key is already registered by {role} {name:?}")]
+    PubkeyHeld { role: Role, name: String },
     /// The replicated registries have not been initialized yet.
     #[error("cluster is initializing its registries")]
     NotInitialized,

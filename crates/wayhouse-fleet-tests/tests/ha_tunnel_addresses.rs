@@ -12,8 +12,6 @@ use wayhouse_fleet_tests::{
     build_fleet_bins, free_port, spawn_controller_with, wait_http_up, wait_until, Proc,
 };
 
-const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-
 struct Cluster {
     bases: Vec<String>,
     /// `None` once a node has been killed.
@@ -128,7 +126,7 @@ impl Cluster {
             let r = self
                 .http
                 .post(format!("{base}/peers"))
-                .json(&json!({"name": name, "pubkey": KEY, "backends": [":25565"]}))
+                .json(&json!({"name": name, "pubkey": wayhouse_fleet_tests::test_key(name), "backends": [":25565"]}))
                 .send()
                 .await?;
             if r.status().is_success() {
@@ -288,7 +286,7 @@ async fn pre_ha_controller() -> Result<(tempfile::TempDir, Vec<(String, Value)>)
     for name in ["o1", "o2", "o3"] {
         let r: Value = http
             .post(format!("{base}/peers"))
-            .json(&json!({"name": name, "pubkey": KEY, "backends": [":25565"]}))
+            .json(&json!({"name": name, "pubkey": wayhouse_fleet_tests::test_key(name), "backends": [":25565"]}))
             .send()
             .await?
             .json()

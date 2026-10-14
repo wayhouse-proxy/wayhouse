@@ -22,24 +22,57 @@ fn restrict_permissions(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Tightens an existing key file that is readable by group or others to 0600
+/// and says so; a failure only warns, since the key is usable either way.
+#[cfg(unix)]
+fn tighten_if_loose(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = fs::metadata(path) else {
+        return;
+    };
+    if meta.permissions().mode() & 0o077 == 0 {
+        return;
+    }
+    match restrict_permissions(path) {
+        Ok(()) => {
+            tracing::warn!(path = %path.display(), "the WireGuard private key file was readable by others; restricted it to 0600")
+        }
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "the WireGuard private key file is readable by others and could not be restricted")
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn tighten_if_loose(_path: &Path) {}
+
 /// Loads the private key at `path` (base64, `Key`'s own `Display` format),
 /// or generates and persists a new one if the file doesn't exist yet.
 pub fn load_or_generate(path: &Path) -> anyhow::Result<Key> {
     if path.exists() {
         let text = fs::read_to_string(path)
             .with_context(|| format!("reading private key from {}", path.display()))?;
-        return Key::try_from(text.trim()).map_err(|e| {
+        let key = Key::try_from(text.trim()).map_err(|e| {
             anyhow::anyhow!(
                 "{} does not hold a valid WireGuard key: {e}",
                 path.display()
             )
-        });
+        })?;
+        tighten_if_loose(path);
+        return Ok(key);
     }
 
     let key = Key::generate();
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    // Born 0600: a chmod after the write leaves a window in which another local
+    // user can open the file, and an fd opened then stays readable.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
         .open(path)
         .with_context(|| format!("creating private key file {}", path.display()))?;
     file.write_all(key.to_string().as_bytes())
@@ -80,6 +113,22 @@ mod tests {
         let path = dir.path().join("private.key");
         fs::write(&path, "not a key").unwrap();
         assert!(load_or_generate(&path).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_loose_existing_key_file_is_tightened_on_load() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private.key");
+        let key = load_or_generate(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let again = load_or_generate(&path).unwrap();
+        assert_eq!(again.to_string(), key.to_string());
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "mode is {mode:o}");
     }
 
     #[cfg(unix)]

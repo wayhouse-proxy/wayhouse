@@ -1030,6 +1030,15 @@ fn validate_gossip(rg: RawGossip) -> Result<GossipConfig, ConfigError> {
             rg.bind
         ))
     })?;
+    // The bind address is this instance's gossip identity and the origin of its
+    // votes, so it must be one other instances can reach (#304).
+    if SocketAddr::ip(&bind).is_unspecified() {
+        return Err(Invalid(format!(
+            "settings.gossip.bind must be a concrete address that the other instances can reach, \
+             not an unspecified one like {}",
+            rg.bind
+        )));
+    }
     let mut seeds = Vec::with_capacity(rg.seeds.len());
     for s in &rg.seeds {
         seeds.push(s.parse().map_err(|_| {

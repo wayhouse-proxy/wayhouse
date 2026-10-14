@@ -70,7 +70,7 @@ mod tests {
     fn body_with(name: &str, tunnel_address: Option<&str>) -> String {
         let mut v = serde_json::json!({
             "name": name,
-            "pubkey": KEY,
+            "pubkey": crate::registry::test_pubkey(name),
             "endpoint": "203.0.113.9:51820",
         });
         if let Some(a) = tunnel_address {
@@ -82,7 +82,7 @@ mod tests {
     fn reg_body(name: &str, endpoint: &str) -> String {
         serde_json::json!({
             "name": name,
-            "pubkey": KEY,
+            "pubkey": crate::registry::test_pubkey(name),
             "endpoint": endpoint,
         })
         .to_string()

@@ -12,7 +12,6 @@ use wayhouse_fleet_tests::{
 };
 
 const AUTH_TOKEN: &str = "ha-auth-test-client-token";
-const KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 #[tokio::test]
 async fn writes_through_a_follower_carry_the_callers_bearer_token() -> Result<()> {
@@ -88,7 +87,7 @@ async fn writes_through_a_follower_carry_the_callers_bearer_token() -> Result<()
     // Registrations forward too, and carry a JSON body through. Retried
     // while the cluster is still initializing its registries.
     for (i, base) in bases.iter().enumerate() {
-        let body = json!({"name": format!("o{i}"), "pubkey": KEY, "backends": [":25565"]});
+        let body = json!({"name": format!("o{i}"), "pubkey": wayhouse_fleet_tests::test_key(&format!("o{i}")), "backends": [":25565"]});
         let mut last = String::new();
         let mut ok = false;
         for _ in 0..60 {
