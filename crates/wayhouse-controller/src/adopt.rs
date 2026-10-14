@@ -97,13 +97,18 @@ async fn adopt(State(state): State<AdoptState>, Json(req): Json<AdoptRequest>) -
              start the tier with --role slave instead",
         );
     }
-    let config_empty = matches!(state.config.store.current_revision(), Ok(None));
-    let intent_empty = matches!(state.intent.store.current_revision(), Ok(None));
-    if !config_empty || !intent_empty {
-        return conflict(
-            "adoption requires an empty (quiescent) controller — this tier already has its \
-             own revision history that would need reconciling first (docs/10 \"Adoption\")",
-        );
+    if !is_quiescent(&state) {
+        return conflict(HISTORY_MSG);
+    }
+    // Claim the flip before the slow parent fetch: of several concurrent adoptions
+    // exactly one passes this, and once it is a slave no direct write can add history.
+    if !state.role.compare_and_set(Role::Standalone, Role::Slave) {
+        return conflict("this tier is already a slave (or is being adopted)");
+    }
+    // A write may have landed between the check above and the claim.
+    if !is_quiescent(&state) {
+        state.role.set(Role::Standalone);
+        return conflict(HISTORY_MSG);
     }
 
     let mut seeded_config_revision = None;
@@ -111,15 +116,15 @@ async fn adopt(State(state): State<AdoptState>, Json(req): Json<AdoptRequest>) -
         Ok(Some((revision, config))) => {
             seeded_config_revision = Some(revision);
             if let Err(e) = state.config.apply_relayed(config.into_bytes(), revision) {
+                state.role.set(Role::Standalone);
                 return store_error_response(e);
             }
         }
         Ok(None) => {}
         Err(e) => {
-            // Not fatal: the role flip below still happens, and the
-            // subscribe loops it spawns will keep retrying — matching how
-            // a slave started via `--role slave` behaves if the parent
-            // happens to be unreachable at boot.
+            // Not fatal: the role flip stays, and the subscribe loops spawned
+            // below keep retrying — matching how a slave started via `--role
+            // slave` behaves if the parent happens to be unreachable at boot.
             tracing::warn!(
                 error = %e, parent = %req.parent_url,
                 "could not reach the new parent at adoption time; will keep retrying via subscribe"
@@ -127,7 +132,6 @@ async fn adopt(State(state): State<AdoptState>, Json(req): Json<AdoptRequest>) -
         }
     }
 
-    state.role.set(Role::Slave);
     tracing::info!(parent = %req.parent_url, "adopted: this tier is now a slave");
 
     tokio::spawn(crate::parent_client::run(
@@ -148,6 +152,15 @@ async fn adopt(State(state): State<AdoptState>, Json(req): Json<AdoptRequest>) -
         }),
     )
         .into_response()
+}
+
+const HISTORY_MSG: &str =
+    "adoption requires an empty (quiescent) controller — this tier already has its \
+     own revision history that would need reconciling first (docs/10 \"Adoption\")";
+
+fn is_quiescent(state: &AdoptState) -> bool {
+    matches!(state.config.store.current_revision(), Ok(None))
+        && matches!(state.intent.store.current_revision(), Ok(None))
 }
 
 fn conflict(msg: &str) -> Response {
@@ -208,6 +221,54 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         format!("http://{addr}")
+    }
+
+    /// Like [`spawn_mock_parent`], but answers `GET /config` only after `delay`.
+    async fn spawn_slow_parent(delay: std::time::Duration) -> String {
+        let app = Router::new().route(
+            "/config",
+            get(move || async move {
+                tokio::time::sleep(delay).await;
+                (StatusCode::OK, [("X-Config-Revision", "7")], "pools: []").into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn concurrent_adoptions_flip_the_role_exactly_once() {
+        let (state, _c, _i) = test_state();
+        let parent_url = spawn_slow_parent(std::time::Duration::from_millis(200)).await;
+        let app = router(state);
+        let mut calls = Vec::new();
+        for _ in 0..4 {
+            let app = app.clone();
+            let body = format!(r#"{{"parent_url":"{parent_url}"}}"#);
+            calls.push(tokio::spawn(async move {
+                app.oneshot(
+                    HttpRequest::post("/admin/adopt")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }));
+        }
+        let mut statuses = Vec::new();
+        for call in calls {
+            statuses.push(call.await.unwrap());
+        }
+        let ok = statuses.iter().filter(|s| **s == StatusCode::OK).count();
+        let conflicts = statuses
+            .iter()
+            .filter(|s| **s == StatusCode::CONFLICT)
+            .count();
+        assert_eq!((ok, conflicts), (1, 3), "{statuses:?}");
     }
 
     #[tokio::test]

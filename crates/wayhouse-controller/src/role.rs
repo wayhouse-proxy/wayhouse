@@ -58,6 +58,18 @@ impl RoleHandle {
     pub fn set(&self, role: Role) {
         *self.0.write().unwrap_or_else(PoisonError::into_inner) = role;
     }
+
+    /// Sets the role to `to` only if it is `from` now, atomically; `true` when it did.
+    /// Lets exactly one of several concurrent callers win a role flip.
+    pub fn compare_and_set(&self, from: Role, to: Role) -> bool {
+        let mut cell = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        if *cell == from {
+            *cell = to;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[cfg(test)]
@@ -71,5 +83,13 @@ mod tests {
         assert_eq!(clone.get(), Role::Standalone);
         handle.set(Role::Slave);
         assert_eq!(clone.get(), Role::Slave);
+    }
+
+    #[test]
+    fn compare_and_set_succeeds_only_from_the_expected_role() {
+        let handle = RoleHandle::new(Role::Standalone);
+        assert!(handle.compare_and_set(Role::Standalone, Role::Slave));
+        assert!(!handle.compare_and_set(Role::Standalone, Role::Slave));
+        assert_eq!(handle.get(), Role::Slave);
     }
 }

@@ -352,7 +352,16 @@ fn raft_error(e: RaftError<NodeId, ClientWriteError<NodeId, BasicNode>>) -> Resp
         RaftError::APIError(ClientWriteError::ChangeMembershipError(e)) => {
             error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string())
         }
-        RaftError::Fatal(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        // The Raft core itself stopped or panicked (the "panicked" 500 of #257 is
+        // openraft's `Fatal::Panicked`, not a panic in this handler): say so in the log,
+        // where the core's own panic message sits just above.
+        RaftError::Fatal(e) => {
+            tracing::error!(error = %e, "the raft core failed during a membership change");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("raft core failed: {e}"),
+            )
+        }
     }
 }
 

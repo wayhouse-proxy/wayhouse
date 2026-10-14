@@ -103,9 +103,8 @@ impl Invalidates for BackendHealthKey {
 }
 
 /// backend addr -> (origin instance -> its current register). One entry per
-/// `(backend, origin)` pair ever seen; there is no expiry yet (a departed
-/// instance's last-published register lingers) — an accepted simplification
-/// for this slice, matching this codebase's "start simple" bias elsewhere.
+/// `(backend, origin)` pair; a member that leaves the mesh takes its registers
+/// with it ([`GossipHandle::replace_members`], #278).
 type DomainMap = Arc<Mutex<HashMap<SocketAddr, HashMap<SocketAddr, BackendHealthRegister>>>>;
 
 struct BroadcastMerger {
@@ -192,6 +191,28 @@ impl GossipHandle {
             },
             GossipInbox(rx),
         )
+    }
+
+    /// Installs the current member set and drops every register whose origin was a
+    /// member before and is not now (#278), with backends left holding none.
+    fn replace_members(&self, ids: HashSet<SocketAddr>) {
+        let departed: Vec<SocketAddr> = {
+            let mut cur = self
+                .member_ids
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let departed = cur.difference(&ids).copied().collect();
+            *cur = ids;
+            departed
+        };
+        if departed.is_empty() {
+            return;
+        }
+        let mut domain = self.domain.lock().unwrap_or_else(PoisonError::into_inner);
+        domain.retain(|_, regs| {
+            regs.retain(|origin, _| !departed.contains(origin));
+            !regs.is_empty()
+        });
     }
 
     pub fn member_count(&self) -> usize {
@@ -427,15 +448,9 @@ async fn sleep_until_opt(deadline: Option<Instant>) {
 
 fn publish_member_count(foca: &FocaInstance, handle: &GossipHandle, identity: SocketAddr) {
     let n = foca.num_members();
-    {
-        let mut ids = handle
-            .member_ids
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        ids.clear();
-        ids.insert(identity);
-        ids.extend(foca.iter_members().map(|m| *m.id()));
-    }
+    let mut ids: HashSet<SocketAddr> = foca.iter_members().map(|m| *m.id()).collect();
+    ids.insert(identity);
+    handle.replace_members(ids);
     handle.members.store(n, Ordering::Relaxed);
     metrics::gauge!(m::GOSSIP_MEMBERS).set(n as f64);
 }
@@ -904,6 +919,30 @@ mod tests {
             regs.insert(ghost, now_reg(addr, ghost, 1));
         }
         handle.member_ids.lock().unwrap().insert(member);
+        assert_eq!(handle.domain_votes(addr), (0, 1));
+    }
+
+    /// #278: a member that leaves the mesh takes its registers with it, so a
+    /// departed instance's last verdict neither lingers in the map nor comes
+    /// back to vote if its address is reused.
+    #[test]
+    fn registers_of_a_departed_member_are_dropped() {
+        let (handle, _inbox) = GossipHandle::new();
+        let addr: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        let stays: SocketAddr = "10.0.0.2:1".parse().unwrap();
+        let leaves: SocketAddr = "10.0.0.3:1".parse().unwrap();
+        handle.replace_members([stays, leaves].into_iter().collect());
+        {
+            let mut domain = handle.domain.lock().unwrap();
+            let regs = domain.entry(addr).or_default();
+            regs.insert(stays, now_reg(addr, stays, 1));
+            regs.insert(leaves, now_reg(addr, leaves, 1));
+        }
+        assert_eq!(handle.domain_votes(addr), (0, 2));
+        handle.replace_members([stays].into_iter().collect());
+        assert_eq!(handle.domain.lock().unwrap()[&addr].len(), 1);
+        // Back in the mesh, it does not vote with its old verdict.
+        handle.replace_members([stays, leaves].into_iter().collect());
         assert_eq!(handle.domain_votes(addr), (0, 1));
     }
 
