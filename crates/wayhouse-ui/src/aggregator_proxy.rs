@@ -94,7 +94,7 @@ async fn get_instance_sniffers(
     proxy_segments(
         &state,
         Method::GET,
-        &["instances",&instance,"sniffers"],
+        &["instances", &instance, "sniffers"],
         None,
         actor,
     )
@@ -109,7 +109,7 @@ async fn drain_instance(
     proxy_segments(
         &state,
         Method::POST,
-        &["instances",&instance,"drain"],
+        &["instances", &instance, "drain"],
         None,
         actor,
     )
@@ -124,7 +124,7 @@ async fn undrain_instance(
     proxy_segments(
         &state,
         Method::POST,
-        &["instances",&instance,"undrain"],
+        &["instances", &instance, "undrain"],
         None,
         actor,
     )
@@ -140,7 +140,7 @@ async fn add_backend(
     proxy_segments(
         &state,
         Method::POST,
-        &["pools",&pool,"backends"],
+        &["pools", &pool, "backends"],
         Some(body),
         actor,
     )
@@ -156,7 +156,7 @@ async fn patch_backend(
     proxy_segments(
         &state,
         Method::PATCH,
-        &["pools",&pool,"backends",&addr],
+        &["pools", &pool, "backends", &addr],
         Some(body),
         actor,
     )
@@ -171,7 +171,7 @@ async fn delete_backend(
     proxy_segments(
         &state,
         Method::DELETE,
-        &["pools",&pool,"backends",&addr],
+        &["pools", &pool, "backends", &addr],
         None,
         actor,
     )
@@ -216,14 +216,7 @@ async fn delete_sniffer(
     Extension(Actor(actor)): Extension<Actor>,
     Path(name): Path<String>,
 ) -> Response {
-    proxy_segments(
-        &state,
-        Method::DELETE,
-        &["sniffers",&name],
-        None,
-        actor,
-    )
-    .await
+    proxy_segments(&state, Method::DELETE, &["sniffers", &name], None, actor).await
 }
 
 async fn rollback_sniffer(
@@ -234,7 +227,7 @@ async fn rollback_sniffer(
     proxy_segments(
         &state,
         Method::POST,
-        &["sniffers",&name,"rollback"],
+        &["sniffers", &name, "rollback"],
         None,
         actor,
     )
@@ -502,7 +495,11 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1);
         assert!(!seen[0].contains("&force"), "{}", seen[0]);
-        assert!(seen[0].contains("name=evil%26force%3Dtrue%23x"), "{}", seen[0]);
+        assert!(
+            seen[0].contains("name=evil%26force%3Dtrue%23x"),
+            "{}",
+            seen[0]
+        );
     }
 
     #[tokio::test]

@@ -121,7 +121,11 @@ mod tests {
 
     #[test]
     fn ingest_url_tolerates_trailing_slashes() {
-        for base in ["http://parent:8082", "http://parent:8082/", "http://parent:8082//"] {
+        for base in [
+            "http://parent:8082",
+            "http://parent:8082/",
+            "http://parent:8082//",
+        ] {
             assert_eq!(ingest_url(base), "http://parent:8082/ingest");
         }
     }

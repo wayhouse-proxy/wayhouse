@@ -281,7 +281,9 @@ mod tests {
     fn a_full_store_evicts_instances_silent_past_the_ttl() {
         let store = IngestStore::with_max_instances(2);
         store.try_ingest_at(payload("a"), 1_000).unwrap();
-        store.try_ingest_at(payload("b"), 1_000 + STALE_AFTER_MS / 2).unwrap();
+        store
+            .try_ingest_at(payload("b"), 1_000 + STALE_AFTER_MS / 2)
+            .unwrap();
         // `a` has been silent for STALE_AFTER_MS + 1: it makes room, `b` does not.
         store
             .try_ingest_at(payload("c"), 1_000 + STALE_AFTER_MS + 1)
@@ -293,7 +295,9 @@ mod tests {
     #[test]
     fn oversized_payloads_are_rejected() {
         assert!(payload("ok").check_bounds().is_ok());
-        assert!(payload(&"x".repeat(MAX_FIELD_BYTES + 1)).check_bounds().is_err());
+        assert!(payload(&"x".repeat(MAX_FIELD_BYTES + 1))
+            .check_bounds()
+            .is_err());
         let mut p = payload("many-pools");
         p.pools = (0..=MAX_POOLS)
             .map(|i| PoolSummary {

@@ -539,8 +539,7 @@ impl SnifferLoader {
                     continue;
                 }
                 Err(e) => {
-                    return Err(anyhow::Error::new(e)
-                        .context(format!("reading {}", path.display())))
+                    return Err(anyhow::Error::new(e).context(format!("reading {}", path.display())))
                 }
             };
 
@@ -1511,9 +1510,7 @@ listeners:
     #[test]
     fn validate_rejects_extra_memories_and_huge_tables() {
         loader().validate(&module_with(""), MEM).unwrap();
-        assert!(loader()
-            .validate(&module_with("(memory 1)"), MEM)
-            .is_err());
+        assert!(loader().validate(&module_with("(memory 1)"), MEM).is_err());
         assert!(loader()
             .validate(&module_with("(table 100000 funcref)"), MEM)
             .is_err());

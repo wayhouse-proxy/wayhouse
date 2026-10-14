@@ -158,14 +158,12 @@ pub fn router(state: AppState) -> Router {
     // protocol header; `/fleet` serves the UI and operators.
     // The bearer check is the outer layer: an unauthenticated request must not
     // reach the protocol gate, which counts mismatches into the fleet view.
-    let ingest = wayhouse_http::protocol::gate(
-        Router::new().route("/ingest", post(ingest)),
-        "aggregator",
-    )
-    .route_layer(axum::middleware::from_fn_with_state(
-        wayhouse_http::server::BearerAuth::new(state.ingest_token.as_deref()),
-        wayhouse_http::server::require_bearer,
-    ));
+    let ingest =
+        wayhouse_http::protocol::gate(Router::new().route("/ingest", post(ingest)), "aggregator")
+            .route_layer(axum::middleware::from_fn_with_state(
+                wayhouse_http::server::BearerAuth::new(state.ingest_token.as_deref()),
+                wayhouse_http::server::require_bearer,
+            ));
     let fleet = Router::new()
         .route("/fleet/pools", get(fleet_pools))
         .route("/fleet/sessions", get(fleet_sessions))
@@ -214,7 +212,10 @@ async fn ingest(
     }
     let instance = payload.instance.clone();
     if state.store.try_ingest(payload).is_err() {
-        tracing::warn!(instance, "ingest store is full of live instances, push refused");
+        tracing::warn!(
+            instance,
+            "ingest store is full of live instances, push refused"
+        );
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse {
@@ -733,8 +734,8 @@ mod tests {
     async fn an_unauthenticated_push_with_another_protocol_major_is_a_401_not_a_426() {
         // The protocol gate counts a mismatch (and the fleet view then turns this
         // node red), so it must only ever see requests that passed the token.
-        let state = AppState::new(Arc::new(IngestStore::new()))
-            .with_ingest_token(Some("ingest".into()));
+        let state =
+            AppState::new(Arc::new(IngestStore::new())).with_ingest_token(Some("ingest".into()));
         let resp = router(state)
             .oneshot(
                 Request::post("/ingest")

@@ -133,7 +133,11 @@ mod tests {
     use tower::ServiceExt;
 
     async fn status(state: AppState, req: HttpRequest<Body>) -> StatusCode {
-        crate::api::router(state).oneshot(req).await.unwrap().status()
+        crate::api::router(state)
+            .oneshot(req)
+            .await
+            .unwrap()
+            .status()
     }
 
     fn post(host: &str) -> axum::http::request::Builder {
@@ -148,14 +152,14 @@ mod tests {
     async fn responses_carry_the_security_headers() {
         let app = with_security_headers(crate::api::router(open()));
         let resp = app
-            .oneshot(
-                HttpRequest::get("/ui/session")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(HttpRequest::get("/ui/session").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        let h = |n: &str| resp.headers().get(n).map(|v| v.to_str().unwrap().to_string());
+        let h = |n: &str| {
+            resp.headers()
+                .get(n)
+                .map(|v| v.to_str().unwrap().to_string())
+        };
         assert!(h("content-security-policy")
             .unwrap()
             .contains("frame-ancestors 'none'"));
@@ -243,7 +247,10 @@ mod tests {
             username: None,
         });
         let req = post("localhost:7000")
-            .header(header::COOKIE, format!("{}={id}", crate::api::SESSION_COOKIE))
+            .header(
+                header::COOKIE,
+                format!("{}={id}", crate::api::SESSION_COOKIE),
+            )
             .header("sec-fetch-site", "cross-site")
             .body(Body::empty())
             .unwrap();
@@ -259,11 +266,25 @@ mod tests {
                 .unwrap()
         };
         let state = || open().with_loopback_host_only(true);
-        for ok in ["localhost:7000", "127.0.0.1:7000", "[::1]:7000", "127.0.0.1"] {
+        for ok in [
+            "localhost:7000",
+            "127.0.0.1:7000",
+            "[::1]:7000",
+            "127.0.0.1",
+        ] {
             assert_eq!(status(state(), get(ok)).await, StatusCode::OK, "{ok}");
         }
-        for bad in ["evil.example:7000", "evil.example", "10.0.0.5:7000", "localhost.evil.example"] {
-            assert_eq!(status(state(), get(bad)).await, StatusCode::FORBIDDEN, "{bad}");
+        for bad in [
+            "evil.example:7000",
+            "evil.example",
+            "10.0.0.5:7000",
+            "localhost.evil.example",
+        ] {
+            assert_eq!(
+                status(state(), get(bad)).await,
+                StatusCode::FORBIDDEN,
+                "{bad}"
+            );
         }
         // The check is off unless asked for (non-loopback binds, authenticated mode).
         assert_eq!(status(open(), get("evil.example")).await, StatusCode::OK);

@@ -94,7 +94,11 @@ async fn handle_socket(mut socket: WebSocket, state: AppState, session_id: Optio
     let Some(feed) = state.fleet_feed.clone() else {
         // No --aggregator-url configured at all: nothing to stream. Tell the
         // browser once and close, rather than leaving it hanging.
-        let _ = send(&mut socket, Message::Text("no aggregator configured".into())).await;
+        let _ = send(
+            &mut socket,
+            Message::Text("no aggregator configured".into()),
+        )
+        .await;
         return;
     };
 
@@ -466,9 +470,7 @@ mod tests {
         }
     }
 
-    async fn serve_open(
-        state: crate::api::AppState,
-    ) -> std::net::SocketAddr {
+    async fn serve_open(state: crate::api::AppState) -> std::net::SocketAddr {
         let app = crate::api::router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
