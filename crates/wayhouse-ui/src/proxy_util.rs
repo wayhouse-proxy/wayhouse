@@ -43,23 +43,21 @@ pub(crate) fn path_segment(name: &str) -> Option<String> {
 /// Most bytes of an upstream reply the UI buffers before answering the browser.
 pub(crate) const MAX_UPSTREAM_BODY: usize = 16 << 20;
 
-/// The upstream reply's body, capped at [`MAX_UPSTREAM_BODY`]; the `502` to send
-/// instead when it is larger or the transfer fails.
-pub(crate) async fn upstream_body(
-    resp: reqwest::Response,
-    who: &str,
-) -> Result<axum::body::Bytes, axum::response::Response> {
+/// The upstream reply as the browser's reply: status, forwardable headers and a
+/// body capped at [`MAX_UPSTREAM_BODY`] (a `502` instead when it is larger or the
+/// transfer fails).
+pub(crate) async fn relay(resp: reqwest::Response, who: &str) -> axum::response::Response {
     use axum::response::IntoResponse;
-    wayhouse_http::read_capped(resp, MAX_UPSTREAM_BODY)
-        .await
-        .map(axum::body::Bytes::from)
-        .map_err(|e| {
-            (
-                axum::http::StatusCode::BAD_GATEWAY,
-                axum::Json(serde_json::json!({ "error": format!("{who}: {e}") })),
-            )
-                .into_response()
-        })
+    let status = resp.status();
+    let headers = forwardable_headers(resp.headers());
+    match wayhouse_http::read_capped(resp, MAX_UPSTREAM_BODY).await {
+        Ok(body) => (status, headers, body).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            axum::Json(serde_json::json!({ "error": format!("{who}: {e}") })),
+        )
+            .into_response(),
+    }
 }
 
 /// Wire-shape contract for *every* route `wayhouse-ui` proxies: whatever the

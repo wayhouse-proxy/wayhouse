@@ -331,14 +331,7 @@ async fn proxy_typed(
     }
 
     match req.send().await {
-        Ok(resp) => {
-            let status = resp.status();
-            let headers = crate::proxy_util::forwardable_headers(resp.headers());
-            match crate::proxy_util::upstream_body(resp, "controller").await {
-                Ok(body) => (status, headers, body).into_response(),
-                Err(e) => e,
-            }
-        }
+        Ok(resp) => crate::proxy_util::relay(resp, "controller").await,
         Err(e) => (
             StatusCode::BAD_GATEWAY,
             Json(ErrorResponse {
