@@ -11,7 +11,7 @@ flowchart LR
         direction LR
         subgraph data["Data plane (hot path)"]
             direction LR
-            listener["Listener<br/>accept"] --> router["Router<br/>match + resolver"]
+            listener["Listener<br/>accept · ACL · limits"] --> sniff["Sniffers<br/>peek first bytes"] --> router["Router<br/>match + resolver"]
             router --> pool["Upstream pool<br/>LB + affinity"]
             pool --> pump["Connection / session pump<br/>splice / io"]
         end
@@ -172,8 +172,13 @@ struct, the rest is shared).
 ## Extension points
 
 - **Sniffer API**: `fn sniff(&[u8]) -> Option<RouteHint>` (SNI, Minecraft,
-  Steam A2S, FiveM …). In-process (statically linked) in v1; WASM/out-of-process
-  sniffers later.
+  Steam A2S, FiveM …). SNI is built in; the others are sandboxed WASM modules loaded from
+  `settings.sniffers.dir` (see [sniffers.md](sniffers.md)). They run on the data path and
+  only see the bytes they are handed.
+- **Plugins** are a separate mechanism: WASM modules hosted by the controller, off the data
+  path, reacting to timers, webhooks and events through capabilities the operator approved
+  (see [plugins.md](plugins.md)). They can publish routes, which proxies merge after their
+  own.
 - **BackendSource** adapters (see above).
 - **Filter chain** before routing (ACL, rate limit, geo) as an ordered, configurable
   list.
