@@ -17,7 +17,8 @@
 ## Filter chain (before routing, cheapest first)
 
 1. **CIDR allow/deny** – static lists + an optional dynamic block list (feed/file, hot
-   reload). O(1) via an LPM trie.
+   reload). O(1) via an LPM trie. An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) is
+   matched as the IPv4 address it carries, so it cannot slip past an IPv4 deny list.
 2. **Geo filter** (optional) – MaxMind Country DB (`settings.geo_db`), per-listener
    `geo: { allow, deny }` by ISO country code; `deny` wins, a non-empty `allow`
    is default-deny, an unplaceable IP is admitted only with no `allow` list.

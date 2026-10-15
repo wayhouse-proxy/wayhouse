@@ -23,6 +23,37 @@ flowchart LR
     pump --> backends
 ```
 
+### Fleet, sniffers and plugins
+
+The same instance in context. Sniffers sit on the data path; plugins live in the controller.
+
+```mermaid
+flowchart LR
+    clients(["Clients"]) --> proxy
+    subgraph proxy["wayhouse (each instance)"]
+        direction TB
+        lst["Listener<br/>ACL · limits · rate limit"] --> sn["Sniffers (WASM)<br/>SNI · Minecraft · A2S …"]
+        sn --> rt["Router"] --> pl["Pool<br/>LB · health · affinity"]
+        tun["Tunnel client<br/>WireGuard"]
+        gos["Gossip<br/>backend health"]
+    end
+    pl --> be(["Backends"])
+    tun -. "encrypted transport" .-> agent["wayhouse-agent"] --> be
+    subgraph ctl["wayhouse-controller (Raft HA)"]
+        direction TB
+        cfg["Config + intent log"]
+        reg["Backend / proxy peer registries"]
+        ph["Plugin host (WASM)<br/>timers · webhooks · events · routes"]
+    end
+    ctl -. "config, plugin routes, peers (subscribe)" .-> proxy
+    agent -. "register" .-> reg
+    agg["wayhouse-aggregator"] <-. state .- proxy
+    ui["wayhouse-ui"] --> ctl
+    ui --> agg
+    sreg[("sniffers registry")] -. install .-> proxy
+    preg[("plugins registry")] -. install .-> ph
+```
+
 ## Data plane / control plane separation
 
 - **Data plane**: accepts connections, makes the routing decision against an

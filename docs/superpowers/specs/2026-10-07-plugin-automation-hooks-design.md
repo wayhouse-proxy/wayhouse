@@ -1,6 +1,6 @@
 # Plugin automation hooks (addendum to the plugin system design)
 
-Status: design for review (brainstormed 2026-10-07 with Leandro). Decisions are marked **[decided]**; the rest is a recommendation the plugin build plan follows unless the maintainer changes it. No code in this wave.
+Status: design for review (brainstormed 2026-10-07 with Wueschli). Decisions are marked **[decided]**; the rest is a recommendation the plugin build plan follows unless the maintainer changes it. No code in this wave.
 
 This extends the [plugin system design](2026-10-07-plugin-system-design.md) (#221), which stays valid except where this document says otherwise. It settles the items that spec left open: what a plugin is for, what wakes it, the route model, how module bytes replicate, and secret storage.
 

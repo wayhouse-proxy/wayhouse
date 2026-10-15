@@ -9,7 +9,7 @@ Plugins are not [sniffers](sniffers.md): sniffers run on the proxy data path.
 controller can store plugin installs behind an admin API and ticks the enabled ones
 (below); the web UI has a Plugins page on top of the install API (see "The Plugins page"). An HA tier replicates installs and state through Raft, serves the same API on every replica
 and ticks on the leader only, and the module bytes follow the installs to every replica (see
-"High availability"). Not built yet: secrets, `http`, `routes`, webhooks, events and `backends`.
+"High availability"). Secrets, `http`, `routes`, webhooks and events are built; `backends` is not.
 
 ## Module contract (ABI 0.1)
 

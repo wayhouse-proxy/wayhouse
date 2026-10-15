@@ -51,14 +51,35 @@ examples) or from an external routing service you control.
 
 ```mermaid
 flowchart LR
-    P[Players] -->|TCP / UDP| W["wayhouse<br/>(proxy)"]
-    W --> B1[Game server A]
-    W --> B2[Game server B]
-    C["wayhouse-controller<br/>(optional)"] -. config .-> W
+    P[Players] -->|TCP / UDP| L
+
+    subgraph W["wayhouse (proxy)"]
+        direction TB
+        L["Listener<br/>ACL · limits · rate limit"] --> S["Sniffers<br/>(WASM, in-process)"]
+        S --> R["Router<br/>hostname / hint match"]
+        R --> LB["Pool<br/>LB · health · affinity"]
+        T["Tunnel client<br/>(WireGuard, optional)"]
+        G["Gossip<br/>(backend health, optional)"]
+    end
+
+    LB --> B1[Game server A]
+    LB --> B2[Game server B]
+    LB -. "WireGuard" .-> AG["wayhouse-agent<br/>(origin side)"] --> B3[Game server C]
+
+    SN[("sniffers repo<br/>signed registry")] -. "install / update" .-> S
+    C["wayhouse-controller<br/>(config, Raft HA)"] -. "config + plugin routes" .-> W
+    PH["Plugin host (WASM)<br/>timers · webhooks · events"] --- C
+    PR[("plugins repo<br/>registry")] -. "install" .-> PH
     W -. state .-> A["wayhouse-aggregator<br/>(optional)"]
     U["wayhouse-ui<br/>(admin GUI)"] --> C
     U --> A
 ```
+
+**Sniffers** are small WASM modules that run on the proxy's data path and read the first
+bytes of a connection to find the hostname or protocol (see [docs/sniffers.md](docs/sniffers.md)).
+**Plugins** are WASM modules hosted by the controller, off the data path: they react to timers,
+webhooks and events and act only through capabilities the operator approved (see
+[docs/plugins.md](docs/plugins.md)).
 
 One `wayhouse` binary is all you need. The controller, aggregator and GUI add central
 configuration and fleet-wide operation once you run more than one proxy.
