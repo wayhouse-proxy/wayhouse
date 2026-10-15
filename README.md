@@ -56,7 +56,7 @@ examples) or from an external routing service you control.
   <img alt="Wayhouse architecture overview: players reach the proxy (listener, optional sniffers, router, pool, pump) which forwards to game servers; the controller with its plugin host, the aggregator, the UI and the sniffers and plugins registries sit off the data path." src="docs/img/architecture-overview.svg">
 </picture>
 
-The proxy is the only part that touches player traffic. The controller, aggregator and UI are optional and stay off the data path; see [docs/02-architecture.md](docs/02-architecture.md) for the detailed diagram.
+The proxy is the only player-facing ingress and routing component (behind a tunnel, the origin-side `wayhouse-agent` carries the traffic the last hop). The controller, aggregator and UI are optional and stay off the data path; see [docs/02-architecture.md](docs/02-architecture.md) for the detailed diagram.
 
 **Sniffers** are small WASM modules that run on the proxy's data path and read the first
 bytes of a connection to find the hostname or protocol (see [docs/sniffers.md](docs/sniffers.md)).

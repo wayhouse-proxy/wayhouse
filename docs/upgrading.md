@@ -55,7 +55,9 @@ its row. Use `unreleased` for the product column until the release is tagged.
 - **Gossip does not cross the version.** 0.2.0 gossip frames carry a magic byte and
   `GOSSIP_VERSION`; a 0.1.0 node and a 0.2.0 node drop each other's datagrams. While a fleet
   runs both, health votes and domain quorum are not shared between old and new nodes, and each
-  node falls back to its own checks. The data plane is unaffected. This is the one exception
+  node falls back to its own checks. Existing player traffic is not affected, but nodes can
+  briefly disagree on backend health, so new sessions may be placed differently on old and new
+  nodes. This is the one exception
   to the N and N-1 window (see [docs/10](10-distributed-control-plane.md)).
 - **Registry names.** A name must be 1 to 64 characters of `A-Za-z0-9._-` and not
   `subscribe`; see "Dedupe first" below for the check to run before the first replica is
