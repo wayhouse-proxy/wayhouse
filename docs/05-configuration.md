@@ -211,6 +211,42 @@
 > `wayhouse_filter_blocked_total{filter="max_conn"|"max_udp"|"max_new_rate"}`.
 > Startup-only, like `settings.workers`.
 >
+> **Web sites (schema 3):** the optional top-level `web:` section describes HTTP(S) sites
+> published through a Caddy that sits behind a Wayhouse pool (design: issue #297, spec
+> `docs/superpowers/specs/2026-10-15-web-routing-design.md`). It is validated and resolved
+> as `Config.web`; the data path does not read it yet, so it needs `schema_version: 3`
+> and changes no routing.
+>
+> ```yaml
+> web:
+>   pool: web                       # pool in front of Caddy (default "web"); must set proxy_protocol: v2
+>   listen: { http: 127.0.0.1:8080, https: 127.0.0.1:8443 }   # where Caddy listens (defaults shown)
+>   trusted_proxy: []               # addresses / CIDRs Caddy trusts PROXY headers from
+>   internal_bind: 127.0.0.1        # loopback only (default shown)
+>   internal_ports: "19000-19999"   # lo-hi, at most 1000 ports (default shown)
+>   sites:
+>     - hosts: [panel.example.com, "*.apps.example.com"]
+>       upstreams:
+>         - addr: 10.0.0.5:8080     # a plain address, or
+>         - pool: panel             # a pool (via defaults to direct), or
+>         - { pool: wings1, via: wayhouse, port: 19010 }   # port pins the loopback listener
+> ```
+>
+> Rules: `pool` must exist and set `proxy_protocol: v2` (Caddy's PROXY listener rejects plain
+> connections). Hosts are exact names or `*.suffix`, lowercased, and unique across sites; each
+> site needs a host and an upstream. An upstream is exactly one of `addr` / `pool`; `via`
+> (`direct` | `wayhouse`) and `port` apply only to a pool, and `port` only with
+> `via: wayhouse`, inside `internal_ports` and unique per pool; a pool used `via: wayhouse`
+> must not set `proxy_protocol` (the next hop is plain HTTP). `internal_bind` must be a
+> loopback address.
+>
+> `listen` may be a routable address: on a gateway node Caddy cannot listen on loopback only.
+> `trusted_proxy` is a **list** of IPs or CIDRs (a bare address is a /32 or /128); with a
+> `web` pool on another node, put that node's address in it, because Caddy's `proxy_protocol`
+> `allow` must contain the peer. A non-loopback `listen` with an empty `trusted_proxy` logs
+> a warning, as does a `web.pool` that no TCP listener routes to (`--check`, startup and
+> reload).
+>
 > **Plugin routes (schema 2):** `plugin_routes: { type: sni }` (or `{ type: sniffer,
 > sniffer: <name> }`) on a TCP listener lets enabled controller plugins add routes to it
 > (`docs/plugins.md` "Routes"). They are matched by the hostname the connection

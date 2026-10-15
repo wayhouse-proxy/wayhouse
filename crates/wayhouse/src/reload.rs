@@ -397,7 +397,7 @@ mod tests {
         .await;
         assert!(tokio::net::TcpStream::connect(bind).await.is_ok());
 
-        std::fs::write(&path, yaml("schema_version: 3\n")).unwrap();
+        std::fs::write(&path, yaml("schema_version: 4\n")).unwrap();
         apply(
             &path,
             &handle,

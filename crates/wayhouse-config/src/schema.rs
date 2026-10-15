@@ -29,6 +29,9 @@ pub(crate) struct RawConfig {
     pub(crate) resolvers: Vec<RawResolver>,
     #[serde(default)]
     pub(crate) listeners: Vec<RawListener>,
+    /// Sites published through the packaged Caddy (`web.rs`). Config schema 3.
+    #[serde(default)]
+    pub(crate) web: Option<crate::web::RawWeb>,
 }
 
 #[derive(Debug, Deserialize)]
