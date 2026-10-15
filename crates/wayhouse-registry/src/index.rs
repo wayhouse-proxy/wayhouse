@@ -204,8 +204,16 @@ impl VersionEntry {
             // Authority is everything up to the first '/', '?' or '#'. Refuse an empty host
             // and user info; whether the host is a private address is the fetch-time guard's job.
             let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-            let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
-            if authority.contains('@') || host.is_empty() || host == "[]" {
+            let (host, port) = match authority.strip_prefix('[') {
+                Some(v6) => v6.split_once(']').map_or((v6, None), |(h, r)| {
+                    (h, r.strip_prefix(':').or(Some(r).filter(|r| !r.is_empty())))
+                }),
+                None => authority
+                    .rsplit_once(':')
+                    .map_or((authority, None), |(h, p)| (h, Some(p))),
+            };
+            let port_ok = port.is_none_or(|p| p.parse::<u16>().is_ok());
+            if authority.contains('@') || host.is_empty() || !port_ok {
                 return Err(IndexError::BadUrlHost {
                     sniffer: sniffer.to_owned(),
                     version: version.clone(),
@@ -389,6 +397,9 @@ mod tests {
             "https://user:pw@example.com/a.wasm",
             "https://example.com@evil.example/a.wasm",
             "https://?x=1",
+            "https://example.com:not-a-port/a.wasm",
+            "https://example.com:99999/a.wasm",
+            "https://[::1]x/a.wasm",
         ] {
             let mut v = example();
             first_version(&mut v)["url"] = url.into();
