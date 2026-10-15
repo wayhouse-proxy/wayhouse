@@ -12,6 +12,10 @@
 //! A controller without plugins answers 501 (or 404 on an older build): the overlay is
 //! cleared (a restart without `--plugins` withdraws the routes at once) and the client
 //! retries slowly and quietly. An unreachable controller keeps the last overlay.
+//!
+//! The rebuild itself is retried: if the re-fetch of the controller's config fails after a
+//! change (`controller_client::watch_admin_reloads`), it is repeated with a growing delay
+//! until it succeeds, so a withdrawn route does not linger until the next unrelated change.
 
 use std::sync::Mutex;
 use std::time::Duration;

@@ -101,7 +101,11 @@ file readable by its owner only. Every controller of a tier needs the same keyri
 is re-read when it changes. Without a key the secrets API answers `409` and a plugin that uses
 secret slots is **held**: it is not run, `GET /plugins/{id}/status` shows `held: ...` (no key,
 secret unset, key missing, or not authenticating), and other plugins keep running. Plaintext
-HTTP on a non-loopback `--listen` refuses to start with `--plugins` and a key unless
+is kept out of the store and the log, and the controller wipes the buffers it owns, but this is
+**best effort**: the HTTP stack copies a request body and an expanded header value into memory
+this project does not control (`HeaderValue`, the `PUT` body `Bytes`), and those copies are not
+zeroed. Anyone who can read the controller's or the proxy's memory can read live secrets.
+Plaintext HTTP on a non-loopback `--listen` refuses to start with `--plugins` and a key unless
 `--allow-insecure-secrets` is given.
 
 **Rotating a key.** (1) Append the new key to the keyring file on every controller. (2) `POST
@@ -170,6 +174,10 @@ call needs every member to run a build that supports it.
 <token>`. In order:
 
 1. A per-source rate limit (IPv6 by /64) runs first, valid token or not: `429`.
+   The source is the TCP peer address. Callers behind one load balancer or NAT therefore
+   share a single bucket, and the limit applies to all of them together; there is no
+   trusted-proxy header. Put the webhook listener where callers reach it directly; there is
+   no setting to relax the source limit.
 2. The token is checked in constant time, against a dummy hash when the install is unknown,
    disabled or has no webhook. Every failure is the same `401`.
 3. A per-install rate limit: `429`.
