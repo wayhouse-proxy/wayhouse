@@ -3,25 +3,20 @@
 ## Overview
 
 ```mermaid
-flowchart LR
-    clients(["Clients<br/>TCP / UDP"])
-    backends(["Game servers<br/>private network"])
-
-    subgraph proxy["Proxy instance"]
-        subgraph control["Control plane (off the hot path)"]
-            ctl["Config loader · admin API · discovery adapter<br/>health checker · metrics / log exporter"]
-        end
-        subgraph data["Data plane (hot path)"]
-            listener["Listener<br/>accept · ACL · limits"] --> sniff["Sniffers (optional)<br/>peek first bytes"] --> router["Router<br/>match + resolver"]
-            router --> pool["Upstream pool<br/>LB + affinity"]
-            pool --> pump["Connection / session pump<br/>splice / io"]
-        end
+flowchart TB
+    subgraph data["Data plane (hot path)"]
+        direction LR
+        clients(["Clients<br/>TCP / UDP"]) --> listener["Listener<br/>accept · ACL · limits"] --> sniff["Sniffers (optional)<br/>peek first bytes"] --> router["Router<br/>match + resolver"]
+        router --> pool["Upstream pool<br/>LB + affinity"]
+        pool --> pump["Connection / session pump<br/>splice / io"]
+        pump --> backends(["Game servers<br/>private network"])
     end
 
-    clients --> listener
-    pump --> backends
-    sniff ~~~ ctl
-    ctl -. "publishes immutable snapshot<br/>(read lock-free)" .- router
+    subgraph control["Control plane (off the hot path)"]
+        ctl["Config loader · admin API · discovery adapter<br/>health checker · metrics / log exporter"]
+    end
+
+    data <-. "immutable snapshot (read lock-free) · health" .-> control
 ```
 
 ### Fleet, sniffers and plugins
@@ -29,46 +24,41 @@ flowchart LR
 The same instance in context. Traffic enters on the left and leaves on the right; everything off the data path is below it. Sniffers sit on the data path; plugins live in the controller.
 
 ```mermaid
-flowchart LR
-    subgraph fleet["Fleet control plane (optional, off the data path)"]
-        ctrl["wayhouse-controller (Raft HA)<br/>config + intent log<br/>backend / proxy peer registries"]
-        ph["Plugin host (WASM)<br/>timers · webhooks · events · routes"]
-        agg["wayhouse-aggregator"]
-        ui["wayhouse-ui"]
-        sreg[("sniffers registry")]
-        preg[("plugins registry")]
+flowchart TB
+    subgraph DP["Data plane (hot path): ingress on the left, egress on the right"]
+        direction LR
+        P(["Players<br/>TCP / UDP"]) --> L["Listener<br/>ACL · limits · rate limit"] --> S["Sniffers (optional)<br/>WASM, in-process"]
+        S --> R["Router<br/>hostname / hint match"]
+        R --> LB["Pool<br/>LB · health · affinity"]
+        LB --> B1(["Game server A"])
+        LB --> B2(["Game server B"])
+        LB --> T["Tunnel client<br/>(WireGuard, optional)"]
+        T -.-> AG["wayhouse-agent<br/>(origin side)"] --> B3(["Game server C"])
     end
 
-    clients(["Clients"]) --> lst
-
-    subgraph proxy["wayhouse (one proxy instance)"]
-        subgraph local["Control plane (in the proxy)"]
-            cfg["Config loader · admin API<br/>discovery · health checks<br/>(publishes the snapshot)"]
-            gos["Gossip<br/>backend health"]
+    subgraph CP["Control plane (off the data path)"]
+        direction LR
+        subgraph PCP["In the proxy (per instance)"]
+            G["Gossip<br/>(backend health, optional)"]
+            CL["Config loader · admin API<br/>discovery · health checks"]
         end
-        subgraph data["Data plane (hot path)"]
-            lst["Listener<br/>ACL · limits · rate limit"] --> sn["Sniffers (optional, WASM)<br/>Minecraft · A2S …"]
-            sn --> rt["Router"] --> pl["Pool<br/>LB · health · affinity"]
-            pl --> tun["Tunnel client<br/>WireGuard"]
+        subgraph FCP["Fleet (optional)"]
+            C["wayhouse-controller<br/>(config, Raft HA)"]
+            PH["Plugin host (WASM)<br/>timers · webhooks · events"]
+            A["wayhouse-aggregator"]
+            U["wayhouse-ui<br/>(admin GUI)"]
         end
+        SN[("sniffers repo")]
+        PR[("plugins repo")]
+        C -. "config · plugin routes" .-> PCP
+        PH --- C
+        PCP -. "state" .-> A
+        U --> C
+        U --> A
+        PR -.-> PH
     end
 
-    pl --> be(["Backends"])
-    tun -. "encrypted transport" .-> agent["wayhouse-agent"] --> be
-
-    sn ~~~ cfg
-    rt ~~~ gos
-    cfg -.- rt
-    gos -. "health votes" .- pl
-    cfg ~~~ ctrl
-    ctrl -. "config, plugin routes, peers" .- cfg
-    ph --- ctrl
-    agent -. "register" .- ctrl
-    cfg -. "state" .- agg
-    ui --> ctrl
-    ui --> agg
-    sreg -. install .- sn
-    preg -. install .- ph
+    DP <-. "snapshot · health votes · sniffer installs" .-> CP
 ```
 
 ## Data plane / control plane separation

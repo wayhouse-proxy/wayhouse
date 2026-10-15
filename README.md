@@ -52,47 +52,41 @@ examples) or from an external routing service you control.
 ## How it fits together
 
 ```mermaid
-flowchart LR
-    subgraph FC["Fleet control plane (optional, off the data path)"]
-        C["wayhouse-controller<br/>(config, Raft HA)"]
-        PH["Plugin host (WASM)<br/>timers · webhooks · events"]
-        A["wayhouse-aggregator"]
-        U["wayhouse-ui<br/>(admin GUI)"]
+flowchart TB
+    subgraph DP["Data plane (hot path): ingress on the left, egress on the right"]
+        direction LR
+        P(["Players<br/>TCP / UDP"]) --> L["Listener<br/>ACL · limits · rate limit"] --> S["Sniffers (optional)<br/>WASM, in-process"]
+        S --> R["Router<br/>hostname / hint match"]
+        R --> LB["Pool<br/>LB · health · affinity"]
+        LB --> B1(["Game server A"])
+        LB --> B2(["Game server B"])
+        LB --> T["Tunnel client<br/>(WireGuard, optional)"]
+        T -.-> AG["wayhouse-agent<br/>(origin side)"] --> B3(["Game server C"])
+    end
+
+    subgraph CP["Control plane (off the data path)"]
+        direction LR
+        subgraph PCP["In the proxy (per instance)"]
+            G["Gossip<br/>(backend health, optional)"]
+            CL["Config loader · admin API<br/>discovery · health checks"]
+        end
+        subgraph FCP["Fleet (optional)"]
+            C["wayhouse-controller<br/>(config, Raft HA)"]
+            PH["Plugin host (WASM)<br/>timers · webhooks · events"]
+            A["wayhouse-aggregator"]
+            U["wayhouse-ui<br/>(admin GUI)"]
+        end
         SN[("sniffers repo")]
         PR[("plugins repo")]
+        C -. "config · plugin routes" .-> PCP
+        PH --- C
+        PCP -. "state" .-> A
+        U --> C
+        U --> A
+        PR -.-> PH
     end
 
-    P(["Players<br/>TCP / UDP"]) --> L
-
-    subgraph W["wayhouse (proxy instance)"]
-        subgraph CP["Control plane (in the proxy)"]
-            CL["Config loader · admin API<br/>discovery · health checks<br/>(publishes the snapshot)"]
-            G["Gossip<br/>(backend health, optional)"]
-        end
-        subgraph DP["Data plane (hot path)"]
-            L["Listener<br/>ACL · limits · rate limit"] --> S["Sniffers (optional)<br/>WASM, in-process"]
-            S --> R["Router<br/>hostname / hint match"]
-            R --> LB["Pool<br/>LB · health · affinity"]
-            LB --> T["Tunnel client<br/>(WireGuard, optional)"]
-        end
-    end
-
-    LB --> B1(["Game server A"])
-    LB --> B2(["Game server B"])
-    T -. "WireGuard" .-> AG["wayhouse-agent<br/>(origin side)"] --> B3(["Game server C"])
-
-    S ~~~ CL
-    R ~~~ G
-    CL -.- R
-    G -. "health votes" .- LB
-    CL ~~~ C
-    C -. "config + plugin routes" .- CL
-    PH --- C
-    CL -. "state" .- A
-    U --> C
-    U --> A
-    SN -. "install / update" .- S
-    PR -. "install" .- PH
+    DP <-. "snapshot · health votes · sniffer installs" .-> CP
 ```
 
 **Sniffers** are small WASM modules that run on the proxy's data path and read the first
