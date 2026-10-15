@@ -15,6 +15,7 @@ members = [
     "crates/wayhouse-sniffer-abi",
     "crates/wayhouse-plugin-abi",
     "crates/wayhouse-plugin-host",
+    "crates/wayhouse-acme",
 ]
 
 [workspace.package]
