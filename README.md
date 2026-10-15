@@ -55,7 +55,7 @@ flowchart LR
 
     subgraph W["wayhouse (proxy)"]
         direction TB
-        L["Listener<br/>ACL · limits · rate limit"] --> S["Sniffers<br/>(WASM, in-process)"]
+        L["Listener<br/>ACL · limits · rate limit"] --> S["Sniffers (optional)<br/>(WASM, in-process)"]
         S --> R["Router<br/>hostname / hint match"]
         R --> LB["Pool<br/>LB · health · affinity"]
         T["Tunnel client<br/>(WireGuard, optional)"]

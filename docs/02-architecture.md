@@ -11,7 +11,7 @@ flowchart LR
         direction LR
         subgraph data["Data plane (hot path)"]
             direction LR
-            listener["Listener<br/>accept · ACL · limits"] --> sniff["Sniffers<br/>peek first bytes"] --> router["Router<br/>match + resolver"]
+            listener["Listener<br/>accept · ACL · limits"] --> sniff["Sniffers (optional)<br/>peek first bytes"] --> router["Router<br/>match + resolver"]
             router --> pool["Upstream pool<br/>LB + affinity"]
             pool --> pump["Connection / session pump<br/>splice / io"]
         end
@@ -32,7 +32,7 @@ flowchart LR
     clients(["Clients"]) --> proxy
     subgraph proxy["wayhouse (each instance)"]
         direction TB
-        lst["Listener<br/>ACL · limits · rate limit"] --> sn["Sniffers (WASM)<br/>Minecraft · A2S …"]
+        lst["Listener<br/>ACL · limits · rate limit"] --> sn["Sniffers (optional, WASM)<br/>Minecraft · A2S …"]
         sn --> rt["Router"] --> pl["Pool<br/>LB · health · affinity"]
         tun["Tunnel client<br/>WireGuard"]
         gos["Gossip<br/>backend health"]
