@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -145,6 +145,29 @@ async fn submit(client: &reqwest::Client, base: &str, body: String) -> Option<u6
     v["revision"].as_u64()
 }
 
+/// Wait for a raft leader to accept a write sent to replica 0. A timeout is a
+/// cluster that never formed, which the bare error cannot explain (it hit
+/// `raft_traffic_reuses_its_tls_connections` once on main, 2026-10-15), so the
+/// error carries every replica's log.
+async fn wait_for_leader(c: &Cluster, body: String) -> Result<()> {
+    let waited = wait_until(
+        || {
+            let (client, base, body) = (c.client.clone(), c.bases[0].clone(), body.clone());
+            async move { Ok(submit(&client, &base, body).await.is_some()) }
+        },
+        Duration::from_secs(60),
+        "a raft leader to accept a write",
+    )
+    .await;
+    waited.with_context(|| {
+        c.procs
+            .iter()
+            .enumerate()
+            .map(|(i, p)| format!("--- replica {} log ---\n{}\n", i + 1, p.log()))
+            .collect::<String>()
+    })
+}
+
 fn config() -> Result<String> {
     Ok(minimal_wayhouse_config(
         free_port()?,
@@ -166,16 +189,7 @@ async fn three_replicas_replicate_over_native_tls() -> Result<()> {
 /// A leader is elected, a write sent to each replica is accepted (at least two
 /// are followers, so forwarding is exercised), and every replica serves the last.
 async fn assert_replicates(c: &Cluster) -> Result<()> {
-    let first = config()?;
-    wait_until(
-        || {
-            let (client, base, body) = (c.client.clone(), c.bases[0].clone(), first.clone());
-            async move { Ok(submit(&client, &base, body).await.is_some()) }
-        },
-        Duration::from_secs(60),
-        "a raft leader to accept a write",
-    )
-    .await?;
+    wait_for_leader(c, config()?).await?;
 
     // One write per replica: at least two land on followers and are
     // forwarded to the leader's https URL.
@@ -266,16 +280,7 @@ async fn replicas_without_the_ca_never_elect_a_leader() -> Result<()> {
 #[tokio::test]
 async fn raft_traffic_reuses_its_tls_connections() -> Result<()> {
     let c = cluster(true).await?;
-    let first = config()?;
-    wait_until(
-        || {
-            let (client, base, body) = (c.client.clone(), c.bases[0].clone(), first.clone());
-            async move { Ok(submit(&client, &base, body).await.is_some()) }
-        },
-        Duration::from_secs(60),
-        "a raft leader to accept a write",
-    )
-    .await?;
+    wait_for_leader(&c, config()?).await?;
     let total = || {
         c.accepted
             .iter()
