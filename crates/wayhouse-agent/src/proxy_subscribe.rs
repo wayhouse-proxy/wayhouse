@@ -36,6 +36,10 @@ use serde::Deserialize;
 
 const RECONNECT_MIN: Duration = Duration::from_millis(500);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
+/// How long a stream stays open after a peer failed to configure. The controller
+/// emits no event for an unchanged re-registration, so the only way to retry is to
+/// reconnect, which replays the whole registry.
+const CONFIGURE_RETRY: Duration = Duration::from_secs(30);
 
 /// One proxy's registration, exactly as `wayhouse_controller::proxy_peers::
 /// ProxyRegistration` serializes it (duplicated wire shape).
@@ -225,8 +229,21 @@ async fn subscribe_once(
     tracing::info!(controller = %base_url, "subscribed to proxy-peers updates");
 
     let mut buf = wayhouse_http::sse::EventBuffer::new();
+    let mut retry_at: Option<tokio::time::Instant> = None;
     loop {
-        let chunk = resp.chunk().await.map_err(|e| {
+        let read = match retry_at {
+            Some(at) => match tokio::time::timeout_at(at, resp.chunk()).await {
+                Ok(read) => read,
+                Err(_) => {
+                    tracing::warn!(
+                        "a WireGuard peer failed to configure; reconnecting to retry it"
+                    );
+                    return Ok(());
+                }
+            },
+            None => resp.chunk().await,
+        };
+        let chunk = read.map_err(|e| {
             anyhow::anyhow!(
                 "reading subscribe stream from {base_url}: {}",
                 wayhouse_http::error_chain(&e)
@@ -240,7 +257,9 @@ async fn subscribe_once(
 
         while let Some(event) = buf.next_event() {
             if let Some(ev) = parse_sse_event(&event) {
-                apply(wg, live, last_applied, &ev);
+                if apply(wg, live, last_applied, &ev) {
+                    retry_at.get_or_insert(tokio::time::Instant::now() + CONFIGURE_RETRY);
+                }
             }
         }
     }
@@ -250,14 +269,15 @@ async fn subscribe_once(
 /// event removes or supersedes is also dropped from `live`'s lost peers, so a
 /// later repair cannot bring back a proxy that is gone. The whole edit holds
 /// `live`'s peer lock, so a renewal in flight finishes before it and never
-/// re-adds a peer from older state.
+/// re-adds a peer from older state. `true` when a peer failed to configure and
+/// wants a retry.
 fn apply(
     wg: &(dyn WireguardInterfaceApi + Send + Sync),
     live: &LiveInterface,
     applied: &mut HashMap<String, ProxyRegistration>,
     ev: &Event,
-) {
-    live.edit_peers(|| apply_locked(wg, live, applied, ev));
+) -> bool {
+    live.edit_peers(|| apply_locked(wg, live, applied, ev))
 }
 
 fn apply_locked(
@@ -265,7 +285,8 @@ fn apply_locked(
     live: &LiveInterface,
     applied: &mut HashMap<String, ProxyRegistration>,
     ev: &Event,
-) {
+) -> bool {
+    let mut retry = false;
     match plan(applied, ev) {
         Action::Skip => {}
         Action::Reconcile(reg) => {
@@ -287,6 +308,7 @@ fn apply_locked(
                     // a removed proxy back. The next identical event retries.
                     forget(live, &reg.pubkey);
                     applied.remove(&reg.name);
+                    retry = true;
                 }
                 // Nothing on the device was touched for an unchanged key, so
                 // the installed peer keeps its record and a later removal still
@@ -306,6 +328,7 @@ fn apply_locked(
             }
         }
     }
+    retry
 }
 
 fn forget(live: &LiveInterface, pubkey: &str) {
@@ -400,10 +423,13 @@ mod tests {
         let ev = Event::Registered(r.clone());
         let mut applied = HashMap::new();
 
-        apply_locked(&wg, &live, &mut applied, &ev);
+        assert!(
+            apply_locked(&wg, &live, &mut applied, &ev),
+            "a failed configure asks for a retry"
+        );
         assert!(applied.is_empty(), "a failed configure is not applied");
 
-        apply_locked(&wg, &live, &mut applied, &ev);
+        assert!(!apply_locked(&wg, &live, &mut applied, &ev));
         assert_eq!(applied.get("edge-1"), Some(&r));
         assert_eq!(wg.peers.lock().unwrap().len(), 1);
     }

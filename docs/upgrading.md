@@ -93,6 +93,14 @@ check, and changing a raft RPC payload counts as a breaking wire change.
    followers elect a new leader within the election timeout and writes resume through it.
 3. Upgrade the former leader last.
 
+**Dedupe first.** Since 0.2.0 a tier's replicated registries refuse a registration whose
+WireGuard public key another name already holds (`409`). That check runs when a log entry
+is applied, so a 0.2.0 node can reject an entry that a 0.1.0 node accepted, and a fresh
+node replaying an old log does the same; the replicas would then hold different registry
+contents. Before the first replica is upgraded, list `GET /peers` and `GET /proxy-peers` on
+the tier and `DELETE` every extra name that shares a public key with another, keeping the
+one that is in use.
+
 This sequence is **not covered by an automated test** (the fleet tests do not run a
 rolling Raft upgrade); treat the first use in your environment as a rehearsal. A write
 that a follower forwards to the leader is sent with the follower's protocol version, not

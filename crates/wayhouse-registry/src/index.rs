@@ -222,14 +222,16 @@ impl VersionEntry {
     }
 }
 
-/// Same rule as `valid_module_name` in the proxy's `admin.rs`.
+/// Registry names are lowercase only, so two names never collide as files on a
+/// case-insensitive filesystem. Stricter than `valid_module_name` in the
+/// proxy's `admin.rs`, which stays case-sensitive.
 pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name != "."
         && name != ".."
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
 /// Parse an ABI string `major.minor` (both `u16`).
@@ -374,7 +376,15 @@ mod tests {
 
     #[test]
     fn rejects_bad_name() {
-        for bad in ["../evil", "", "has space", ".", ".."] {
+        for bad in [
+            "../evil",
+            "",
+            "has space",
+            ".",
+            "..",
+            "Minecraft",
+            "MINECRAFT",
+        ] {
             let mut v = example();
             v["sniffers"][0]["name"] = bad.into();
             assert!(matches!(parse(&v), Err(IndexError::BadName(_))), "{bad:?}");
