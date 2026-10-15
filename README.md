@@ -53,51 +53,31 @@ examples) or from an external routing service you control.
 
 ```mermaid
 flowchart LR
-    P(["Players<br/>TCP / UDP"]) --> L["Listener<br/>TCP accept · UDP recv"]
-    L --> F["Filters<br/>ACL · geo · rate limits<br/>per-IP and global caps"]
-    F --> S["Sniffers (optional)<br/>WASM, peek first bytes"]
-    S --> R["Router<br/>port · dst · client CIDR<br/>SNI · first bytes · external"]
-    R --> LB["Pool<br/>LB · affinity · health"]
-    LB --> PUMP["Pump<br/>splice (TCP) · sessions (UDP)<br/>optional PROXY protocol"]
-    PUMP --> B1(["Game server A"])
-    PUMP --> B2(["Game server B"])
-    PUMP --> T["Tunnel client<br/>WireGuard (optional)"]
-    T -. "encrypted" .-> AG["wayhouse-agent<br/>(origin side)"] --> B3(["Game server C"])
-    R -. "external route" .-> RES["Resolver (optional)<br/>HTTP / gRPC · cache"]
-    RES -. "pool or target" .-> LB
-
-    UI["wayhouse-ui<br/>(admin GUI)"]
-    AGG["wayhouse-aggregator<br/>(optional)"]
-    CTRL["wayhouse-controller<br/>config · Raft HA"]
-    PH["Plugin host (WASM)<br/>timers · webhooks · events"]
-    PR[("plugins repo")]
-    SN[("sniffers repo")]
-    ADM["Admin API<br/>drain · metrics"]
-    CFG["Config loader<br/>validate · build snapshot"]
-    DISC["Discovery adapters<br/>DNS SRV · Consul · K8s · static"]
-    HC["Health checker"]
-    G["Gossip (optional)<br/>peer health votes"]
-
-
-    L <-."drain".- ADM
-    F <-."immutable snapshot<br/>(filters, router, pool)".- CFG
-    LB <-.- DISC
-    LB <-.- HC
-    LB <-.- G
-    S <-.- SN
-    CFG <-.- CTRL
-    CTRL --- PH
-    PH <-.- PR
-    CTRL <--> UI
+    P(["Players<br/>TCP / UDP"])
+    subgraph PX["wayhouse-proxy (one per host)"]
+        L["Listener<br/>+ filters"] --> R["Router<br/>(+ optional sniffers)"] --> LB["Pool<br/>LB · health"] --> PUMP["Pump"]
+        CFG["Config snapshot<br/>+ admin API"]
+        HC["Health checks<br/>discovery · gossip"]
+    end
+    B(["Game servers"])
+    subgraph CT["wayhouse-controller (optional)"]
+        C["Config + intent<br/>Raft HA"]
+        PH["Plugin host<br/>(WASM)"]
+    end
+    AGG["wayhouse-aggregator<br/>fleet reads"]
+    UI["wayhouse-ui<br/>admin GUI"]
+    P --> L
+    PUMP --> B
+    C -. "config" .-> CFG
+    CFG -. "snapshot" .-> LB
+    HC -. "health" .-> LB
+    CFG -. "state" .-> AGG
+    UI --> C
     UI --> AGG
-    ADM -."state".-> AGG
-    AG -.-> CTRL
-
-    classDef data fill:#dbeafe,stroke:#2563eb,color:#111
-    classDef ctl fill:#fef3c7,stroke:#b45309,color:#111
-    class P,L,F,S,R,LB,PUMP,B1,B2,B3,T,AG,RES data
-    class UI,AGG,CTRL,PH,PR,SN,ADM,CFG,DISC,HC,G ctl
+    PH --- C
 ```
+
+The proxy is the only part that touches player traffic. The controller, aggregator and UI are optional and stay off the data path; see [docs/02-architecture.md](docs/02-architecture.md) for the detailed diagram.
 
 **Sniffers** are small WASM modules that run on the proxy's data path and read the first
 bytes of a connection to find the hostname or protocol (see [docs/sniffers.md](docs/sniffers.md)).

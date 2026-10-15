@@ -2,54 +2,48 @@
 
 ## Overview
 
-One proxy instance in context. Traffic enters on the left and leaves on the right; everything off the data path sits below it. Sniffers run on the data path; plugins live in the controller.
+One proxy instance in context. Traffic enters on the left and leaves on the right; sniffers run inside the proxy on the data path, while plugins run in the controller, off it.
 
 ```mermaid
 flowchart LR
-    P(["Players<br/>TCP / UDP"]) --> L["Listener<br/>TCP accept · UDP recv"]
-    L --> F["Filters<br/>ACL · geo · rate limits<br/>per-IP and global caps"]
-    F --> S["Sniffers (optional)<br/>WASM, peek first bytes"]
-    S --> R["Router<br/>port · dst · client CIDR<br/>SNI · first bytes · external"]
-    R --> LB["Pool<br/>LB · affinity · health"]
-    LB --> PUMP["Pump<br/>splice (TCP) · sessions (UDP)<br/>optional PROXY protocol"]
-    PUMP --> B1(["Game server A"])
-    PUMP --> B2(["Game server B"])
-    PUMP --> T["Tunnel client<br/>WireGuard (optional)"]
-    T -. "encrypted" .-> AG["wayhouse-agent<br/>(origin side)"] --> B3(["Game server C"])
-    R -. "external route" .-> RES["Resolver (optional)<br/>HTTP / gRPC · cache"]
-    RES -. "pool or target" .-> LB
-
-    UI["wayhouse-ui<br/>(admin GUI)"]
-    AGG["wayhouse-aggregator<br/>(optional)"]
-    CTRL["wayhouse-controller<br/>config · Raft HA"]
-    PH["Plugin host (WASM)<br/>timers · webhooks · events"]
-    PR[("plugins repo")]
+    P(["Players<br/>TCP / UDP"])
+    subgraph PX["wayhouse-proxy (one per host)"]
+        direction LR
+        L["Listener<br/>TCP accept · UDP recv"] --> F["Filters<br/>ACL · geo · rate limits · caps"] --> S["Sniffers (optional)<br/>WASM, peek first bytes"] --> R["Router<br/>port · dst · CIDR · SNI<br/>first bytes · external"]
+        R --> LB["Pool<br/>LB · affinity"] --> PUMP["Pump<br/>splice · UDP sessions<br/>PROXY protocol out"]
+        R -. "external route" .-> RES["Resolver (optional)<br/>HTTP / gRPC · cache"] -. "pool or target" .-> LB
+        PUMP --> T["Tunnel client<br/>WireGuard (optional)"]
+        CFG["Config loader<br/>validate · snapshot"]
+        ADM["Admin API<br/>drain · metrics"]
+        DISC["Discovery<br/>SRV · Consul · K8s"]
+        HC["Health checker"]
+        G["Gossip (optional)"]
+    end
+    B(["Game servers"])
+    AG["wayhouse-agent<br/>(origin side)"]
+    subgraph CT["wayhouse-controller (optional)"]
+        C["Config + intent log<br/>Raft HA"]
+        PH["Plugin host (WASM)<br/>timers · webhooks · events"]
+    end
+    AGG["wayhouse-aggregator<br/>fleet reads"]
+    UI["wayhouse-ui<br/>admin GUI"]
     SN[("sniffers repo")]
-    ADM["Admin API<br/>drain · metrics"]
-    CFG["Config loader<br/>validate · build snapshot"]
-    DISC["Discovery adapters<br/>DNS SRV · Consul · K8s · static"]
-    HC["Health checker"]
-    G["Gossip (optional)<br/>peer health votes"]
-
-
-    L <-."drain".- ADM
-    F <-."immutable snapshot<br/>(filters, router, pool)".- CFG
-    LB <-.- DISC
-    LB <-.- HC
-    LB <-.- G
-    S <-.- SN
-    CFG <-.- CTRL
-    CTRL --- PH
-    PH <-.- PR
-    CTRL <--> UI
+    PR[("plugins repo")]
+    P --> L
+    PUMP --> B
+    T -. "encrypted" .-> AG --> B
+    CFG -. "immutable snapshot" .-> F
+    CFG -.-> R
+    DISC -.-> LB
+    HC -.-> LB
+    G -.-> LB
+    C -. "config · plugin routes" .-> CFG
+    ADM -. "state" .-> AGG
+    UI --> C
     UI --> AGG
-    ADM -."state".-> AGG
-    AG -.-> CTRL
-
-    classDef data fill:#dbeafe,stroke:#2563eb,color:#111
-    classDef ctl fill:#fef3c7,stroke:#b45309,color:#111
-    class P,L,F,S,R,LB,PUMP,B1,B2,B3,T,AG,RES data
-    class UI,AGG,CTRL,PH,PR,SN,ADM,CFG,DISC,HC,G ctl
+    PH --- C
+    SN -. "install" .-> S
+    PR -. "install" .-> PH
 ```
 
 Blue boxes are the data path (ingress left, egress right); amber boxes are everything off it. Dotted lines are control, config or state flows.
