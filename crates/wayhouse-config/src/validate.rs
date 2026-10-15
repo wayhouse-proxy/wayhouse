@@ -1093,6 +1093,11 @@ pub(crate) fn validate(
         raw.settings.shutdown_grace_sec,
     )?;
 
+    let web = raw
+        .web
+        .map(|w| crate::web::validate_web(w, &pools))
+        .transpose()?;
+
     Ok(Config {
         schema_version,
         schema_declared,
@@ -1110,6 +1115,7 @@ pub(crate) fn validate(
         failure_domain: raw.settings.failure_domain,
         gossip,
         group,
+        web,
     })
 }
 

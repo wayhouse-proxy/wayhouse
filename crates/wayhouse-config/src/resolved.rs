@@ -9,6 +9,7 @@ use serde::Deserialize;
 use crate::cidr::{Acl, Cidr, GeoAcl};
 use crate::matcher::{is_handshake_only_sniffer, MatchContext, Matcher, PEEK_MAX};
 use crate::schema::AdminTls;
+use crate::web::WebConfig;
 
 // ---------------------------------------------------------------------------
 // Shared enums.
@@ -241,6 +242,8 @@ pub struct Config {
     /// `None` ⇒ this instance shows up ungrouped in the admin GUI's fleet
     /// tree. Never consulted by routing/forwarding.
     pub group: Option<String>,
+    /// The `web:` section, if any. Never consulted by routing.
+    pub web: Option<WebConfig>,
 }
 
 /// A pool behind a handshake-only sniffer should keep a session at least this long
@@ -252,6 +255,29 @@ impl Config {
     /// reload) or print (`--check`). Empty for a clean config.
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
+        if let Some(web) = &self.web {
+            let routed = self.listeners.iter().any(|l| {
+                l.protocol == Protocol::Tcp
+                    && l.routes
+                        .iter()
+                        .any(|r| matches!(&r.action, Action::Pool(p) if p == &web.pool))
+            });
+            if !routed {
+                out.push(format!(
+                    "web: no tcp listener routes to pool {} (add a `port` or `sni` route), \
+                     so no web traffic reaches Caddy",
+                    web.pool
+                ));
+            }
+            if web.listens_off_loopback() && web.trusted_proxy.is_empty() {
+                out.push(
+                    "web.listen is not loopback but web.trusted_proxy is empty: Caddy would \
+                     only accept PROXY headers from its own host; list the gateway nodes' \
+                     addresses or CIDRs"
+                        .to_string(),
+                );
+            }
+        }
         for l in self
             .listeners
             .iter()

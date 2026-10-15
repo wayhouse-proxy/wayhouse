@@ -19,6 +19,7 @@ mod resolved;
 mod schema;
 mod validate;
 pub mod version;
+mod web;
 
 pub use cidr::{Acl, Cidr, CidrSet, GeoAcl};
 pub use keys::base64_decode_32;
@@ -30,6 +31,7 @@ pub use resolved::{
     SniffersConfig, SourceConfig, SourceKind, TokenBucket,
 };
 pub use schema::AdminTls;
+pub use web::{WebConfig, WebSite, WebUpstream, WebVia};
 
 use schema::RawConfig;
 use validate::validate;
