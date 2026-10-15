@@ -39,7 +39,7 @@ HEAD, and `release.yml` the tagged commit; an `unknown` commit fails
 
 **Releasing.** `release.yml` publishes the images when a `v<version>` tag is pushed; the steps and the branching models are in [`RELEASING.md`](../RELEASING.md).
 
-**First release.** The release path has never run end to end (the `publish` job only runs on a tag), so make the first tag a pre-release such as `v0.1.0-rc.1`: it publishes the images but never moves `latest`.
+**Pre-releases.** A pre-release tag such as `v0.1.0-rc.1` publishes the images but never moves `latest`.
 
 **Multi-arch.** `ghcr.io/<owner>/<image>:<version>` (and `:latest` for a non-pre-release) is
 a manifest list for `linux/amd64` and `linux/arm64`; `docker pull` picks the host's. The
@@ -54,33 +54,6 @@ binaries you built yourself from `deploy/prebuilt/` (`wayhouse`, `wayhouse-minim
 `wayhouse-aggregator`, `wayhouse-ui`, `wayhouse-agent`). CI uses it so the `deploy` job reuses the
 `build-release` binaries; they must be built against a glibc no newer than the
 runtime's (2.41). The nightly CI run uses the default, self-contained path.
-
-## Pulling private images
-
-The six `ghcr.io/<owner>/wayhouse*` packages are **private** for now, so an anonymous `docker pull` fails with `unauthorized` or `denied`. A public repository does not make its packages public.
-
-1. Create a **personal access token (classic)** with the `read:packages` scope. GitHub Packages (GHCR) does not accept fine-grained tokens ([GitHub docs](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)).
-2. Log in:
-
-    ```sh
-    echo "$CR_PAT" | docker login ghcr.io -u <github-user> --password-stdin
-    ```
-
-    Docker Compose (`deploy/compose`) uses the same login; set the image names to `ghcr.io/<owner>/<image>:<version>` first.
-
-3. **Kubernetes:** create a pull secret in the namespace and reference it from every workload (each manifest in `deploy/k8s` has the commented `imagePullSecrets` line to enable):
-
-    ```sh
-    kubectl -n wayhouse create secret docker-registry ghcr \
-      --docker-server=ghcr.io --docker-username=<github-user> --docker-password="$CR_PAT"
-    ```
-
-    ```yaml
-    spec:
-        imagePullSecrets: [{ name: ghcr }]
-    ```
-
-**Making the images public later:** (1) set each of the six packages (`wayhouse`, `wayhouse-minimal`, `wayhouse-controller`, `wayhouse-aggregator`, `wayhouse-ui`, `wayhouse-agent`) to public under the package settings, (2) remove the token and `imagePullSecrets` notes from these docs and manifests, (3) announce it.
 
 ## Run the demo
 
@@ -139,7 +112,7 @@ Ingress/LoadBalancer (with TLS) in front of it.
 
 ## Caveats
 
-- Reference only; the published images are private (see "Pulling private images").
+- Reference only; the published `ghcr.io` images are public and need no login. `imagePullSecrets` are only needed for a mirror that requires auth.
 - Tokens are visible in `docker inspect` / the Pod spec env — fine for a demo;
   use real secret management in production.
 - These examples run every service on **plain HTTP**: bearer tokens and

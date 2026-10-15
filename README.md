@@ -4,9 +4,8 @@
 >
 > This project is under active development and is **definitely not finished yet**.
 >
-> - Tagged releases exist, but the container images on GHCR are **private** for now
->   (see [Pulling private images](deploy/README.md#pulling-private-images)). The major version
->   is 0, so breaking changes land in minor versions.
+> - Tagged releases exist, and the container images on GHCR are **public** and
+>   need no login. The major version is 0, so breaking changes land in minor versions.
 > - The configuration format, CLI flags, admin/fleet HTTP APIs and on-disk formats
 >   **can change in any minor release, with no compatibility guarantee**. Each release's
 >   upgrade steps are in [docs/upgrading.md](docs/upgrading.md), but the rolling-upgrade
@@ -174,7 +173,7 @@ configuration and fleet-wide operation once you run more than one proxy.
 
 ## Quick start
 
-You build from source (the container images are private for now, see above). You need a Rust toolchain (the repo pins
+This section builds from source; the public container images on GHCR are covered in [deploy/README.md](deploy/README.md). You need a Rust toolchain (the repo pins
 `stable` in `rust-toolchain.toml`) and `protoc`, because the gRPC resolver client is
 generated at build time (`apt install protobuf-compiler` or `brew install protobuf`).
 
