@@ -65,7 +65,14 @@ pub struct Whoami {
     /// Ids of the plugin secret keys this node holds (never key material).
     #[serde(default)]
     pub secret_key_ids: Vec<String>,
+    /// Whether this build decodes ACME entries ([`ACME_SUPPORT`]); `0` for a build that
+    /// predates them.
+    #[serde(default)]
+    pub acme_support: u32,
 }
+
+/// The ACME replication level this build speaks (`1`: sites, account, certificates).
+pub const ACME_SUPPORT: u32 = 1;
 
 /// The plugin replication level this build speaks (a node without plugins, started without
 /// `--plugins` or as a slave, reports `0` instead, so the install gate refuses while it is a
@@ -86,6 +93,7 @@ async fn whoami(State(ha): State<Arc<HaHandle>>) -> impl IntoResponse {
             0
         },
         secret_key_ids: ha.secret_keys.current().key_ids(),
+        acme_support: ACME_SUPPORT,
     })
 }
 

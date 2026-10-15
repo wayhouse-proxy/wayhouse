@@ -562,6 +562,7 @@ mod tests {
                     pre_ha: crate::ha::import::PreHaSummary::default(),
                     plugin_support: 0,
                     secret_key_ids: Vec::new(),
+                    acme_support: 0,
                 })
             }),
         );

@@ -8,9 +8,7 @@ use std::sync::{Arc, Mutex};
 use sled::transaction::{ConflictableTransactionError, TransactionError};
 use sled::Transactional;
 
-use super::types::{
-    AcmeOp, AcmeSnapshot, Applied, Attempt, Site, StoredAccount, StoredCert,
-};
+use super::types::{AcmeOp, AcmeSnapshot, Applied, Attempt, Site, StoredAccount, StoredCert};
 
 const APPLIED_KEY: &[u8] = b"applied";
 const ACCOUNT_KEY: &[u8] = b"account";
@@ -49,8 +47,12 @@ fn cert_prefix(site: &str) -> Vec<u8> {
     k
 }
 
-fn read<T: serde::de::DeserializeOwned>(v: Option<sled::IVec>) -> Result<Option<T>, AcmeStoreError> {
-    v.map(|b| serde_json::from_slice(&b)).transpose().map_err(Into::into)
+fn read<T: serde::de::DeserializeOwned>(
+    v: Option<sled::IVec>,
+) -> Result<Option<T>, AcmeStoreError> {
+    v.map(|b| serde_json::from_slice(&b))
+        .transpose()
+        .map_err(Into::into)
 }
 
 impl AcmeStore {
@@ -105,7 +107,13 @@ impl AcmeStore {
 
     /// The newest certificate of `site`.
     pub fn cert(&self, site: &str) -> Result<Option<StoredCert>, AcmeStoreError> {
-        read(self.certs.scan_prefix(cert_prefix(site)).values().next_back().transpose()?)
+        read(
+            self.certs
+                .scan_prefix(cert_prefix(site))
+                .values()
+                .next_back()
+                .transpose()?,
+        )
     }
 
     /// Every kept version of `site`, oldest first.
@@ -190,10 +198,16 @@ impl AcmeStore {
                     return Ok(Applied::Replayed);
                 }
                 meta.insert(APPLIED_KEY, &index.to_be_bytes())?;
-                let json = |v: &dyn erased::Ser| v.to_json().map_err(|e| abort(AcmeStoreError::from(e)));
-                let get_site = |name: &str| -> Result<Option<Site>, ConflictableTransactionError<AcmeStoreError>> {
+                let json =
+                    |v: &dyn erased::Ser| v.to_json().map_err(|e| abort(AcmeStoreError::from(e)));
+                let get_site = |name: &str| -> Result<
+                    Option<Site>,
+                    ConflictableTransactionError<AcmeStoreError>,
+                > {
                     match sites.get(name.as_bytes())? {
-                        Some(v) => Ok(Some(serde_json::from_slice(&v).map_err(|e| abort(e.into()))?)),
+                        Some(v) => Ok(Some(
+                            serde_json::from_slice(&v).map_err(|e| abort(e.into()))?,
+                        )),
                         None => Ok(None),
                     }
                 };
@@ -228,7 +242,11 @@ impl AcmeStore {
                         account.insert(ACCOUNT_KEY, json(acct)?)?;
                         Ok(Applied::Done)
                     }
-                    AcmeOp::CertIssued { site, tagged_term, cert } => {
+                    AcmeOp::CertIssued {
+                        site,
+                        tagged_term,
+                        cert,
+                    } => {
                         let Some(current) = get_site(site)? else {
                             return Ok(Applied::NoSuchSite);
                         };
@@ -260,7 +278,13 @@ impl AcmeStore {
                 TransactionError::Abort(e) => e,
                 TransactionError::Storage(e) => e.into(),
             })?;
-        for t in [&self.sites, &self.account, &self.certs, &self.attempts, &self.meta] {
+        for t in [
+            &self.sites,
+            &self.account,
+            &self.certs,
+            &self.attempts,
+            &self.meta,
+        ] {
             t.flush()?;
         }
         if outcome == Applied::Done {
@@ -297,12 +321,24 @@ impl AcmeStore {
     /// Makes the store exactly `snap`, in one transaction.
     pub fn replace(&self, snap: &AcmeSnapshot) -> Result<(), AcmeStoreError> {
         let _guard = self.lock();
-        let keys = |t: &sled::Tree| -> Result<Vec<sled::IVec>, sled::Error> { t.iter().keys().collect() };
-        let (old_sites, old_certs, old_attempts) =
-            (keys(&self.sites)?, keys(&self.certs)?, keys(&self.attempts)?);
-        (&self.sites, &self.account, &self.certs, &self.attempts, &self.meta)
+        let keys =
+            |t: &sled::Tree| -> Result<Vec<sled::IVec>, sled::Error> { t.iter().keys().collect() };
+        let (old_sites, old_certs, old_attempts) = (
+            keys(&self.sites)?,
+            keys(&self.certs)?,
+            keys(&self.attempts)?,
+        );
+        (
+            &self.sites,
+            &self.account,
+            &self.certs,
+            &self.attempts,
+            &self.meta,
+        )
             .transaction(|(sites, account, certs, attempts, meta)| {
-                let err = |e: serde_json::Error| ConflictableTransactionError::Abort(AcmeStoreError::from(e));
+                let err = |e: serde_json::Error| {
+                    ConflictableTransactionError::Abort(AcmeStoreError::from(e))
+                };
                 for k in &old_sites {
                     sites.remove(k.clone())?;
                 }
@@ -317,7 +353,10 @@ impl AcmeStore {
                     sites.insert(s.name.as_bytes(), serde_json::to_vec(s).map_err(err)?)?;
                 }
                 for (site, c) in &snap.certs {
-                    certs.insert(cert_key(site, c.version), serde_json::to_vec(c).map_err(err)?)?;
+                    certs.insert(
+                        cert_key(site, c.version),
+                        serde_json::to_vec(c).map_err(err)?,
+                    )?;
                 }
                 for (site, a) in &snap.attempts {
                     attempts.insert(site.as_bytes(), serde_json::to_vec(a).map_err(err)?)?;
@@ -335,7 +374,13 @@ impl AcmeStore {
                 TransactionError::Abort(e) => e,
                 TransactionError::Storage(e) => e.into(),
             })?;
-        for t in [&self.sites, &self.account, &self.certs, &self.attempts, &self.meta] {
+        for t in [
+            &self.sites,
+            &self.account,
+            &self.certs,
+            &self.attempts,
+            &self.meta,
+        ] {
             t.flush()?;
         }
         self.changed.send_modify(|n| *n += 1);
@@ -398,19 +443,35 @@ mod tests {
     }
 
     fn issued(site: &str, term: u64, c: StoredCert) -> AcmeOp {
-        AcmeOp::CertIssued { site: site.into(), tagged_term: term, cert: c }
+        AcmeOp::CertIssued {
+            site: site.into(),
+            tagged_term: term,
+            cert: c,
+        }
     }
 
     #[test]
     fn sites_round_trip_and_a_name_belongs_to_one_site() {
         let (s, _d) = store();
-        assert_eq!(s.apply_local(&AcmeOp::SiteSet(site("a", &["a.example.com"]))).unwrap(), Applied::Done);
         assert_eq!(
-            s.apply_local(&AcmeOp::SiteSet(site("b", &["x.example.com", "a.example.com"]))).unwrap(),
+            s.apply_local(&AcmeOp::SiteSet(site("a", &["a.example.com"])))
+                .unwrap(),
+            Applied::Done
+        );
+        assert_eq!(
+            s.apply_local(&AcmeOp::SiteSet(site(
+                "b",
+                &["x.example.com", "a.example.com"]
+            )))
+            .unwrap(),
             Applied::NameTaken("a.example.com".into())
         );
         // Re-setting the same site with the same names is fine.
-        assert_eq!(s.apply_local(&AcmeOp::SiteSet(site("a", &["a.example.com"]))).unwrap(), Applied::Done);
+        assert_eq!(
+            s.apply_local(&AcmeOp::SiteSet(site("a", &["a.example.com"])))
+                .unwrap(),
+            Applied::Done
+        );
         assert_eq!(s.sites().unwrap().len(), 1);
         assert_eq!(s.site("a").unwrap().unwrap().names, vec!["a.example.com"]);
     }
@@ -420,9 +481,13 @@ mod tests {
         let (s, _d) = store();
         let mut wild = site("w", &["*.example.com"]);
         wild.gateways.clear();
-        assert!(matches!(s.apply_local(&AcmeOp::SiteSet(wild)).unwrap(), Applied::Invalid(_)));
         assert!(matches!(
-            s.apply_local(&AcmeOp::SiteSet(site("Bad Name", &["a.example.com"]))).unwrap(),
+            s.apply_local(&AcmeOp::SiteSet(wild)).unwrap(),
+            Applied::Invalid(_)
+        ));
+        assert!(matches!(
+            s.apply_local(&AcmeOp::SiteSet(site("Bad Name", &["a.example.com"])))
+                .unwrap(),
             Applied::Invalid(_)
         ));
         assert!(s.sites().unwrap().is_empty());
@@ -431,9 +496,19 @@ mod tests {
     #[test]
     fn the_first_account_wins() {
         let (s, _d) = store();
-        let acct = |u: &str| StoredAccount { directory_url: "https://ca".into(), account_url: u.into(), sealed: sealed() };
-        assert_eq!(s.apply_local(&AcmeOp::AccountSet(acct("one"))).unwrap(), Applied::Done);
-        assert_eq!(s.apply_local(&AcmeOp::AccountSet(acct("two"))).unwrap(), Applied::Exists);
+        let acct = |u: &str| StoredAccount {
+            directory_url: "https://ca".into(),
+            account_url: u.into(),
+            sealed: sealed(),
+        };
+        assert_eq!(
+            s.apply_local(&AcmeOp::AccountSet(acct("one"))).unwrap(),
+            Applied::Done
+        );
+        assert_eq!(
+            s.apply_local(&AcmeOp::AccountSet(acct("two"))).unwrap(),
+            Applied::Exists
+        );
         assert_eq!(s.account().unwrap().unwrap().account_url, "one");
     }
 
@@ -444,13 +519,30 @@ mod tests {
         s.apply_local(&AcmeOp::SiteSet(site("a", &names))).unwrap();
         let at = |idx: u64, term: u64, op: AcmeOp| s.apply_at(idx, term, &op).unwrap();
         // Entry appended in term 4 but proposed in term 3: a deposed leader's late result.
-        assert_eq!(at(2, 4, issued("a", 3, cert(1, &names))), Applied::WrongTerm);
+        assert_eq!(
+            at(2, 4, issued("a", 3, cert(1, &names))),
+            Applied::WrongTerm
+        );
         assert!(s.cert("a").unwrap().is_none());
-        assert_eq!(at(3, 4, issued("a", 4, cert(2, &names))), Applied::Stale, "must start at 1");
-        assert_eq!(at(4, 4, issued("a", 4, cert(1, &["other.example.com"]))), Applied::Stale);
+        assert_eq!(
+            at(3, 4, issued("a", 4, cert(2, &names))),
+            Applied::Stale,
+            "must start at 1"
+        );
+        assert_eq!(
+            at(4, 4, issued("a", 4, cert(1, &["other.example.com"]))),
+            Applied::Stale
+        );
         assert_eq!(at(5, 4, issued("a", 4, cert(1, &names))), Applied::Done);
-        assert_eq!(at(6, 4, issued("a", 4, cert(1, &names))), Applied::Stale, "same version twice");
-        assert_eq!(at(7, 4, issued("zzz", 4, cert(1, &names))), Applied::NoSuchSite);
+        assert_eq!(
+            at(6, 4, issued("a", 4, cert(1, &names))),
+            Applied::Stale,
+            "same version twice"
+        );
+        assert_eq!(
+            at(7, 4, issued("zzz", 4, cert(1, &names))),
+            Applied::NoSuchSite
+        );
     }
 
     #[test]
@@ -460,11 +552,19 @@ mod tests {
         s.apply_local(&AcmeOp::SiteSet(site("a", &names))).unwrap();
         s.apply_local(&AcmeOp::Attempt {
             site: "a".into(),
-            attempt: Attempt { failures: 3, next_attempt_at: 99, last_error: Some("x".into()), ..Attempt::default() },
+            attempt: Attempt {
+                failures: 3,
+                next_attempt_at: 99,
+                last_error: Some("x".into()),
+                ..Attempt::default()
+            },
         })
         .unwrap();
         for v in 1..=3 {
-            assert_eq!(s.apply_local(&issued("a", 0, cert(v, &names))).unwrap(), Applied::Done);
+            assert_eq!(
+                s.apply_local(&issued("a", 0, cert(v, &names))).unwrap(),
+                Applied::Done
+            );
         }
         let versions: Vec<u64> = s.certs("a").unwrap().iter().map(|c| c.version).collect();
         assert_eq!(versions, vec![2, 3]);
@@ -478,17 +578,37 @@ mod tests {
         let names = ["a.example.com"];
         s.apply_local(&AcmeOp::SiteSet(site("a", &names))).unwrap();
         s.apply_local(&issued("a", 0, cert(1, &names))).unwrap();
-        assert_eq!(s.apply_local(&AcmeOp::SiteDelete { name: "a".into() }).unwrap(), Applied::Done);
+        assert_eq!(
+            s.apply_local(&AcmeOp::SiteDelete { name: "a".into() })
+                .unwrap(),
+            Applied::Done
+        );
         assert!(s.cert("a").unwrap().is_none() && s.site("a").unwrap().is_none());
-        assert_eq!(s.apply_local(&AcmeOp::SiteDelete { name: "a".into() }).unwrap(), Applied::NoSuchSite);
+        assert_eq!(
+            s.apply_local(&AcmeOp::SiteDelete { name: "a".into() })
+                .unwrap(),
+            Applied::NoSuchSite
+        );
     }
 
     #[test]
     fn a_replayed_index_changes_nothing() {
         let (s, _d) = store();
-        assert_eq!(s.apply_at(5, 0, &AcmeOp::SiteSet(site("a", &["a.example.com"]))).unwrap(), Applied::Done);
-        assert_eq!(s.apply_at(5, 0, &AcmeOp::SiteDelete { name: "a".into() }).unwrap(), Applied::Replayed);
-        assert_eq!(s.apply_at(3, 0, &AcmeOp::SiteDelete { name: "a".into() }).unwrap(), Applied::Replayed);
+        assert_eq!(
+            s.apply_at(5, 0, &AcmeOp::SiteSet(site("a", &["a.example.com"])))
+                .unwrap(),
+            Applied::Done
+        );
+        assert_eq!(
+            s.apply_at(5, 0, &AcmeOp::SiteDelete { name: "a".into() })
+                .unwrap(),
+            Applied::Replayed
+        );
+        assert_eq!(
+            s.apply_at(3, 0, &AcmeOp::SiteDelete { name: "a".into() })
+                .unwrap(),
+            Applied::Replayed
+        );
         assert!(s.site("a").unwrap().is_some());
         assert_eq!(s.applied_index().unwrap(), Some(5));
     }
@@ -497,17 +617,43 @@ mod tests {
     fn a_snapshot_restores_everything_on_another_replica() {
         let (a, _da) = store();
         let names = ["a.example.com"];
-        a.apply_at(1, 0, &AcmeOp::SiteSet(site("a", &names))).unwrap();
-        a.apply_at(2, 0, &AcmeOp::AccountSet(StoredAccount { directory_url: "u".into(), account_url: "acct".into(), sealed: sealed() })).unwrap();
+        a.apply_at(1, 0, &AcmeOp::SiteSet(site("a", &names)))
+            .unwrap();
+        a.apply_at(
+            2,
+            0,
+            &AcmeOp::AccountSet(StoredAccount {
+                directory_url: "u".into(),
+                account_url: "acct".into(),
+                sealed: sealed(),
+            }),
+        )
+        .unwrap();
         a.apply_at(3, 1, &issued("a", 1, cert(1, &names))).unwrap();
-        a.apply_at(4, 1, &AcmeOp::Attempt { site: "a".into(), attempt: Attempt { failures: 1, ..Attempt::default() } }).unwrap();
+        a.apply_at(
+            4,
+            1,
+            &AcmeOp::Attempt {
+                site: "a".into(),
+                attempt: Attempt {
+                    failures: 1,
+                    ..Attempt::default()
+                },
+            },
+        )
+        .unwrap();
         let snap = a.snapshot().unwrap();
         let (b, _db) = store();
-        b.apply_at(1, 0, &AcmeOp::SiteSet(site("stale", &["old.example.com"]))).unwrap();
+        b.apply_at(1, 0, &AcmeOp::SiteSet(site("stale", &["old.example.com"])))
+            .unwrap();
         b.replace(&snap).unwrap();
         assert_eq!(b.snapshot().unwrap(), snap);
         assert_eq!(b.applied_index().unwrap(), Some(4));
         assert!(b.site("stale").unwrap().is_none());
-        assert_eq!(b.apply_at(4, 1, &AcmeOp::SiteDelete { name: "a".into() }).unwrap(), Applied::Replayed);
+        assert_eq!(
+            b.apply_at(4, 1, &AcmeOp::SiteDelete { name: "a".into() })
+                .unwrap(),
+            Applied::Replayed
+        );
     }
 }

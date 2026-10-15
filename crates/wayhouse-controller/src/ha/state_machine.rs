@@ -2308,7 +2308,12 @@ mod tests {
         assert_eq!(a.acme().snapshot().unwrap(), b.acme().snapshot().unwrap());
         assert_eq!(a.acme().cert("web").unwrap().unwrap().version, 1);
 
-        let snapshot = a.get_snapshot_builder().await.build_snapshot().await.unwrap();
+        let snapshot = a
+            .get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
         let (mut c, _c) = test_sm();
         apply_one(
             &mut c,
@@ -2316,7 +2321,9 @@ mod tests {
             WriteRequest::Acme(AcmeOp::SiteSet(acme_site("old", "old.example.com"))),
         )
         .await;
-        c.install_snapshot(&snapshot.meta, snapshot.snapshot).await.unwrap();
+        c.install_snapshot(&snapshot.meta, snapshot.snapshot)
+            .await
+            .unwrap();
         assert_eq!(c.acme().snapshot().unwrap(), a.acme().snapshot().unwrap());
         assert!(c.acme().site("old").unwrap().is_none());
     }
