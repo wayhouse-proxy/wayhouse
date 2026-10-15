@@ -49,7 +49,11 @@ async fn writes_through_a_follower_carry_the_callers_bearer_token() -> Result<()
             &extra,
         )?);
         dirs.push(dir);
-        wait_http_up(&format!("{}/healthz", bases[i]), Duration::from_secs(10)).await?;
+        wait_http_up(
+            &format!("{}/healthz", bases[i]),
+            wayhouse_fleet_tests::STARTUP_TIMEOUT,
+        )
+        .await?;
     }
 
     // Writing through every node covers both roles: whichever replica is a

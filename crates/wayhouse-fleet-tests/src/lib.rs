@@ -250,6 +250,13 @@ impl Proc {
     }
 }
 
+/// How long a test waits for a spawned binary to answer `/healthz`. Generous on
+/// purpose (#279): a loaded CI runner, or a queue entry building next to other
+/// merges, can take far longer than a developer machine to start a process, and
+/// a wait that is too short flakes while a long one costs nothing when the
+/// binary is up. A real hang still fails, with the URL and the last error.
+pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
+
 /// Poll `url` (a plain `GET`) until it returns any HTTP response or
 /// `timeout` elapses, retrying every send error. Every fleet binary here
 /// serves `GET /healthz` unauthenticated, so this is the uniform "is it up"

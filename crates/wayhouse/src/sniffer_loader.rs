@@ -908,21 +908,33 @@ mod tests {
         "#;
         let loader = SnifferLoader::new(Duration::from_millis(20)).unwrap();
         let sniffer = wasm_sniffer("spinner", wat, &loader.engine);
-        let started = std::time::Instant::now();
-        let mut timed_out = 0;
-        let mut calls = 0;
-        while calls < 1500 {
-            if matches!(sniffer.call(b"x"), Err(CallError::Timeout)) {
-                timed_out += 1;
+        // The deadline is two ticks of `call_timeout / 2`, so a call can only
+        // trap legitimately once at least one tick interval has passed. A
+        // timeout after less than that is the #173 granularity bug. A call the
+        // scheduler stalled for longer (a busy CI runner, #223) is not, so it
+        // is not counted: the test asserts on the cause, not on load.
+        let tick = Duration::from_millis(10);
+        let mut spurious = 0;
+        let mut elapsed = Vec::new();
+        for _ in 0..1500 {
+            let started = std::time::Instant::now();
+            let result = sniffer.call(b"x");
+            let took = started.elapsed();
+            elapsed.push(took);
+            if matches!(result, Err(CallError::Timeout)) && took < tick {
+                spurious += 1;
             }
-            calls += 1;
         }
-        let per_call = started.elapsed() / calls;
+        elapsed.sort();
+        let median = elapsed[elapsed.len() / 2];
         assert!(
-            per_call < Duration::from_millis(5),
-            "test premise: each call must be far under the 20 ms timeout, was {per_call:?}"
+            median < Duration::from_millis(5),
+            "test premise: a typical call must be far under the 20 ms timeout, median was {median:?}"
         );
-        assert_eq!(timed_out, 0, "{timed_out}/{calls} short calls timed out");
+        assert_eq!(
+            spurious, 0,
+            "{spurious}/1500 short calls timed out within one tick"
+        );
     }
 
     #[test]
