@@ -27,6 +27,16 @@ pub trait SolverSource: Send + Sync {
     fn solver_for(&self, dns_plugin: &str) -> Option<Arc<dyn DnsSolver>>;
 }
 
+/// The solver source of a controller that has no DNS plugin hook yet: every order fails with a
+/// recorded, visible reason.
+pub struct NoSolvers;
+
+impl SolverSource for NoSolvers {
+    fn solver_for(&self, _: &str) -> Option<Arc<dyn DnsSolver>> {
+        None
+    }
+}
+
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 pub fn system_clock() -> Clock {
@@ -55,7 +65,10 @@ pub enum Pass {
     /// No usable keyring: nothing is issued.
     Held,
     /// Ran; the sites that were issued and the ones that failed.
-    Ran { issued: Vec<String>, failed: Vec<String> },
+    Ran {
+        issued: Vec<String>,
+        failed: Vec<String>,
+    },
 }
 
 impl Runner {
@@ -115,7 +128,10 @@ impl Runner {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!(error = %e, "acme: could not read the sites");
-                return Pass::Ran { issued: vec![], failed: vec![] };
+                return Pass::Ran {
+                    issued: vec![],
+                    failed: vec![],
+                };
             }
         };
         for site in &sites {
@@ -127,7 +143,9 @@ impl Runner {
         }
         if held {
             if !sites.is_empty() {
-                tracing::warn!("acme: holding issuance, this node has no secret key (--secret-key-file)");
+                tracing::warn!(
+                    "acme: holding issuance, this node has no secret key (--secret-key-file)"
+                );
             }
             return Pass::Held;
         }
@@ -147,7 +165,8 @@ impl Runner {
                     issued.push(site.name.clone());
                 }
                 Err(why) => {
-                    metrics::counter!("wayhouse_acme_issue_total", "result" => "error").increment(1);
+                    metrics::counter!("wayhouse_acme_issue_total", "result" => "error")
+                        .increment(1);
                     tracing::warn!(site = %site.name, error = %why, "acme: issuance failed");
                     self.record_failure(site, &why, now).await;
                     failed.push(site.name.clone());
@@ -173,10 +192,12 @@ impl Runner {
     }
 
     async fn issue_site(&self, site: &Site, term: u64, now: u64) -> Result<(), String> {
-        let solver = self
-            .solvers
-            .solver_for(&site.dns_plugin)
-            .ok_or_else(|| format!("the DNS plugin {:?} is not available on this node", site.dns_plugin))?;
+        let solver = self.solvers.solver_for(&site.dns_plugin).ok_or_else(|| {
+            format!(
+                "the DNS plugin {:?} is not available on this node",
+                site.dns_plugin
+            )
+        })?;
         let creds = self.account().await?;
         let ca = &self.ca;
         let (bundle, _) = ca
@@ -184,11 +205,19 @@ impl Runner {
             .await
             .map_err(|e| e.to_string())?;
         let stored = self.seal_cert(site, &bundle)?;
-        let op = AcmeOp::CertIssued { site: site.name.clone(), tagged_term: term, cert: stored };
+        let op = AcmeOp::CertIssued {
+            site: site.name.clone(),
+            tagged_term: term,
+            cert: stored,
+        };
         match self.propose(op).await? {
             Applied::Done => Ok(()),
-            Applied::WrongTerm => Err("this node stopped leading during the order; the result was dropped".into()),
-            Applied::Stale => Err("the site changed during the order; the result was dropped".into()),
+            Applied::WrongTerm => {
+                Err("this node stopped leading during the order; the result was dropped".into())
+            }
+            Applied::Stale => {
+                Err("the site changed during the order; the result was dropped".into())
+            }
             other => Err(format!("the certificate was refused: {other:?}")),
         }
     }
@@ -197,11 +226,19 @@ impl Runner {
     /// race converge on the first stored one, the other's account is orphaned at the CA.
     async fn account(&self) -> Result<AccountCreds, String> {
         if self.store.account().map_err(|e| e.to_string())?.is_none() {
-            let fresh = self.ca.ensure_account(None).await.map_err(|e| e.to_string())?;
+            let fresh = self
+                .ca
+                .ensure_account(None)
+                .await
+                .map_err(|e| e.to_string())?;
             let sealed = self
                 .keyring
                 .current()
-                .seal(SEAL_SCOPE, ACCOUNT_SLOT, fresh.credentials.expose().as_bytes())
+                .seal(
+                    SEAL_SCOPE,
+                    ACCOUNT_SLOT,
+                    fresh.credentials.expose().as_bytes(),
+                )
                 .map_err(|e| e.to_string())?;
             let stored = StoredAccount {
                 directory_url: self.directory_url.clone(),
@@ -226,8 +263,12 @@ impl Runner {
             .current()
             .open(SEAL_SCOPE, ACCOUNT_SLOT, &stored.sealed)
             .map_err(|e| format!("the account key cannot be opened: {e}"))?;
-        let credentials = std::str::from_utf8(plain.expose()).map_err(|_| "the account key is malformed")?;
-        Ok(AccountCreds { account_url: stored.account_url, credentials: Redacted::new(credentials) })
+        let credentials =
+            std::str::from_utf8(plain.expose()).map_err(|_| "the account key is malformed")?;
+        Ok(AccountCreds {
+            account_url: stored.account_url,
+            credentials: Redacted::new(credentials),
+        })
     }
 
     fn seal_cert(&self, site: &Site, bundle: &CertBundle) -> Result<StoredCert, String> {
@@ -239,7 +280,11 @@ impl Runner {
         let sealed_key = self
             .keyring
             .current()
-            .seal(SEAL_SCOPE, &cert_slot(&site.name, version), bundle.key_pem.expose().as_bytes())
+            .seal(
+                SEAL_SCOPE,
+                &cert_slot(&site.name, version),
+                bundle.key_pem.expose().as_bytes(),
+            )
             .map_err(|e| e.to_string())?;
         Ok(StoredCert {
             version,
@@ -253,7 +298,12 @@ impl Runner {
     }
 
     async fn record_failure(&self, site: &Site, why: &str, now: u64) {
-        let prev = self.store.attempt(&site.name).ok().flatten().unwrap_or_default();
+        let prev = self
+            .store
+            .attempt(&site.name)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         let (window_start, window_failures) = if now < prev.window_start + WINDOW_SECS {
             (prev.window_start, prev.window_failures + 1)
         } else {
@@ -270,7 +320,13 @@ impl Runner {
             window_start,
             window_failures,
         };
-        if let Err(e) = self.propose(AcmeOp::Attempt { site: site.name.clone(), attempt }).await {
+        if let Err(e) = self
+            .propose(AcmeOp::Attempt {
+                site: site.name.clone(),
+                attempt,
+            })
+            .await
+        {
             tracing::warn!(site = %site.name, error = %e, "acme: could not record the failure");
         }
     }
@@ -292,7 +348,9 @@ impl Runner {
 
 /// A stable value in `[0, 1]` per site, so sites issued together do not renew together.
 fn jitter(site: &str) -> f64 {
-    let h = site.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
+    let h = site
+        .bytes()
+        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
     f64::from(h % 1000) / 999.0
 }
 
@@ -349,7 +407,16 @@ mod tests {
             None,
             clock,
         );
-        Fixture { runner, store, fake, dns, now, keyring, db, _dir: dir }
+        Fixture {
+            runner,
+            store,
+            fake,
+            dns,
+            now,
+            keyring,
+            db,
+            _dir: dir,
+        }
     }
 
     async fn fixture() -> Fixture {
@@ -368,7 +435,10 @@ mod tests {
     }
 
     fn put(f: &Fixture, s: Site) {
-        assert_eq!(f.store.apply_local(&AcmeOp::SiteSet(s)).unwrap(), Applied::Done);
+        assert_eq!(
+            f.store.apply_local(&AcmeOp::SiteSet(s)).unwrap(),
+            Applied::Done
+        );
     }
 
     fn ran(issued: &[&str], failed: &[&str]) -> Pass {
@@ -386,7 +456,11 @@ mod tests {
         let c = f.store.cert("web").unwrap().unwrap();
         assert_eq!(c.version, 1);
         assert!(c.chain_pem.contains("BEGIN CERTIFICATE"));
-        let key = f.keyring.current().open("acme", "cert:web@1", &c.sealed_key).unwrap();
+        let key = f
+            .keyring
+            .current()
+            .open("acme", "cert:web@1", &c.sealed_key)
+            .unwrap();
         let pem = std::str::from_utf8(key.expose()).unwrap();
         assert!(pem.contains("PRIVATE KEY"));
         // The plaintext key is in no tree of the database, in any form.
@@ -419,7 +493,11 @@ mod tests {
         put(&f, site("web", "panel.example.com"));
         f.runner.run_once().await;
         f.now.fetch_add(45 * DAY, Ordering::SeqCst);
-        assert_eq!(f.runner.run_once().await, ran(&[], &[]), "half the life left");
+        assert_eq!(
+            f.runner.run_once().await,
+            ran(&[], &[]),
+            "half the life left"
+        );
         f.now.fetch_add(20 * DAY, Ordering::SeqCst); // 25 days left of 90
         assert_eq!(f.runner.run_once().await, ran(&["web"], &[]));
         assert_eq!(f.store.cert("web").unwrap().unwrap().version, 2);
@@ -433,7 +511,10 @@ mod tests {
         f.runner.run_once().await;
         put(&f, site("web", "b.example.com"));
         assert_eq!(f.runner.run_once().await, ran(&["web"], &[]));
-        assert_eq!(f.store.cert("web").unwrap().unwrap().names, vec!["b.example.com"]);
+        assert_eq!(
+            f.store.cert("web").unwrap().unwrap().names,
+            vec!["b.example.com"]
+        );
     }
 
     #[tokio::test]
@@ -447,10 +528,17 @@ mod tests {
         assert_eq!(a.next_attempt_at, f.now.load(Ordering::SeqCst) + 300);
         assert!(a.last_error.is_some());
         assert!(f.dns.is_empty(), "cleaned up after the failure");
-        assert_eq!(f.runner.run_once().await, ran(&[], &[]), "inside the backoff");
+        assert_eq!(
+            f.runner.run_once().await,
+            ran(&[], &[]),
+            "inside the backoff"
+        );
         f.now.fetch_add(301, Ordering::SeqCst);
         assert_eq!(f.runner.run_once().await, ran(&["web"], &[]));
-        assert!(f.store.attempt("web").unwrap().is_none(), "success clears the state");
+        assert!(
+            f.store.attempt("web").unwrap().is_none(),
+            "success clears the state"
+        );
     }
 
     #[tokio::test]
@@ -466,7 +554,10 @@ mod tests {
         }
         let a = f.store.attempt("web").unwrap().unwrap();
         assert_eq!(a.failures, MAX_FAILURES_PER_HOUR);
-        assert!(a.next_attempt_at >= start + WINDOW_SECS, "waits out the hour");
+        assert!(
+            a.next_attempt_at >= start + WINDOW_SECS,
+            "waits out the hour"
+        );
     }
 
     #[tokio::test]
@@ -527,7 +618,9 @@ mod tests {
         put(&f, site("web", "a.example.com"));
         f.runner.run_once().await;
         let other = FakeCa::start(MemDns::default()).await;
-        let ca = AcmeCa::new(&other.directory_url(), true).with_http(FakeCa::http_factory()).fast_retry();
+        let ca = AcmeCa::new(&other.directory_url(), true)
+            .with_http(FakeCa::http_factory())
+            .fast_retry();
         let now = f.now.clone();
         let moved = Runner::new(
             f.store.clone(),
@@ -551,7 +644,9 @@ mod tests {
         let dns = MemDns::default();
         let clock = system_clock();
         let fake = FakeCa::start_with(dns.clone(), clock.clone(), 90 * DAY).await;
-        let ca = AcmeCa::new(&fake.directory_url(), true).with_http(FakeCa::http_factory()).fast_retry();
+        let ca = AcmeCa::new(&fake.directory_url(), true)
+            .with_http(FakeCa::http_factory())
+            .fast_retry();
         let runner = Runner::new(
             store.clone(),
             ca,
@@ -563,7 +658,10 @@ mod tests {
         );
         let applied = ha
             .raft
-            .client_write(WriteRequest::Acme(AcmeOp::SiteSet(site("web", "a.example.com"))))
+            .client_write(WriteRequest::Acme(AcmeOp::SiteSet(site(
+                "web",
+                "a.example.com",
+            ))))
             .await
             .unwrap();
         assert_eq!(applied.data, WriteResponse::AcmeResult(Applied::Done));
@@ -576,7 +674,14 @@ mod tests {
             .client_write(WriteRequest::Acme(AcmeOp::CertIssued {
                 site: "web".into(),
                 tagged_term: 999,
-                cert: store.cert("web").unwrap().map(|mut c| { c.version = 2; c }).unwrap(),
+                cert: store
+                    .cert("web")
+                    .unwrap()
+                    .map(|mut c| {
+                        c.version = 2;
+                        c
+                    })
+                    .unwrap(),
             }))
             .await
             .unwrap();
