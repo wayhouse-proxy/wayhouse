@@ -1,6 +1,7 @@
 //! Controller-managed ACME certificates (design:
 //! `docs/superpowers/specs/2026-10-15-controller-acme-design.md`).
 
+pub mod runner;
 pub mod store;
 pub mod types;
 

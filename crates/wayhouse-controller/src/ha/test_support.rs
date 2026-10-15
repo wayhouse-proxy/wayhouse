@@ -35,6 +35,21 @@ pub(crate) async fn single_node_with_plugins(
     crate::plugins::PluginStore,
     tempfile::TempDir,
 ) {
+    let (handle, cluster, plugins, _acme, dir) = single_node_full(node_id, addr).await;
+    (handle, cluster, plugins, dir)
+}
+
+/// [`single_node`], also handing out the state machine's plugin and ACME stores.
+pub(crate) async fn single_node_full(
+    node_id: u64,
+    addr: &str,
+) -> (
+    Arc<HaHandle>,
+    Arc<ClusterState>,
+    crate::plugins::PluginStore,
+    crate::acme::AcmeStore,
+    tempfile::TempDir,
+) {
     let dir = tempfile::tempdir().unwrap();
     let store = |sub: &str| Arc::new(Store::open(&dir.path().join(sub)).unwrap());
     let config = Arc::new(AppState::new(
@@ -66,6 +81,7 @@ pub(crate) async fn single_node_with_plugins(
     );
     let cluster = sm.cluster().clone();
     let plugins = sm.plugins().clone();
+    let acme = sm.acme().clone();
     let raft: Raft = openraft::Raft::new(
         node_id,
         Arc::new(raft_config(SNAPSHOT_AFTER).validate().unwrap()),
@@ -91,5 +107,5 @@ pub(crate) async fn single_node_with_plugins(
         secret_keys: crate::plugins::secrets::KeyringHandle::default(),
         plugins_enabled: true,
     });
-    (handle, cluster, plugins, dir)
+    (handle, cluster, plugins, acme, dir)
 }
