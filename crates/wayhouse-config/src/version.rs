@@ -18,12 +18,12 @@ use serde_norway::Value;
 use crate::ConfigError;
 
 /// The newest config schema this build understands.
-pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+pub const CONFIG_SCHEMA_VERSION: u32 = 3;
 
 /// `(dotted path, schema version that introduced it)`. Paths walk mappings by key
 /// and pass through sequences transparently (`listeners.foo` matches `foo` in
 /// every listener).
-pub const FIELD_SINCE: &[(&str, u32)] = &[("listeners.plugin_routes", 2)];
+pub const FIELD_SINCE: &[(&str, u32)] = &[("listeners.plugin_routes", 2), ("web", 3)];
 
 /// The effective declared version of a document: `raw` is its `schema_version`
 /// value, if any. Refuses non-integers, `0`, and anything above
@@ -144,20 +144,20 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_3_is_rejected_with_message() {
-        let e = parse_str(&doc("schema_version: 3\n")).unwrap_err();
-        assert!(matches!(e, ConfigError::SchemaTooNew { found: 3, max: 2 }));
+    fn schema_version_4_is_rejected_with_message() {
+        let e = parse_str(&doc("schema_version: 4\n")).unwrap_err();
+        assert!(matches!(e, ConfigError::SchemaTooNew { found: 4, max: 3 }));
         assert_eq!(
             e.to_string(),
-            "config schema_version 3 is newer than this build supports (max 2)"
+            "config schema_version 4 is newer than this build supports (max 3)"
         );
     }
 
     #[test]
     fn a_newer_document_with_a_field_this_build_lacks_reports_the_version() {
-        let e = parse_str(&doc("schema_version: 3\nbrand_new_setting: true\n")).unwrap_err();
+        let e = parse_str(&doc("schema_version: 4\nbrand_new_setting: true\n")).unwrap_err();
         assert!(
-            matches!(e, ConfigError::SchemaTooNew { found: 3, max: 2 }),
+            matches!(e, ConfigError::SchemaTooNew { found: 4, max: 3 }),
             "{e}"
         );
     }

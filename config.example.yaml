@@ -361,3 +361,17 @@ listeners:
 #   survive reloads.)
 # Note: a UDP session reads idle_timeout_sec once at creation; a reload that
 # changes it applies to sessions opened afterwards.
+
+# Web sites published through the packaged Caddy (config schema 3; docs/05 "Web
+# sites"). Wayhouse routes the traffic to a pool in front of Caddy with PROXY v2;
+# this section describes the sites. A pool used `via: wayhouse` gets a generated
+# loopback listener `web-up-<pool>` so Caddy reaches the origin through the pool.
+# web:
+#   pool: web                  # must exist and set proxy_protocol: v2
+#   sites:
+#     - hosts: [panel.example.com]
+#       upstreams:
+#         - addr: 10.0.0.5:8080
+#     - hosts: [wings1.example.com]
+#       upstreams:
+#         - { pool: local, via: wayhouse }

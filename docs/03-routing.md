@@ -322,3 +322,15 @@ listener raw-udp-v4
 its own key, and `routes:` entries are `{ match: {...}, action: {...} }`. See
 `docs/05` for the actual shape; the range-bind idea itself (F1.4) is real and
 built.)
+
+### G) Web sites behind the packaged Caddy
+```
+listener public-tcp (0.0.0.0:443/tcp)
+  route 1: sni suffix ".example.com" → pool web   (proxy_protocol v2 → Caddy on loopback)
+  route 2: always                    → pool game
+listener web-up-wings1 (127.0.0.1:19010/tcp, generated from `web:` via: wayhouse)
+  route 1: always → pool wings1                    (Caddy's upstream for wings1.example.com)
+```
+Wayhouse sends the TLS stream to Caddy untouched and never terminates it. The second
+listener is what lets Caddy reach an origin through a pool (tunnel-backed, remote, drained
+or failed over like any other backend); see [05](05-configuration.md) "Web sites".

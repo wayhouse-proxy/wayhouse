@@ -22,6 +22,8 @@ owner's call).
 Tags stay manual (release-please runs with `skip-github-release`); the steps are in
 [`RELEASING.md`](RELEASING.md). Automating the tag is backlog #210.
 
+**Web sites (#360, refs #297):** the `web:` section (config schema 3; `wayhouse-config/src/web.rs`) describes sites published through the packaged Caddy. A site upstream is an `addr` or a pool, `via: direct` (default) or `via: wayhouse`; the latter makes the validator append a loopback-only listener `web-up-<pool>` to `Config.listeners` (stable hashed port from `internal_ports`), so the data path needs no change. `web.pool` must set `proxy_protocol: v2`. Spec: [`docs/superpowers/specs/2026-10-15-web-routing-design.md`](docs/superpowers/specs/2026-10-15-web-routing-design.md); tests `crates/wayhouse-core/tests/web_routing.rs`. Not yet: the Caddy renderer (`wayhouse-web-sync`), recipes, certificates (`web.acme`, `web.sites[].tls`).
+
 **Sniffer registry (Wave 3, #183):** the `wayhouse-registry` crate (index, verify, `wayhouse-registry-gen`),
 the UI backend (`/api/registries/*`, `--registries-file`, `--no-default-registry`) and the Sniffers page
 ("Install from a registry") are built; see [`docs/sniffers.md`](docs/sniffers.md). Not yet: the sniffers

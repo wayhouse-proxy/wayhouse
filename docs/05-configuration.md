@@ -496,6 +496,68 @@ Both pushed signals are coalesced: after the first change the source is fetched
 once it has been quiet for 500 ms (at most 5 s after the first change), so a
 rolling update of many pods costs one fetch, not one per event.
 
+## Web sites (`web:`, schema 3)
+
+Optional top-level section that publishes HTTP(S) sites through the packaged Caddy
+(design: [`2026-10-15-web-routing-design.md`](superpowers/specs/2026-10-15-web-routing-design.md)).
+Wayhouse never parses HTTP: its `port` or `sni` routes send :80 and :443 to a pool whose
+backends are Caddy's loopback listeners, with `proxy_protocol: v2` so Caddy sees the real
+client address. The section only describes the sites; the data path ignores it except for
+the listeners it generates.
+
+```yaml
+schema_version: 3
+pools:
+  - { name: web, targets: ["127.0.0.1:8080", "127.0.0.1:8443"], proxy_protocol: v2 }
+  - { name: wings1, source: wings1-origin }          # e.g. a tunnel-backed origin
+listeners:
+  - name: https
+    bind: "0.0.0.0:443"
+    routes:
+      - { match: { type: sni, host: ["*.example.com"] }, action: { pool: web } }
+      - { match: { type: always }, action: { pool: game } }
+web:
+  pool: web                                          # default
+  listen: { http: 127.0.0.1:8080, https: 127.0.0.1:8443 }   # defaults
+  internal_bind: 127.0.0.1                           # default, loopback only
+  internal_ports: "19000-19999"                      # default
+  sites:
+    - hosts: [panel.example.com, "*.apps.example.com"]
+      upstreams:
+        - addr: 10.0.0.5:8080                        # a plain address
+        - pool: panel                                # a pool, via: direct
+    - hosts: [wings1.example.com]
+      upstreams:
+        - pool: wings1
+          via: wayhouse                              # through this proxy's own pool
+          port: 19010                                # optional pin inside internal_ports
+```
+
+**Upstreams.** Each is exactly one of `addr` (an `ip:port`) or `pool`. A pool is reached
+`via: direct` (the default; the renderer resolves the pool's backends and gives them to
+Caddy) or `via: wayhouse`. For `via: wayhouse` the proxy adds a TCP listener
+`web-up-<pool>` bound to `internal_bind` on a port from `internal_ports`, routed to that
+pool, and Caddy's upstream is that loopback address
+(`Config.web.sites[].upstreams[]` = `Local { pool, addr }`). The connection then takes the
+ordinary path: balancing, health checks, drains, tunnel backends, forwarding to another
+node. The hop is one extra loopback connection. Caddy forwards the client address in
+`X-Forwarded-For`; the TCP peer Wayhouse sees on that hop is Caddy's loopback.
+
+**Ports.** An unpinned pool's port comes from a hash of its name, moving on to the next free
+port when taken (by another pin, another generated listener, an operator listener on the
+same address, or the admin API), so adding or removing other pools does not move it. Pools
+are processed in name order; a range with no free port is an error.
+
+**Validation.** `web.pool` must exist and set `proxy_protocol: v2`; hosts are exact names or
+`*.suffix` and may not appear in two sites; every site has a host and an upstream;
+`via` and `port` apply only to a pool and `port` only with `via: wayhouse`; a pool used
+`via: wayhouse` must not set `proxy_protocol` (the next hop is plain HTTP); `internal_bind`
+must be loopback; `internal_ports` is `lo-hi`, at most 1000 ports; pins lie inside it and
+are unique; a generated name may not clash with an operator listener. `--check` and startup
+warn when no TCP listener routes to `web.pool`. The `web:` key needs `schema_version: 3`.
+Fields for certificates (`web.acme`, `web.sites[].tls`) and the renderer are added by their
+own changes.
+
 ## Validation rules (excerpt)
 
 - A pool needs exactly one of `targets:` / `source:`; `source` must point to a
@@ -569,7 +631,7 @@ rolling update of many pods costs one fetch, not one per event.
 
 `schema_version` (top level, optional) is the **minimum config schema the document
 needs**; absent means `1`. A build supports up to the schema in
-`wayhouse_config::version::CONFIG_SCHEMA_VERSION` (currently `2`). A document that
+`wayhouse_config::version::CONFIG_SCHEMA_VERSION` (currently `3`). A document that
 asks for more is refused with `config schema_version N is newer than this build
 supports (max M)`, on startup, on a file reload (the running config stays active)
 and on a controller-delivered revision. A string, `0` or a fractional value is

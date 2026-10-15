@@ -1093,6 +1093,16 @@ pub(crate) fn validate(
         raw.settings.shutdown_grace_sec,
     )?;
 
+    let web = match raw.web {
+        Some(rw) => Some(crate::web::validate_web(
+            rw,
+            &pools,
+            &mut listeners,
+            admin_listen,
+        )?),
+        None => None,
+    };
+
     Ok(Config {
         schema_version,
         schema_declared,
@@ -1110,6 +1120,7 @@ pub(crate) fn validate(
         failure_domain: raw.settings.failure_domain,
         gossip,
         group,
+        web,
     })
 }
 
