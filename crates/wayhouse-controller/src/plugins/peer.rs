@@ -32,7 +32,7 @@ use axum::Router;
 use wayhouse_plugin_host::{inspect, MAX_MODULE_BYTES};
 
 use super::{PluginStore, PluginStoreError};
-use crate::ha::members::{fetch_whoami, is_unreachable};
+use crate::ha::members::{fetch_whoami, WhoamiError};
 use crate::ha::peers::peer_url;
 use crate::ha::routes::{Whoami, PLUGIN_SUPPORT};
 use crate::ha::{HaHandle, NodeId, WriteRequest, WriteResponse};
@@ -222,7 +222,7 @@ pub async fn check_active_key(ha: &HaHandle, active: &str) -> Result<(), String>
 }
 
 pub fn check_active_key_answers(
-    answers: &[(NodeId, Result<Whoami, String>)],
+    answers: &[(NodeId, Result<Whoami, WhoamiError>)],
     active: &str,
 ) -> Result<(), String> {
     let missing: Vec<String> = answers
@@ -230,7 +230,7 @@ pub fn check_active_key_answers(
         .filter_map(|(id, who)| match who {
             Ok(w) if w.secret_key_ids.iter().any(|k| k == active) => None,
             Ok(_) => Some(format!("node {id} lacks key {active}")),
-            Err(why) if is_unreachable(why) => {
+            Err(why) if why.is_unreachable() => {
                 tracing::warn!(node = id, error = %why, "no answer while checking for the active secret key");
                 None
             }
@@ -245,7 +245,7 @@ pub fn check_active_key_answers(
 }
 
 /// `/raft/whoami` from every other member, by id.
-pub async fn whoami_all(ha: &HaHandle) -> Vec<(NodeId, Result<Whoami, String>)> {
+pub async fn whoami_all(ha: &HaHandle) -> Vec<(NodeId, Result<Whoami, WhoamiError>)> {
     let mut tasks = tokio::task::JoinSet::new();
     for (id, addr) in others(ha) {
         let (client, token) = (ha.forward.clone(), ha.ha_token.clone());
@@ -338,17 +338,19 @@ pub async fn replicate_to_quorum(ha: &HaHandle, sha256: &str, bytes: Bytes) -> R
 }
 
 /// `Ok` when every answer says the member can take part in module replication.
-pub fn check_support_answers(answers: &[(NodeId, Result<Whoami, String>)]) -> Result<(), String> {
+pub fn check_support_answers(
+    answers: &[(NodeId, Result<Whoami, WhoamiError>)],
+) -> Result<(), String> {
     support_check(answers, false)
 }
 
 fn support_check(
-    answers: &[(NodeId, Result<Whoami, String>)],
+    answers: &[(NodeId, Result<Whoami, WhoamiError>)],
     skip_silent: bool,
 ) -> Result<(), String> {
     for (id, answer) in answers {
         match answer {
-            Err(why) if skip_silent && is_unreachable(why) => {}
+            Err(why) if skip_silent && why.is_unreachable() => {}
             Err(why) => {
                 return Err(format!(
                     "node {id} did not answer ({why}); plugin installs wait until every member \
@@ -380,7 +382,7 @@ pub async fn check_support(ha: &HaHandle) -> Result<(), String> {
 /// that answers with a build unable to decode the entry blocks. For revocations (secret
 /// delete, rewrap), which must work while a replica is down (#344).
 pub fn check_revocation_support_answers(
-    answers: &[(NodeId, Result<Whoami, String>)],
+    answers: &[(NodeId, Result<Whoami, WhoamiError>)],
 ) -> Result<(), String> {
     support_check(answers, true)
 }
@@ -591,13 +593,13 @@ mod tests {
         );
     }
 
-    fn unreachable() -> String {
-        format!("{}connection refused", "unreachable: ")
+    fn unreachable() -> WhoamiError {
+        WhoamiError::Unreachable("connection refused".into())
     }
 
     #[test]
     fn a_member_that_answers_badly_still_blocks_revocation_and_rotation() {
-        let bad = || Err("answered 404 Not Found".to_string());
+        let bad = || Err(WhoamiError::Answered("answered 404 Not Found".into()));
         let why = check_revocation_support_answers(&[(2, bad())]).unwrap_err();
         assert!(why.contains("node 2"), "{why}");
         let why = check_active_key_answers(&[(2, bad())], "k2").unwrap_err();

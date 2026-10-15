@@ -1042,7 +1042,7 @@ async fn secret_keys(State(st): State<PluginsState>) -> Json<serde_json::Value> 
                 id.to_string(),
                 match who {
                     Ok(w) => serde_json::json!(w.secret_key_ids),
-                    Err(why) => serde_json::json!({ "error": why }),
+                    Err(why) => serde_json::json!({ "error": why.to_string() }),
                 },
             );
         }

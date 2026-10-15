@@ -19,8 +19,6 @@ enum ResolvedSource {
     Dynamic(SourceConfig),
 }
 
-/// A pool shares one backend's live state (health, admin state, active count)
-/// per address, so the same address twice is never what anyone meant.
 /// Longest accepted timeout or interval. A larger value overflows the
 /// millisecond arithmetic downstream (deadlines wrap) and is never sensible.
 const MAX_TIMEOUT_SEC: u64 = 86_400;
@@ -81,6 +79,8 @@ fn cap_ms(what: &str, field: &str, v: u64) -> Result<(), ConfigError> {
     Ok(())
 }
 
+/// A pool shares one backend's live state (health, admin state, active count)
+/// per address, so the same address twice is never what anyone meant.
 fn reject_duplicate_targets(what: &str, addrs: &[SocketAddr]) -> Result<(), ConfigError> {
     let mut seen = BTreeSet::new();
     match addrs.iter().find(|a| !seen.insert(**a)) {
