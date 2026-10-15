@@ -2,64 +2,57 @@
 
 ## Overview
 
-```mermaid
-flowchart TB
-    subgraph data["Data plane (hot path)"]
-        direction LR
-        clients(["Clients<br/>TCP / UDP"]) --> listener["Listener<br/>accept · ACL · limits"] --> sniff["Sniffers (optional)<br/>peek first bytes"] --> router["Router<br/>match + resolver"]
-        router --> pool["Upstream pool<br/>LB + affinity"]
-        pool --> pump["Connection / session pump<br/>splice / io"]
-        pump --> backends(["Game servers<br/>private network"])
-    end
-
-    subgraph control["Control plane (off the hot path)"]
-        ctl["Config loader · admin API · discovery adapter<br/>health checker · metrics / log exporter"]
-    end
-
-    data <-. "immutable snapshot (read lock-free) · health" .-> control
-```
-
-### Fleet, sniffers and plugins
-
-The same instance in context. Traffic enters on the left and leaves on the right; everything off the data path is below it. Sniffers sit on the data path; plugins live in the controller.
+One proxy instance in context. Traffic enters on the left and leaves on the right; everything off the data path sits below it. Sniffers run on the data path; plugins live in the controller.
 
 ```mermaid
-flowchart TB
-    subgraph DP["Data plane (hot path): ingress on the left, egress on the right"]
-        direction LR
-        P(["Players<br/>TCP / UDP"]) --> L["Listener<br/>ACL · limits · rate limit"] --> S["Sniffers (optional)<br/>WASM, in-process"]
-        S --> R["Router<br/>hostname / hint match"]
-        R --> LB["Pool<br/>LB · health · affinity"]
-        LB --> B1(["Game server A"])
-        LB --> B2(["Game server B"])
-        LB --> T["Tunnel client<br/>(WireGuard, optional)"]
-        T -.-> AG["wayhouse-agent<br/>(origin side)"] --> B3(["Game server C"])
-    end
+flowchart LR
+    P(["Players<br/>TCP / UDP"]) --> L["Listener<br/>TCP accept · UDP recv"]
+    L --> F["Filters<br/>ACL · geo · rate limits<br/>per-IP and global caps"]
+    F --> S["Sniffers (optional)<br/>WASM, peek first bytes"]
+    S --> R["Router<br/>port · dst · client CIDR<br/>SNI · first bytes · external"]
+    R --> LB["Pool<br/>LB · affinity · health"]
+    LB --> PUMP["Pump<br/>splice (TCP) · sessions (UDP)<br/>optional PROXY protocol"]
+    PUMP --> B1(["Game server A"])
+    PUMP --> B2(["Game server B"])
+    PUMP --> T["Tunnel client<br/>WireGuard (optional)"]
+    T -. "encrypted" .-> AG["wayhouse-agent<br/>(origin side)"] --> B3(["Game server C"])
+    R -. "external route" .-> RES["Resolver (optional)<br/>HTTP / gRPC · cache"]
+    RES -. "pool or target" .-> LB
 
-    subgraph CP["Control plane (off the data path)"]
-        direction LR
-        subgraph PCP["In the proxy (per instance)"]
-            G["Gossip<br/>(backend health, optional)"]
-            CL["Config loader · admin API<br/>discovery · health checks"]
-        end
-        subgraph FCP["Fleet (optional)"]
-            C["wayhouse-controller<br/>(config, Raft HA)"]
-            PH["Plugin host (WASM)<br/>timers · webhooks · events"]
-            A["wayhouse-aggregator"]
-            U["wayhouse-ui<br/>(admin GUI)"]
-        end
-        SN[("sniffers repo")]
-        PR[("plugins repo")]
-        C -. "config · plugin routes" .-> PCP
-        PH --- C
-        PCP -. "state" .-> A
-        U --> C
-        U --> A
-        PR -.-> PH
-    end
+    UI["wayhouse-ui<br/>(admin GUI)"]
+    AGG["wayhouse-aggregator<br/>(optional)"]
+    CTRL["wayhouse-controller<br/>config · Raft HA"]
+    PH["Plugin host (WASM)<br/>timers · webhooks · events"]
+    PR[("plugins repo")]
+    SN[("sniffers repo")]
+    ADM["Admin API<br/>drain · metrics"]
+    CFG["Config loader<br/>validate · build snapshot"]
+    DISC["Discovery adapters<br/>DNS SRV · Consul · K8s · static"]
+    HC["Health checker"]
+    G["Gossip (optional)<br/>peer health votes"]
 
-    DP <-. "snapshot · health votes · sniffer installs" .-> CP
+
+    L <-."drain".- ADM
+    F <-."immutable snapshot<br/>(filters, router, pool)".- CFG
+    LB <-.- DISC
+    LB <-.- HC
+    LB <-.- G
+    S <-.- SN
+    CFG <-.- CTRL
+    CTRL --- PH
+    PH <-.- PR
+    CTRL <--> UI
+    UI --> AGG
+    ADM -."state".-> AGG
+    AG -.-> CTRL
+
+    classDef data fill:#dbeafe,stroke:#2563eb,color:#111
+    classDef ctl fill:#fef3c7,stroke:#b45309,color:#111
+    class P,L,F,S,R,LB,PUMP,B1,B2,B3,T,AG,RES data
+    class UI,AGG,CTRL,PH,PR,SN,ADM,CFG,DISC,HC,G ctl
 ```
+
+Blue boxes are the data path (ingress left, egress right); amber boxes are everything off it. Dotted lines are control, config or state flows.
 
 ## Data plane / control plane separation
 
