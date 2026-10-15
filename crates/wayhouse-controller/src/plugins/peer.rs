@@ -214,16 +214,28 @@ pub fn request_purge(ha: &Arc<HaHandle>) {
     });
 }
 
-/// `Ok` when every other member holds the key `active`; otherwise names who does not.
+/// `Ok` when every other member that answers holds the key `active`; otherwise names who
+/// does not. A silent member does not block: rotating a leaked key must work while a
+/// replica is down (#344), and that replica needs the key before it reads secrets again.
 pub async fn check_active_key(ha: &HaHandle, active: &str) -> Result<(), String> {
-    let mut missing = Vec::new();
-    for (id, who) in whoami_all(ha).await {
-        match who {
-            Ok(w) if w.secret_key_ids.iter().any(|k| k == active) => {}
-            Ok(_) => missing.push(format!("node {id} lacks key {active}")),
-            Err(why) => missing.push(format!("node {id} did not answer ({why})")),
-        }
-    }
+    check_active_key_answers(&whoami_all(ha).await, active)
+}
+
+pub fn check_active_key_answers(
+    answers: &[(NodeId, Result<Whoami, String>)],
+    active: &str,
+) -> Result<(), String> {
+    let missing: Vec<String> = answers
+        .iter()
+        .filter_map(|(id, who)| match who {
+            Ok(w) if w.secret_key_ids.iter().any(|k| k == active) => None,
+            Ok(_) => Some(format!("node {id} lacks key {active}")),
+            Err(why) => {
+                tracing::warn!(node = id, error = %why, "no answer while checking for the active secret key");
+                None
+            }
+        })
+        .collect();
     if missing.is_empty() {
         Ok(())
     } else {
@@ -326,8 +338,16 @@ pub async fn replicate_to_quorum(ha: &HaHandle, sha256: &str, bytes: Bytes) -> R
 
 /// `Ok` when every answer says the member can take part in module replication.
 pub fn check_support_answers(answers: &[(NodeId, Result<Whoami, String>)]) -> Result<(), String> {
+    support_check(answers, false)
+}
+
+fn support_check(
+    answers: &[(NodeId, Result<Whoami, String>)],
+    skip_silent: bool,
+) -> Result<(), String> {
     for (id, answer) in answers {
         match answer {
+            Err(_) if skip_silent => {}
             Err(why) => {
                 return Err(format!(
                     "node {id} did not answer ({why}); plugin installs wait until every member \
@@ -353,6 +373,20 @@ pub fn check_support_answers(answers: &[(NodeId, Result<Whoami, String>)]) -> Re
 /// cannot decode the entry or hold the module.
 pub async fn check_support(ha: &HaHandle) -> Result<(), String> {
     check_support_answers(&whoami_all(ha).await)
+}
+
+/// Like [`check_support_answers`] but a member that does not answer is skipped: only one
+/// that answers with a build unable to decode the entry blocks. For revocations (secret
+/// delete, rewrap), which must work while a replica is down (#344).
+pub fn check_revocation_support_answers(
+    answers: &[(NodeId, Result<Whoami, String>)],
+) -> Result<(), String> {
+    support_check(answers, true)
+}
+
+/// [`check_revocation_support_answers`] over the live members.
+pub async fn check_revocation_support(ha: &HaHandle) -> Result<(), String> {
+    check_revocation_support_answers(&whoami_all(ha).await)
 }
 
 /// Fetches `sha256` from the first of `addrs` that has it; `None` when none does.
@@ -553,6 +587,42 @@ mod tests {
         assert!(
             silent.contains("node 2") && silent.contains("did not answer"),
             "{silent}"
+        );
+    }
+
+    #[test]
+    fn revoking_a_secret_does_not_wait_for_a_silent_member() {
+        // A leaked secret must be revocable while a replica is down (#344); only a
+        // member that answers with a build that cannot decode the entry blocks it.
+        assert!(check_revocation_support_answers(&[
+            (2, Err("connection refused".into())),
+            (3, Ok(who(PLUGIN_SUPPORT)))
+        ])
+        .is_ok());
+        let old = check_revocation_support_answers(&[
+            (2, Err("connection refused".into())),
+            (3, Ok(who(0))),
+        ])
+        .unwrap_err();
+        assert!(old.contains("node 3") && old.contains("upgrade"), "{old}");
+    }
+
+    #[test]
+    fn rotating_the_key_does_not_wait_for_a_silent_member() {
+        let with = |ids: &[&str]| Whoami {
+            secret_key_ids: ids.iter().map(|s| (*s).to_string()).collect(),
+            ..who(PLUGIN_SUPPORT)
+        };
+        assert!(
+            check_active_key_answers(&[(2, Err("down".into())), (3, Ok(with(&["k2"])))], "k2")
+                .is_ok()
+        );
+        let lacking =
+            check_active_key_answers(&[(2, Err("down".into())), (3, Ok(with(&["k1"])))], "k2")
+                .unwrap_err();
+        assert!(
+            lacking.contains("node 3") && !lacking.contains("node 2"),
+            "{lacking}"
         );
     }
 

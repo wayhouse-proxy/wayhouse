@@ -397,11 +397,7 @@ async fn main() -> anyhow::Result<()> {
     // `role::RoleHandle`'s doc for why a plain `Role` field per state
     // wouldn't work once adoption exists).
     let role_handle = RoleHandle::new(args.role);
-    // POST /config refuses a document newer than the oldest live proxy
-    // understands; the clone reads the same trees `with_ha` below keeps using.
-    let schema_source = proxy_peers_state.clone();
-    let mut config_state = AppState::try_new(store, args.auth_token.clone(), role_handle.clone())?
-        .with_schema_floor(Arc::new(move || schema_source.min_live_config_schema()));
+    let mut config_state = AppState::try_new(store, args.auth_token.clone(), role_handle.clone())?;
     let mut intent_state_val =
         IntentState::try_new(intent_store, role_handle.clone(), args.auth_token.clone())?;
 
@@ -543,6 +539,12 @@ async fn main() -> anyhow::Result<()> {
             import_policy,
         ));
     }
+    // POST /config refuses a document newer than the oldest live proxy
+    // understands. Set after the HA wiring above: under HA the liveness window
+    // must allow for the hourly `last_seen` touch (#342).
+    let schema_source = proxy_peers_state.clone();
+    config_state =
+        config_state.with_schema_floor(Arc::new(move || schema_source.min_live_config_schema()));
     let leader_handle = ha_handle.as_ref().map(|(h, _, _)| h.clone());
     let lease_leader = leader_handle.clone();
     tokio::spawn(wayhouse_controller::lease::lease_loop(
