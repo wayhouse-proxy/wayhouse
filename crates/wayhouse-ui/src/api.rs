@@ -299,7 +299,7 @@ async fn login(
     // Every name, real or not, is charged to one of a fixed set of hashed
     // username buckets: the throttle answers identically for both, so it is no
     // account-existence oracle, and the limiter's memory stays bounded.
-    let username = state.users.as_ref().and_then(|_| req.username.as_deref());
+    let username = state.users.as_ref().and(req.username.as_deref());
     // Usernames key the limiter's map, so bound their size (no real
     // username comes close).
     if req

@@ -56,7 +56,7 @@ fn unexpected_host(host: Option<&str>) -> String {
     let seen: String = host
         .unwrap_or("")
         .chars()
-        .filter(|c| c.is_ascii_graphic())
+        .filter(char::is_ascii_graphic)
         .take(100)
         .collect();
     format!(

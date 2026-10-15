@@ -947,12 +947,9 @@ impl ResolveCarry {
                     next.insert(key, (addrs, false));
                 }
                 Err(e) => {
-                    match prev.remove(&key) {
-                        Some((addrs, false)) => {
-                            out.extend(addrs.iter().copied());
-                            next.insert(key, (addrs, true));
-                        }
-                        _ => {}
+                    if let Some((addrs, false)) = prev.remove(&key) {
+                        out.extend(addrs.iter().copied());
+                        next.insert(key, (addrs, true));
                     }
                     failed = Some(e);
                 }
