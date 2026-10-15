@@ -21,6 +21,7 @@ workspace = true
 wayhouse-http = { workspace = true, features = ["server"] }
 wayhouse-config = { path = "../wayhouse-config" }
 wayhouse-plugin-host = { path = "../wayhouse-plugin-host" }
+wayhouse-acme = { path = "../wayhouse-acme" }
 
 sled.workspace = true
 thiserror.workspace = true
