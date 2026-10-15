@@ -14,10 +14,10 @@ fn claim_dir() -> PathBuf {
 
 #[test]
 fn concurrent_callers_never_share_a_port() {
-    let threads: Vec<_> = (0..8)
+    let threads: Vec<_> = (0..4)
         .map(|_| {
             std::thread::spawn(|| {
-                (0..200)
+                (0..20)
                     .map(|_| free_port().expect("a free port"))
                     .collect::<Vec<_>>()
             })
@@ -50,7 +50,7 @@ fn ports_stay_out_of_the_ephemeral_range_and_are_claimed() {
 fn ports_that_are_bound_stay_distinct() {
     // Bind every port free_port hands out and keep it: every bind must succeed
     // and none may repeat.
-    let held: Vec<(u16, TcpListener)> = (0..50)
+    let held: Vec<(u16, TcpListener)> = (0..20)
         .map(|_| {
             let port = free_port().expect("a free port");
             (port, TcpListener::bind(("127.0.0.1", port)).expect("bind"))

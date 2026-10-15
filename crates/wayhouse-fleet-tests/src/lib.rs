@@ -70,7 +70,7 @@ pub fn free_port() -> Result<u16> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static CALLS: AtomicU64 = AtomicU64::new(0);
 
-    let (lo, hi) = port_window();
+    let (lo, hi) = port_window()?;
     let span = u32::from(hi - lo);
     let dir = std::env::temp_dir().join("wayhouse-fleet-ports");
     std::fs::create_dir_all(&dir).context("creating the port claim dir")?;
@@ -103,14 +103,16 @@ pub fn free_port() -> Result<u16> {
 /// the claims of killed runs do not pile up.
 const PORT_CLAIM_TTL: Duration = Duration::from_secs(3600);
 
-/// `lo..hi`: from 20000 up to the kernel's ephemeral range, or to 32768 if
-/// that cannot be read.
-fn port_window() -> (u16, u16) {
-    let ephemeral_low = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+/// `lo..hi`, strictly below the kernel's ephemeral range (32768 if that cannot
+/// be read): from 20000, or 100 ports under the range if it starts lower.
+fn port_window() -> Result<(u16, u16)> {
+    let hi = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
         .ok()
         .and_then(|s| s.split_whitespace().next()?.parse::<u16>().ok())
         .unwrap_or(32768);
-    (20000, ephemeral_low.max(20100))
+    let lo = 20_000.min(hi.saturating_sub(100)).max(1024);
+    ensure!(lo < hi, "no ports below the ephemeral range ({hi}+)");
+    Ok((lo, hi))
 }
 
 /// Create the claim file; `false` if another caller holds a live claim.
