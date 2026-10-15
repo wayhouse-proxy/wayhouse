@@ -30,10 +30,7 @@ The same instance in context. Traffic enters on the left and leaves on the right
 
 ```mermaid
 flowchart LR
-    subgraph ctl["Control plane (off the data path)"]
-        direction LR
-        cfg["Config loader · admin API<br/>discovery · health checks"]
-        gos["Gossip<br/>backend health"]
+    subgraph fleet["Fleet control plane (optional, off the data path)"]
         ctrl["wayhouse-controller (Raft HA)<br/>config + intent log<br/>backend / proxy peer registries"]
         ph["Plugin host (WASM)<br/>timers · webhooks · events · routes"]
         agg["wayhouse-aggregator"]
@@ -44,10 +41,16 @@ flowchart LR
 
     clients(["Clients"]) --> lst
 
-    subgraph data["Data plane (hot path, one proxy instance)"]
-        lst["Listener<br/>ACL · limits · rate limit"] --> sn["Sniffers (optional, WASM)<br/>Minecraft · A2S …"]
-        sn --> rt["Router"] --> pl["Pool<br/>LB · health · affinity"]
-        pl --> tun["Tunnel client<br/>WireGuard"]
+    subgraph proxy["wayhouse (one proxy instance)"]
+        subgraph local["Control plane (in the proxy)"]
+            cfg["Config loader · admin API<br/>discovery · health checks<br/>(publishes the snapshot)"]
+            gos["Gossip<br/>backend health"]
+        end
+        subgraph data["Data plane (hot path)"]
+            lst["Listener<br/>ACL · limits · rate limit"] --> sn["Sniffers (optional, WASM)<br/>Minecraft · A2S …"]
+            sn --> rt["Router"] --> pl["Pool<br/>LB · health · affinity"]
+            pl --> tun["Tunnel client<br/>WireGuard"]
+        end
     end
 
     pl --> be(["Backends"])
@@ -55,9 +58,9 @@ flowchart LR
 
     sn ~~~ cfg
     rt ~~~ gos
-    pl ~~~ ctrl
-    cfg -. "immutable snapshot" .- rt
+    cfg -.- rt
     gos -. "health votes" .- pl
+    cfg ~~~ ctrl
     ctrl -. "config, plugin routes, peers" .- cfg
     ph --- ctrl
     agent -. "register" .- ctrl

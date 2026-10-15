@@ -53,12 +53,10 @@ examples) or from an external routing service you control.
 
 ```mermaid
 flowchart LR
-    subgraph CP["Control plane (off the data path)"]
-        CL["Config loader · admin API<br/>discovery · health checks"]
-        G["Gossip<br/>(backend health, optional)"]
+    subgraph FC["Fleet control plane (optional, off the data path)"]
         C["wayhouse-controller<br/>(config, Raft HA)"]
         PH["Plugin host (WASM)<br/>timers · webhooks · events"]
-        A["wayhouse-aggregator<br/>(optional)"]
+        A["wayhouse-aggregator"]
         U["wayhouse-ui<br/>(admin GUI)"]
         SN[("sniffers repo")]
         PR[("plugins repo")]
@@ -66,11 +64,17 @@ flowchart LR
 
     P(["Players<br/>TCP / UDP"]) --> L
 
-    subgraph DP["Data plane (hot path)"]
-        L["Listener<br/>ACL · limits · rate limit"] --> S["Sniffers (optional)<br/>WASM, in-process"]
-        S --> R["Router<br/>hostname / hint match"]
-        R --> LB["Pool<br/>LB · health · affinity"]
-        LB --> T["Tunnel client<br/>(WireGuard, optional)"]
+    subgraph W["wayhouse (proxy instance)"]
+        subgraph CP["Control plane (in the proxy)"]
+            CL["Config loader · admin API<br/>discovery · health checks<br/>(publishes the snapshot)"]
+            G["Gossip<br/>(backend health, optional)"]
+        end
+        subgraph DP["Data plane (hot path)"]
+            L["Listener<br/>ACL · limits · rate limit"] --> S["Sniffers (optional)<br/>WASM, in-process"]
+            S --> R["Router<br/>hostname / hint match"]
+            R --> LB["Pool<br/>LB · health · affinity"]
+            LB --> T["Tunnel client<br/>(WireGuard, optional)"]
+        end
     end
 
     LB --> B1(["Game server A"])
@@ -79,9 +83,9 @@ flowchart LR
 
     S ~~~ CL
     R ~~~ G
-    LB ~~~ C
-    CL -. "snapshot" .- R
+    CL -.- R
     G -. "health votes" .- LB
+    CL ~~~ C
     C -. "config + plugin routes" .- CL
     PH --- C
     CL -. "state" .- A
