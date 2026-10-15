@@ -30,15 +30,15 @@ ABI major is 0 the host requires an exact match of the minor. Depending on
 
 One per sniffer, written by the author. Unknown keys are an error.
 
-| Key                                                 | Meaning                                                                            |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `name`                                              | Letters, digits, `-` and `_` only (the proxy's module name rule)                   |
-| `description`, `license`                            | Shown in the UI                                                                    |
-| `version`                                           | SemVer of this sniffer                                                             |
-| `abi`                                               | `major.minor` the module was built for; must equal the section in the built module |
-| `min_proxy`                                         | Oldest proxy version it runs on                                                    |
+| Key                                                 | Meaning                                                                                                  |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `name`                                              | Letters, digits, `-` and `_` only (the proxy's module name rule)                                         |
+| `description`, `license`                            | Shown in the UI                                                                                          |
+| `version`                                           | SemVer of this sniffer                                                                                   |
+| `abi`                                               | `major.minor` the module was built for; must equal the section in the built module                       |
+| `min_proxy`                                         | Oldest proxy version it runs on                                                                          |
 | `limits.max_memory_bytes`, `limits.call_timeout_ms` | Resource limits the sniffer is designed for; the client rejects 0 and anything above 256 MiB / 10 000 ms |
-| `config` (optional), `homepage` (optional)          | Documentation of the per-module config string; a link                              |
+| `config` (optional), `homepage` (optional)          | Documentation of the per-module config string; a link                                                    |
 
 ## Index (`index.json`)
 
