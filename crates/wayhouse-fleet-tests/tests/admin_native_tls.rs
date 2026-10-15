@@ -12,7 +12,7 @@ use wayhouse_fleet_tests::{
     spawn_wayhouse, wait_http_up, wait_until, WayhouseArgs,
 };
 
-const UP: Duration = Duration::from_secs(30);
+const UP: Duration = wayhouse_fleet_tests::STARTUP_TIMEOUT;
 
 /// `minimal_wayhouse_config` with `settings.admin.tls` naming `cert`/`key`.
 fn tls_admin_config(admin_port: u16, cert: &str, key: &str) -> Result<String> {

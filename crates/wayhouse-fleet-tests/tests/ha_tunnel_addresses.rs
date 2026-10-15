@@ -93,7 +93,11 @@ impl Cluster {
                 .await?;
             }
             c.procs[i] = Some(spawn(i, &dir_of(i))?);
-            wait_http_up(&format!("{}/healthz", c.bases[i]), Duration::from_secs(10)).await?;
+            wait_http_up(
+                &format!("{}/healthz", c.bases[i]),
+                wayhouse_fleet_tests::STARTUP_TIMEOUT,
+            )
+            .await?;
         }
         c._dirs = dirs;
         if let Some(seed) = seed {
@@ -280,7 +284,11 @@ async fn pre_ha_controller() -> Result<(tempfile::TempDir, Vec<(String, Value)>)
         &format!("127.0.0.1:{port}"),
         &["--tunnel-network".to_string(), "10.60.0.0/24".to_string()],
     )?;
-    wait_http_up(&format!("{base}/healthz"), Duration::from_secs(10)).await?;
+    wait_http_up(
+        &format!("{base}/healthz"),
+        wayhouse_fleet_tests::STARTUP_TIMEOUT,
+    )
+    .await?;
     let http = wayhouse_http::client();
     let mut given = Vec::new();
     for name in ["o1", "o2", "o3"] {
@@ -430,7 +438,11 @@ async fn a_fourth_node_joins_then_the_leader_is_removed() -> Result<()> {
     let dir4 = tempfile::tempdir()?;
     let node4 = spawn_joiner(dir4.path(), 4, port4)?;
     let base4 = format!("http://127.0.0.1:{port4}");
-    wait_http_up(&format!("{base4}/healthz"), Duration::from_secs(10)).await?;
+    wait_http_up(
+        &format!("{base4}/healthz"),
+        wayhouse_fleet_tests::STARTUP_TIMEOUT,
+    )
+    .await?;
     // Asked of a node that may be a follower: it forwards to the leader.
     c.member_change(
         reqwest::Method::POST,
@@ -480,7 +492,11 @@ async fn put_moves_a_member_to_a_new_port() -> Result<()> {
     let new_port = free_port()?;
     let _moved = spawn_joiner(c._dirs[2].path(), 3, new_port)?;
     let new_base = format!("http://127.0.0.1:{new_port}");
-    wait_http_up(&format!("{new_base}/healthz"), Duration::from_secs(10)).await?;
+    wait_http_up(
+        &format!("{new_base}/healthz"),
+        wayhouse_fleet_tests::STARTUP_TIMEOUT,
+    )
+    .await?;
     c.member_change(
         reqwest::Method::PUT,
         &c.bases[0],

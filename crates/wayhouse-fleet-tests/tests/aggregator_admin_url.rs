@@ -14,7 +14,7 @@ use wayhouse_fleet_tests::{
     wait_http_up, wait_until, WayhouseArgs,
 };
 
-const UP: Duration = Duration::from_secs(30);
+const UP: Duration = wayhouse_fleet_tests::STARTUP_TIMEOUT;
 
 /// The fan-out goes to the overridden URL (through the terminator, which
 /// counts it), not to the admin listener the instance would otherwise report.

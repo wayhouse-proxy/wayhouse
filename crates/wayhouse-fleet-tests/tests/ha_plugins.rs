@@ -93,7 +93,11 @@ async fn plugins_replicate_through_a_follower_and_the_new_leader_keeps_ticking()
             &extra,
         )?));
         dirs.push(dir);
-        wait_http_up(&format!("{}/healthz", bases[i]), Duration::from_secs(10)).await?;
+        wait_http_up(
+            &format!("{}/healthz", bases[i]),
+            wayhouse_fleet_tests::STARTUP_TIMEOUT,
+        )
+        .await?;
     }
 
     // Wait for a leader every node agrees on, then pick a follower.
@@ -322,7 +326,11 @@ async fn a_secret_and_a_webhook_go_through_a_follower_and_no_node_stores_the_sec
             &extra,
         )?);
         dirs.push(dir);
-        wait_http_up(&format!("{}/healthz", bases[i]), Duration::from_secs(10)).await?;
+        wait_http_up(
+            &format!("{}/healthz", bases[i]),
+            wayhouse_fleet_tests::STARTUP_TIMEOUT,
+        )
+        .await?;
     }
     wait_until(
         || async {

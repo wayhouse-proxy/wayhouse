@@ -133,7 +133,11 @@ async fn a_node_that_joins_after_a_purge_catches_up_by_snapshot() -> Result<()> 
     )?);
     dirs.push(dir4);
     let base4 = format!("http://127.0.0.1:{port4}");
-    wait_http_up(&format!("{base4}/healthz"), Duration::from_secs(10)).await?;
+    wait_http_up(
+        &format!("{base4}/healthz"),
+        wayhouse_fleet_tests::STARTUP_TIMEOUT,
+    )
+    .await?;
     let added = client
         .post(format!("{}/admin/ha/members", bases[0]))
         .json(&serde_json::json!({ "id": 4, "addr": format!("127.0.0.1:{port4}") }))

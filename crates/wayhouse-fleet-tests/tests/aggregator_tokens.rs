@@ -7,7 +7,7 @@ use anyhow::{ensure, Result};
 use serde_json::{json, Value};
 use wayhouse_fleet_tests::{build_fleet_bins, free_port, spawn_aggregator_with, wait_http_up};
 
-const UP: Duration = Duration::from_secs(30);
+const UP: Duration = wayhouse_fleet_tests::STARTUP_TIMEOUT;
 const ADMIN: &str = "admin-token-0123456789";
 const INGEST: &str = "ingest-token-0123456789";
 

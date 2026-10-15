@@ -18,7 +18,7 @@ fn ensure_built() {
     BUILT.get_or_init(|| build_fleet_bins().expect("building fleet binaries"));
 }
 
-const UP: Duration = Duration::from_secs(10);
+const UP: Duration = wayhouse_fleet_tests::STARTUP_TIMEOUT;
 
 fn write_config(dir: &tempfile::TempDir, name: &str, yaml: &str) -> Result<std::path::PathBuf> {
     let path = dir.path().join(name);
