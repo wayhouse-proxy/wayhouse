@@ -228,6 +228,9 @@ pub enum WriteRequest {
         items: Vec<crate::plugins::RewrapItem>,
         updated_at: u64,
     },
+    /// A controller-managed ACME write (sites, account, certificates, retry state). Keys
+    /// inside are already sealed by the proposing leader.
+    Acme(crate::acme::AcmeOp),
 }
 
 /// Why a plugin entry changed nothing. Deterministic: every replica gives the
@@ -286,6 +289,8 @@ pub enum WriteResponse {
     PluginRewrapped(Vec<String>),
     /// A plugin entry changed nothing, deterministically.
     PluginRejected(PluginReject),
+    /// What an ACME entry did.
+    AcmeResult(crate::acme::Applied),
 }
 
 openraft::declare_raft_types!(
