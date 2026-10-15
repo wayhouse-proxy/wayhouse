@@ -43,26 +43,50 @@ impl fmt::Display for Role {
 
 /// A shared, cloneable handle onto this tier's current [`Role`]. Every clone
 /// reads/writes the same underlying cell.
+///
+/// It also owns the gate between direct writes and adoption: a direct write
+/// holds [`RoleHandle::write_gate`] from its role check through its store
+/// commit, and [`crate::adopt`] holds [`RoleHandle::adoption_gate`] from its
+/// quiescence check through the role claim, so no write can read `Standalone`
+/// before the claim and commit history after the second quiescence check.
 #[derive(Clone)]
-pub struct RoleHandle(Arc<RwLock<Role>>);
+pub struct RoleHandle {
+    role: Arc<RwLock<Role>>,
+    gate: Arc<tokio::sync::RwLock<()>>,
+}
 
 impl RoleHandle {
     pub fn new(role: Role) -> Self {
-        RoleHandle(Arc::new(RwLock::new(role)))
+        RoleHandle {
+            role: Arc::new(RwLock::new(role)),
+            gate: Arc::new(tokio::sync::RwLock::new(())),
+        }
     }
 
     pub fn get(&self) -> Role {
-        *self.0.read().unwrap_or_else(PoisonError::into_inner)
+        *self.role.read().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub fn set(&self, role: Role) {
-        *self.0.write().unwrap_or_else(PoisonError::into_inner) = role;
+        *self.role.write().unwrap_or_else(PoisonError::into_inner) = role;
+    }
+
+    /// Held by a direct write from its role check through its store commit;
+    /// any number of writes hold it at once, none while an adoption does.
+    pub async fn write_gate(&self) -> tokio::sync::OwnedRwLockReadGuard<()> {
+        self.gate.clone().read_owned().await
+    }
+
+    /// Held by an adoption from its quiescence check through the role claim;
+    /// waits for every in-flight direct write and keeps new ones out.
+    pub async fn adoption_gate(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        self.gate.clone().write_owned().await
     }
 
     /// Sets the role to `to` only if it is `from` now, atomically; `true` when it did.
     /// Lets exactly one of several concurrent callers win a role flip.
     pub fn compare_and_set(&self, from: Role, to: Role) -> bool {
-        let mut cell = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        let mut cell = self.role.write().unwrap_or_else(PoisonError::into_inner);
         if *cell == from {
             *cell = to;
             true
@@ -91,5 +115,44 @@ mod tests {
         assert!(handle.compare_and_set(Role::Standalone, Role::Slave));
         assert!(!handle.compare_and_set(Role::Standalone, Role::Slave));
         assert_eq!(handle.get(), Role::Slave);
+    }
+
+    #[tokio::test]
+    async fn the_adoption_gate_waits_for_an_in_flight_write_and_blocks_new_ones() {
+        let handle = RoleHandle::new(Role::Standalone);
+        let write = handle.write_gate().await;
+        let second_write = handle.write_gate().await; // writes share the gate
+
+        let adopting = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.adoption_gate().await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !adopting.is_finished(),
+            "adoption must wait for in-flight writes"
+        );
+
+        drop(write);
+        drop(second_write);
+        let adoption = tokio::time::timeout(std::time::Duration::from_secs(2), adopting)
+            .await
+            .expect("adoption proceeds once the writes finish")
+            .unwrap();
+
+        let late_write = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.write_gate().await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !late_write.is_finished(),
+            "a write must wait out an adoption"
+        );
+        drop(adoption);
+        tokio::time::timeout(std::time::Duration::from_secs(2), late_write)
+            .await
+            .expect("the write proceeds once the adoption is done")
+            .unwrap();
     }
 }

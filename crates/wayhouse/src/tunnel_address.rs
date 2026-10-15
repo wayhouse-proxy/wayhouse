@@ -60,8 +60,33 @@ pub fn interface_cidr(
         .with_context(|| format!("{source:?} has no valid /prefix"))?;
     if network.is_some() {
         check_in_network(ip, net_ip, prefix)?;
+    } else {
+        check_pinned_prefix(ip, prefix)?;
     }
     Ok(format!("{assigned_ip}/{prefix}"))
+}
+
+/// Pin-only mode has no reported network to bound the prefix or place the address in,
+/// so the pinned prefix must at least fit `ip`'s family, and `ip` must not be the first
+/// or last address of the subnet it implies (a `/31` or `/32` has neither).
+fn check_pinned_prefix(ip: std::net::IpAddr, prefix: u8) -> anyhow::Result<()> {
+    let (bits, width) = match ip {
+        std::net::IpAddr::V4(a) => (u128::from(u32::from(a)), 32u32),
+        std::net::IpAddr::V6(a) => (u128::from(a), 128u32),
+    };
+    anyhow::ensure!(
+        (1..=width).contains(&u32::from(prefix)),
+        "pinned prefix /{prefix} is not a usable prefix for the {width}-bit address {ip}"
+    );
+    let host_bits = width - u32::from(prefix);
+    if host_bits >= 2 {
+        let host = bits & ((1u128 << host_bits) - 1);
+        anyhow::ensure!(
+            host != 0 && host != (1u128 << host_bits) - 1,
+            "tunnel address {ip} is the network or broadcast address of its /{prefix}"
+        );
+    }
+    Ok(())
 }
 
 /// The controller's own bounds for a tunnel network: IPv4 `/16`..`/30`, IPv6 `/64`..`/120`.
@@ -306,6 +331,42 @@ mod tests {
     fn ip_of_strips_the_prefix() {
         assert_eq!(ip_of("10.60.0.5/16"), "10.60.0.5");
         assert_eq!(ip_of("10.60.0.5"), "10.60.0.5");
+    }
+
+    /// #326: the pinned prefix is operator input; it has to fit the address family
+    /// of the assigned IP, or the interface address fails later when it is parsed.
+    #[test]
+    fn a_pinned_prefix_wider_than_the_address_family_is_refused() {
+        assert!(interface_cidr("10.60.0.5", None, Some("10.60.0.5/33")).is_err());
+        assert!(interface_cidr("10.60.0.5", None, Some("10.60.0.5/64")).is_err());
+        assert!(interface_cidr("fd49::5", None, Some("fd49::5/129")).is_err());
+        assert_eq!(
+            interface_cidr("fd49::5", None, Some("fd49::5/64")).unwrap(),
+            "fd49::5/64"
+        );
+    }
+
+    /// #326: without a reported network the pinned prefix still decides which
+    /// addresses of the subnet are hosts; its first and last are not.
+    #[test]
+    fn a_pinned_prefix_does_not_admit_the_subnets_boundary_addresses() {
+        let pin = Some("10.60.0.5/16");
+        assert!(interface_cidr("10.60.255.255", None, pin).is_err());
+        assert!(interface_cidr("10.60.0.0", None, pin).is_err());
+        assert_eq!(
+            interface_cidr("10.60.0.6", None, pin).unwrap(),
+            "10.60.0.6/16"
+        );
+        // A /32 or /31 has no network or broadcast address to refuse.
+        assert!(interface_cidr("10.60.0.5", None, Some("10.60.0.5/32")).is_ok());
+        assert!(interface_cidr("10.60.0.4", None, Some("10.60.0.5/31")).is_ok());
+    }
+
+    /// A pinned `/0` is no tunnel network, and for IPv6 it would shift a `u128` by 128.
+    #[test]
+    fn a_pinned_zero_prefix_is_an_error_not_a_panic() {
+        assert!(interface_cidr("fd49::5", None, Some("fd49::5/0")).is_err());
+        assert!(interface_cidr("10.60.0.5", None, Some("10.60.0.5/0")).is_err());
     }
 
     #[test]

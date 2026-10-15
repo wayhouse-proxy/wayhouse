@@ -203,6 +203,9 @@ async fn submit_intent(
     headers: axum::http::HeaderMap,
     body: String,
 ) -> Response {
+    // Held through the store commit so an adoption cannot claim the slave role
+    // between the role check and the commit (`crate::adopt`).
+    let _gate = state.role.write_gate().await;
     if state.role.get() == Role::Slave {
         return (
             StatusCode::FORBIDDEN,
@@ -442,6 +445,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn an_intent_write_waits_out_an_adoption_and_is_then_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let role = RoleHandle::new(Role::Standalone);
+        let app = router(IntentState::new(store.clone(), role.clone(), None));
+
+        let adoption = role.adoption_gate().await;
+        let write = tokio::spawn(async move {
+            app.oneshot(
+                Request::post("/intent")
+                    .header(wayhouse_http::protocol::HEADER, "1.0")
+                    .body(Body::from(
+                        r#"{"op":"backend_add","pool":"mc","addr":"127.0.0.1:1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !write.is_finished(),
+            "a write must not run while an adoption holds the gate"
+        );
+
+        role.set(Role::Slave);
+        drop(adoption);
+        assert_eq!(write.await.unwrap(), StatusCode::FORBIDDEN);
+        assert_eq!(store.current_revision().unwrap(), None);
     }
 
     #[tokio::test]

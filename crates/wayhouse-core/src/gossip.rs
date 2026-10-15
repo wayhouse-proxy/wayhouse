@@ -111,6 +111,13 @@ type DomainMap = Arc<Mutex<HashMap<SocketAddr, HashMap<SocketAddr, BackendHealth
 
 struct BroadcastMerger {
     domain: DomainMap,
+    /// The live members (and this instance), shared with [`GossipHandle`]. A register
+    /// from an origin outside it is not stored: foca keeps a broadcast for a while
+    /// after its origin left and may deliver it again, and a departed origin's old
+    /// verdict would vote once it rejoins. A genuine register that arrives a moment
+    /// before its origin is listed is lost too, but its origin publishes again on every
+    /// health probe, so the vote is back within one probe interval.
+    member_ids: Arc<Mutex<HashSet<SocketAddr>>>,
 }
 
 impl foca::BroadcastHandler<SocketAddr> for BroadcastMerger {
@@ -125,6 +132,15 @@ impl foca::BroadcastHandler<SocketAddr> for BroadcastMerger {
         let reg: BackendHealthRegister = postcard::from_bytes(data)?;
         if reg.changed_at > wall_ms().saturating_add(MAX_VERSION_SKEW_MS) {
             tracing::debug!(origin = %reg.origin, "gossip: dropping a register stamped in the future");
+            return Ok(None);
+        }
+        let is_member = self
+            .member_ids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&reg.origin);
+        if !is_member {
+            tracing::debug!(origin = %reg.origin, "gossip: dropping a register from a non-member");
             return Ok(None);
         }
         let key = BackendHealthKey {
@@ -193,6 +209,13 @@ impl GossipHandle {
             },
             GossipInbox(rx),
         )
+    }
+
+    fn merger(&self) -> BroadcastMerger {
+        BroadcastMerger {
+            domain: self.domain.clone(),
+            member_ids: self.member_ids.clone(),
+        }
     }
 
     /// Installs the current member set and drops every register whose origin was a
@@ -312,15 +335,8 @@ pub async fn run(
     let foca_cfg = FocaConfig::new_lan(NonZeroU32::new(10).unwrap());
     let max_packet = foca_cfg.max_packet_size.get();
     let rng: rand10::rngs::StdRng = rand10::make_rng();
-    let mut foca: FocaInstance = Foca::with_custom_broadcast(
-        identity,
-        foca_cfg,
-        rng,
-        PostcardCodec,
-        BroadcastMerger {
-            domain: handle.domain.clone(),
-        },
-    );
+    let mut foca: FocaInstance =
+        Foca::with_custom_broadcast(identity, foca_cfg, rng, PostcardCodec, handle.merger());
     let mut runtime = AccumulatingRuntime::new();
     let mut warned_version = false;
     let mut last_version = 0u64;
@@ -633,6 +649,7 @@ mod tests {
         (
             BroadcastMerger {
                 domain: domain.clone(),
+                member_ids: Arc::default(),
             },
             domain,
         )
@@ -648,9 +665,17 @@ mod tests {
         })
     }
 
-    fn receive(m: &mut BroadcastMerger, r: BackendHealthRegister) -> Option<BackendHealthKey> {
+    /// Delivers `r` as it arrives, whether or not its origin is a member.
+    fn deliver(m: &mut BroadcastMerger, r: BackendHealthRegister) -> Option<BackendHealthKey> {
         m.receive_item(&postcard::to_allocvec(&r).unwrap(), None)
             .unwrap()
+    }
+
+    /// Like [`deliver`] for a merger built by [`merger`], which has no member list: the
+    /// origin is listed first, as the mesh would have by the time its register matters.
+    fn receive(m: &mut BroadcastMerger, r: BackendHealthRegister) -> Option<BackendHealthKey> {
+        m.member_ids.lock().unwrap().insert(r.origin);
+        deliver(m, r)
     }
 
     /// #170: an origin that restarts publishes with a version that is above
@@ -945,6 +970,34 @@ mod tests {
         assert_eq!(handle.domain.lock().unwrap()[&addr].len(), 1);
         // Back in the mesh, it does not vote with its old verdict.
         handle.replace_members([stays, leaves].into_iter().collect());
+        assert_eq!(handle.domain_votes(addr), (0, 1));
+    }
+
+    /// foca keeps a health broadcast for a while after the origin that wrote it
+    /// has left, and may deliver it again; it must not put the departed origin's
+    /// verdict back into the map, where it would vote once the origin rejoins
+    /// (#326).
+    #[test]
+    fn a_stale_broadcast_from_a_departed_origin_is_dropped() {
+        let (handle, _inbox) = GossipHandle::new();
+        let mut merger = handle.merger();
+        let addr: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        let stays: SocketAddr = "10.0.0.2:1".parse().unwrap();
+        let leaves: SocketAddr = "10.0.0.3:1".parse().unwrap();
+        handle.replace_members([stays, leaves].into_iter().collect());
+        assert!(deliver(&mut merger, now_reg(addr, leaves, 5)).is_some());
+        assert_eq!(handle.domain_votes(addr), (0, 1));
+
+        handle.replace_members([stays].into_iter().collect());
+        // The old broadcast arrives again while the origin is away.
+        assert!(deliver(&mut merger, now_reg(addr, leaves, 5)).is_none());
+        assert!(!handle.domain.lock().unwrap().contains_key(&addr));
+
+        // It rejoins: nothing of its old verdict is left to vote.
+        handle.replace_members([stays, leaves].into_iter().collect());
+        assert_eq!(handle.domain_votes(addr), (0, 0));
+        // Its next publication is taken as usual.
+        assert!(deliver(&mut merger, now_reg(addr, leaves, 6)).is_some());
         assert_eq!(handle.domain_votes(addr), (0, 1));
     }
 

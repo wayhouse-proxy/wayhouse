@@ -612,6 +612,9 @@ async fn submit(
     actor: Option<String>,
     forward: &crate::ha::client::ForwardHeaders,
 ) -> Response {
+    // Held through the store commit so an adoption cannot claim the slave role
+    // between the role check and the commit (`crate::adopt`).
+    let _gate = state.role.write_gate().await;
     if state.role.get() == Role::Slave {
         return slave_rejects_write();
     }
@@ -708,6 +711,7 @@ async fn promote(
     Path(revision): Path<u64>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    let _gate = state.role.write_gate().await;
     if state.role.get() == Role::Slave {
         return slave_rejects_write();
     }
@@ -1572,6 +1576,36 @@ listeners:
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_config_write_waits_out_an_adoption_and_is_then_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let role = RoleHandle::new(Role::Standalone);
+        let app = router(AppState::new(store.clone(), None, role.clone()));
+
+        let adoption = role.adoption_gate().await;
+        let write = tokio::spawn(async move {
+            app.oneshot(
+                Request::post("/config")
+                    .body(Body::from(VALID_CONFIG))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !write.is_finished(),
+            "a write must not run while an adoption holds the gate"
+        );
+
+        role.set(Role::Slave);
+        drop(adoption);
+        assert_eq!(write.await.unwrap(), StatusCode::FORBIDDEN);
+        assert_eq!(store.current_revision().unwrap(), None);
     }
 
     #[tokio::test]
