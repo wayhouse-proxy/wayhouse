@@ -43,6 +43,10 @@ use serde::Deserialize;
 
 const RECONNECT_MIN: Duration = Duration::from_millis(500);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
+/// How long a stream stays open after a peer failed to configure. The controller
+/// emits no event for an unchanged re-registration, so the only way to retry is to
+/// reconnect, which replays the whole registry.
+const CONFIGURE_RETRY: Duration = Duration::from_secs(30);
 
 #[cfg(unix)]
 fn restrict_permissions(path: &Path) -> anyhow::Result<()> {
@@ -293,8 +297,21 @@ async fn subscribe_once(
     tracing::info!(controller = %base_url, "subscribed to backend-peers updates");
 
     let mut buf = wayhouse_http::sse::EventBuffer::new();
+    let mut retry_at: Option<tokio::time::Instant> = None;
     loop {
-        let chunk = resp.chunk().await.map_err(|e| {
+        let read = match retry_at {
+            Some(at) => match tokio::time::timeout_at(at, resp.chunk()).await {
+                Ok(read) => read,
+                Err(_) => {
+                    tracing::warn!(
+                        "a WireGuard peer failed to configure; reconnecting to retry it"
+                    );
+                    return Ok(());
+                }
+            },
+            None => resp.chunk().await,
+        };
+        let chunk = read.map_err(|e| {
             anyhow::anyhow!(
                 "reading subscribe stream from {base_url}: {}",
                 wayhouse_http::error_chain(&e)
@@ -308,18 +325,22 @@ async fn subscribe_once(
 
         while let Some(event) = buf.next_event() {
             if let Some(ev) = parse_sse_event(&event) {
-                apply_event(wg, last_applied, &ev);
+                if apply_event(wg, last_applied, &ev) {
+                    retry_at.get_or_insert(tokio::time::Instant::now() + CONFIGURE_RETRY);
+                }
             }
         }
     }
 }
 
-/// Applies one event to the WireGuard device and records what it applied.
+/// Applies one event to the WireGuard device and records what it applied. `true`
+/// when a peer failed to configure and wants a retry.
 fn apply_event(
     wg: &(dyn WireguardInterfaceApi + Send + Sync),
     last_applied: &mut HashMap<String, PeerRegistration>,
     ev: &Event,
-) {
+) -> bool {
+    let mut retry = false;
     match plan(last_applied, ev) {
         Action::Skip => {}
         Action::Reconcile(reg) => {
@@ -336,6 +357,7 @@ fn apply_event(
                 }
                 Reconciled::ConfigureFailed => {
                     last_applied.remove(&reg.name);
+                    retry = true;
                 }
                 // The device is untouched for an unchanged key, so the installed
                 // peer keeps its record and a later removal still finds it. A
@@ -354,6 +376,7 @@ fn apply_event(
             }
         }
     }
+    retry
 }
 
 #[derive(Debug, PartialEq)]
@@ -530,11 +553,14 @@ mod tests {
         let ev = Event::Registered(reg.clone());
         let mut applied = HashMap::new();
 
-        apply_event(&wg, &mut applied, &ev);
+        assert!(
+            apply_event(&wg, &mut applied, &ev),
+            "a failed configure asks for a retry"
+        );
         assert!(applied.is_empty(), "a failed configure is not applied");
         assert_eq!(plan(&applied, &ev), Action::Reconcile(&reg));
 
-        apply_event(&wg, &mut applied, &ev);
+        assert!(!apply_event(&wg, &mut applied, &ev));
         assert_eq!(applied.get("home"), Some(&reg));
     }
 

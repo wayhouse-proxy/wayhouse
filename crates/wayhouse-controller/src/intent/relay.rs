@@ -129,6 +129,19 @@ fn parse_sse_event(event: &str) -> Option<SseIntent> {
     Some(SseIntent { revision, op })
 }
 
+fn warn_if_regressed(state: &IntentState, revision: u64) {
+    if let Ok(cursor) = state.relay.get() {
+        if crate::relay::parent_revision_regressed(cursor, revision) {
+            tracing::warn!(
+                parent_revision = revision,
+                cursor,
+                "parent controller intent revision is below the relay cursor: the parent \
+                 was reset or restored, and this tier skips its ops until it passes the cursor"
+            );
+        }
+    }
+}
+
 /// Lands one parsed op in this tier's own intent store via
 /// [`IntentState::relay_revision`] — the sanctioned bypass of the `slave`
 /// write gate, same as `parent_client::apply_sse_event`'s handling of
@@ -140,6 +153,11 @@ fn parse_sse_event(event: &str) -> Option<SseIntent> {
 /// for a keep-alive or malformed block.
 async fn apply_sse_event(event: &str, state: &IntentState) -> Result<Option<u64>, RelayError> {
     let Some(SseIntent { revision, op }) = parse_sse_event(event) else {
+        if crate::relay::is_data_event(event) {
+            tracing::warn!(
+                "skipping a parent intent event this build cannot parse (unknown op or malformed)"
+            );
+        }
         return Ok(None);
     };
     let bytes = match serde_json::to_vec(&op) {
@@ -151,6 +169,7 @@ async fn apply_sse_event(event: &str, state: &IntentState) -> Result<Option<u64>
             return Ok(Some(revision));
         }
     };
+    warn_if_regressed(state, revision);
     state.relay_revision(bytes, revision).await?;
     tracing::info!(
         parent_revision = revision,

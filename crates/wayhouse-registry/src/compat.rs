@@ -45,13 +45,10 @@ pub fn abi_matches(sniffer: &str, host: &str) -> Result<bool, AbiParseError> {
     })
 }
 
-/// The oldest proxy of `env`, a pre-release counting as its release for this
-/// comparison (`0.1.0-rc.1` is `0.1.0`). `None` when no proxy version is known.
+/// The oldest proxy of `env` by strict semver ordering (`0.1.0-rc.1` is older than
+/// `0.1.0`). `None` when no proxy version is known.
 fn oldest_proxy(env: &Environment) -> Option<semver::Version> {
-    env.proxy_versions
-        .iter()
-        .min()
-        .map(|p| semver::Version::new(p.major, p.minor, p.patch))
+    env.proxy_versions.iter().min().cloned()
 }
 
 /// Whether every known proxy of `env` is new enough for `version`'s `min_proxy`.
@@ -254,10 +251,17 @@ mod tests {
     }
 
     #[test]
-    fn prerelease_proxy_counts_as_its_release() {
-        // 0.1.0-rc.1 is semver-older than 0.1.0, but a release candidate of 0.1.0
-        // runs the 0.1.0 feature set, so its pre-release tag is ignored.
+    fn prerelease_proxy_is_older_than_its_release() {
+        // Strict semver: 0.1.0-rc.1 sorts below 0.1.0, so a version needing
+        // min_proxy 0.1.0 is not offered to a fleet still on the candidate.
         let e = entry(vec![ver("0.1.0", "0.1", "0.1.0")]);
-        assert!(select(&e, &env("0.1", &["0.1.0-rc.1"])).is_ok());
+        assert_eq!(
+            select(&e, &env("0.1", &["0.1.0-rc.1"])),
+            Err(Incompatible::ProxyTooOld {
+                needs: v("0.1.0"),
+                oldest_proxy: v("0.1.0-rc.1")
+            })
+        );
+        assert!(select(&e, &env("0.1", &["0.1.1-rc.1"])).is_ok());
     }
 }

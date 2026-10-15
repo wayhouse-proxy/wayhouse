@@ -224,8 +224,21 @@ fn parse_sse_event(event: &str) -> Option<SseRevision> {
 /// the revision is retried. `Ok(None)` for a keep-alive or malformed block.
 async fn apply_sse_event(event: &str, state: &AppState) -> Result<Option<u64>, RelayError> {
     let Some(SseRevision { revision, config }) = parse_sse_event(event) else {
+        if crate::relay::is_data_event(event) {
+            tracing::warn!("skipping a parent config event this build cannot parse");
+        }
         return Ok(None);
     };
+    if let Ok(cursor) = state.relay.get() {
+        if crate::relay::parent_revision_regressed(cursor, revision) {
+            tracing::warn!(
+                parent_revision = revision,
+                cursor,
+                "parent controller revision is below the relay cursor: the parent was reset \
+                 or restored, and this tier skips its revisions until it passes the cursor"
+            );
+        }
+    }
     state.relay_revision(config.into_bytes(), revision).await?;
     tracing::info!(
         parent_revision = revision,
