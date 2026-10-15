@@ -9,7 +9,7 @@ spec:
     metadata: { labels: { app: wayhouse-controller } }
     spec:
       securityContext: { fsGroup: 65532, runAsNonRoot: true }
-      # Private GHCR images: uncomment (see deploy/README.md "Pulling private images").
+      # Only needed if you pull from a mirror that requires auth (the ghcr.io images are public).
       # imagePullSecrets: [{ name: ghcr }]
       containers:
         - name: controller

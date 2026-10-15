@@ -17,7 +17,7 @@ owner's call).
 
 ### Resume here
 
-**Releases:** `v0.1.0-rc.1` and `v0.1.0` are published to GHCR (six private images, amd64 + arm64;
+**Releases:** `v0.1.0-rc.1` and `v0.1.0` are published to GHCR (six public images, amd64 + arm64;
 `release.yml` ran end to end, #177 checked: the per-arch digests equal the multi-arch index's).
 Tags stay manual (release-please runs with `skip-github-release`); the steps are in
 [`RELEASING.md`](RELEASING.md). Automating the tag is backlog #210.
