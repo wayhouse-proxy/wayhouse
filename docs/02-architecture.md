@@ -2,26 +2,14 @@
 
 ## Overview
 
-```mermaid
-flowchart LR
-    clients(["Clients<br/>TCP / UDP"])
-    backends(["Game servers<br/>private network"])
+One proxy instance in context. Traffic enters on the left and leaves on the right; sniffers run inside the proxy on the data path, while plugins run in the controller, off it.
 
-    subgraph proxy["Proxy instance"]
-        direction LR
-        subgraph data["Data plane (hot path)"]
-            direction LR
-            listener["Listener<br/>accept"] --> router["Router<br/>match + resolver"]
-            router --> pool["Upstream pool<br/>LB + affinity"]
-            pool --> pump["Connection / session pump<br/>splice / io"]
-        end
-        control["Control plane<br/>config loader · admin API · discovery adapter<br/>health checker · metrics / log exporter"]
-        control -. "publishes immutable snapshot<br/>(read lock-free)" .-> data
-    end
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/architecture-detailed-dark.svg">
+  <img alt="Detailed Wayhouse architecture: the proxy data path (listener, filters, optional sniffers, router, optional resolver, pool, pump, tunnel client to agent) and its in-process control components, plus the controller with plugin host, aggregator, UI and the sniffers and plugins registries." src="img/architecture-detailed.svg">
+</picture>
 
-    clients --> listener
-    pump --> backends
-```
+Blue boxes are the data path (ingress left, egress right); amber boxes are everything off it. Dotted lines are control, config or state flows.
 
 ## Data plane / control plane separation
 
@@ -141,8 +129,13 @@ struct, the rest is shared).
 ## Extension points
 
 - **Sniffer API**: `fn sniff(&[u8]) -> Option<RouteHint>` (SNI, Minecraft,
-  Steam A2S, FiveM …). In-process (statically linked) in v1; WASM/out-of-process
-  sniffers later.
+  Steam A2S, FiveM …). SNI is built in; the others are sandboxed WASM modules loaded from
+  `settings.sniffers.dir` (see [sniffers.md](sniffers.md)). They run on the data path and
+  only see the bytes they are handed.
+- **Plugins** are a separate mechanism: WASM modules hosted by the controller, off the data
+  path, reacting to timers, webhooks and events through capabilities the operator approved
+  (see [plugins.md](plugins.md)). They can publish routes, which proxies merge after their
+  own.
 - **BackendSource** adapters (see above).
 - **Filter chain** before routing (ACL, rate limit, geo) as an ordered, configurable
   list.

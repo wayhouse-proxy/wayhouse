@@ -4,11 +4,13 @@
 >
 > This project is under active development and is **definitely not finished yet**.
 >
-> - The first release, `0.1.0`, exists, but the container images on GHCR are **private** for now
+> - Tagged releases exist, but the container images on GHCR are **private** for now
 >   (see [Pulling private images](deploy/README.md#pulling-private-images)). The major version
 >   is 0, so breaking changes land in minor versions.
 > - The configuration format, CLI flags, admin/fleet HTTP APIs and on-disk formats
->   **can change at any time without notice or a migration path**.
+>   **can change in any minor release, with no compatibility guarantee**. Each release's
+>   upgrade steps are in [docs/upgrading.md](docs/upgrading.md), but the rolling-upgrade
+>   paths there are only partly tested.
 > - Everything below is covered by automated tests, but **none of it has run in
 >   production**. Parts of the deployment story (the Docker images on a developer
 >   machine, the Kubernetes manifests on a real cluster) have only been exercised in CI.
@@ -49,16 +51,18 @@ examples) or from an external routing service you control.
 
 ## How it fits together
 
-```mermaid
-flowchart LR
-    P[Players] -->|TCP / UDP| W["wayhouse<br/>(proxy)"]
-    W --> B1[Game server A]
-    W --> B2[Game server B]
-    C["wayhouse-controller<br/>(optional)"] -. config .-> W
-    W -. state .-> A["wayhouse-aggregator<br/>(optional)"]
-    U["wayhouse-ui<br/>(admin GUI)"] --> C
-    U --> A
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/architecture-overview-dark.svg">
+  <img alt="Wayhouse architecture overview: players reach the proxy (listener, optional sniffers, router, pool, pump) which forwards to game servers; the controller with its plugin host, the aggregator, the UI and the sniffers and plugins registries sit off the data path." src="docs/img/architecture-overview.svg">
+</picture>
+
+The proxy is the only player-facing ingress and routing component (behind a tunnel, the origin-side `wayhouse-agent` carries the traffic the last hop). The controller, aggregator and UI are optional and stay off the data path; see [docs/02-architecture.md](docs/02-architecture.md) for the detailed diagram.
+
+**Sniffers** are small WASM modules that run on the proxy's data path and read the first
+bytes of a connection to find the hostname or protocol (see [docs/sniffers.md](docs/sniffers.md)).
+**Plugins** are WASM modules hosted by the controller, off the data path: they react to timers,
+webhooks and events and act only through capabilities the operator approved (see
+[docs/plugins.md](docs/plugins.md)).
 
 One `wayhouse` binary is all you need. The controller, aggregator and GUI add central
 configuration and fleet-wide operation once you run more than one proxy.

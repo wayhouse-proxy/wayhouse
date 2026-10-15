@@ -48,6 +48,35 @@ its row. Use `unreleased` for the product column until the release is tagged.
 | unreleased | 1.1      | 2             | 1            | 0.1         |
 | 0.1.0      | 1.0      | 1             | 1            | 0.1         |
 
+## Upgrading from 0.1.0 to 0.2.0
+
+0.2.0 is the first release with a real upgrade step. Things to know before you start:
+
+- **Gossip does not cross the version.** 0.2.0 gossip frames carry a magic byte and
+  `GOSSIP_VERSION`; a 0.1.0 node and a 0.2.0 node drop each other's datagrams. While a fleet
+  runs both, health votes and domain quorum are not shared between old and new nodes, and each
+  node falls back to its own checks. Existing player traffic is not affected, but nodes can
+  briefly disagree on backend health, so new sessions may be placed differently on old and new
+  nodes. This is the one exception
+  to the N and N-1 window (see [docs/10](10-distributed-control-plane.md)).
+- **Registry names.** A name must be 1 to 64 characters of `A-Za-z0-9._-` and not
+  `subscribe`; see "Dedupe first" below for the check to run before the first replica is
+  upgraded.
+- **Bundled sniffers moved.** The official WASM sniffers now live in
+  [`wayhouse-proxy/sniffers`](https://github.com/wayhouse-proxy/sniffers) and are no longer
+  built from this repository. Get them from that repository's releases, install them from the
+  UI's registry page, or copy them into the directory named by `settings.sniffers.dir`
+  (see [sniffers.md](sniffers.md)). `sniffers.lock` in this repository only pins the
+  releases the CI loader tests run against; it has no effect on a deployment.
+- **Config schema 2.** `listeners.plugin_routes` is a schema 2 field. A 0.1.0 proxy cannot
+  parse it, so use it only after every proxy runs 0.2.0. The controller enforces this on
+  submit (`422` naming the lowest live proxy maximum). A proxy that does not announce a
+  schema (0.1.0) is sent only revisions that need schema 1: one that first starts after the
+  first schema 2 revision exists gets the newest schema 1 revision, not the newer ones, and
+  keeps it until it is upgraded.
+- **Plugin ABI.** The version table has no plugin column: the plugin ABI is 0.1 and the host
+  requires an exact minor match while the major is 0.
+
 ## Order of operations
 
 1. **Aggregator and UI** (the read side).
@@ -79,8 +108,10 @@ major matches.
 
 The baseline-fields rule for a child one minor older is **not covered by an automated
 test** for the tier path (the fleet tests exercise a proxy against a controller, not a
-`slave` tier against its parent); treat the first tier upgrade in your environment as a
-rehearsal.
+`slave` tier against its parent), and neither is the relay cursor across versions (a child
+resuming the parent's revision stream after one side upgraded). Treat the first tier
+upgrade in your environment as a rehearsal, and read the "N and N-1" window above as
+tested for proxy against controller only.
 
 ## Raft HA inside a tier
 

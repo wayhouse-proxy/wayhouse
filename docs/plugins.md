@@ -9,7 +9,7 @@ Plugins are not [sniffers](sniffers.md): sniffers run on the proxy data path.
 controller can store plugin installs behind an admin API and ticks the enabled ones
 (below); the web UI has a Plugins page on top of the install API (see "The Plugins page"). An HA tier replicates installs and state through Raft, serves the same API on every replica
 and ticks on the leader only, and the module bytes follow the installs to every replica (see
-"High availability"). Not built yet: secrets, `http`, `routes`, webhooks, events and `backends`.
+"High availability"). Secrets, `http`, `routes`, webhooks and events are built; `backends` is not.
 
 ## Module contract (ABI 0.1)
 
@@ -146,7 +146,7 @@ Rules:
   plugin name on every route.
 - Exact names match before `*.suffix` patterns, longer suffixes first.
 - Disabling or deleting an install withdraws its routes at once. A plugin whose ticks fail keeps its
-  last committed set. (The spec's grace period with an alert is not built; see the follow-up issue.)
+  last committed set, and so does one that stops calling `routes_set`: the set stays until the next successful tick replaces it or the install is deleted or disabled. (The spec's grace period with an alert is not built; see the follow-up issue.)
 - A controller started without `--plugins` answers `501` (`404` on an older build) and proxies drop
   the plugin routes at once, keeping their own config; a controller that is only unreachable leaves
   the last overlay in place. A proxy without `--controller` ignores the overlay.
@@ -290,7 +290,8 @@ A call returns its state writes; the controller applies them as one batch only i
 install's state revision is still the one the call read (compare-and-set), then bumps the
 revision. A call that failed (trap, timeout, over a limit) commits nothing, is recorded in
 the status, and the plugin is called again at its next interval. Deleting an install
-removes its state. This is the single-node form of the design's term-checked commit; the HA form is below.
+removes its state; disabling keeps it, and enabling again resumes against it. `created_by` is a label taken from
+the `X-Actor` header the caller sent, not a verified identity (the admin token is what authorises the call). This is the single-node form of the design's term-checked commit; the HA form is below.
 
 ## The Plugins page (web UI)
 
@@ -321,7 +322,7 @@ full interval of grace, so a new leader has applied the earlier terms' entries b
 plugin. A tick's state writes are one `PluginState` entry tagged with the term the leader read the
 state in and the state revision the call read: if leadership moved or another commit got in first,
 the state machine drops it and the status says so. A commit is refused before it reaches the log
-when over the host's state limits (1 MiB, 256 keys). Status is in memory on the leader and starts
+when over the host's state limits (1 MiB, 1024 keys, 256 writes per call). Status is in memory on the leader and starts
 empty after a failover.
 
 **Module bytes (slice 7).** The Raft log carries install records only; the module (up to 8 MiB)

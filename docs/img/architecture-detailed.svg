@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 900" width="1400" role="img" aria-labelledby="t d" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif"><title id="t">Wayhouse architecture (detailed)</title><desc id="d">One proxy with its data path and in-process control components, plus the controller, plugin host, aggregator, UI and the sniffers and plugins registries.</desc><defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#374151"/></marker></defs><rect width="1400" height="900" fill="#fff"/>
+<rect x="10" y="160" width="110" height="64" rx="32" fill="#e5e7eb" stroke="#6b7280" stroke-width="1.5"/>
+<text x="65.0" y="188.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Players</text>
+<text x="65.0" y="204.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">TCP / UDP</text>
+<rect x="1290" y="160" width="100" height="64" rx="32" fill="#e5e7eb" stroke="#6b7280" stroke-width="1.5"/>
+<text x="1340.0" y="188.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Game servers</text>
+<text x="1340.0" y="204.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">(private net)</text>
+<rect x="140" y="100" width="1120" height="400" rx="12" fill="#2563eb" fill-opacity="0.07" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="154" y="122" font-size="14" font-weight="700" fill="#2563eb">wayhouse-proxy (one per host)</text>
+<rect x="160" y="160" width="130" height="64" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+<text x="225.0" y="180.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Listener</text>
+<text x="225.0" y="196.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">TCP accept</text>
+<text x="225.0" y="212.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">UDP recv</text>
+<rect x="318" y="160" width="130" height="64" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+<text x="383.0" y="180.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Filters</text>
+<text x="383.0" y="196.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">ACL · geo · rate</text>
+<text x="383.0" y="212.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">limits · caps</text>
+<rect x="476" y="160" width="130" height="64" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+<text x="541.0" y="180.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Sniffers (optional)</text>
+<text x="541.0" y="196.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">WASM, in-process</text>
+<text x="541.0" y="212.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">peek first bytes</text>
+<rect x="634" y="160" width="130" height="64" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+<text x="699.0" y="180.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Router</text>
+<text x="699.0" y="196.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">port · dst · CIDR · SNI</text>
+<text x="699.0" y="212.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">first bytes · external</text>
+<rect x="792" y="160" width="130" height="64" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+<text x="857.0" y="180.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Pool</text>
+<text x="857.0" y="196.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">LB · affinity</text>
+<text x="857.0" y="212.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">healthy backends</text>
+<rect x="950" y="160" width="130" height="64" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+<text x="1015.0" y="180.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Pump</text>
+<text x="1015.0" y="196.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">splice · UDP sessions</text>
+<text x="1015.0" y="212.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">PROXY protocol out</text>
+<rect x="1108" y="160" width="130" height="64" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+<text x="1173.0" y="180.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Tunnel client</text>
+<text x="1173.0" y="196.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">WireGuard</text>
+<text x="1173.0" y="212.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">(optional)</text>
+<polyline points="120,192 160,192" fill="none" stroke="#374151" stroke-width="1.6" marker-end="url(#a)"/>
+<polyline points="290,192 318,192" fill="none" stroke="#374151" stroke-width="1.6" marker-end="url(#a)"/>
+<polyline points="448,192 476,192" fill="none" stroke="#374151" stroke-width="1.6" marker-end="url(#a)"/>
+<polyline points="606,192 634,192" fill="none" stroke="#374151" stroke-width="1.6" marker-end="url(#a)"/>
+<polyline points="764,192 792,192" fill="none" stroke="#374151" stroke-width="1.6" marker-end="url(#a)"/>
+<polyline points="922,192 950,192" fill="none" stroke="#374151" stroke-width="1.6" marker-end="url(#a)"/>
+<polyline points="1080,192 1108,192" fill="none" stroke="#374151" stroke-width="1.6" marker-end="url(#a)"/>
+<rect x="634" y="280" width="130" height="64" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+<text x="699.0" y="300.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Resolver (optional)</text>
+<text x="699.0" y="316.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">HTTP / gRPC</text>
+<text x="699.0" y="332.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">cached</text>
+<polyline points="699,224 699,280" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
+<rect x="655.8" y="247" width="86.39999999999999" height="15" rx="3" fill="#fff" fill-opacity="0.9"/><text x="699" y="258" text-anchor="middle" font-size="11" fill="#374151">external route</text>
+<polyline points="764,312 830,312 830,224" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
+<rect x="756.8" y="319" width="86.39999999999999" height="15" rx="3" fill="#fff" fill-opacity="0.9"/><text x="800" y="330" text-anchor="middle" font-size="11" fill="#374151">pool or target</text>
+<polyline points="1015,160 1015,130 1340,130 1340,160" fill="none" stroke="#374151" stroke-width="1.6" marker-end="url(#a)"/>
+<rect x="1128.4" y="116" width="103.19999999999999" height="15" rx="3" fill="#fff" fill-opacity="0.9"/><text x="1180" y="127" text-anchor="middle" font-size="11" fill="#374151">direct to backend</text>
+<rect x="1280" y="280" width="120" height="64" rx="8" fill="#e5e7eb" stroke="#6b7280" stroke-width="1.5"/>
+<text x="1340.0" y="308.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">wayhouse-agent</text>
+<text x="1340.0" y="324.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">(origin side)</text>
+<rect x="1290" y="400" width="100" height="64" rx="32" fill="#e5e7eb" stroke="#6b7280" stroke-width="1.5"/>
+<text x="1340.0" y="428.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Game server</text>
+<text x="1340.0" y="444.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">at origin</text>
+<polyline points="1173,224 1173,312 1280,312" fill="none" stroke="#374151" stroke-width="1.6" marker-end="url(#a)"/>
+<rect x="1202.8" y="295" width="58.4" height="15" rx="3" fill="#fff" fill-opacity="0.9"/><text x="1232" y="306" text-anchor="middle" font-size="11" fill="#374151">WireGuard</text>
+<polyline points="1340,344 1340,400" fill="none" stroke="#374151" stroke-width="1.6" marker-end="url(#a)"/>
+<rect x="160" y="400" width="130" height="64" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+<text x="225.0" y="428.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Config loader</text>
+<text x="225.0" y="444.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">validate · snapshot</text>
+<rect x="318" y="400" width="130" height="64" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+<text x="383.0" y="420.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Discovery</text>
+<text x="383.0" y="436.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">DNS SRV · Consul</text>
+<text x="383.0" y="452.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">K8s · static</text>
+<rect x="476" y="400" width="130" height="64" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+<text x="541.0" y="428.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Health checker</text>
+<text x="541.0" y="444.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">active + passive</text>
+<rect x="634" y="400" width="130" height="64" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+<text x="699.0" y="420.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Gossip (optional)</text>
+<text x="699.0" y="436.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">peer health votes</text>
+<text x="699.0" y="452.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">UDP</text>
+<rect x="792" y="400" width="130" height="64" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+<text x="857.0" y="420.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Admin API</text>
+<text x="857.0" y="436.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">drain · metrics</text>
+<text x="857.0" y="452.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">pools · sessions</text>
+<polyline points="225,400 225,360 340,360 340,224" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
+<rect x="227.6" y="343" width="108.8" height="15" rx="3" fill="#fff" fill-opacity="0.9"/><text x="282" y="354" text-anchor="middle" font-size="11" fill="#374151">immutable snapshot</text>
+<polyline points="383,400 383,376 885,376 885,224" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
+<polyline points="541,400 541,376" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4"/>
+<polyline points="699,400 699,376" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4"/>
+<text x="900" y="368" font-size="11" text-anchor="start" fill="#374151">health and backend lists → pool</text>
+<rect x="140" y="540" width="420" height="170" rx="12" fill="#b45309" fill-opacity="0.07" stroke="#b45309" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="154" y="562" font-size="14" font-weight="700" fill="#b45309">wayhouse-controller (optional)</text>
+<rect x="160" y="590" width="180" height="70" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+<text x="250.0" y="613.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Plugin host (WASM)</text>
+<text x="250.0" y="629.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">timers · webhooks</text>
+<text x="250.0" y="645.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">events · routes</text>
+<rect x="360" y="590" width="180" height="70" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+<text x="450.0" y="613.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">Config + intent log</text>
+<text x="450.0" y="629.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">Raft HA</text>
+<text x="450.0" y="645.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">peer registries</text>
+<polyline points="340,625 360,625" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4"/>
+<polyline points="450,590 450,486 225,486 225,464" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
+<rect x="274.4" y="469" width="131.2" height="15" rx="3" fill="#fff" fill-opacity="0.9"/><text x="340" y="480" text-anchor="middle" font-size="11" fill="#374151">config · plugin routes</text>
+<rect x="780" y="590" width="170" height="70" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+<text x="865.0" y="613.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">wayhouse-aggregator</text>
+<text x="865.0" y="629.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">fleet reads</text>
+<text x="865.0" y="645.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">(optional)</text>
+<polyline points="857,464 857,590" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
+<rect x="839.0" y="529" width="36.0" height="15" rx="3" fill="#fff" fill-opacity="0.9"/><text x="857" y="540" text-anchor="middle" font-size="11" fill="#374151">state</text>
+<rect x="365" y="760" width="170" height="70" rx="8" fill="#fef3c7" stroke="#b45309" stroke-width="1.5"/>
+<text x="450.0" y="791.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">wayhouse-ui</text>
+<text x="450.0" y="807.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">admin GUI</text>
+<polyline points="450,760 450,660" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
+<rect x="429.2" y="719" width="41.599999999999994" height="15" rx="3" fill="#fff" fill-opacity="0.9"/><text x="450" y="730" text-anchor="middle" font-size="11" fill="#374151">intent</text>
+<polyline points="535,795 865,795 865,660" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
+<rect x="665.2" y="779" width="69.6" height="15" rx="3" fill="#fff" fill-opacity="0.9"/><text x="700" y="790" text-anchor="middle" font-size="11" fill="#374151">fleet reads</text>
+<rect x="10" y="590" width="110" height="70" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+<text x="65.0" y="621.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">plugins repo</text>
+<text x="65.0" y="637.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">(registry)</text>
+<polyline points="120,625 160,625" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
+<rect x="116.4" y="607" width="47.199999999999996" height="15" rx="3" fill="#fff" fill-opacity="0.9"/><text x="140" y="618" text-anchor="middle" font-size="11" fill="#374151">install</text>
+<rect x="476" y="20" width="130" height="56" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.5"/>
+<text x="541.0" y="44.5" text-anchor="middle" font-size="13" font-weight="700" fill="#111">sniffers repo</text>
+<text x="541.0" y="60.5" text-anchor="middle" font-size="11" font-weight="400" fill="#111">(registry)</text>
+<polyline points="541,76 541,160" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
+<rect x="546.4" y="107" width="47.199999999999996" height="15" rx="3" fill="#fff" fill-opacity="0.9"/><text x="570" y="118" text-anchor="middle" font-size="11" fill="#374151">install</text>
+<polyline points="40,870 80,870" fill="none" stroke="#374151" stroke-width="1.6" marker-end="url(#a)"/>
+<text x="88" y="874" font-size="12" text-anchor="start" fill="#374151">player traffic</text>
+<polyline points="190,870 230,870" fill="none" stroke="#374151" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
+<text x="238" y="874" font-size="12" text-anchor="start" fill="#374151">config, health, state, install, lookups</text>
+<rect x="440" y="863" width="14" height="14" rx="3" fill="#dbeafe" stroke="#2563eb"/>
+<text x="460" y="874" font-size="12" text-anchor="start" fill="#374151">data path</text>
+<rect x="530" y="863" width="14" height="14" rx="3" fill="#fef3c7" stroke="#b45309"/>
+<text x="550" y="874" font-size="12" text-anchor="start" fill="#374151">control / off the data path</text>
+<rect x="700" y="863" width="14" height="14" rx="3" fill="#ede9fe" stroke="#7c3aed"/>
+<text x="720" y="874" font-size="12" text-anchor="start" fill="#374151">registry repos</text>
+</svg>

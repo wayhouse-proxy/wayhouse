@@ -524,7 +524,16 @@ two login modes, mutually exclusive.
   (never put a plaintext password in the file).
 
 With neither flag, the UI is fully open and every session is implicitly
-`admin` — same posture every other optional-auth surface in this fleet has.
+`admin` — same posture every other optional-auth surface in this fleet has. By default
+open mode is loopback-only; `--insecure-no-auth` permits a non-loopback `--listen` with no
+login (and logs a warning). The UI guards the operator's own browser against other sites:
+a state-changing request or WebSocket upgrade is refused (`403`) when `Sec-Fetch-Site`
+is `cross-site` or `same-site`, or, when the browser sends no `Sec-Fetch-Site`, when
+`Origin` is `null` or names another host; in open mode every request's `Host` must also
+be a loopback name or address (against DNS rebinding; this `Host` check applies only when the
+UI listens on loopback). Requests without those headers
+(curl, scripts) pass. Names the UI forwards to the aggregator or controller (backend,
+pool, sniffer) are percent-encoded to stay one path segment, and `.` / `..` are refused.
 
 Sessions expire: `--session-idle-timeout-secs` (default 1800) and
 `--session-max-age-secs` (default 43200, also the cookie's `Max-Age`), with at
