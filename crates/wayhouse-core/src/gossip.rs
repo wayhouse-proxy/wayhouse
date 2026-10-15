@@ -69,6 +69,11 @@ const MAX_BACKENDS: usize = 8192;
 /// value near `u64::MAX` would otherwise pin its origin's register for ever,
 /// because only a newer `changed_at` replaces it (#305).
 const MAX_VERSION_SKEW_MS: u64 = 60_000;
+/// Origins remembered for the rate-limited drop warning; a table past this is
+/// cleared rather than grown by forged origins.
+const MAX_WARNED_ORIGINS: usize = 1024;
+/// Minimum gap between two warnings about registers dropped from one origin.
+const DROP_WARN_INTERVAL_MS: u64 = 60_000;
 /// How far a datagram's sender timestamp may sit from our clock before it is
 /// dropped as a replay (security review O4). Also the clock skew the mesh
 /// tolerates between instances; a replay inside the window is still possible.
@@ -111,6 +116,9 @@ type DomainMap = Arc<Mutex<HashMap<SocketAddr, HashMap<SocketAddr, BackendHealth
 
 struct BroadcastMerger {
     domain: DomainMap,
+    /// When each origin last had a dropped register logged (wall ms), so a
+    /// persistent drop warns once a minute per origin instead of per message.
+    last_warn: HashMap<SocketAddr, u64>,
     /// The live members (and this instance), shared with [`GossipHandle`]. A register
     /// from an origin outside it is not stored: foca keeps a broadcast for a while
     /// after its origin left and may deliver it again, and a departed origin's old
@@ -118,6 +126,41 @@ struct BroadcastMerger {
     /// before its origin is listed is lost too, but its origin publishes again on every
     /// health probe, so the vote is back within one probe interval.
     member_ids: Arc<Mutex<HashSet<SocketAddr>>>,
+}
+
+impl BroadcastMerger {
+    /// Whether a drop from `origin` at `now_ms` should be logged at `warn`: at
+    /// most once per [`DROP_WARN_INTERVAL_MS`] per origin.
+    fn warn_due(&mut self, origin: SocketAddr, now_ms: u64) -> bool {
+        if let Some(&at) = self.last_warn.get(&origin) {
+            if now_ms.saturating_sub(at) < DROP_WARN_INTERVAL_MS {
+                return false;
+            }
+        } else if self.last_warn.len() >= MAX_WARNED_ORIGINS {
+            // Full: reclaim only entries whose window has passed, so a fresh
+            // timestamp is never forgotten. A new origin that still finds no
+            // room stays silent (it is counted by the metric regardless).
+            self.last_warn
+                .retain(|_, at| now_ms.saturating_sub(*at) < DROP_WARN_INTERVAL_MS);
+            if self.last_warn.len() >= MAX_WARNED_ORIGINS {
+                return false;
+            }
+        }
+        self.last_warn.insert(origin, now_ms);
+        true
+    }
+
+    /// Counts a dropped register and warns (rate-limited) about its origin.
+    fn note_drop(&mut self, origin: SocketAddr, reason: &'static str) {
+        metrics::counter!(m::GOSSIP_REGISTERS_DROPPED_TOTAL, "reason" => reason).increment(1);
+        if self.warn_due(origin, wall_ms()) {
+            tracing::warn!(
+                %origin, reason,
+                "gossip: dropping health registers from this origin; its votes do not count \
+                 (check the clock on that instance if the reason is `future`)"
+            );
+        }
+    }
 }
 
 impl foca::BroadcastHandler<SocketAddr> for BroadcastMerger {
@@ -131,7 +174,7 @@ impl foca::BroadcastHandler<SocketAddr> for BroadcastMerger {
     ) -> Result<Option<Self::Key>, Self::Error> {
         let reg: BackendHealthRegister = postcard::from_bytes(data)?;
         if reg.changed_at > wall_ms().saturating_add(MAX_VERSION_SKEW_MS) {
-            tracing::debug!(origin = %reg.origin, "gossip: dropping a register stamped in the future");
+            self.note_drop(reg.origin, "future");
             return Ok(None);
         }
         let is_member = self
@@ -140,7 +183,7 @@ impl foca::BroadcastHandler<SocketAddr> for BroadcastMerger {
             .unwrap_or_else(PoisonError::into_inner)
             .contains(&reg.origin);
         if !is_member {
-            tracing::debug!(origin = %reg.origin, "gossip: dropping a register from a non-member");
+            self.note_drop(reg.origin, "non_member");
             return Ok(None);
         }
         let key = BackendHealthKey {
@@ -213,6 +256,7 @@ impl GossipHandle {
 
     fn merger(&self) -> BroadcastMerger {
         BroadcastMerger {
+            last_warn: HashMap::new(),
             domain: self.domain.clone(),
             member_ids: self.member_ids.clone(),
         }
@@ -648,6 +692,7 @@ mod tests {
         let domain = DomainMap::default();
         (
             BroadcastMerger {
+                last_warn: HashMap::new(),
                 domain: domain.clone(),
                 member_ids: Arc::default(),
             },
@@ -894,6 +939,35 @@ mod tests {
 
     /// #305: a forged `changed_at` far ahead of the wall clock would pin the
     /// victim origin's register and suppress its real votes for ever.
+    #[test]
+    fn dropped_registers_warn_once_a_minute_per_origin() {
+        let (mut m, _) = merger();
+        let a: SocketAddr = "10.0.0.2:1".parse().unwrap();
+        let b: SocketAddr = "10.0.0.3:1".parse().unwrap();
+        assert!(m.warn_due(a, 1_000));
+        assert!(!m.warn_due(a, 1_000 + 59_999));
+        assert!(m.warn_due(b, 1_500), "another origin has its own window");
+        assert!(m.warn_due(a, 1_000 + 60_000));
+        // The table of warned origins stays bounded under forged origins.
+        for i in 0..10_000u32 {
+            let o = SocketAddr::from(([10, 1, (i >> 8) as u8, i as u8], 1));
+            m.warn_due(o, 2_000_000);
+        }
+        assert!(m.last_warn.len() <= MAX_WARNED_ORIGINS);
+        // A full table never forgets fresh timestamps: a new origin stays
+        // silent until a window expires, and an already-warned one stays muted.
+        let full_at = 2_000_000;
+        let c: SocketAddr = "10.9.9.9:1".parse().unwrap();
+        assert!(
+            !m.warn_due(c, full_at),
+            "no room for a new origin while full"
+        );
+        let warned = SocketAddr::from(([10, 1, 0, 5], 1));
+        assert!(!m.warn_due(warned, full_at + 1), "fresh timestamp survives");
+        // Once the windows expire the table is reclaimed and new origins warn.
+        assert!(m.warn_due(c, full_at + DROP_WARN_INTERVAL_MS));
+    }
+
     #[test]
     fn a_register_far_in_the_future_is_dropped() {
         let (mut m, domain) = merger();

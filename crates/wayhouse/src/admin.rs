@@ -302,7 +302,11 @@ async fn sessions(
     State(s): State<AdminState>,
     Query(q): Query<SessionsQuery>,
 ) -> impl IntoResponse {
-    let src = q.src.as_deref().and_then(|s| s.parse::<IpAddr>().ok());
+    let src = q
+        .src
+        .as_deref()
+        .and_then(|s| s.parse::<IpAddr>().ok())
+        .map(|ip| ip.to_canonical());
     let mut list = s.runtime.sessions();
     list.retain(|e| {
         q.listener.as_deref().is_none_or(|l| l == e.listener)
@@ -1053,7 +1057,13 @@ mod tests {
         assert!(body.contains(&format!("peer=127.0.0.1:{src_port}")));
 
         // Filters that should still match.
-        for q in ["?proto=tcp", "?listener=l", "?pool=p", "?src=127.0.0.1"] {
+        for q in [
+            "?proto=tcp",
+            "?listener=l",
+            "?pool=p",
+            "?src=127.0.0.1",
+            "?src=::ffff:127.0.0.1",
+        ] {
             let b = http
                 .get(format!("{base}/sessions{q}"))
                 .send()

@@ -10,11 +10,15 @@ use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::TokioResolver;
 use wayhouse_core::{BackendSource, SourceError};
 
+use crate::discovery::ResolveCarry;
+
 pub struct DnsSrvSource {
     pool: String,
     record: String,
     interval: Duration,
     resolver: TokioResolver,
+    /// Previous addresses of SRV targets whose lookup failed this cycle.
+    carry: ResolveCarry,
 }
 
 impl DnsSrvSource {
@@ -37,6 +41,7 @@ impl DnsSrvSource {
             record,
             interval,
             resolver,
+            carry: ResolveCarry::default(),
         })
     }
 
@@ -59,6 +64,7 @@ impl DnsSrvSource {
             resolver: TokioResolver::builder_with_config(cfg, TokioRuntimeProvider::default())
                 .build()
                 .expect("building a resolver from a fixed nameserver never fails"),
+            carry: ResolveCarry::default(),
         }
     }
 }
@@ -85,8 +91,7 @@ impl BackendSource for DnsSrvSource {
                     cause: e.to_string(),
                 })?;
 
-        let mut out = Vec::new();
-        let mut failed = None;
+        let mut results = Vec::new();
         for record in lookup.answers() {
             let hickory_resolver::proto::rr::RData::SRV(srv) = &record.data else {
                 continue;
@@ -99,30 +104,32 @@ impl BackendSource for DnsSrvSource {
             if port == 0 || target.is_empty() {
                 continue;
             }
+            let key = format!("{target}:{port}");
             match target.parse() {
-                Ok(ip) => out.push(SocketAddr::new(ip, port)),
+                Ok(ip) => results.push((key, Ok(vec![SocketAddr::new(ip, port)]))),
                 Err(_) => match self.resolver.lookup_ip(target).await {
                     Ok(ips) => {
-                        for ip in ips.iter() {
-                            out.push(SocketAddr::new(ip, port));
-                        }
+                        let addrs = ips.iter().map(|ip| SocketAddr::new(ip, port)).collect();
+                        results.push((key, Ok(addrs)));
                     }
                     // One bad target must not freeze the whole pool at its last
-                    // known good set; only "nothing resolved" is a failure.
+                    // known good set, nor drop its backend for a refresh: `carry`
+                    // keeps its previous address for one cycle, and only
+                    // "nothing resolved" is a failure.
                     Err(e) => {
-                        tracing::warn!(record = %self.record, %target, error = %e, "SRV target does not resolve, skipping");
-                        failed = Some(SourceError::Unreachable {
-                            context: format!("A/AAAA lookup for SRV target {target}"),
-                            cause: e.to_string(),
-                        });
+                        tracing::warn!(record = %self.record, %target, error = %e, "SRV target does not resolve");
+                        results.push((
+                            key,
+                            Err(SourceError::Unreachable {
+                                context: format!("A/AAAA lookup for SRV target {target}"),
+                                cause: e.to_string(),
+                            }),
+                        ));
                     }
                 },
             }
         }
-        match failed {
-            Some(e) if out.is_empty() => Err(e),
-            _ => Ok(out),
-        }
+        self.carry.apply(results)
     }
 }
 

@@ -127,6 +127,11 @@
   fresh gossip datagrams dropped because their magic or version byte is not this build's
   gossip version: a peer on an incompatible release. Dropped before decoding; the
   first one per process is logged as a warning.
+- `wayhouse_gossip_registers_dropped_total{reason="future"|"non_member"}` (counter) —
+  authentic gossip health registers dropped because their timestamp is more than 60 s
+  ahead of this node's clock (the origin's clock runs fast; keep NTP running) or their
+  origin is not a current member. Each origin also gets a `warn` log line at most once
+  a minute.
 - `wayhouse_protocol_mismatch_total{route_group="controller"|"aggregator"|"raft"|"proxy"}`
   (counter, #185) — component requests refused with `426` because the caller's
   `X-Wayhouse-Protocol` major differs, is not `<major>.<minor>`, or (on component

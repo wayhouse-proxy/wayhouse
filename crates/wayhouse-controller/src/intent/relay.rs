@@ -129,9 +129,12 @@ fn parse_sse_event(event: &str) -> Option<SseIntent> {
     Some(SseIntent { revision, op })
 }
 
+static REGRESSION: crate::relay::RegressionLatch = crate::relay::RegressionLatch::new();
+
 fn warn_if_regressed(state: &IntentState, revision: u64) {
     if let Ok(cursor) = state.relay.get() {
-        if crate::relay::parent_revision_regressed(cursor, revision) {
+        let regressed = crate::relay::parent_revision_regressed(cursor, revision);
+        if REGRESSION.should_warn(regressed) {
             tracing::warn!(
                 parent_revision = revision,
                 cursor,
