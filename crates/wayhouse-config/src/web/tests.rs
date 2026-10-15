@@ -346,3 +346,16 @@ fn warns_on_a_routable_listen_without_trusted_proxy() {
     let w = parse(&site(OK_UP)).unwrap().warnings();
     assert!(w.iter().all(|m| !m.contains("trusted_proxy")), "{w:?}");
 }
+
+#[test]
+fn an_upstream_may_not_be_the_web_pool_itself() {
+    for ups in [
+        "        - pool: web\n",
+        "        - { pool: web, via: direct }\n",
+        "        - { pool: web, via: wayhouse }\n",
+    ] {
+        let m = err(&site(ups));
+        assert!(m.contains("is web.pool"), "{m}");
+        assert!(m.contains("web.sites[0].upstreams[0]"), "{m}");
+    }
+}

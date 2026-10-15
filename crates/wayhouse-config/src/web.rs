@@ -271,6 +271,11 @@ pub(crate) fn validate_web(raw: RawWeb, pools: &[PoolConfig]) -> Result<WebConfi
                     upstreams.push(WebUpstream::Addr(a));
                 }
                 (None, Some(p)) => {
+                    if *p == raw.pool {
+                        return Err(at(&format!(
+                            "pool {p} is web.pool; Caddy would forward requests to itself"
+                        )));
+                    }
                     let pool = pools
                         .iter()
                         .find(|c| &c.name == p)

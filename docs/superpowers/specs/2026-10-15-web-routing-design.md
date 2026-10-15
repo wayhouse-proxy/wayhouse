@@ -122,9 +122,11 @@ Status: slice 1 is issue #360 (schema, validation, schema 3, docs); the `via: wa
 data-path tests above ship with those, not with #360. #360 resolves `via: wayhouse` upstreams as
 `Pool { name, via, port }`.
 
-1. `web:` schema, validation, expansion, schema 3, `config.example.yaml`, `docs/05-configuration.md`.
-2. Data-path end-to-end tests (entry matcher to `web` pool with PROXY v2; `via: wayhouse` path).
-3. Docs: chapter on the web front door in `docs/03-routing.md` / `docs/12-deployment.md` (recipe is the
-   deployment slice's), HANDOVER, roadmap line.
+1. `web:` schema, validation, schema 3, `config.example.yaml`, `docs/05-configuration.md` (#360).
+2. `via: wayhouse` expansion: the generated loopback listeners (#368).
+3. Data-path end-to-end tests (entry matcher to `web` pool with PROXY v2; `via: wayhouse` path) and the
+   docs chapter on the web front door in `docs/03-routing.md` (#369); the deployment recipe is the
+   deployment slice's.
+4. Machine-readable web view for the renderer (#370).
 
-Slices 1 to 3 ship as one PR.
+Each slice ships as its own PR.
