@@ -204,16 +204,22 @@ impl VersionEntry {
             // Authority is everything up to the first '/', '?' or '#'. Refuse an empty host
             // and user info; whether the host is a private address is the fetch-time guard's job.
             let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-            let (host, port) = match authority.strip_prefix('[') {
-                Some(v6) => v6.split_once(']').map_or((v6, None), |(h, r)| {
-                    (h, r.strip_prefix(':').or(Some(r).filter(|r| !r.is_empty())))
+            let (host, port, host_ok) = match authority.strip_prefix('[') {
+                Some(v6) => v6.split_once(']').map_or(("", None, false), |(h, r)| {
+                    (
+                        h,
+                        r.strip_prefix(':').or(Some(r).filter(|r| !r.is_empty())),
+                        h.parse::<std::net::Ipv6Addr>().is_ok(),
+                    )
                 }),
-                None => authority
-                    .rsplit_once(':')
-                    .map_or((authority, None), |(h, p)| (h, Some(p))),
+                None => (
+                    authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+                    authority.rsplit_once(':').map(|(_, p)| p),
+                    true,
+                ),
             };
             let port_ok = port.is_none_or(|p| p.parse::<u16>().is_ok());
-            if authority.contains('@') || host.is_empty() || !port_ok {
+            if authority.contains('@') || host.is_empty() || !host_ok || !port_ok {
                 return Err(IndexError::BadUrlHost {
                     sniffer: sniffer.to_owned(),
                     version: version.clone(),
@@ -400,6 +406,8 @@ mod tests {
             "https://example.com:not-a-port/a.wasm",
             "https://example.com:99999/a.wasm",
             "https://[::1]x/a.wasm",
+            "https://[::1/a.wasm",
+            "https://[abc]/a.wasm",
         ] {
             let mut v = example();
             first_version(&mut v)["url"] = url.into();
