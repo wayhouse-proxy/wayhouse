@@ -21,6 +21,7 @@ workspace = true
 wayhouse-http = { workspace = true, features = ["server"] }
 wayhouse-config = { path = "../wayhouse-config" }
 wayhouse-plugin-host = { path = "../wayhouse-plugin-host" }
+wayhouse-acme = { path = "../wayhouse-acme" }
 
 sled.workspace = true
 thiserror.workspace = true
@@ -42,9 +43,11 @@ base64 = "0.22"
 chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 sha2.workspace = true
 zeroize = "1"
+metrics.workspace = true
 url = "2"
 
 [dev-dependencies]
+wayhouse-acme = { path = "../wayhouse-acme", features = ["test-support"] }
 tempfile.workspace = true
 wat.workspace = true
 tower = "0.5"

@@ -147,6 +147,10 @@
 p50/p99 (vs. NFR N1/N2) is the closest thing today, measured out-of-band, not
 exported as a `/metrics` series. See "Planned / not yet built" below.
 
+**Controller ACME (`--acme`)**, on the controller's `/metrics`, not on `wayhouse`'s (these are
+registered by `wayhouse-controller`, not in `metrics_defs.rs`): `wayhouse_acme_cert_expiry_seconds{site}`,
+`wayhouse_acme_issue_total{result}` and `wayhouse_acme_held`; see [`acme.md`](acme.md).
+
 ### Planned / not yet built
 
 Documented here as real future work, not implemented — none of these exist in
