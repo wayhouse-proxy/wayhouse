@@ -144,7 +144,7 @@ async fn proc_captures_output_for_failure_reports() -> Result<()> {
     let ctl = spawn_controller_on(dir.path(), &format!("127.0.0.1:{port}"))?;
     wait_http_up(
         &format!("http://127.0.0.1:{port}/healthz"),
-        Duration::from_secs(10),
+        wayhouse_fleet_tests::STARTUP_TIMEOUT,
     )
     .await?;
     assert_eq!(ctl.name(), "wayhouse-controller");

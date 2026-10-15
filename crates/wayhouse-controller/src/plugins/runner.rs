@@ -93,8 +93,28 @@ pub enum HookError {
     Failed,
 }
 
-struct Loaded {
+/// What a loaded plugin was built from: the module, the caps it runs under and its `init`
+/// config. A cached plugin serves a record only while all three still match, so a revoked
+/// capability or a changed config is never served from the old instance.
+#[derive(PartialEq)]
+struct LoadKey {
     sha256: String,
+    approved: wayhouse_plugin_host::Capabilities,
+    config: serde_json::Value,
+}
+
+impl LoadKey {
+    fn of(rec: &InstallRecord) -> Self {
+        Self {
+            sha256: rec.sha256.clone(),
+            approved: rec.approved.clone(),
+            config: rec.config.clone(),
+        }
+    }
+}
+
+struct Loaded {
+    key: LoadKey,
     plugin: Arc<Plugin>,
 }
 
@@ -285,8 +305,8 @@ impl Runner {
                 };
             }
             let live = |r: &&InstallRecord| r.enabled && r.approved.triggers.on_timer;
-            // A plugin that only has a webhook or event hook is cached too, so each hook
-            // does not compile the module and run `init` again.
+            // A plugin with only a webhook trigger is cached too, so each hook does not
+            // compile the module and run `init` again (`on_event` needs `on_timer`).
             let hooked = |r: &&InstallRecord| {
                 r.enabled && (r.approved.triggers.on_timer || r.approved.triggers.on_webhook)
             };
@@ -311,6 +331,7 @@ impl Runner {
                 let secs = rec.approved.tick_interval_secs.min(MAX_TICK_INTERVAL_SECS);
                 let interval = Duration::from_secs(secs);
                 let Some(first) = now.checked_add(interval) else {
+                    tracing::debug!(install = %rec.id, "tick interval overflows the clock; skipped");
                     continue;
                 };
                 let at = *sched.next_due.entry(rec.id.clone()).or_insert(first);
@@ -393,7 +414,7 @@ impl Runner {
             sched
                 .loaded
                 .get(&rec.id)
-                .filter(|l| l.sha256 == rec.sha256)
+                .filter(|l| l.key == LoadKey::of(rec))
                 .map(|l| l.plugin.clone())
         };
         let plugin = match cached {
@@ -476,7 +497,7 @@ impl Runner {
         self.schedule.lock().await.loaded.insert(
             rec.id.clone(),
             Loaded {
-                sha256: rec.sha256.clone(),
+                key: LoadKey::of(rec),
                 plugin: plugin.clone(),
             },
         );
@@ -1398,5 +1419,27 @@ mod tests {
         // Disabling the install withdraws its routes from the overlay.
         store.set_enabled("a", false).unwrap();
         assert!(store.overlay().unwrap().routes.is_empty());
+    }
+    #[test]
+    fn a_cached_plugin_is_reused_only_for_the_same_module_caps_and_config() {
+        let rec = |approved: &str, config: serde_json::Value| InstallRecord {
+            id: "00000000000000aa".into(),
+            name: "demo".into(),
+            sha256: "a".repeat(64),
+            size: 3,
+            approved: wayhouse_plugin_host::Capabilities::parse(approved.as_bytes()).unwrap(),
+            config,
+            enabled: true,
+            created_at: 1,
+            created_by: None,
+            webhook: None,
+        };
+        let base = LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({})));
+        assert!(base == LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({}))));
+        assert!(
+            base != LoadKey::of(&rec(r#"{}"#, serde_json::json!({}))),
+            "caps revoked"
+        );
+        assert!(base != LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({"a": 1}))));
     }
 }

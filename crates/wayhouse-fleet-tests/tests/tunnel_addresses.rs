@@ -19,7 +19,7 @@ async fn controller(extra: &[&str]) -> Result<(Proc, tempfile::TempDir, String)>
     let ctl = spawn_controller_with(dir.path(), &format!("127.0.0.1:{port}"), &extra)?;
     wait_http_up(
         &format!("http://127.0.0.1:{port}/healthz"),
-        Duration::from_secs(10),
+        wayhouse_fleet_tests::STARTUP_TIMEOUT,
     )
     .await?;
     Ok((ctl, dir, format!("http://127.0.0.1:{port}")))
@@ -160,7 +160,7 @@ async fn controller_in(dir: &std::path::Path, port: u16, extra: &[&str]) -> Resu
     let ctl = spawn_controller_with(dir, &format!("127.0.0.1:{port}"), &extra)?;
     wait_http_up(
         &format!("http://127.0.0.1:{port}/healthz"),
-        Duration::from_secs(10),
+        wayhouse_fleet_tests::STARTUP_TIMEOUT,
     )
     .await?;
     Ok(ctl)

@@ -2,13 +2,17 @@
 //! verification in `--users-file` mode, so an unthrottled login is both a
 //! brute-force target and a cheap CPU DoS. Two token buckets per attempt:
 //! one per client address (IPv6 by /64) and one per username (so a botnet
-//! can't spread guesses at one account). Behind a reverse proxy every client
+//! can't spread guesses at one account; names hash into a fixed set of
+//! buckets, real or not, so the throttle reveals nothing about which accounts
+//! exist, and a successful login refunds its token). Behind a reverse proxy every client
 //! shares the proxy's address and the per-IP bucket degrades to a global one;
 //! the per-username bucket still holds.
 //!
 //! Ephemeral like the session store: a restart forgets everything.
 
+use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -44,6 +48,11 @@ impl Default for LoginLimits {
         }
     }
 }
+
+/// Fixed number of username buckets: every name (account or not) hashes into
+/// one of them, so the map is bounded and the throttle looks the same for
+/// names that exist and names that don't.
+const USERNAME_BUCKETS: usize = 1024;
 
 struct State {
     tokens: f64,
@@ -95,9 +104,9 @@ impl<K: std::hash::Hash + Eq + Clone> Buckets<K> {
     }
 
     /// Hands a token back (used when the second bucket refuses).
-    fn give_back(&mut self, key: &K) {
+    fn give_back(&mut self, key: &K, b: Bucket) {
         if let Some(s) = self.map.get_mut(key) {
-            s.tokens += 1.0;
+            s.tokens = (s.tokens + 1.0).min(f64::from(b.burst));
         }
     }
 }
@@ -107,10 +116,29 @@ pub struct LoginLimiter {
     inner: Mutex<Inner>,
 }
 
-#[derive(Default)]
 struct Inner {
     ips: Buckets<IpAddr>,
-    users: Buckets<String>,
+    users: Buckets<usize>,
+    /// Randomly keyed, so an attacker cannot pick names that collide with a
+    /// chosen account's bucket.
+    hasher: RandomState,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Inner {
+            ips: Buckets::default(),
+            users: Buckets::default(),
+            hasher: RandomState::new(),
+        }
+    }
+}
+
+impl Inner {
+    fn username_bucket(&self, name: &str) -> usize {
+        let name = name.to_lowercase();
+        (self.hasher.hash_one(&name) as usize) % USERNAME_BUCKETS
+    }
 }
 
 impl Default for LoginLimiter {
@@ -151,15 +179,23 @@ impl LoginLimiter {
         self.check_at(ip, username, Instant::now())
     }
 
+    /// Hands back the username token of a login that succeeded, so correct
+    /// passwords never count towards a lockout.
+    pub fn refund_username(&self, username: &str) {
+        let mut g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let bucket = g.username_bucket(username);
+        g.users.give_back(&bucket, self.limits.per_username);
+    }
+
     fn check_at(&self, ip: IpAddr, username: Option<&str>, now: Instant) -> Result<(), Duration> {
         let ip = source_key(ip);
         let l = self.limits;
         let mut g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         g.ips.take(&ip, l.per_ip, l.max_keys, now)?;
         if let Some(name) = username {
-            let name = name.to_lowercase();
-            if let Err(wait) = g.users.take(&name, l.per_username, l.max_keys, now) {
-                g.ips.give_back(&ip);
+            let bucket = g.username_bucket(name);
+            if let Err(wait) = g.users.take(&bucket, l.per_username, l.max_keys, now) {
+                g.ips.give_back(&ip, l.per_ip);
                 return Err(wait);
             }
         }
@@ -231,6 +267,32 @@ mod tests {
         assert!(l.check_at(ip("2001:db8:1:3::1"), None, t0).is_ok());
         assert!(l.check_at(ip("::ffff:192.0.2.1"), None, t0).is_ok());
         assert!(l.check_at(ip("192.0.2.1"), None, t0).is_err());
+    }
+
+    #[test]
+    fn usernames_share_a_fixed_set_of_buckets() {
+        let l = limiter(1_000_000, 100, 1_000_000);
+        let t0 = Instant::now();
+        for i in 0..5_000 {
+            let name = format!("user-{i}");
+            assert!(l.check_at(ip("192.0.2.1"), Some(&name), t0).is_ok());
+        }
+        let tracked = l.inner.lock().unwrap().users.map.len();
+        assert!(tracked <= USERNAME_BUCKETS, "{tracked} username buckets");
+    }
+
+    #[test]
+    fn refunding_a_username_gives_one_token_back_up_to_the_burst() {
+        let l = limiter(100, 1, 100);
+        let t0 = Instant::now();
+        assert!(l.check_at(ip("192.0.2.1"), Some("alice"), t0).is_ok());
+        assert!(l.check_at(ip("192.0.2.1"), Some("alice"), t0).is_err());
+        l.refund_username("ALICE");
+        assert!(l.check_at(ip("192.0.2.1"), Some("alice"), t0).is_ok());
+        l.refund_username("alice");
+        l.refund_username("alice");
+        assert!(l.check_at(ip("192.0.2.1"), Some("alice"), t0).is_ok());
+        assert!(l.check_at(ip("192.0.2.1"), Some("alice"), t0).is_err());
     }
 
     #[test]

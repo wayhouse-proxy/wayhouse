@@ -30,15 +30,15 @@ ABI major is 0 the host requires an exact match of the minor. Depending on
 
 One per sniffer, written by the author. Unknown keys are an error.
 
-| Key                                                 | Meaning                                                                            |
-| --------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `name`                                              | Letters, digits, `-` and `_` only (the proxy's module name rule)                   |
-| `description`, `license`                            | Shown in the UI                                                                    |
-| `version`                                           | SemVer of this sniffer                                                             |
-| `abi`                                               | `major.minor` the module was built for; must equal the section in the built module |
-| `min_proxy`                                         | Oldest proxy version it runs on                                                    |
-| `limits.max_memory_bytes`, `limits.call_timeout_ms` | Resource limits the sniffer is designed for                                        |
-| `config` (optional), `homepage` (optional)          | Documentation of the per-module config string; a link                              |
+| Key                                                 | Meaning                                                                                                  |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `name`                                              | Letters, digits, `-` and `_` only (the proxy's module name rule)                                         |
+| `description`, `license`                            | Shown in the UI                                                                                          |
+| `version`                                           | SemVer of this sniffer                                                                                   |
+| `abi`                                               | `major.minor` the module was built for; must equal the section in the built module                       |
+| `min_proxy`                                         | Oldest proxy version it runs on                                                                          |
+| `limits.max_memory_bytes`, `limits.call_timeout_ms` | Resource limits the sniffer is designed for; the client rejects 0 and anything above 256 MiB / 10 000 ms |
+| `config` (optional), `homepage` (optional)          | Documentation of the per-module config string; a link                                                    |
 
 ## Index (`index.json`)
 
@@ -73,7 +73,7 @@ The same file format for the official registry and for external ones, served ove
 
 Rules a client enforces: `schema` is 1; `kind` is `sniffer` (`plugin` is reserved for the
 plugin registry and rejected for now); names are unique and valid; versions are unique
-and sorted newest first; every URL is `https://`; `sha256` is 64 lowercase hex; `size`
+and sorted newest first; every URL is `https://` with a host and no user info; `sha256` is 64 lowercase hex; `size`
 is at most 8 MiB; the whole file is at most 1 MiB. Unknown extra fields are ignored so a
 newer registry can still be read.
 

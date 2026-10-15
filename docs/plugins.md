@@ -63,6 +63,11 @@ other capability. `http.hosts` entries are exact lower-case host names or IP lit
 optional `port` (default 443); `allow_private` must be approved per host to reach private,
 loopback or link-local addresses.
 
+A slot's `hosts` entries are `host` or `host:port` (`[v6]:port` for an IPv6 literal). A `host:port`
+entry binds the slot to that approved port only. A bare `host` binds it to the host's one approved
+port, and a module that lists the host on several ports must name one (`panel.example:8443`), so a
+secret never reaches a second port of the same host by accident.
+
 **The request.** `http_request` takes UTF-8 JSON, `{"method", "url", "headers", "body"}`
 (`body` base64, optional), and `http_read` returns `{"status", "headers", "body"}` (`body`
 base64), or `{"error": "..."}` for a refused or failed call. The host enforces: `https` only; a
@@ -96,13 +101,17 @@ file readable by its owner only. Every controller of a tier needs the same keyri
 is re-read when it changes. Without a key the secrets API answers `409` and a plugin that uses
 secret slots is **held**: it is not run, `GET /plugins/{id}/status` shows `held: ...` (no key,
 secret unset, key missing, or not authenticating), and other plugins keep running. Plaintext
-HTTP on a non-loopback `--listen` refuses to start with `--plugins` and a key unless
+is kept out of the store and the log, and the controller wipes the buffers it owns, but this is
+**best effort**: the HTTP stack copies a request body and an expanded header value into memory
+this project does not control (`HeaderValue`, the `PUT` body `Bytes`), and those copies are not
+zeroed. Anyone who can read the controller's or the proxy's memory can read live secrets.
+Plaintext HTTP on a non-loopback `--listen` refuses to start with `--plugins` and a key unless
 `--allow-insecure-secrets` is given.
 
 **Rotating a key.** (1) Append the new key to the keyring file on every controller. (2) `POST
 /admin/plugins/secrets/rewrap` on any controller: it refuses until every member reports the
 active key (`GET /admin/plugins/secrets/keys` lists the key ids each holds), then re-encrypts
-every secret under it; a slot an operator rewrote meanwhile is skipped and reported. (3) Remove
+every secret under it; a slot an operator rewrote meanwhile is skipped and reported. A member that does not answer is skipped, so a rewrap also works while a replica is down; that replica catches up on its own once it is back, and until it has the new key in its keyring the plugins that use it are held. (3) Remove
 the old key from the file. Removing it before step 2 holds the plugins that still use it
 (`held: key <id> missing`) until it is put back.
 
@@ -138,14 +147,15 @@ Rules:
 - Exact names match before `*.suffix` patterns, longer suffixes first.
 - Disabling or deleting an install withdraws its routes at once. A plugin whose ticks fail keeps its
   last committed set. (The spec's grace period with an alert is not built; see the follow-up issue.)
-- A controller started without `--plugins` answers `501` and proxies keep their own config; a
-  proxy without `--controller` ignores the overlay.
+- A controller started without `--plugins` answers `501` (`404` on an older build) and proxies drop
+  the plugin routes at once, keeping their own config; a controller that is only unreachable leaves
+  the last overlay in place. A proxy without `--controller` ignores the overlay.
 
 ## Webhooks
 
-A plugin that declares `"triggers": {"on_webhook": true}` (and `on_timer`, which stays required)
-can be called by an outside system. Webhooks are off until the operator starts the controller
-with a **separate listener**, never on the admin port:
+A plugin that declares `"triggers": {"on_webhook": true}` can be called by an outside system.
+Webhooks are off until the operator starts the controller with a **separate listener**, never on
+the admin port:
 
 ```text
 --plugin-webhook-listen 0.0.0.0:8444 --plugin-webhook-tls-cert hooks.pem --plugin-webhook-tls-key hooks.key
@@ -164,6 +174,10 @@ call needs every member to run a build that supports it.
 <token>`. In order:
 
 1. A per-source rate limit (IPv6 by /64) runs first, valid token or not: `429`.
+   The source is the TCP peer address. Callers behind one load balancer or NAT therefore
+   share a single bucket, and the limit applies to all of them together; there is no
+   trusted-proxy header. Put the webhook listener where callers reach it directly; there is
+   no setting to relax the source limit.
 2. The token is checked in constant time, against a dummy hash when the install is unknown,
    disabled or has no webhook. Every failure is the same `401`.
 3. A per-install rate limit: `429`.
@@ -221,7 +235,7 @@ leader term (automation hooks spec, "Commit rule").
 
 Before a module is compiled, `bounds::check` walks it with `wasmparser` and rejects
 structure out of proportion to a real plugin (`ModuleError::TooComplex`, naming the
-bound): functions, types, locals per function, block nesting depth, declared table and
+bound): functions, types, locals per function (1000) and in total (50 000), block nesting depth, declared table (at most `Limits::max_table_elements`, 10 000) and
 memory sizes, globals, imports, exports and total code bytes (`Bounds`, set through
 `Limits::bounds`). `CompilePool` runs `PluginHost::load` on a fixed set of worker threads
 behind a bounded queue: a full queue answers `Busy` at once and a slow compile answers
@@ -324,13 +338,24 @@ is a content-addressed blob each replica keeps in its own store and moves over t
   Until it has the module a node runs nothing for that install; a leader that cannot find one
   logs a repeated warning, since it would otherwise silently run nothing.
 - Rolling upgrades: a new install is refused with `503` unless every member answers
-  `/raft/whoami` with `plugin_support` of at least 2 (a build before module replication leaves it
-  out). Existing installs keep working through an upgrade. Upgrade every replica before the first
+  `/raft/whoami` with the current `plugin_support` level (3; a build before module replication
+  leaves it out). A member started without `--plugins`, or as a slave, reports `0`, so every
+  replica needs `--plugins` before plugins are installed or their webhooks, secrets or key
+  rotation change. A leader without `--plugins` would otherwise run no ticks and fail webhook
+  forwards silently.
+- The same gate covers secret changes, so setting, deleting or rewrapping a secret answers `409`
+  while any cluster member (voter or learner) is unreachable. Revoking one credential therefore
+  needs every member up; disabling or deleting the install still works as emergency containment. Existing installs keep working through an upgrade. Upgrade every replica before the first
   install; the gate does not cover a replica added later with an old build.
 - An install that lands on a leader that has meanwhile lost leadership answers `503 retry` and is
   never forwarded for a second hop.
-- At startup a controller removes the module blobs no install references (uploads that were never
-  installed, and cleanups a crash interrupted), so upload and install belong in one sitting.
+- A controller removes the module blobs no install references (uploads that were never installed,
+  and cleanups a crash interrupted) once at startup, so upload and install belong in one sitting.
+  Under HA the sweep waits until the node knows a leader and has applied its whole log, because a
+  blob pushed for a committed install that is not replayed yet looks unused. Uploads no install
+  uses are capped at 64 MiB in total (`507`), so an open controller cannot be filled with them.
+- A delete that lands between an install's blob check and its commit removes the module on every
+  replica; the leader puts it back and pushes it again once the install is recorded.
 
 **Turning HA on.** Installs, state and modules of a controller that ran standalone are not carried into an HA tier (the tier keeps its own in the Raft state machine's database, and there is no pre-HA import for plugins): install them again.
 

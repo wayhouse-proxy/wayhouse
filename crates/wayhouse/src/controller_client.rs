@@ -35,7 +35,10 @@ const REVISION_HEADER: &str = "x-config-revision";
 /// before anything else exists to build a `Snapshot` from (mirrors
 /// `wayhouse_config::load` in file mode).
 pub async fn fetch_current(base_url: &str, token: Option<&str>) -> anyhow::Result<(u64, String)> {
-    let mut req = wayhouse_http::client().get(format!("{base_url}/config"));
+    let mut req = wayhouse_http::client().get(format!(
+        "{base_url}/config?max_schema={}",
+        wayhouse_config::version::CONFIG_SCHEMA_VERSION
+    ));
     if let Some(token) = token {
         req = req.bearer_auth(token);
     }
@@ -122,6 +125,15 @@ pub async fn run(
 /// this returns `Err` partway through a batch — the caller must reconnect
 /// from wherever the connection actually got to, never from where it
 /// started (see the comment in `run`).
+/// `{base_url}/config/subscribe` from `since`, telling the controller the newest config
+/// schema this build parses so it never sends a revision that needs more (#202).
+fn subscribe_url(base_url: &str, since: u64) -> String {
+    format!(
+        "{base_url}/config/subscribe?since={since}&max_schema={}",
+        wayhouse_config::version::CONFIG_SCHEMA_VERSION
+    )
+}
+
 async fn subscribe_once(
     base_url: &str,
     token: Option<&str>,
@@ -132,7 +144,7 @@ async fn subscribe_once(
     sniffers: &Sniffers,
 ) -> anyhow::Result<()> {
     let since = *cursor;
-    let url = format!("{base_url}/config/subscribe?since={since}");
+    let url = subscribe_url(base_url, since);
     let mut req = wayhouse_http::client().get(&url);
     if let Some(token) = token {
         req = req.bearer_auth(token);
@@ -208,6 +220,37 @@ fn parse_sse_event(event: &str) -> Option<SseRevision> {
 /// into one re-fetch instead of one per call.
 const ADMIN_REBUILD_DEBOUNCE: Duration = Duration::from_millis(200);
 
+/// Retry delays for a failed re-fetch after `request_reload()`: the change that asked for
+/// the rebuild (a plugin-route overlay, a backend edit) is already recorded locally and
+/// nothing asks again, so giving up would leave it unapplied until the next unrelated one.
+const REFETCH_RETRY_MIN: Duration = Duration::from_secs(1);
+const REFETCH_RETRY_MAX: Duration = Duration::from_secs(30);
+
+/// Calls `fetch` until it succeeds, doubling the wait between attempts up to
+/// [`REFETCH_RETRY_MAX`]. Runs on the watcher task only, so a long outage just keeps one
+/// task asleep; a newer `request_reload()` during the wait is covered by the next fetch,
+/// which always reads the controller's current config.
+async fn fetch_with_retry<F, Fut>(mut fetch: F) -> (u64, String)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<(u64, String)>>,
+{
+    let mut delay = REFETCH_RETRY_MIN;
+    loop {
+        match fetch().await {
+            Ok(got) => return got,
+            Err(e) => {
+                tracing::warn!(
+                    error = %format_args!("{e:#}"), retry_in = ?delay,
+                    "could not re-fetch controller config after an admin-triggered reload; retrying"
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(REFETCH_RETRY_MAX);
+            }
+        }
+    }
+}
+
 /// Watches [`RuntimeHandle::reload_requested`] and re-fetches + re-applies
 /// the controller's current config on every notification. **Fixes a real
 /// gap, not a hypothetical one**: `reload::run` is what normally listens on
@@ -246,29 +289,23 @@ pub async fn watch_admin_reloads(
         // coalescing `reload::run` does for its own triggers.
         let _ = tokio::time::timeout(Duration::ZERO, admin.notified()).await;
 
-        match fetch_current(&base_url, token.as_deref()).await {
-            Ok((_revision, text)) => {
-                match wayhouse_config::parse_str(&crate::plugin_overlay::merge(&text)) {
-                    Ok(cfg) => {
-                        crate::reload::apply_config(
-                            cfg,
-                            &handle,
-                            &resolvers,
-                            sniffer_loader.as_deref(),
-                            &sniffers,
-                            "admin-triggered overlay change",
-                        )
-                        .await;
-                    }
-                    Err(e) => tracing::error!(
-                        error = %e,
-                        "re-fetched controller config failed to parse after an admin-triggered reload"
-                    ),
-                }
+        let (_revision, text) =
+            fetch_with_retry(|| fetch_current(&base_url, token.as_deref())).await;
+        match wayhouse_config::parse_str(&crate::plugin_overlay::merge(&text)) {
+            Ok(cfg) => {
+                crate::reload::apply_config(
+                    cfg,
+                    &handle,
+                    &resolvers,
+                    sniffer_loader.as_deref(),
+                    &sniffers,
+                    "admin-triggered overlay change",
+                )
+                .await;
             }
-            Err(e) => tracing::warn!(
-                error = %e, controller = %base_url,
-                "could not re-fetch controller config after an admin-triggered reload"
+            Err(e) => tracing::error!(
+                error = %e,
+                "re-fetched controller config failed to parse after an admin-triggered reload"
             ),
         }
     }
@@ -309,6 +346,52 @@ async fn apply_sse_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subscribe_url_announces_the_supported_config_schema() {
+        let url = subscribe_url("http://c:1", 7);
+        assert_eq!(
+            url,
+            format!(
+                "http://c:1/config/subscribe?since=7&max_schema={}",
+                wayhouse_config::version::CONFIG_SCHEMA_VERSION
+            )
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_refetch_is_retried_with_a_growing_delay_until_it_succeeds() {
+        let calls = std::sync::atomic::AtomicU32::new(0);
+        let started = tokio::time::Instant::now();
+        let got = fetch_with_retry(|| async {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 3 {
+                Err(anyhow::anyhow!("controller unreachable"))
+            } else {
+                Ok((9, "pools: []".to_string()))
+            }
+        })
+        .await;
+        assert_eq!(got.0, 9);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+        // 1 s + 2 s + 4 s between the four attempts.
+        assert_eq!(started.elapsed(), Duration::from_secs(7));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_retry_delay_stops_growing_at_the_cap() {
+        let calls = std::sync::atomic::AtomicU32::new(0);
+        let started = tokio::time::Instant::now();
+        fetch_with_retry(|| async {
+            if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 8 {
+                Err(anyhow::anyhow!("down"))
+            } else {
+                Ok((1, String::new()))
+            }
+        })
+        .await;
+        // 1+2+4+8+16+30+30+30 (capped at REFETCH_RETRY_MAX).
+        assert_eq!(started.elapsed(), Duration::from_secs(121));
+    }
 
     #[test]
     fn parses_a_well_formed_data_event() {

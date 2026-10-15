@@ -141,6 +141,15 @@ async fn relay_once(base_url: &str, token: Option<&str>, state: &AppState) -> an
     subscribe_once(base_url, token, &mut cursor, state).await
 }
 
+/// `{base_url}/config/subscribe` from `since`, telling the controller the newest config
+/// schema this build parses so it never sends a revision that needs more (#202).
+fn subscribe_url(base_url: &str, since: u64) -> String {
+    format!(
+        "{base_url}/config/subscribe?since={since}&max_schema={}",
+        wayhouse_config::version::CONFIG_SCHEMA_VERSION
+    )
+}
+
 async fn subscribe_once(
     base_url: &str,
     token: Option<&str>,
@@ -148,7 +157,7 @@ async fn subscribe_once(
     state: &AppState,
 ) -> anyhow::Result<()> {
     let since = *cursor;
-    let url = format!("{base_url}/config/subscribe?since={since}");
+    let url = subscribe_url(base_url, since);
     let mut req = wayhouse_http::client().get(&url);
     if let Some(token) = token {
         req = req.bearer_auth(token);
@@ -212,6 +221,9 @@ fn parse_sse_event(event: &str) -> Option<SseRevision> {
     })
 }
 
+/// Whether the parent has been seen below the relay cursor, so the warning fires once per episode.
+static REGRESSION: crate::relay::RegressionLatch = crate::relay::RegressionLatch::new();
+
 /// Lands one parsed revision in this tier's own store via
 /// [`AppState::relay_revision`] — bypassing the `slave` write gate on
 /// purpose, since this *is* the sanctioned way a slave gets a new revision.
@@ -224,8 +236,22 @@ fn parse_sse_event(event: &str) -> Option<SseRevision> {
 /// the revision is retried. `Ok(None)` for a keep-alive or malformed block.
 async fn apply_sse_event(event: &str, state: &AppState) -> Result<Option<u64>, RelayError> {
     let Some(SseRevision { revision, config }) = parse_sse_event(event) else {
+        if crate::relay::is_data_event(event) {
+            tracing::warn!("skipping a parent config event this build cannot parse");
+        }
         return Ok(None);
     };
+    if let Ok(cursor) = state.relay.get() {
+        let regressed = crate::relay::parent_revision_regressed(cursor, revision);
+        if REGRESSION.should_warn(regressed) {
+            tracing::warn!(
+                parent_revision = revision,
+                cursor,
+                "parent controller revision is below the relay cursor: the parent was reset \
+                 or restored, and this tier skips its revisions until it passes the cursor"
+            );
+        }
+    }
     state.relay_revision(config.into_bytes(), revision).await?;
     tracing::info!(
         parent_revision = revision,
@@ -237,6 +263,18 @@ async fn apply_sse_event(event: &str, state: &AppState) -> Result<Option<u64>, R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subscribe_url_announces_the_supported_config_schema() {
+        let url = subscribe_url("http://c:1", 7);
+        assert_eq!(
+            url,
+            format!(
+                "http://c:1/config/subscribe?since=7&max_schema={}",
+                wayhouse_config::version::CONFIG_SCHEMA_VERSION
+            )
+        );
+    }
 
     #[test]
     fn parses_a_well_formed_data_event() {

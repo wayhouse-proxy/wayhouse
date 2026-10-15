@@ -397,11 +397,7 @@ async fn main() -> anyhow::Result<()> {
     // `role::RoleHandle`'s doc for why a plain `Role` field per state
     // wouldn't work once adoption exists).
     let role_handle = RoleHandle::new(args.role);
-    // POST /config refuses a document newer than the oldest live proxy
-    // understands; the clone reads the same trees `with_ha` below keeps using.
-    let schema_source = proxy_peers_state.clone();
-    let mut config_state = AppState::try_new(store, args.auth_token.clone(), role_handle.clone())?
-        .with_schema_floor(Arc::new(move || schema_source.min_live_config_schema()));
+    let mut config_state = AppState::try_new(store, args.auth_token.clone(), role_handle.clone())?;
     let mut intent_state_val =
         IntentState::try_new(intent_store, role_handle.clone(), args.auth_token.clone())?;
 
@@ -494,6 +490,12 @@ async fn main() -> anyhow::Result<()> {
             forward: ha::client::forward_client(ha::client::FORWARD_TIMEOUT),
             pre_ha,
             secret_keys: plugin_keys.clone(),
+            // A slave serves only the disabled router, whatever `--plugins` says.
+            plugins_enabled: wayhouse_controller::plugins::availability(
+                args.plugins,
+                args.role == Role::Slave,
+            )
+            .is_ok(),
         });
         // A Raft core that stopped after a storage error leaves this node unable to
         // commit while `/healthz` still answers: exit so the orchestrator restarts
@@ -537,6 +539,12 @@ async fn main() -> anyhow::Result<()> {
             import_policy,
         ));
     }
+    // POST /config refuses a document newer than the oldest live proxy
+    // understands. Set after the HA wiring above: under HA the liveness window
+    // must allow for the hourly `last_seen` touch (#342).
+    let schema_source = proxy_peers_state.clone();
+    config_state =
+        config_state.with_schema_floor(Arc::new(move || schema_source.min_live_config_schema()));
     let leader_handle = ha_handle.as_ref().map(|(h, _, _)| h.clone());
     let lease_leader = leader_handle.clone();
     tokio::spawn(wayhouse_controller::lease::lease_loop(
@@ -653,10 +661,21 @@ async fn main() -> anyhow::Result<()> {
                     ha.clone(),
                     plugin_keys.clone(),
                 );
-                match store.sweep_blobs() {
-                    Ok(0) => {}
-                    Ok(n) => tracing::info!(removed = n, "removed plugin modules no install uses"),
-                    Err(e) => tracing::warn!(error = %e, "could not sweep orphaned plugin modules"),
+                // Under HA the sweep waits for the state machine to replay the log.
+                match &ha {
+                    Some(handle) => drop(wayhouse_controller::plugins::peer::spawn_startup_sweep(
+                        store.clone(),
+                        handle.clone(),
+                    )),
+                    None => match store.sweep_blobs() {
+                        Ok(0) => {}
+                        Ok(n) => {
+                            tracing::info!(removed = n, "removed plugin modules no install uses");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "could not sweep orphaned plugin modules");
+                        }
+                    },
                 }
                 // Detached on purpose: they run for the life of the process.
                 drop(runner.clone().spawn());

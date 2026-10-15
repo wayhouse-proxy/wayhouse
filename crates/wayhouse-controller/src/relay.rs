@@ -34,6 +34,47 @@ pub enum RelayError {
     Raft(String),
 }
 
+/// Whether the parent sent a revision below this tier's relay cursor. Every
+/// replica skips such an entry as a duplicate (that guard drops a deposed
+/// leader's late proposal), but from the parent's own stream it only happens
+/// when the parent's counter went backwards: it was wiped, restored from an
+/// older snapshot or replaced. The tier then ignores the parent until the
+/// counter passes the old cursor, so the caller logs a warning.
+pub fn parent_revision_regressed(cursor: u64, revision: u64) -> bool {
+    revision < cursor
+}
+
+/// Remembers whether the parent is currently below the relay cursor, so the
+/// regression warning fires once per episode instead of once per event while
+/// the parent catches up. One per relay stream (config, intent).
+#[derive(Default)]
+pub struct RegressionLatch(std::sync::atomic::AtomicBool);
+
+impl RegressionLatch {
+    pub const fn new() -> Self {
+        Self(std::sync::atomic::AtomicBool::new(false))
+    }
+
+    /// Feeds the latest check; true only on the first regressed event after a
+    /// good one (or after startup).
+    pub fn should_warn(&self, regressed: bool) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        if regressed {
+            !self.0.swap(true, Relaxed)
+        } else {
+            self.0.store(false, Relaxed);
+            false
+        }
+    }
+}
+
+/// Whether an SSE block carries a `data:` line. A block that does but does not
+/// parse into a revision (an op this build does not know, a malformed body) is
+/// skipped by the relay and logged by the caller; keep-alive comments are not.
+pub fn is_data_event(event: &str) -> bool {
+    event.split('\n').any(|line| line.starts_with("data:"))
+}
+
 /// Proposes one relay entry and waits for it to commit and apply.
 pub async fn propose(ha: &HaHandle, req: WriteRequest) -> Result<(), RelayError> {
     match ha.raft.client_write(req).await {
@@ -49,5 +90,38 @@ pub async fn propose(ha: &HaHandle, req: WriteRequest) -> Result<(), RelayError>
 pub async fn wait_until_leader(is_leader: impl Fn() -> bool) {
     while !is_leader() {
         tokio::time::sleep(LEADER_POLL).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_data_line_makes_an_event_worth_a_warning_when_unparsable() {
+        assert!(is_data_event(
+            "data: {\"revision\":4,\"op\":{\"kind\":\"new\"}}"
+        ));
+        assert!(is_data_event("id: 4\ndata: x"));
+        assert!(!is_data_event(": keep-alive"));
+        assert!(!is_data_event(""));
+    }
+
+    #[test]
+    fn a_regression_warns_once_per_episode() {
+        let latch = RegressionLatch::default();
+        assert!(!latch.should_warn(false));
+        assert!(latch.should_warn(true), "first event below the cursor");
+        assert!(!latch.should_warn(true));
+        assert!(!latch.should_warn(true));
+        assert!(!latch.should_warn(false), "the parent passed the cursor");
+        assert!(latch.should_warn(true), "a new episode warns again");
+    }
+
+    #[test]
+    fn a_revision_below_the_cursor_means_the_parent_went_backwards() {
+        assert!(parent_revision_regressed(50, 3));
+        assert!(!parent_revision_regressed(50, 51));
+        assert!(!parent_revision_regressed(0, 1));
     }
 }

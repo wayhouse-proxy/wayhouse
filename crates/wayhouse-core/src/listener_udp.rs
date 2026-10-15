@@ -311,7 +311,7 @@ pub async fn run_udp_listener(
                             }
                         }
                         let now = mono_ms();
-                        wheel.schedule(key, session.id, now + session.idle_ms, now);
+                        wheel.schedule(key, session.id, now.saturating_add(session.idle_ms), now);
                         sessions.insert(key, session);
                         metrics::gauge!(m::ACTIVE_UDP_SESSIONS, "listener" => cfg.name.clone())
                             .increment(1.0);
@@ -512,7 +512,7 @@ pub async fn run_udp_listener(
                     match open_session(&cfg, &snapshot, &conns, &sock, src_guard, limit_guard, client, dst, routed, data).await {
                         Ok(session) => {
                             let now = mono_ms();
-                            wheel.schedule(key, session.id, now + session.idle_ms, now);
+                            wheel.schedule(key, session.id, now.saturating_add(session.idle_ms), now);
                             sessions.insert(key, session);
                             metrics::gauge!(m::ACTIVE_UDP_SESSIONS, "listener" => cfg.name.clone())
                                 .increment(1.0);
@@ -811,7 +811,7 @@ impl IdleWheel {
             let Some(s) = sessions.get(&key).filter(|s| s.id == id) else {
                 continue; // session already gone, or replaced under the same key
             };
-            let deadline = s.last_ms.load(Ordering::Relaxed) + s.idle_ms;
+            let deadline = s.last_ms.load(Ordering::Relaxed).saturating_add(s.idle_ms);
             if now >= deadline {
                 tracing::debug!(
                     listener = %listener, client = %key.0, backend = %s.backend,
@@ -954,7 +954,7 @@ async fn open_session(
         } => (
             addr,
             None,
-            idle_timeout.as_millis() as u64,
+            u64::try_from(idle_timeout.as_millis()).unwrap_or(u64::MAX),
             proxy_protocol,
             "(resolver target)".to_string(),
         ),
@@ -968,7 +968,7 @@ async fn open_session(
             (
                 addr,
                 Some(g),
-                pool.idle_timeout.as_millis() as u64,
+                u64::try_from(pool.idle_timeout.as_millis()).unwrap_or(u64::MAX),
                 pool.proxy_protocol,
                 name,
             )

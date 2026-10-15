@@ -33,6 +33,9 @@ pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
 /// `state_put`s one call may commit (the host's per-call limit).
 pub const MAX_PUTS: usize = 256;
 
+/// How many bytes of uploaded modules no install uses may sit in the store at once.
+pub const MAX_ORPHAN_BYTES: usize = 64 * 1024 * 1024;
+
 /// Whether this controller serves the plugin API: `Err` carries the reason it does not.
 /// Plugins are opt-in (`--plugins`); a slave tier has none (they run on the root tier).
 pub fn availability(enabled: bool, slave: bool) -> Result<(), &'static str> {
@@ -81,6 +84,19 @@ pub enum PluginStoreError {
     Corrupt(#[from] serde_json::Error),
     #[error("the module for this install is no longer stored")]
     BlobMissing,
+    #[error("an install with this id already exists")]
+    Exists,
+    #[error("modules waiting for an install fill the store; install or restart to clear them")]
+    OrphansFull,
+}
+
+/// What [`PluginStore::delete_upload`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadDelete {
+    Deleted,
+    NotFound,
+    /// An install uses the module; remove the install instead.
+    InUse,
 }
 
 /// Whether `name` is a valid install name.
@@ -446,6 +462,54 @@ impl PluginStore {
         }
     }
 
+    /// An uploaded module no install uses yet is kept, up to `cap` bytes of such modules in
+    /// total (`OrphansFull` past that). A module already stored is accepted as is.
+    pub fn put_upload(
+        &self,
+        sha256: &str,
+        bytes: &[u8],
+        cap: usize,
+    ) -> Result<(), PluginStoreError> {
+        let _guard = self.lock();
+        if self.blobs.contains_key(sha256.as_bytes())? {
+            return Ok(());
+        }
+        if self.orphan_bytes()?.saturating_add(bytes.len()) > cap {
+            return Err(PluginStoreError::OrphansFull);
+        }
+        self.put_blob(sha256, bytes)
+    }
+
+    /// Deletes an uploaded module no install uses, freeing its share of the orphan cap.
+    pub fn delete_upload(&self, sha256: &str) -> Result<UploadDelete, PluginStoreError> {
+        let _guard = self.lock();
+        if self.list()?.iter().any(|r| r.sha256 == sha256) {
+            return Ok(UploadDelete::InUse);
+        }
+        let removed = self.blobs.remove(sha256.as_bytes())?;
+        self.blobs.flush()?;
+        Ok(if removed.is_some() {
+            UploadDelete::Deleted
+        } else {
+            UploadDelete::NotFound
+        })
+    }
+
+    /// The total size of the stored modules no install references.
+    pub fn orphan_bytes(&self) -> Result<usize, PluginStoreError> {
+        let referenced: std::collections::HashSet<String> =
+            self.list()?.into_iter().map(|r| r.sha256).collect();
+        let mut total = 0usize;
+        for item in self.blobs.iter() {
+            let (key, value) = item?;
+            let kept = std::str::from_utf8(&key).is_ok_and(|sha| referenced.contains(sha));
+            if !kept {
+                total = total.saturating_add(value.len());
+            }
+        }
+        Ok(total)
+    }
+
     /// Keep `bytes` under its `sha256` (idempotent).
     pub fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<(), PluginStoreError> {
         self.blobs.insert(sha256.as_bytes(), bytes)?;
@@ -477,6 +541,9 @@ impl PluginStore {
         let _guard = self.lock();
         if !self.blobs.contains_key(record.sha256.as_bytes())? {
             return Err(PluginStoreError::BlobMissing);
+        }
+        if self.installs.contains_key(record.id.as_bytes())? {
+            return Err(PluginStoreError::Exists);
         }
         self.write_record(record)
     }
@@ -581,6 +648,10 @@ impl PluginStore {
         let Some(record) = self.get(id)? else {
             return Err(CommitError::NoSuchInstall);
         };
+        // A call that was running when the install was disabled must not write.
+        if !record.enabled {
+            return Err(CommitError::Stale);
+        }
         if let Some(set) = routes {
             check_routes(&record, set).map_err(CommitError::Invalid)?;
         }
@@ -725,6 +796,9 @@ impl PluginStore {
                         let Some(record) = read(id)? else {
                             return done(Applied::NoSuchInstall);
                         };
+                        if !record.enabled {
+                            return done(Applied::Stale);
+                        }
                         if let Some(set) = routes {
                             if let Err(why) = check_routes(&record, set) {
                                 return done(Applied::Invalid(why));
@@ -1243,6 +1317,89 @@ mod tests {
             Err(CommitError::NoSuchInstall)
         ));
         assert_eq!(s.state("nope").unwrap().0, 0);
+    }
+
+    #[test]
+    fn create_refuses_an_id_that_is_taken() {
+        let (s, _d) = store();
+        s.put_blob("sha1", b"abc").unwrap();
+        s.create(&record("a", "sha1", 1)).unwrap();
+        let mut other = record("a", "sha1", 2);
+        other.name = "impostor".into();
+        assert!(matches!(s.create(&other), Err(PluginStoreError::Exists)));
+        assert_eq!(s.get("a").unwrap().unwrap().name, "demo");
+    }
+
+    #[test]
+    fn uploads_that_no_install_uses_are_capped_in_total() {
+        let (s, _d) = store();
+        s.put_upload("sha1", &[0; 6], 10).unwrap();
+        // The same module again costs nothing.
+        s.put_upload("sha1", &[0; 6], 10).unwrap();
+        assert!(matches!(
+            s.put_upload("sha2", &[0; 5], 10),
+            Err(PluginStoreError::OrphansFull)
+        ));
+        assert!(s.get_blob("sha2").unwrap().is_none());
+        // Installing the first module frees its share of the cap.
+        s.create(&record("a", "sha1", 1)).unwrap();
+        s.put_upload("sha2", &[0; 5], 10).unwrap();
+        assert_eq!(s.orphan_bytes().unwrap(), 5);
+    }
+
+    #[test]
+    fn an_unused_upload_can_be_deleted_to_free_the_cap() {
+        let (s, _d) = store();
+        s.put_upload("sha1", &[0; 6], 10).unwrap();
+        assert!(matches!(
+            s.put_upload("sha2", &[0; 5], 10),
+            Err(PluginStoreError::OrphansFull)
+        ));
+        assert_eq!(s.delete_upload("sha1").unwrap(), UploadDelete::Deleted);
+        assert!(s.get_blob("sha1").unwrap().is_none());
+        s.put_upload("sha2", &[0; 5], 10).unwrap();
+        assert_eq!(s.delete_upload("sha1").unwrap(), UploadDelete::NotFound);
+    }
+
+    #[test]
+    fn a_module_an_install_uses_is_not_deleted_as_an_upload() {
+        let (s, _d) = store();
+        s.put_blob("sha1", b"abc").unwrap();
+        s.create(&record("a", "sha1", 1)).unwrap();
+        assert_eq!(s.delete_upload("sha1").unwrap(), UploadDelete::InUse);
+        assert!(s.get_blob("sha1").unwrap().is_some());
+    }
+
+    #[test]
+    fn a_state_commit_for_a_disabled_install_is_stale() {
+        let (s, _d) = store();
+        s.put_blob("sha1", b"abc").unwrap();
+        s.create(&record("a", "sha1", 1)).unwrap();
+        s.set_enabled("a", false).unwrap();
+        assert!(matches!(
+            s.commit_state("a", 0, &puts(&[("k", b"v")])),
+            Err(CommitError::Stale)
+        ));
+        assert!(s.state("a").unwrap().1.is_empty());
+        s.set_enabled("a", true).unwrap();
+        assert_eq!(s.commit_state("a", 0, &puts(&[("k", b"v")])).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_replicated_state_entry_for_a_disabled_install_is_stale() {
+        let (s, _d) = store();
+        s.apply_at(1, PluginOp::Install(&valid(ID_A, 'a', 1)))
+            .unwrap();
+        s.apply_at(
+            2,
+            PluginOp::SetEnabled {
+                id: ID_A,
+                enabled: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(put_state(&s, 3, ID_A, 0, "n", b"1"), Applied::Stale);
+        assert!(s.state(ID_A).unwrap().1.is_empty());
     }
 
     #[test]

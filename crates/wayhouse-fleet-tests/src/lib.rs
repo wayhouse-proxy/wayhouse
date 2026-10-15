@@ -50,13 +50,94 @@ pub async fn http_get(url: impl reqwest::IntoUrl) -> reqwest::Result<reqwest::Re
     wayhouse_http::client().get(url).send().await
 }
 
-/// An OS-assigned loopback port, freed immediately before the caller binds
-/// it again in a spawned child. Carries the usual tiny TOCTOU race of this
-/// technique; acceptable here the same way `crates/wayhouse-core/tests/` already
-/// leans on `127.0.0.1:0` for ephemeral sockets (AGENTS.md's testing rule).
+/// A loopback port nothing listens on and no other caller was given, for a
+/// child process to bind a moment later.
+///
+/// `bind(127.0.0.1:0)` and dropping the listener (the first version of this)
+/// let two calls, in this process or in any of the test processes nextest runs
+/// side by side, receive the same port, and let an outgoing connection take
+/// the port in the window before the child binds it. In a three-replica HA
+/// cluster that is not just a failed start: when replica 2 got replica 1's
+/// port, `Address already in use` killed replica 2 and its peer URL then
+/// reached replica 1, which received its own vote and `append_entries` and hit
+/// an openraft assertion (#334).
+///
+/// So ports come from below the kernel's ephemeral range, where outgoing
+/// connections never land, and each is claimed with an exclusive file in the
+/// temp dir, which every test process shares. A claim is never released; it
+/// expires after [`PORT_CLAIM_TTL`].
 pub fn free_port() -> Result<u16> {
-    let listener = StdTcpListener::bind("127.0.0.1:0").context("binding an ephemeral port")?;
-    Ok(listener.local_addr()?.port())
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static CALLS: AtomicU64 = AtomicU64::new(0);
+
+    let (lo, hi) = port_window()?;
+    let span = u32::from(hi - lo);
+    let dir = std::env::temp_dir().join("wayhouse-fleet-ports");
+    std::fs::create_dir_all(&dir).context("creating the port claim dir")?;
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(
+        &(
+            std::process::id(),
+            CALLS.fetch_add(1, Ordering::Relaxed),
+            std::time::SystemTime::now(),
+        ),
+        &mut hasher,
+    );
+    let start = (std::hash::Hasher::finish(&hasher) % u64::from(span)) as u32;
+
+    for step in 0..span {
+        let port = lo + ((start + step) % span) as u16;
+        if !claim_port(&dir.join(port.to_string())) {
+            continue;
+        }
+        // Claimed, but something unrelated may still be listening there.
+        if StdTcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return Ok(port);
+        }
+    }
+    bail!("no free port left in {lo}..{hi}")
+}
+
+/// How long a port stays claimed. Far longer than any test, short enough that
+/// the claims of killed runs do not pile up.
+const PORT_CLAIM_TTL: Duration = Duration::from_secs(3600);
+
+/// `lo..hi`, strictly below the kernel's ephemeral range (32768 if that cannot
+/// be read): from 20000, or 100 ports under the range if it starts lower.
+fn port_window() -> Result<(u16, u16)> {
+    let hi = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse::<u16>().ok())
+        .unwrap_or(32768);
+    let lo = 20_000.min(hi.saturating_sub(100)).max(1024);
+    ensure!(lo < hi, "no ports below the ephemeral range ({hi}+)");
+    Ok((lo, hi))
+}
+
+/// Create the claim file; `false` if another caller holds a live claim.
+fn claim_port(path: &Path) -> bool {
+    for _ in 0..2 {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+        {
+            Ok(_) => return true,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                let expired = std::fs::metadata(path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age > PORT_CLAIM_TTL);
+                if !expired || std::fs::remove_file(path).is_err() {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 fn workspace_root() -> PathBuf {
@@ -249,6 +330,13 @@ impl Proc {
         self.child.try_wait().ok().flatten().and_then(|s| s.code())
     }
 }
+
+/// How long a test waits for a spawned binary to answer `/healthz`. Generous on
+/// purpose (#279): a loaded CI runner, or a queue entry building next to other
+/// merges, can take far longer than a developer machine to start a process, and
+/// a wait that is too short flakes while a long one costs nothing when the
+/// binary is up. A real hang still fails, with the URL and the last error.
+pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Poll `url` (a plain `GET`) until it returns any HTTP response or
 /// `timeout` elapses, retrying every send error. Every fleet binary here

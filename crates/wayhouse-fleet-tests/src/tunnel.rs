@@ -187,7 +187,7 @@ impl TunnelLab {
         )?;
         wait_http_up(
             &format!("http://127.0.0.1:{controller_port}/healthz"),
-            Duration::from_secs(10),
+            crate::STARTUP_TIMEOUT,
         )
         .await?;
         Ok(Self {

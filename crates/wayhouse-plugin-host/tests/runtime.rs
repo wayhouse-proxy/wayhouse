@@ -327,7 +327,7 @@ fn a_table_over_the_runtime_cap_is_rejected_at_load() {
     );
     assert!(matches!(
         host().load(&m, &approved(&m)),
-        Err(ModuleError::Instantiate(_))
+        Err(ModuleError::TooComplex(_))
     ));
 }
 

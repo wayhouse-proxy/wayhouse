@@ -19,6 +19,66 @@ enum ResolvedSource {
     Dynamic(SourceConfig),
 }
 
+/// Longest accepted timeout or interval. A larger value overflows the
+/// millisecond arithmetic downstream (deadlines wrap) and is never sensible.
+const MAX_TIMEOUT_SEC: u64 = 86_400;
+const MAX_TIMEOUT_MS: u64 = MAX_TIMEOUT_SEC * 1000;
+
+/// Rejects a `*_sec` value above one day.
+fn cap_sec(what: &str, field: &str, v: u64) -> Result<(), ConfigError> {
+    if v > MAX_TIMEOUT_SEC {
+        return Err(ConfigError::Invalid(format!(
+            "{what}: {field} must be at most one day ({MAX_TIMEOUT_SEC} seconds)"
+        )));
+    }
+    Ok(())
+}
+
+/// Rejects a discovery URL that would carry a credential over the network in the clear:
+/// `https://host[:port]` or `http://` to loopback only, and never user info in the URL.
+fn credential_url(what: &str, field: &str, url: &str) -> Result<(), ConfigError> {
+    let bad = |why: &str| {
+        ConfigError::Invalid(format!(
+            "{what}: {field} {url:?} {why}: use https://, or http:// to a loopback address"
+        ))
+    };
+    let (https, rest) = match (url.strip_prefix("https://"), url.strip_prefix("http://")) {
+        (Some(r), _) => (true, r),
+        (_, Some(r)) => (false, r),
+        _ => return Err(bad("is not an http(s) URL")),
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.contains('@') {
+        return Err(bad("must not contain user info"));
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+    };
+    if host.is_empty() {
+        return Err(bad("has no host"));
+    }
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if https || loopback {
+        Ok(())
+    } else {
+        Err(bad("would send a credential over plain http"))
+    }
+}
+
+/// Rejects a `*_ms` value above one day.
+fn cap_ms(what: &str, field: &str, v: u64) -> Result<(), ConfigError> {
+    if v > MAX_TIMEOUT_MS {
+        return Err(ConfigError::Invalid(format!(
+            "{what}: {field} must be at most one day ({MAX_TIMEOUT_MS} milliseconds)"
+        )));
+    }
+    Ok(())
+}
+
 /// A pool shares one backend's live state (health, admin state, active count)
 /// per address, so the same address twice is never what anyone meant.
 fn reject_duplicate_targets(what: &str, addrs: &[SocketAddr]) -> Result<(), ConfigError> {
@@ -96,6 +156,11 @@ pub(crate) fn validate(
                 s.name
             )));
         }
+        cap_sec(
+            &format!("backend_sources {}", s.name),
+            "refresh_interval_sec",
+            s.refresh_interval_sec,
+        )?;
         let refresh_interval = Duration::from_secs(s.refresh_interval_sec);
         let resolved = match s.kind.as_str() {
             "static" => {
@@ -149,6 +214,15 @@ pub(crate) fn validate(
                         s.name
                     )));
                 }
+                if s.consul_token_file.is_some() {
+                    if let Some(addr) = &s.consul_addr {
+                        credential_url(
+                            &format!("backend_sources {}", s.name),
+                            "consul_addr",
+                            addr,
+                        )?;
+                    }
+                }
                 ResolvedSource::Dynamic(SourceConfig {
                     name: s.name.clone(),
                     kind: SourceKind::Consul {
@@ -170,6 +244,10 @@ pub(crate) fn validate(
                         s.name
                     ))
                 })?;
+                if let Some(api) = &s.api {
+                    // The in-pod service-account token goes to this URL.
+                    credential_url(&format!("backend_sources {}", s.name), "api", api)?;
+                }
                 ResolvedSource::Dynamic(SourceConfig {
                     name: s.name.clone(),
                     kind: SourceKind::Kubernetes {
@@ -268,6 +346,16 @@ pub(crate) fn validate(
                 p.name
             )));
         }
+
+        let what = format!("pool {}", p.name);
+        cap_ms(&what, "connect_timeout_ms", p.connect_timeout_ms)?;
+        cap_sec(&what, "idle_timeout_sec", p.idle_timeout_sec)?;
+        cap_sec(
+            &what,
+            "health_check.interval_sec",
+            p.health_check.interval_sec,
+        )?;
+        cap_ms(&what, "health_check.timeout_ms", p.health_check.timeout_ms)?;
 
         let hc = &p.health_check;
         if hc.kind.is_none() {
@@ -438,6 +526,18 @@ pub(crate) fn validate(
                 "resolver {}: target_connect_timeout_ms and target_idle_timeout_sec must be > 0",
                 r.name
             )));
+        }
+        let what = format!("resolver {}", r.name);
+        cap_ms(&what, "timeout_ms", r.timeout_ms)?;
+        cap_ms(
+            &what,
+            "target_connect_timeout_ms",
+            r.target_connect_timeout_ms,
+        )?;
+        cap_sec(&what, "target_idle_timeout_sec", r.target_idle_timeout_sec)?;
+        if let Some(c) = &r.cache {
+            cap_sec(&what, "cache.positive_ttl_sec", c.positive_ttl_sec)?;
+            cap_sec(&what, "cache.negative_ttl_sec", c.negative_ttl_sec)?;
         }
         let cache = match r.cache {
             Some(c) if !c.key.is_empty() => {
@@ -987,6 +1087,12 @@ pub(crate) fn validate(
         None => None,
     };
 
+    cap_sec(
+        "settings",
+        "shutdown_grace_sec",
+        raw.settings.shutdown_grace_sec,
+    )?;
+
     Ok(Config {
         schema_version,
         schema_declared,
@@ -1073,6 +1179,7 @@ fn validate_sniffers(rs: RawSniffers) -> Result<SniffersConfig, ConfigError> {
             "settings.sniffers.call_timeout_ms must be > 0".into(),
         ));
     }
+    cap_ms("settings.sniffers", "call_timeout_ms", rs.call_timeout_ms)?;
     if rs.max_memory_bytes == 0 {
         return Err(Invalid(
             "settings.sniffers.max_memory_bytes must be > 0".into(),

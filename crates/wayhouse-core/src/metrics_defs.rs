@@ -140,6 +140,12 @@ pub const GOSSIP_STALE_REJECTED_TOTAL: &str = "wayhouse_gossip_stale_rejected_to
 /// incompatible release. Dropped before decoding.
 pub const GOSSIP_VERSION_REJECTED_TOTAL: &str = "wayhouse_gossip_version_rejected_total";
 
+/// Counter. Label: `reason` (`future` | `non_member`). Authentic gossip health
+/// registers dropped because their `changed_at` is more than 60 s ahead of this
+/// node's clock (the origin's clock runs fast) or their origin is not a current
+/// member. A steady `future` count means one instance's votes are being ignored.
+pub const GOSSIP_REGISTERS_DROPPED_TOTAL: &str = "wayhouse_gossip_registers_dropped_total";
+
 /// Gauge (0/1). Labels: `pool`, `backend`. Whether the Tier-2 domain quorum
 /// is currently overriding this backend to down (phase 13) — independent of
 /// (and never able to clear) the backend's own local `healthy` flag.

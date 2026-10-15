@@ -5,8 +5,6 @@
 //! `WAYHOUSE_TEST_PROTOCOL_*` (the `test-protocol-override` feature every fleet
 //! build enables, see `PROTOCOL_OVERRIDE_FEATURE`).
 
-use std::time::Duration;
-
 use anyhow::Result;
 use serde_json::{json, Value};
 use wayhouse_fleet_tests::{
@@ -22,7 +20,7 @@ async fn controller() -> Result<(Proc, tempfile::TempDir, String)> {
     let ctl = spawn_controller_with(dir.path(), &format!("127.0.0.1:{port}"), &extra)?;
     wait_http_up(
         &format!("http://127.0.0.1:{port}/healthz"),
-        Duration::from_secs(10),
+        wayhouse_fleet_tests::STARTUP_TIMEOUT,
     )
     .await?;
     Ok((ctl, dir, format!("http://127.0.0.1:{port}")))

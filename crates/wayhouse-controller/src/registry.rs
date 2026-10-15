@@ -468,7 +468,23 @@ impl<R: Registration> RegistryState<R> {
     /// entry is ignored and a deleted one is gone, so a decommissioned proxy
     /// cannot pin the minimum. `Ok(None)` is a successful read that found no
     /// live proxy; an unreadable registry is an `Err` (the gate fails closed).
+    ///
+    /// Under HA an unchanged re-registration refreshes `last_seen` only every
+    /// [`TOUCH_AFTER`], so a live proxy would look stale `live_for` seconds after
+    /// its last real change and the gate would open under it (#342): the window
+    /// grows by that interval.
     pub fn min_live_config_schema(&self) -> Result<Option<u32>, String> {
+        let slack = if self.ha.is_some() {
+            TOUCH_AFTER.as_secs()
+        } else {
+            0
+        };
+        self.live_config_schema_floor(slack)
+    }
+
+    /// [`Self::min_live_config_schema`] with `slack` seconds added to every
+    /// registrant's liveness window.
+    pub(crate) fn live_config_schema_floor(&self, slack: u64) -> Result<Option<u32>, String> {
         let regs = self.all_current().map_err(|e| e.to_string())?;
         let now = (self.now_fn)();
         let mut floor: Option<u32> = None;
@@ -481,7 +497,7 @@ impl<R: Registration> RegistryState<R> {
                 Ok(None) => continue,
                 Err(e) => return Err(e.to_string()),
             };
-            if now.saturating_sub(seen) <= report.live_for {
+            if now.saturating_sub(seen) <= report.live_for.saturating_add(slack) {
                 floor = Some(floor.map_or(report.max, |f| f.min(report.max)));
             }
         }

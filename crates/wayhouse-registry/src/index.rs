@@ -9,6 +9,10 @@ pub const MAX_INDEX_BYTES: usize = 1024 * 1024;
 /// Largest module a registry may list. Equal to `MAX_MODULE_BYTES` in the proxy's
 /// `sniffer_loader.rs` (the source of truth); keep the two in step.
 pub const MAX_MODULE_BYTES: u64 = 8 * 1024 * 1024;
+/// Largest `limits.max_memory_bytes` an index may declare (the proxy's own cap is lower or equal).
+pub const MAX_LIMIT_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
+/// Largest `limits.call_timeout_ms` an index may declare.
+pub const MAX_LIMIT_CALL_TIMEOUT_MS: u64 = 10_000;
 
 /// What a registry serves. Plugins are reserved for the plugin wave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +22,9 @@ pub enum Kind {
     Plugin,
 }
 
+/// `name` is a display name (the official index is "wayhouse official
+/// sniffers"), not an identifier, so the lowercase rule that applies to
+/// [`SnifferEntry`] names is not applied to it (#336).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Index {
     pub schema: u32,
@@ -58,6 +65,8 @@ pub struct Limits {
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+/// Index `name` is a display name and is not validated like a sniffer name
+/// ([`IndexError::BadName`] covers sniffer entries only).
 pub enum IndexError {
     #[error("index is {0} bytes, over the {MAX_INDEX_BYTES} byte limit")]
     TooLarge(usize),
@@ -67,7 +76,7 @@ pub enum IndexError {
     UnsupportedSchema(u32),
     #[error("registry kind {0:?} is not supported yet (only sniffer registries)")]
     UnsupportedKind(Kind),
-    #[error("invalid sniffer name {0:?}: use only letters, digits, '-' and '_'")]
+    #[error("invalid sniffer name {0:?}: use only lowercase letters, digits, '-' and '_'")]
     BadName(String),
     #[error("sniffer {0:?} is listed twice")]
     DuplicateSniffer(String),
@@ -86,6 +95,17 @@ pub enum IndexError {
         field: &'static str,
         url: String,
     },
+    #[error(
+        "sniffer {sniffer:?} {version}: {field} must have a host and no user info, got {url:?}"
+    )]
+    BadUrlHost {
+        sniffer: String,
+        version: String,
+        field: &'static str,
+        url: String,
+    },
+    #[error("sniffer {sniffer:?} {version}: limits.max_memory_bytes must be 1..={MAX_LIMIT_MEMORY_BYTES} and limits.call_timeout_ms 1..={MAX_LIMIT_CALL_TIMEOUT_MS}")]
+    BadLimits { sniffer: String, version: String },
     #[error("sniffer {sniffer:?} {version}: sha256 must be 64 lowercase hex characters")]
     BadSha256 { sniffer: String, version: String },
     #[error("sniffer {sniffer:?} {version}: size {size} is over the {MAX_MODULE_BYTES} byte module limit")]
@@ -178,16 +198,41 @@ impl VersionEntry {
     fn validate(&self, sniffer: &str) -> Result<(), IndexError> {
         let version = self.version.to_string();
         let https = |field: &'static str, url: &str| {
-            if url.starts_with("https://") {
-                Ok(())
-            } else {
-                Err(IndexError::NotHttps {
+            let Some(rest) = url.strip_prefix("https://") else {
+                return Err(IndexError::NotHttps {
                     sniffer: sniffer.to_owned(),
                     version: version.clone(),
                     field,
                     url: url.to_owned(),
-                })
+                });
+            };
+            // Authority is everything up to the first '/', '?' or '#'. Refuse an empty host
+            // and user info; whether the host is a private address is the fetch-time guard's job.
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            let (host, port, host_ok) = match authority.strip_prefix('[') {
+                Some(v6) => v6.split_once(']').map_or(("", None, false), |(h, r)| {
+                    (
+                        h,
+                        r.strip_prefix(':').or(Some(r).filter(|r| !r.is_empty())),
+                        h.parse::<std::net::Ipv6Addr>().is_ok(),
+                    )
+                }),
+                None => (
+                    authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+                    authority.rsplit_once(':').map(|(_, p)| p),
+                    true,
+                ),
+            };
+            let port_ok = port.is_none_or(|p| p.parse::<u16>().is_ok());
+            if authority.contains('@') || host.is_empty() || !host_ok || !port_ok {
+                return Err(IndexError::BadUrlHost {
+                    sniffer: sniffer.to_owned(),
+                    version: version.clone(),
+                    field,
+                    url: url.to_owned(),
+                });
             }
+            Ok(())
         };
         https("url", &self.url)?;
         if let Some(sig) = &self.signature_url {
@@ -200,6 +245,14 @@ impl VersionEntry {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         {
             return Err(IndexError::BadSha256 {
+                sniffer: sniffer.to_owned(),
+                version,
+            });
+        }
+        if !(1..=MAX_LIMIT_MEMORY_BYTES).contains(&self.limits.max_memory_bytes)
+            || !(1..=MAX_LIMIT_CALL_TIMEOUT_MS).contains(&self.limits.call_timeout_ms)
+        {
+            return Err(IndexError::BadLimits {
                 sniffer: sniffer.to_owned(),
                 version,
             });
@@ -222,14 +275,16 @@ impl VersionEntry {
     }
 }
 
-/// Same rule as `valid_module_name` in the proxy's `admin.rs`.
+/// Registry names are lowercase only, so two names never collide as files on a
+/// case-insensitive filesystem. Stricter than `valid_module_name` in the
+/// proxy's `admin.rs`, which stays case-sensitive.
 pub(crate) fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name != "."
         && name != ".."
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
 }
 
 /// Parse an ABI string `major.minor` (both `u16`).
@@ -345,6 +400,81 @@ mod tests {
     }
 
     #[test]
+    fn rejects_empty_host_and_user_info() {
+        for url in [
+            "https://",
+            "https:///a.wasm",
+            "https://:443/a.wasm",
+            "https://user:pw@example.com/a.wasm",
+            "https://example.com@evil.example/a.wasm",
+            "https://?x=1",
+            "https://example.com:not-a-port/a.wasm",
+            "https://example.com:99999/a.wasm",
+            "https://[::1]x/a.wasm",
+            "https://[::1/a.wasm",
+            "https://[abc]/a.wasm",
+        ] {
+            let mut v = example();
+            first_version(&mut v)["url"] = url.into();
+            assert!(
+                matches!(parse(&v), Err(IndexError::BadUrlHost { field: "url", .. })),
+                "{url}"
+            );
+        }
+        let mut v = example();
+        first_version(&mut v)["signature_url"] = "https://u@example.com/a.minisig".into();
+        assert!(matches!(
+            parse(&v),
+            Err(IndexError::BadUrlHost {
+                field: "signature_url",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn accepts_a_port_and_an_ipv6_host() {
+        for url in [
+            "https://example.com:8443/a.wasm",
+            "https://[::1]:8443/a.wasm",
+        ] {
+            let mut v = example();
+            first_version(&mut v)["url"] = url.into();
+            parse(&v).unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_out_of_range_limits() {
+        for (mem, ms) in [
+            (0u64, 50u64),
+            (u64::MAX, 50),
+            (MAX_LIMIT_MEMORY_BYTES + 1, 50),
+            (1_048_576, 0),
+            (1_048_576, u64::MAX),
+            (1_048_576, MAX_LIMIT_CALL_TIMEOUT_MS + 1),
+        ] {
+            let mut v = example();
+            first_version(&mut v)["limits"] =
+                serde_json::json!({"max_memory_bytes": mem, "call_timeout_ms": ms});
+            assert!(
+                matches!(parse(&v), Err(IndexError::BadLimits { .. })),
+                "{mem} {ms}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_limits_at_the_caps() {
+        let mut v = example();
+        first_version(&mut v)["limits"] = serde_json::json!({
+            "max_memory_bytes": MAX_LIMIT_MEMORY_BYTES,
+            "call_timeout_ms": MAX_LIMIT_CALL_TIMEOUT_MS
+        });
+        parse(&v).unwrap();
+    }
+
+    #[test]
     fn rejects_http_signature_url() {
         let mut v = example();
         first_version(&mut v)["signature_url"] = "http://example.com/a.minisig".into();
@@ -374,11 +504,25 @@ mod tests {
 
     #[test]
     fn rejects_bad_name() {
-        for bad in ["../evil", "", "has space", ".", ".."] {
+        for bad in [
+            "../evil",
+            "",
+            "has space",
+            ".",
+            "..",
+            "Minecraft",
+            "MINECRAFT",
+        ] {
             let mut v = example();
             v["sniffers"][0]["name"] = bad.into();
             assert!(matches!(parse(&v), Err(IndexError::BadName(_))), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_bad_name_message_says_lowercase() {
+        let msg = IndexError::BadName("Minecraft".into()).to_string();
+        assert!(msg.contains("lowercase letters"), "{msg}");
     }
 
     #[test]

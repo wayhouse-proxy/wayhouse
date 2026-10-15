@@ -21,7 +21,7 @@ fn ensure_built() {
     BUILT.get_or_init(|| build_fleet_bins().expect("building fleet binaries"));
 }
 
-const UP: Duration = Duration::from_secs(10);
+const UP: Duration = wayhouse_fleet_tests::STARTUP_TIMEOUT;
 
 /// Controller subscribe/reconnect/freeze-on-disconnect: `wayhouse --controller`
 /// picks up the controller's initial config, keeps running on it when the

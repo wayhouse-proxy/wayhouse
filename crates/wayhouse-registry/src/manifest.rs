@@ -27,7 +27,7 @@ pub enum ManifestError {
     Toml(String),
     #[error("manifest.toml: abi {0:?} is not of the form major.minor")]
     BadAbi(String),
-    #[error("manifest.toml: name {0:?} must match [A-Za-z0-9_-]+")]
+    #[error("manifest.toml: name {0:?} must match [a-z0-9_-]+")]
     BadName(String),
 }
 
@@ -81,7 +81,7 @@ call_timeout_ms = 50
 
     #[test]
     fn manifest_rejects_a_name_that_could_escape_its_directory() {
-        for bad in ["../other", "a/b", "", "has space", "..", "."] {
+        for bad in ["../other", "a/b", "", "has space", "..", ".", "Minecraft"] {
             let text = MANIFEST.replace("name = \"minecraft\"", &format!("name = {bad:?}"));
             assert_eq!(
                 parse_manifest(&text),

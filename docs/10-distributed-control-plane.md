@@ -260,10 +260,16 @@ What the shared key does *not* give is a per-instance identity, so the vote
 registers are bounded rather than authenticated: a register counts only if its
 origin is a member the mesh currently knows (this instance included), its
 `changed_at` may sit at most a minute ahead of the local clock, and the map
-holds at most 256 origins per backend and 8192 backends. A holder of the key
-who also joins the mesh under several identities can still vote with each of
-them, so treat the key like the other fleet secrets and keep it out of
-instances you do not trust.
+holds at most 256 origins per backend and 8192 backends. The origin is not bound
+to the sender, because members relay each other's broadcasts. A holder of the key
+therefore does not even need to join: they can send registers that claim the
+origin of an existing member, which counts as that member's vote, and a
+`changed_at` up to a minute ahead holds off that member's real updates for that
+long. A holder who also joins under several identities can vote with each of
+them. Tier 2 is advisory (it can only nudge a decision the local checks already
+gate), so this is accepted for 0.2.0 rather than answered with per-member
+signatures and new key material. Treat the key like the other fleet secrets and
+keep it out of instances you do not trust.
 
 **Config schema** (built exactly as designed — `settings.gossip.psk` is a
 plain string, not env-substituted like the `${GOSSIP_PSK}` sketch below;

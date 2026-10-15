@@ -146,11 +146,37 @@ impl MemberError {
 }
 
 /// `GET <addr>/raft/whoami`.
+/// Why a [`fetch_whoami`] call failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WhoamiError {
+    /// The member could not be reached at all (connect or transport failure).
+    Unreachable(String),
+    /// The member answered, but with an error status or a body that does not decode. It is
+    /// reachable and may be an old build.
+    Answered(String),
+}
+
+impl WhoamiError {
+    /// Whether this is a transport failure rather than a bad answer.
+    pub fn is_unreachable(&self) -> bool {
+        matches!(self, Self::Unreachable(_))
+    }
+}
+
+impl std::fmt::Display for WhoamiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreachable(why) => write!(f, "unreachable: {why}"),
+            Self::Answered(why) => f.write_str(why),
+        }
+    }
+}
+
 pub(crate) async fn fetch_whoami(
     client: &reqwest::Client,
     ha_token: Option<&str>,
     addr: &str,
-) -> Result<Whoami, String> {
+) -> Result<Whoami, WhoamiError> {
     let mut req = client.get(peer_url(addr, "/raft/whoami"));
     if let Some(token) = ha_token {
         req = req.bearer_auth(token);
@@ -158,11 +184,13 @@ pub(crate) async fn fetch_whoami(
     let resp = req
         .send()
         .await
-        .map_err(|e| wayhouse_http::error_chain(&e))?;
+        .map_err(|e| WhoamiError::Unreachable(wayhouse_http::error_chain(&e)))?;
     if !resp.status().is_success() {
-        return Err(format!("answered {}", resp.status()));
+        return Err(WhoamiError::Answered(format!("answered {}", resp.status())));
     }
-    resp.json().await.map_err(|e| e.to_string())
+    resp.json()
+        .await
+        .map_err(|e| WhoamiError::Answered(e.to_string()))
 }
 
 /// Checks the node at `addr` is node `id` (and, with `for_add`, that its log
@@ -178,7 +206,7 @@ pub async fn verify_identity(
         .await
         .map_err(|reason| MemberError::Unreachable {
             addr: addr.into(),
-            reason,
+            reason: reason.to_string(),
         })?;
     if who.node_id != id {
         return Err(MemberError::IdMismatch {

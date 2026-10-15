@@ -93,7 +93,11 @@ async fn plugins_replicate_through_a_follower_and_the_new_leader_keeps_ticking()
             &extra,
         )?));
         dirs.push(dir);
-        wait_http_up(&format!("{}/healthz", bases[i]), Duration::from_secs(10)).await?;
+        wait_http_up(
+            &format!("{}/healthz", bases[i]),
+            wayhouse_fleet_tests::STARTUP_TIMEOUT,
+        )
+        .await?;
     }
 
     // Wait for a leader every node agrees on, then pick a follower.
@@ -322,7 +326,11 @@ async fn a_secret_and_a_webhook_go_through_a_follower_and_no_node_stores_the_sec
             &extra,
         )?);
         dirs.push(dir);
-        wait_http_up(&format!("{}/healthz", bases[i]), Duration::from_secs(10)).await?;
+        wait_http_up(
+            &format!("{}/healthz", bases[i]),
+            wayhouse_fleet_tests::STARTUP_TIMEOUT,
+        )
+        .await?;
     }
     wait_until(
         || async {
@@ -363,6 +371,21 @@ async fn a_secret_and_a_webhook_go_through_a_follower_and_no_node_stores_the_sec
         .as_str()
         .context("id")?
         .to_string();
+
+    // The follower answers 404 for an install it has not applied yet, so wait for it.
+    wait_until(
+        || async {
+            let got = http
+                .get(format!("{}/plugins/{id}", bases[follower]))
+                .bearer_auth(AUTH_TOKEN)
+                .send()
+                .await?;
+            Ok(got.status() == 200)
+        },
+        Duration::from_secs(15),
+        "the follower applied the install",
+    )
+    .await?;
 
     // The secret is sealed on the follower that got the request and replicated as ciphertext.
     let put = http

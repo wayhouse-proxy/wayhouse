@@ -20,7 +20,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use wayhouse_registry::{
     abi_matches, check_min_proxy, select, verify_artifact, Environment, Index, SnifferEntry,
-    MAX_MODULE_BYTES,
+    VersionEntry, MAX_MODULE_BYTES,
 };
 
 use crate::api::AppState;
@@ -170,6 +170,20 @@ fn compatible(entry: &SnifferEntry, env: &Environment) -> serde_json::Value {
     }
 }
 
+/// Whether installing `version` verifies a signature: only the official registry is
+/// checked, only when its key is configured, and only for a version that lists a signature.
+/// Everything else installs unverified.
+fn version_verifiable(reg: &RegistryRef, version: &VersionEntry) -> bool {
+    reg.official
+        && crate::registry_keys::official_key().is_some()
+        && version.signature_url.is_some()
+}
+
+/// The same for the version an install without an explicit version would choose.
+fn verifiable(reg: &RegistryRef, entry: &SnifferEntry, env: &Environment) -> bool {
+    select(entry, env).is_ok_and(|v| version_verifiable(reg, v))
+}
+
 async fn list_sniffers(
     State(state): State<AppState>,
     Extension(Actor(actor)): Extension<Actor>,
@@ -189,6 +203,10 @@ async fn list_sniffers(
         .map(|entry| {
             let mut v = serde_json::to_value(entry).expect("index entries serialize");
             v["compatible"] = compatible(entry, &fleet.env);
+            v["verifiable"] = json!(verifiable(&reg, entry, &fleet.env));
+            for (j, version) in entry.versions.iter().enumerate() {
+                v["versions"][j]["verifiable"] = json!(version_verifiable(&reg, version));
+            }
             v
         })
         .collect();
@@ -289,17 +307,19 @@ async fn install(
         Ok(b) => b,
         Err(e) => return fetch_failure(&e),
     };
-    let signature = match &version.signature_url {
-        Some(url) => match state.registry_client.fetch_signature(url).await {
-            Ok(s) => Some(s),
-            Err(e) => return fetch_failure(&e),
-        },
-        None => None,
-    };
     let key = reg
         .official
         .then(crate::registry_keys::official_key)
         .flatten();
+    // Only the official registry with a configured key verifies a signature, so
+    // fetch it only then: a dead signature URL elsewhere must not block an install.
+    let signature = match (&version.signature_url, &key) {
+        (Some(url), Some(_)) => match state.registry_client.fetch_signature(url).await {
+            Ok(s) => Some(s),
+            Err(e) => return fetch_failure(&e),
+        },
+        _ => None,
+    };
     let verified = match verify_artifact(version, &bytes, signature.as_deref(), key.as_ref()) {
         Ok(v) => v,
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
@@ -936,6 +956,8 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["sniffers"][0]["name"], "demo");
         assert_eq!(body["sniffers"][0]["compatible"]["version"], "0.1.0");
+        assert_eq!(body["sniffers"][0]["verifiable"], false);
+        assert_eq!(body["sniffers"][0]["versions"][0]["verifiable"], false);
         assert_eq!(body["min_proxy_checked"], false);
     }
 
@@ -1065,6 +1087,40 @@ mod tests {
         assert_eq!(body["risk"], "external");
         assert_eq!(body["sha256"], format!("{:x}", Sha256::digest(&module)));
         assert_eq!(body["results"].as_array().unwrap().len(), 2);
+        assert_eq!(uploads.lock().unwrap().as_slice(), [module]);
+    }
+
+    #[tokio::test]
+    async fn install_ignores_a_dead_signature_url_when_nothing_verifies_it() {
+        let module = wat::parse_str(MODULE_WAT).unwrap();
+        let index = json!({
+            "schema": 1, "kind": "sniffer", "name": "test registry",
+            "sniffers": [{
+                "name": "demo", "description": "a demo", "license": "MIT",
+                "versions": [{
+                    "version": "0.1.0", "abi": "0.1", "min_proxy": "0.1.0",
+                    "url": "https://registry.test/demo.wasm",
+                    "signature_url": "https://registry.test/demo.wasm.minisig",
+                    "sha256": format!("{:x}", Sha256::digest(&module)), "size": module.len(),
+                    "limits": { "max_memory_bytes": 1048576, "call_timeout_ms": 50 }
+                }]
+            }]
+        })
+        .to_string();
+        let served = module.clone();
+        let base = serve(
+            Router::new()
+                .route("/index.json", get(move || async move { index }))
+                .route("/demo.wasm", get(move || async move { served })),
+        )
+        .await;
+        let (agg, uploads) = fake_aggregator(ok_results()).await;
+        // A third-party registry: its signature is never checked, so a dead
+        // signature URL must not block the install.
+        let h = harness(&base, &agg, false, crate::role::Role::Operator).await;
+        let (status, body) = h.install().await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["signed"], false);
         assert_eq!(uploads.lock().unwrap().as_slice(), [module]);
     }
 

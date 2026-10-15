@@ -28,7 +28,7 @@
 //! a known public address in this design, so there's no discovery problem
 //! on that side).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -43,6 +43,10 @@ use serde::Deserialize;
 
 const RECONNECT_MIN: Duration = Duration::from_millis(500);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
+/// How long a stream stays open after a peer failed to configure. The controller
+/// emits no event for an unchanged re-registration, so the only way to retry is to
+/// reconnect, which replays the whole registry.
+const CONFIGURE_RETRY: Duration = Duration::from_secs(30);
 
 #[cfg(unix)]
 fn restrict_permissions(path: &Path) -> anyhow::Result<()> {
@@ -243,12 +247,15 @@ pub async fn run(
 ) {
     let mut backoff = RECONNECT_MIN;
     let mut last_applied: HashMap<String, PeerRegistration> = HashMap::new();
+    // Skipped reused keys already reported, across reconnects.
+    let mut warned: HashSet<(String, String)> = HashSet::new();
     loop {
         match subscribe_once(
             &controller_url,
             token.as_deref(),
             wg.as_ref(),
             &mut last_applied,
+            &mut warned,
         )
         .await
         {
@@ -277,6 +284,7 @@ async fn subscribe_once(
     token: Option<&str>,
     wg: &(dyn WireguardInterfaceApi + Send + Sync),
     last_applied: &mut HashMap<String, PeerRegistration>,
+    warned: &mut HashSet<(String, String)>,
 ) -> anyhow::Result<()> {
     let url = format!("{base_url}/peers/subscribe");
     let mut req = wayhouse_http::client().get(&url);
@@ -293,8 +301,21 @@ async fn subscribe_once(
     tracing::info!(controller = %base_url, "subscribed to backend-peers updates");
 
     let mut buf = wayhouse_http::sse::EventBuffer::new();
+    let mut retry_at: Option<tokio::time::Instant> = None;
     loop {
-        let chunk = resp.chunk().await.map_err(|e| {
+        let read = match retry_at {
+            Some(at) => match tokio::time::timeout_at(at, resp.chunk()).await {
+                Ok(read) => read,
+                Err(_) => {
+                    tracing::warn!(
+                        "a WireGuard peer failed to configure; reconnecting to retry it"
+                    );
+                    return Ok(());
+                }
+            },
+            None => resp.chunk().await,
+        };
+        let chunk = read.map_err(|e| {
             anyhow::anyhow!(
                 "reading subscribe stream from {base_url}: {}",
                 wayhouse_http::error_chain(&e)
@@ -308,20 +329,36 @@ async fn subscribe_once(
 
         while let Some(event) = buf.next_event() {
             if let Some(ev) = parse_sse_event(&event) {
-                apply_event(wg, last_applied, &ev);
+                if apply_event(wg, last_applied, warned, &ev) {
+                    retry_at.get_or_insert(tokio::time::Instant::now() + CONFIGURE_RETRY);
+                }
             }
         }
     }
 }
 
-/// Applies one event to the WireGuard device and records what it applied.
+/// Applies one event to the WireGuard device and records what it applied. `true`
+/// when a peer failed to configure and wants a retry.
 fn apply_event(
     wg: &(dyn WireguardInterfaceApi + Send + Sync),
     last_applied: &mut HashMap<String, PeerRegistration>,
+    warned: &mut HashSet<(String, String)>,
     ev: &Event,
-) {
+) -> bool {
+    let mut retry = false;
     match plan(last_applied, ev) {
-        Action::Skip => {}
+        Action::Skip => {
+            if let Event::Registered(reg) = ev {
+                if let Some(holder) = reused_key_holder(last_applied, reg, warned) {
+                    tracing::warn!(
+                        name = %reg.name,
+                        held_by = %holder,
+                        "skipping a tunnel registration: its public key is already registered \
+                         under another name; give each proxy and agent its own key"
+                    );
+                }
+            }
+        }
         Action::Reconcile(reg) => {
             let replaced = replaced_pubkey(last_applied, reg).is_some();
             if let Some(old) = replaced_pubkey(last_applied, reg) {
@@ -336,6 +373,7 @@ fn apply_event(
                 }
                 Reconciled::ConfigureFailed => {
                     last_applied.remove(&reg.name);
+                    retry = true;
                 }
                 // The device is untouched for an unchanged key, so the installed
                 // peer keeps its record and a later removal still finds it. A
@@ -354,6 +392,7 @@ fn apply_event(
             }
         }
     }
+    retry
 }
 
 #[derive(Debug, PartialEq)]
@@ -404,6 +443,23 @@ fn plan<'a>(applied: &HashMap<String, PeerRegistration>, event: &'a Event) -> Ac
             None => Action::Skip,
         },
     }
+}
+
+/// The name that already holds `reg`'s public key, the first time this name and key are
+/// seen (recorded in `warned`), for a log line: `plan` skips such a registration, and
+/// without a line an operator sees a registered peer that never connects (#340).
+fn reused_key_holder(
+    applied: &HashMap<String, PeerRegistration>,
+    reg: &PeerRegistration,
+    warned: &mut HashSet<(String, String)>,
+) -> Option<String> {
+    let holder = applied
+        .iter()
+        .find(|(name, other)| **name != reg.name && other.pubkey == reg.pubkey)
+        .map(|(name, _)| name.clone())?;
+    warned
+        .insert((reg.name.clone(), reg.pubkey.clone()))
+        .then_some(holder)
 }
 
 fn pubkey_held_by_another(
@@ -530,11 +586,14 @@ mod tests {
         let ev = Event::Registered(reg.clone());
         let mut applied = HashMap::new();
 
-        apply_event(&wg, &mut applied, &ev);
+        assert!(
+            apply_event(&wg, &mut applied, &mut HashSet::new(), &ev),
+            "a failed configure asks for a retry"
+        );
         assert!(applied.is_empty(), "a failed configure is not applied");
         assert_eq!(plan(&applied, &ev), Action::Reconcile(&reg));
 
-        apply_event(&wg, &mut applied, &ev);
+        assert!(!apply_event(&wg, &mut applied, &mut HashSet::new(), &ev));
         assert_eq!(applied.get("home"), Some(&reg));
     }
 
@@ -557,13 +616,28 @@ mod tests {
             tunnel_address: Some("10.60.0.2".into()),
         };
         let mut applied = HashMap::new();
-        apply_event(&wg, &mut applied, &Event::Registered(reg.clone()));
+        apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &Event::Registered(reg.clone()),
+        );
         let mut broken = reg.clone();
         broken.tunnel_address = Some("not-an-address".into());
 
-        apply_event(&wg, &mut applied, &Event::Registered(broken));
+        apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &Event::Registered(broken),
+        );
         assert_eq!(applied.get("home"), Some(&reg));
-        apply_event(&wg, &mut applied, &Event::Removed("home".into()));
+        apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &Event::Removed("home".into()),
+        );
         assert!(applied.is_empty());
     }
 
@@ -702,6 +776,31 @@ mod tests {
             plan(&applied, &Event::Removed("other".into())),
             Action::Skip
         );
+    }
+
+    #[test]
+    fn a_skipped_reused_key_is_reported_once_per_name_and_key() {
+        let mut applied = HashMap::new();
+        let first = reg(Some("10.60.0.5"));
+        applied.insert(first.name.clone(), first.clone());
+        let mut dup = reg(Some("10.60.0.6"));
+        dup.name = "other".into();
+        let mut warned = HashSet::new();
+        assert_eq!(
+            reused_key_holder(&applied, &dup, &mut warned),
+            Some(first.name.clone())
+        );
+        assert_eq!(reused_key_holder(&applied, &dup, &mut warned), None);
+        // The same name presenting a different reused key is a new report.
+        let mut other_key = first.clone();
+        other_key.name = "third".into();
+        assert_eq!(
+            reused_key_holder(&applied, &other_key, &mut warned),
+            Some(first.name.clone())
+        );
+        // Nothing to report for an unshared key.
+        dup.pubkey = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into();
+        assert_eq!(reused_key_holder(&applied, &dup, &mut warned), None);
     }
 
     #[test]
