@@ -67,7 +67,9 @@ pub struct Whoami {
     pub secret_key_ids: Vec<String>,
 }
 
-/// The plugin replication level this build speaks: `1` replicated installs and state, `2`
+/// The plugin replication level this build speaks (a node without plugins, started without
+/// `--plugins` or as a slave, reports `0` instead, so the install gate refuses while it is a
+/// member): `1` replicated installs and state, `2`
 /// adds module blob replication (`/raft/plugin-blob`), `3` adds webhooks
 /// (`PluginSetWebhook`, `/raft/plugin-hook`). A leader proposes a new plugin install, or a
 /// webhook change, only when every member reports at least this.
@@ -78,7 +80,11 @@ async fn whoami(State(ha): State<Arc<HaHandle>>) -> impl IntoResponse {
         node_id: ha.node_id,
         log_empty: ha.raft.metrics().borrow().last_log_index.is_none(),
         pre_ha: ha.pre_ha.summary,
-        plugin_support: PLUGIN_SUPPORT,
+        plugin_support: if ha.plugins_enabled {
+            PLUGIN_SUPPORT
+        } else {
+            0
+        },
         secret_key_ids: ha.secret_keys.current().key_ids(),
     })
 }
@@ -164,6 +170,38 @@ mod tests {
             post_bytes(&app, "/raft/vote", 1024).await,
             StatusCode::UNPROCESSABLE_ENTITY
         );
+    }
+
+    async fn whoami_of(ha: Arc<HaHandle>) -> Whoami {
+        let resp = router(ha)
+            .oneshot(
+                Request::get("/raft/whoami")
+                    .header(wayhouse_http::protocol::HEADER, "1.0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_member_without_plugins_reports_no_plugin_support() {
+        let (with, _cluster, _dir) = single_node(1, "127.0.0.1:1").await;
+        assert_eq!(whoami_of(with.clone()).await.plugin_support, PLUGIN_SUPPORT);
+        let without = Arc::new(HaHandle {
+            raft: with.raft.clone(),
+            node_id: with.node_id,
+            ha_token: None,
+            forward: with.forward.clone(),
+            pre_ha: with.pre_ha.clone(),
+            secret_keys: with.secret_keys.clone(),
+            plugins_enabled: false,
+        });
+        assert_eq!(whoami_of(without).await.plugin_support, 0);
     }
 
     #[tokio::test]

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use url::{Host, Url};
 use zeroize::Zeroizing;
 
-use crate::caps::{valid_slot_name, HttpCap, SecretSlot};
+use crate::caps::{split_slot_host, valid_slot_name, HttpCap, SecretSlot};
 use crate::secret::{Scrubber, SecretSource};
 
 /// Guest requests one call may make (redirect hops are not counted).
@@ -191,8 +191,8 @@ impl HttpEngine {
         }
         let templates = validate_headers(&req.headers)?;
         for hop_no in 0..=MAX_REDIRECTS {
-            let (host, allow_private) = self.check_target(&url)?;
-            let headers = self.expand(&templates, &host, state)?;
+            let (host, port, allow_private) = self.check_target(&url)?;
+            let headers = self.expand(&templates, &host, port, state)?;
             let left = CALL_BUDGET.saturating_sub(state.started.elapsed());
             if left.is_zero() {
                 return Err("http budget exhausted: the call used its time".into());
@@ -234,8 +234,8 @@ impl HttpEngine {
         Err(format!("more than {MAX_REDIRECTS} redirects"))
     }
 
-    /// The host and its private-address approval, or why the target is refused.
-    fn check_target(&self, url: &Url) -> Result<(String, bool), String> {
+    /// The host, port and private-address approval, or why the target is refused.
+    fn check_target(&self, url: &Url) -> Result<(String, u16, bool), String> {
         if url.scheme() != "https" {
             return Err("only https is allowed".into());
         }
@@ -250,14 +250,15 @@ impl HttpEngine {
             .iter()
             .find(|h| canonical(&h.host) == host && h.port == port)
             .ok_or_else(|| format!("{host}:{port} is not an approved host"))?;
-        Ok((host, approved.allow_private))
+        Ok((host, port, approved.allow_private))
     }
 
-    /// The headers of one hop with `${secret:NAME}` expanded for `host`.
+    /// The headers of one hop with `${secret:NAME}` expanded for `host:port`.
     fn expand(
         &self,
         templates: &[(String, String)],
         host: &str,
+        port: u16,
         state: &mut HttpCall,
     ) -> Result<Vec<(String, HeaderValue)>, String> {
         const OPEN: &str = "${secret:";
@@ -280,8 +281,16 @@ impl HttpEngine {
                     .iter()
                     .find(|s| s.name == slot_name)
                     .ok_or_else(|| format!("secret slot {slot_name} is not approved"))?;
-                if !slot.hosts.iter().any(|h| canonical(h) == host) {
-                    return Err(format!("secret slot {slot_name} is not bound to {host}"));
+                // A bare binding covers the host's one approved port (validation refuses a
+                // bare binding for a host approved on several); `host:port` covers that port.
+                let bound = slot.hosts.iter().any(|h| {
+                    let (name, bound_port) = split_slot_host(h);
+                    canonical(name) == host && bound_port.is_none_or(|p| p == port)
+                });
+                if !bound {
+                    return Err(format!(
+                        "secret slot {slot_name} is not bound to {host}:{port}"
+                    ));
                 }
                 let secret = self
                     .secrets
@@ -544,6 +553,45 @@ mod tests {
         );
         assert!(!hops[0].1.contains(TOKEN));
         assert_eq!(hops[0].3, b"${secret:PANEL_TOKEN}", "the body is literal");
+    }
+
+    #[test]
+    fn a_slot_bound_to_one_port_is_not_expanded_for_the_same_host_on_another() {
+        let t = Arc::new(Fake::default());
+        t.answer("https://panel.example/x", 204, &[], b"");
+        t.answer("https://panel.example:8443/x", 204, &[], b"");
+        let host = |port| HttpHost {
+            host: "panel.example".into(),
+            port,
+            allow_private: false,
+        };
+        let e = HttpEngine::new(
+            HttpCap {
+                hosts: vec![host(443), host(8443)],
+            },
+            vec![SecretSlot {
+                name: "PANEL_TOKEN".into(),
+                description: String::new(),
+                hosts: vec!["panel.example:443".into()],
+            }],
+            Arc::new(Secrets(HashMap::from([("PANEL_TOKEN", TOKEN)]))),
+            t.clone(),
+        );
+        let with_secret = |url: &str| {
+            let mut req = get(url);
+            req["headers"] = serde_json::json!({"Authorization": "${secret:PANEL_TOKEN}"});
+            req
+        };
+        assert_eq!(
+            ask(&e, with_secret("https://panel.example/x"))["status"],
+            204
+        );
+        let r = ask(&e, with_secret("https://panel.example:8443/x"));
+        assert!(
+            r["error"].as_str().is_some_and(|e| e.contains("not bound")),
+            "{r}"
+        );
+        assert_eq!(t.hops().len(), 1, "the second port never saw a request");
     }
 
     #[test]

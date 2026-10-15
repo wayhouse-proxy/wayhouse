@@ -336,8 +336,9 @@ pub fn check_support_answers(answers: &[(NodeId, Result<Whoami, String>)]) -> Re
             }
             Ok(who) if who.plugin_support < PLUGIN_SUPPORT => {
                 return Err(format!(
-                    "node {id} runs a build without plugin module replication; upgrade every \
-                     replica before installing plugins"
+                    "node {id} reports no plugin support (it runs without --plugins, or on a build \
+                     without module replication); start every replica with --plugins and \
+                     upgrade them all before changing plugins"
                 ))
             }
             Ok(_) => {}
@@ -410,6 +411,41 @@ fn fetch_order(ha: &HaHandle) -> Vec<String> {
     peers.into_iter().map(|(_, addr)| addr).collect()
 }
 
+/// Whether this node knows a leader and has applied everything it has in its log, so the
+/// state machine has replayed the installs a startup sweep must not orphan.
+fn caught_up(m: &openraft::RaftMetrics<NodeId, openraft::BasicNode>) -> bool {
+    m.current_leader.is_some() && m.last_applied.map(|l| l.index) >= m.last_log_index
+}
+
+/// How long the node must stay caught up before the startup sweep runs.
+const SWEEP_SETTLE: Duration = Duration::from_secs(2);
+
+/// Removes the module blobs no install references, but only once the state machine has
+/// replayed the log: before that, a blob pushed for a committed install the node has not
+/// applied yet looks unused, and a whole-cluster restart could drop the only copies (#294).
+pub fn spawn_startup_sweep(store: PluginStore, ha: Arc<HaHandle>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(Duration::from_millis(500));
+        let mut since: Option<Instant> = None;
+        loop {
+            every.tick().await;
+            if !caught_up(&ha.raft.metrics().borrow()) {
+                since = None;
+                continue;
+            }
+            if since.get_or_insert_with(Instant::now).elapsed() < SWEEP_SETTLE {
+                continue;
+            }
+            match store.sweep_blobs() {
+                Ok(0) => {}
+                Ok(n) => tracing::info!(removed = n, "removed plugin modules no install uses"),
+                Err(e) => tracing::warn!(error = %e, "could not sweep orphaned plugin modules"),
+            }
+            return;
+        }
+    })
+}
+
 /// The catch-up loop: until the task is dropped, fetch the modules this node's installs
 /// need. A leader that cannot find one raises a visible alert (a log line, repeated), since
 /// it would otherwise silently run nothing.
@@ -460,6 +496,32 @@ mod tests {
             plugin_support,
             secret_key_ids: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_node_is_caught_up_with_a_leader_and_nothing_left_to_apply() {
+        use openraft::{CommittedLeaderId, LogId, RaftMetrics};
+        let mut m = RaftMetrics::new_initial(1);
+        assert!(!caught_up(&m), "no leader known yet");
+        m.current_leader = Some(1);
+        assert!(caught_up(&m), "an empty log has nothing to replay");
+        m.last_log_index = Some(5);
+        m.last_applied = Some(LogId::new(CommittedLeaderId::new(1, 1), 4));
+        assert!(!caught_up(&m), "entry 5 is not applied yet");
+        m.last_applied = Some(LogId::new(CommittedLeaderId::new(1, 1), 5));
+        assert!(caught_up(&m));
+    }
+
+    #[tokio::test]
+    async fn the_startup_sweep_removes_unused_modules_once_the_node_has_a_leader() {
+        let (ha, _c, store, _d) = single_node_with_plugins(1, "127.0.0.1:1").await;
+        store.put_blob("unused", b"abc").unwrap();
+        let task = spawn_startup_sweep(store.clone(), ha);
+        tokio::time::timeout(Duration::from_secs(15), task)
+            .await
+            .expect("the sweep finishes")
+            .unwrap();
+        assert!(store.get_blob("unused").unwrap().is_none());
     }
 
     #[test]
@@ -602,6 +664,7 @@ mod tests {
             forward: base.forward.clone(),
             pre_ha: crate::ha::import::LocalPreHa::default(),
             secret_keys: crate::plugins::secrets::KeyringHandle::default(),
+            plugins_enabled: true,
         });
         let (store, _s) = store();
         let app = router(&ha, store);

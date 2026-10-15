@@ -9,8 +9,9 @@
 //! The overlay is process-wide on purpose: there is one config source per process, and
 //! threading it through the three apply sites would add a parameter to each for no gain.
 //!
-//! A controller without plugins answers 501 (or 404 on an older build): the overlay stays
-//! empty and the client retries slowly and quietly.
+//! A controller without plugins answers 501 (or 404 on an older build): the overlay is
+//! cleared (a restart without `--plugins` withdraws the routes at once) and the client
+//! retries slowly and quietly. An unreachable controller keeps the last overlay.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -88,6 +89,12 @@ fn set(routes: Vec<PluginRoute>) -> bool {
     true
 }
 
+/// Whether this answer means the controller has no plugin routes at all (plugins off, or
+/// an older build), as opposed to a transient failure that keeps the last overlay.
+fn withdraws_routes(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 501 | 404)
+}
+
 /// Runs forever: subscribe, keep the overlay, ask for a rebuild on every change.
 pub async fn run(base_url: String, token: Option<String>, handle: RuntimeHandle) {
     let mut backoff = RECONNECT_MIN;
@@ -117,6 +124,10 @@ async fn subscribe_once(
         .with_context(|| format!("connecting to {url}"))?;
     if !resp.status().is_success() {
         // 501: plugins are off on this controller. Not an error worth shouting about.
+        if withdraws_routes(resp.status()) && set(Vec::new()) {
+            tracing::info!("controller serves no plugin routes; withdrawing them");
+            handle.request_reload();
+        }
         anyhow::bail!("controller answered {} for {url}", resp.status());
     }
     let mut buf = wayhouse_http::sse::EventBuffer::new();
@@ -154,6 +165,15 @@ mod tests {
         assert_eq!(r[0].host, "a.example.com");
         assert!(parse_event(": keep-alive").is_none());
         assert!(parse_event("data: nope").is_none());
+    }
+
+    #[test]
+    fn only_501_and_404_withdraw_the_overlay() {
+        use reqwest::StatusCode as S;
+        assert!(withdraws_routes(S::NOT_IMPLEMENTED));
+        assert!(withdraws_routes(S::NOT_FOUND));
+        assert!(!withdraws_routes(S::SERVICE_UNAVAILABLE));
+        assert!(!withdraws_routes(S::UNAUTHORIZED));
     }
 
     #[test]

@@ -286,6 +286,10 @@ listeners:
             "plugin_routes: { type: nope }",
             "plugin_routes: { type: sniffer }",
             "plugin_routes: { type: sni, sniffer: minecraft }",
+            // A typo that is not a mapping is an error, never a silent opt-out (#317).
+            "plugin_routes: sni",
+            "plugin_routes: true",
+            "plugin_routes: [sni]",
         ] {
             let text = BASE.replace("plugin_routes: { type: sni }", bad);
             assert!(parse_str(&text).is_err(), "{bad}");

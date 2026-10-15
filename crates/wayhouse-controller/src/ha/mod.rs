@@ -374,6 +374,9 @@ pub struct HaHandle {
     /// This node's plugin secret keyring (empty without a key); `/raft/whoami` reports its
     /// key ids so a rotation can check every node holds the active key.
     pub secret_keys: crate::plugins::secrets::KeyringHandle,
+    /// Whether this node runs with `--plugins`. A node without it holds no plugin runner,
+    /// so `/raft/whoami` reports no plugin support for it.
+    pub plugins_enabled: bool,
 }
 
 impl HaHandle {

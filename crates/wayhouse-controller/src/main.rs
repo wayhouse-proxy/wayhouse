@@ -494,6 +494,12 @@ async fn main() -> anyhow::Result<()> {
             forward: ha::client::forward_client(ha::client::FORWARD_TIMEOUT),
             pre_ha,
             secret_keys: plugin_keys.clone(),
+            // A slave serves only the disabled router, whatever `--plugins` says.
+            plugins_enabled: wayhouse_controller::plugins::availability(
+                args.plugins,
+                args.role == Role::Slave,
+            )
+            .is_ok(),
         });
         // A Raft core that stopped after a storage error leaves this node unable to
         // commit while `/healthz` still answers: exit so the orchestrator restarts
@@ -653,10 +659,21 @@ async fn main() -> anyhow::Result<()> {
                     ha.clone(),
                     plugin_keys.clone(),
                 );
-                match store.sweep_blobs() {
-                    Ok(0) => {}
-                    Ok(n) => tracing::info!(removed = n, "removed plugin modules no install uses"),
-                    Err(e) => tracing::warn!(error = %e, "could not sweep orphaned plugin modules"),
+                // Under HA the sweep waits for the state machine to replay the log.
+                match &ha {
+                    Some(handle) => drop(wayhouse_controller::plugins::peer::spawn_startup_sweep(
+                        store.clone(),
+                        handle.clone(),
+                    )),
+                    None => match store.sweep_blobs() {
+                        Ok(0) => {}
+                        Ok(n) => {
+                            tracing::info!(removed = n, "removed plugin modules no install uses");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "could not sweep orphaned plugin modules");
+                        }
+                    },
                 }
                 // Detached on purpose: they run for the life of the process.
                 drop(runner.clone().spawn());
