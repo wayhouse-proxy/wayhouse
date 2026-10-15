@@ -35,7 +35,7 @@ use crate::api::AppState;
 pub async fn origin_guard(State(state): State<AppState>, req: Request, next: Next) -> Response {
     let host = request_host(&req);
     if state.loopback_host_only && !host.as_deref().is_some_and(is_loopback_host) {
-        return refuse("unexpected Host header");
+        return refuse(&unexpected_host(host.as_deref()));
     }
     if is_state_changing(&req) {
         if let Some(why) = cross_site(req.headers(), host.as_deref()) {
@@ -45,8 +45,25 @@ pub async fn origin_guard(State(state): State<AppState>, req: Request, next: Nex
     next.run(req).await
 }
 
-fn refuse(why: &'static str) -> Response {
-    (StatusCode::FORBIDDEN, why).into_response()
+fn refuse(why: &str) -> Response {
+    (StatusCode::FORBIDDEN, why.to_string()).into_response()
+}
+
+/// The 403 text for a non-loopback `Host` on a loopback-only open-mode UI: says
+/// which header was seen and how to fix it. The host is client-supplied, so it is
+/// cut to printable ASCII of bounded length before it is echoed.
+fn unexpected_host(host: Option<&str>) -> String {
+    let seen: String = host
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_graphic())
+        .take(100)
+        .collect();
+    format!(
+        "unexpected Host header \"{seen}\": this UI has no login configured, so it only \
+         answers loopback names (localhost, 127.0.0.1, [::1]). Set --ui-password or \
+         --users-file to serve other hosts, or have the reverse proxy send `Host: localhost`."
+    )
 }
 
 fn is_state_changing(req: &Request) -> bool {
@@ -285,6 +302,27 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(status(state, req).await, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn the_host_refusal_names_the_host_and_the_fix() {
+        let req = HttpRequest::get("/ui/session")
+            .header(header::HOST, "ui.example.com")
+            .body(Body::empty())
+            .unwrap();
+        let resp = crate::api::router(open().with_loopback_host_only(true))
+            .oneshot(req)
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("Host header \"ui.example.com\""), "{body}");
+        assert!(body.contains("--ui-password"), "{body}");
+        assert!(body.contains("--users-file"), "{body}");
+        assert!(body.contains("Host: localhost"), "{body}");
     }
 
     #[tokio::test]

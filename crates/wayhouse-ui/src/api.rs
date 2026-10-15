@@ -296,13 +296,10 @@ async fn login(
     let ip = peer.map_or(IpAddr::from([0, 0, 0, 0]), |p| (p.0).0 .0.ip());
     // Throttle before any password work. In legacy/open mode there is no
     // username, so only the per-address bucket applies.
-    // Only real accounts get a username bucket: a name that isn't in the users
-    // file is throttled by address alone, so spraying names can neither fill the
-    // limiter's map nor lock out a legitimate account it doesn't name.
-    let username = state
-        .users
-        .as_ref()
-        .and_then(|users| req.username.as_deref().filter(|u| users.contains_key(*u)));
+    // Every name, real or not, is charged to one of a fixed set of hashed
+    // username buckets: the throttle answers identically for both, so it is no
+    // account-existence oracle, and the limiter's memory stays bounded.
+    let username = state.users.as_ref().and_then(|_| req.username.as_deref());
     // Usernames key the limiter's map, so bound their size (no real
     // username comes close).
     if req
@@ -339,13 +336,18 @@ async fn login(
         .ok()
         .flatten();
         return match verified {
-            Some((role, username)) => issue_session(
-                &state,
-                Session {
-                    role,
-                    username: Some(username),
-                },
-            ),
+            Some((role, username)) => {
+                // A correct password hands the attempt's username token back,
+                // so a legitimate user is not locked out by their own logins.
+                state.login_limiter.refund_username(&username);
+                issue_session(
+                    &state,
+                    Session {
+                        role,
+                        username: Some(username),
+                    },
+                )
+            }
             None => bad_credentials(),
         };
     }
@@ -925,13 +927,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn names_that_are_not_accounts_get_no_username_bucket() {
-        let app = router(users_state().with_login_limits(tight_login_limits(100, 1)));
-        // A per-username burst of 1 would 429 the second attempt for a tracked name.
-        for _ in 0..3 {
-            let resp = post_login(&app, r#"{"username":"nobody","password":"x"}"#).await;
-            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    async fn unknown_names_are_throttled_exactly_like_real_accounts() {
+        // A per-username burst of 1: the second attempt is refused whether or
+        // not the name is an account, so the throttle is no existence oracle.
+        for (name, body) in [
+            ("alice", r#"{"username":"alice","password":"x"}"#),
+            ("nobody", r#"{"username":"nobody","password":"x"}"#),
+        ] {
+            let app = router(users_state().with_login_limits(tight_login_limits(100, 1)));
+            let first = post_login(&app, body).await.status();
+            let second = post_login(&app, body).await.status();
+            assert_eq!(first, StatusCode::UNAUTHORIZED, "{name}");
+            assert_eq!(second, StatusCode::TOO_MANY_REQUESTS, "{name}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_successful_login_refunds_the_username_bucket() {
+        let app = router(users_state().with_login_limits(tight_login_limits(100, 1)));
+        for _ in 0..3 {
+            let resp = post_login(&app, r#"{"username":"alice","password":"alice-pass"}"#).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+        // A failure still spends the token.
+        let resp = post_login(&app, r#"{"username":"alice","password":"nope"}"#).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let resp = post_login(&app, r#"{"username":"alice","password":"alice-pass"}"#).await;
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]
