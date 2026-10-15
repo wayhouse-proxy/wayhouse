@@ -4841,6 +4841,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wat",
+ "wayhouse-acme",
  "wayhouse-config",
  "wayhouse-http",
  "wayhouse-plugin-host",
