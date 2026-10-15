@@ -4,7 +4,10 @@
 
 One proxy instance in context. Traffic enters on the left and leaves on the right; sniffers run inside the proxy on the data path, while plugins run in the controller, off it.
 
-![Detailed Wayhouse architecture: the proxy data path (listener, filters, optional sniffers, router, optional resolver, pool, pump, tunnel client to agent) and its in-process control components, plus the controller with plugin host, aggregator, UI and the sniffers and plugins registries.](img/architecture-detailed.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/architecture-detailed-dark.svg">
+  <img alt="Detailed Wayhouse architecture: the proxy data path (listener, filters, optional sniffers, router, optional resolver, pool, pump, tunnel client to agent) and its in-process control components, plus the controller with plugin host, aggregator, UI and the sniffers and plugins registries." src="img/architecture-detailed.svg">
+</picture>
 
 Blue boxes are the data path (ingress left, egress right); amber boxes are everything off it. Dotted lines are control, config or state flows.
 

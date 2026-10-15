@@ -51,7 +51,10 @@ examples) or from an external routing service you control.
 
 ## How it fits together
 
-![Wayhouse architecture overview: players reach the proxy (listener, optional sniffers, router, pool, pump) which forwards to game servers; the controller with its plugin host, the aggregator, the UI and the sniffers and plugins registries sit off the data path.](docs/img/architecture-overview.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/architecture-overview-dark.svg">
+  <img alt="Wayhouse architecture overview: players reach the proxy (listener, optional sniffers, router, pool, pump) which forwards to game servers; the controller with its plugin host, the aggregator, the UI and the sniffers and plugins registries sit off the data path." src="docs/img/architecture-overview.svg">
+</picture>
 
 The proxy is the only part that touches player traffic. The controller, aggregator and UI are optional and stay off the data path; see [docs/02-architecture.md](docs/02-architecture.md) for the detailed diagram.
 
