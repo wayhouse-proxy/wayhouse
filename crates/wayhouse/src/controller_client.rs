@@ -35,7 +35,10 @@ const REVISION_HEADER: &str = "x-config-revision";
 /// before anything else exists to build a `Snapshot` from (mirrors
 /// `wayhouse_config::load` in file mode).
 pub async fn fetch_current(base_url: &str, token: Option<&str>) -> anyhow::Result<(u64, String)> {
-    let mut req = wayhouse_http::client().get(format!("{base_url}/config"));
+    let mut req = wayhouse_http::client().get(format!(
+        "{base_url}/config?max_schema={}",
+        wayhouse_config::version::CONFIG_SCHEMA_VERSION
+    ));
     if let Some(token) = token {
         req = req.bearer_auth(token);
     }
@@ -122,6 +125,15 @@ pub async fn run(
 /// this returns `Err` partway through a batch — the caller must reconnect
 /// from wherever the connection actually got to, never from where it
 /// started (see the comment in `run`).
+/// `{base_url}/config/subscribe` from `since`, telling the controller the newest config
+/// schema this build parses so it never sends a revision that needs more (#202).
+fn subscribe_url(base_url: &str, since: u64) -> String {
+    format!(
+        "{base_url}/config/subscribe?since={since}&max_schema={}",
+        wayhouse_config::version::CONFIG_SCHEMA_VERSION
+    )
+}
+
 async fn subscribe_once(
     base_url: &str,
     token: Option<&str>,
@@ -132,7 +144,7 @@ async fn subscribe_once(
     sniffers: &Sniffers,
 ) -> anyhow::Result<()> {
     let since = *cursor;
-    let url = format!("{base_url}/config/subscribe?since={since}");
+    let url = subscribe_url(base_url, since);
     let mut req = wayhouse_http::client().get(&url);
     if let Some(token) = token {
         req = req.bearer_auth(token);
@@ -334,6 +346,18 @@ async fn apply_sse_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subscribe_url_announces_the_supported_config_schema() {
+        let url = subscribe_url("http://c:1", 7);
+        assert_eq!(
+            url,
+            format!(
+                "http://c:1/config/subscribe?since=7&max_schema={}",
+                wayhouse_config::version::CONFIG_SCHEMA_VERSION
+            )
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_failed_refetch_is_retried_with_a_growing_delay_until_it_succeeds() {

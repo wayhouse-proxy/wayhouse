@@ -658,6 +658,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_touch_slack_keeps_an_unrefreshed_proxy_live() {
+        // Under HA an unchanged re-registration touches `last_seen` only every
+        // `TOUCH_AFTER`, so a live proxy looks stale for `live_for` seconds
+        // after its last real change (#342). The slack widens the window.
+        let (state, _book, _dir) = test_state();
+        let (state, now) = clocked(state);
+        let app = router(state.clone());
+        assert_eq!(
+            post(&app, schema_body("old", Some(1), Some(30))).await.0,
+            StatusCode::OK
+        );
+        now.store(1_000 + 91, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(state.min_live_config_schema().unwrap(), None);
+        assert_eq!(state.live_config_schema_floor(3_600).unwrap(), Some(1));
+        now.store(1_000 + 90 + 3_600, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(state.live_config_schema_floor(3_600).unwrap(), Some(1));
+        now.store(1_000 + 91 + 3_600, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(state.live_config_schema_floor(3_600).unwrap(), None);
+    }
+
+    #[tokio::test]
     async fn a_deleted_registration_no_longer_counts() {
         let (state, _book, _dir) = test_state();
         let (state, _now) = clocked(state);

@@ -49,6 +49,20 @@ pub(crate) fn check_schema_version(raw: Option<&Value>) -> Result<u32, ConfigErr
     Ok(declared)
 }
 
+/// The `schema_version` a document declares, read without validating the rest: `1` when
+/// the key is absent, not a whole number >= 1, or the text is not YAML. For callers that
+/// route stored documents by the schema they need (the controller's subscribe filter, #202);
+/// a document this cannot read is passed on and refused by the receiver as before.
+#[must_use]
+pub fn declared_schema_version(text: &str) -> u32 {
+    serde_norway::from_str::<Value>(text)
+        .ok()
+        .and_then(|doc| doc.get("schema_version").and_then(Value::as_u64))
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(1)
+}
+
 fn shown(v: &Value) -> String {
     serde_norway::to_string(v).map_or_else(|_| "?".into(), |s| s.trim().to_owned())
 }
@@ -101,6 +115,22 @@ mod tests {
     fn absent_schema_version_is_current() {
         let cfg = parse_str(BODY).unwrap();
         assert_eq!(cfg.schema_version, 1);
+    }
+
+    #[test]
+    fn declared_schema_reads_the_key_without_validating_the_document() {
+        assert_eq!(
+            declared_schema_version("schema_version: 2\npools: nonsense\n"),
+            2
+        );
+        assert_eq!(declared_schema_version(&doc("")), 1, "absent means 1");
+        assert_eq!(
+            declared_schema_version("{not yaml"),
+            1,
+            "unreadable means 1"
+        );
+        assert_eq!(declared_schema_version("schema_version: 0\n"), 1);
+        assert_eq!(declared_schema_version("schema_version: nope\n"), 1);
     }
 
     #[test]

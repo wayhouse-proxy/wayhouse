@@ -90,6 +90,15 @@ pub enum PluginStoreError {
     OrphansFull,
 }
 
+/// What [`PluginStore::delete_upload`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UploadDelete {
+    Deleted,
+    NotFound,
+    /// An install uses the module; remove the install instead.
+    InUse,
+}
+
 /// Whether `name` is a valid install name.
 pub fn valid_name(name: &str) -> bool {
     (1..=64).contains(&name.len())
@@ -469,6 +478,21 @@ impl PluginStore {
             return Err(PluginStoreError::OrphansFull);
         }
         self.put_blob(sha256, bytes)
+    }
+
+    /// Deletes an uploaded module no install uses, freeing its share of the orphan cap.
+    pub fn delete_upload(&self, sha256: &str) -> Result<UploadDelete, PluginStoreError> {
+        let _guard = self.lock();
+        if self.list()?.iter().any(|r| r.sha256 == sha256) {
+            return Ok(UploadDelete::InUse);
+        }
+        let removed = self.blobs.remove(sha256.as_bytes())?;
+        self.blobs.flush()?;
+        Ok(if removed.is_some() {
+            UploadDelete::Deleted
+        } else {
+            UploadDelete::NotFound
+        })
     }
 
     /// The total size of the stored modules no install references.
@@ -1321,6 +1345,29 @@ mod tests {
         s.create(&record("a", "sha1", 1)).unwrap();
         s.put_upload("sha2", &[0; 5], 10).unwrap();
         assert_eq!(s.orphan_bytes().unwrap(), 5);
+    }
+
+    #[test]
+    fn an_unused_upload_can_be_deleted_to_free_the_cap() {
+        let (s, _d) = store();
+        s.put_upload("sha1", &[0; 6], 10).unwrap();
+        assert!(matches!(
+            s.put_upload("sha2", &[0; 5], 10),
+            Err(PluginStoreError::OrphansFull)
+        ));
+        assert_eq!(s.delete_upload("sha1").unwrap(), UploadDelete::Deleted);
+        assert!(s.get_blob("sha1").unwrap().is_none());
+        s.put_upload("sha2", &[0; 5], 10).unwrap();
+        assert_eq!(s.delete_upload("sha1").unwrap(), UploadDelete::NotFound);
+    }
+
+    #[test]
+    fn a_module_an_install_uses_is_not_deleted_as_an_upload() {
+        let (s, _d) = store();
+        s.put_blob("sha1", b"abc").unwrap();
+        s.create(&record("a", "sha1", 1)).unwrap();
+        assert_eq!(s.delete_upload("sha1").unwrap(), UploadDelete::InUse);
+        assert!(s.get_blob("sha1").unwrap().is_some());
     }
 
     #[test]

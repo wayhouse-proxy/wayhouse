@@ -458,9 +458,13 @@ impl AppState {
     /// `O(revisions)` backward scan from the top of the log, not an index —
     /// see the module doc / `docs/10`'s "Staged / canary rollout (design)"
     /// for why that's the right tradeoff at this scale.
+    ///
+    /// With `max_schema`, a revision that needs a newer config schema is passed over like an
+    /// invisible one: the caller gets the newest revision it can parse (#202).
     pub fn current_for_group(
         &self,
         group: Option<&str>,
+        max_schema: Option<u32>,
     ) -> Result<Option<(u64, RevisionBytes)>, StoreError> {
         let Some(mut rev) = self.store.current_revision()? else {
             return Ok(None);
@@ -471,7 +475,14 @@ impl AppState {
                     .store
                     .get(rev)?
                     .expect("a revision number from current_revision/the scan always exists");
-                return Ok(Some((rev, bytes)));
+                let parseable = max_schema.is_none_or(|max| {
+                    wayhouse_config::version::declared_schema_version(&String::from_utf8_lossy(
+                        &bytes,
+                    )) <= max
+                });
+                if parseable {
+                    return Ok(Some((rev, bytes)));
+                }
             }
             if rev == 1 {
                 return Ok(None);
@@ -787,16 +798,19 @@ struct GetConfigParams {
     /// Absent means "no group": only ever see `promoted` revisions, exactly
     /// today's behavior.
     group: Option<String>,
+    /// The newest config schema the caller parses: the answer is the newest
+    /// visible revision that needs no more. Absent means no limit (operators).
+    max_schema: Option<u32>,
 }
 
-/// `GET /config[?group=<name>]` — the current revision *visible to `group`*
+/// `GET /config[?group=<name>][&max_schema=<n>]` — the current revision *visible to `group`*
 /// (see [`AppState::current_for_group`]), or `404` before anything visible
 /// to it has ever landed.
 async fn get_current_config(
     State(state): State<AppState>,
     Query(params): Query<GetConfigParams>,
 ) -> Response {
-    match state.current_for_group(params.group.as_deref()) {
+    match state.current_for_group(params.group.as_deref(), params.max_schema) {
         Ok(Some((revision, bytes))) => {
             let text = String::from_utf8_lossy(&bytes).into_owned();
             (
@@ -981,6 +995,10 @@ struct SubscribeParams {
     /// This subscriber's canary group, if any — see the module doc. Absent
     /// means only ever see `promoted` revisions.
     group: Option<String>,
+    /// The newest config schema this subscriber understands; absent means `1`
+    /// (a proxy that predates the parameter). Revisions that need more are not
+    /// sent (#202).
+    max_schema: Option<u32>,
 }
 
 /// `GET /config/subscribe?since=<revision>[&group=<name>]` — see the module
@@ -997,6 +1015,7 @@ async fn subscribe(
         state.store,
         state.stage,
         params.group,
+        params.max_schema.unwrap_or(1),
         updates,
         params.since.unwrap_or(0),
         tx,
@@ -1030,6 +1049,7 @@ async fn subscribe_worker(
     store: Arc<Store>,
     stage: sled::Tree,
     group: Option<String>,
+    max_schema: u32,
     mut updates: broadcast::Receiver<u64>,
     since: u64,
     tx: mpsc::Sender<(u64, RevisionBytes)>,
@@ -1037,7 +1057,7 @@ async fn subscribe_worker(
     let group = group.as_deref();
     let mut last_sent = since;
 
-    if !catch_up(&store, &stage, group, &mut last_sent, &tx).await {
+    if !catch_up(&store, &stage, group, max_schema, &mut last_sent, &tx).await {
         return;
     }
 
@@ -1049,13 +1069,13 @@ async fn subscribe_worker(
             // snapshot install wakes once, for its newest revision, and the
             // ones before it must still be sent.
             Ok(_) => {
-                if !catch_up(&store, &stage, group, &mut last_sent, &tx).await {
+                if !catch_up(&store, &stage, group, max_schema, &mut last_sent, &tx).await {
                     return;
                 }
             }
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                 tracing::warn!(skipped, "subscriber lagged; replaying from the store");
-                if !catch_up(&store, &stage, group, &mut last_sent, &tx).await {
+                if !catch_up(&store, &stage, group, max_schema, &mut last_sent, &tx).await {
                     return;
                 }
             }
@@ -1064,7 +1084,7 @@ async fn subscribe_worker(
     }
 }
 
-/// Sends every *visible-to-`group`* revision after `*last_sent`, advancing
+/// Sends every *visible-to-`group`* revision that needs no more than `max_schema` after `*last_sent`, advancing
 /// it only for the ones actually sent — see [`subscribe_worker`]'s doc on
 /// why an invisible one doesn't advance the cursor. Returns `false` if the
 /// receiver dropped (stop the worker).
@@ -1072,6 +1092,7 @@ async fn catch_up(
     store: &Store,
     stage: &sled::Tree,
     group: Option<&str>,
+    max_schema: u32,
     last_sent: &mut u64,
     tx: &mpsc::Sender<(u64, RevisionBytes)>,
 ) -> bool {
@@ -1084,6 +1105,17 @@ async fn catch_up(
     };
     for (revision, bytes) in revisions {
         if !is_visible(stage, revision, group) {
+            continue;
+        }
+        let needed =
+            wayhouse_config::version::declared_schema_version(&String::from_utf8_lossy(&bytes));
+        if needed > max_schema {
+            tracing::debug!(
+                revision,
+                needed,
+                max_schema,
+                "not sending a revision newer than the subscriber's config schema"
+            );
             continue;
         }
         if tx.send((revision, bytes)).await.is_err() {
@@ -1264,6 +1296,7 @@ listeners:
             store.clone(),
             test_stage_tree(&store),
             None,
+            1,
             updates_rx,
             0,
             tx,
@@ -1285,6 +1318,7 @@ listeners:
             store.clone(),
             test_stage_tree(&store),
             None,
+            1,
             updates_rx,
             0,
             tx,
@@ -1310,12 +1344,82 @@ listeners:
             store.clone(),
             test_stage_tree(&store),
             None,
+            1,
             updates_rx,
             rev1,
             tx,
         ));
 
         assert_eq!(rx.recv().await.unwrap(), (rev2, b"two".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn subscribe_worker_skips_revisions_newer_than_the_subscribers_schema() {
+        // A 0.1.0 proxy (schema 1) must never be sent a document it cannot parse (#202).
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let rev1 = put_promoted(&store, b"schema_version: 1\n");
+        let _rev2 = put_promoted(&store, b"schema_version: 2\n");
+
+        let (updates_tx, updates_rx) = broadcast::channel(8);
+        let (tx, mut rx) = mpsc::channel(8);
+        tokio::spawn(subscribe_worker(
+            store.clone(),
+            test_stage_tree(&store),
+            None,
+            1,
+            updates_rx,
+            0,
+            tx,
+        ));
+        assert_eq!(rx.recv().await.unwrap().0, rev1);
+
+        // Tailing: a new schema-2 revision is skipped, a later schema-1 one is sent.
+        let rev3 = put_promoted(&store, b"schema_version: 2\n");
+        updates_tx.send(rev3).unwrap();
+        let rev4 = put_promoted(&store, b"pools: []\n");
+        updates_tx.send(rev4).unwrap();
+        assert_eq!(rx.recv().await.unwrap().0, rev4);
+    }
+
+    #[tokio::test]
+    async fn the_initial_fetch_returns_the_newest_revision_the_caller_can_parse() {
+        let (state, _dir) = test_state();
+        let old = put_promoted(&state.store, b"schema_version: 1\n");
+        let _new = put_promoted(&state.store, b"schema_version: 2\n");
+        assert_eq!(
+            state.current_for_group(None, Some(1)).unwrap().unwrap().0,
+            old
+        );
+        assert_eq!(
+            state.current_for_group(None, Some(2)).unwrap().unwrap().0,
+            old + 1
+        );
+        assert_eq!(
+            state.current_for_group(None, None).unwrap().unwrap().0,
+            old + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_worker_sends_everything_to_a_current_subscriber() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let rev1 = put_promoted(&store, b"schema_version: 1\n");
+        let rev2 = put_promoted(&store, b"schema_version: 2\n");
+        let (_updates_tx, updates_rx) = broadcast::channel(8);
+        let (tx, mut rx) = mpsc::channel(8);
+        tokio::spawn(subscribe_worker(
+            store.clone(),
+            test_stage_tree(&store),
+            None,
+            2,
+            updates_rx,
+            0,
+            tx,
+        ));
+        assert_eq!(rx.recv().await.unwrap().0, rev1);
+        assert_eq!(rx.recv().await.unwrap().0, rev2);
     }
 
     #[tokio::test]
@@ -1330,6 +1434,7 @@ listeners:
             store.clone(),
             test_stage_tree(&store),
             None,
+            1,
             updates_rx,
             0,
             tx,
@@ -1909,6 +2014,7 @@ listeners:
             store,
             stage_tree.clone(),
             None,
+            1,
             updates_rx,
             0,
             tx,

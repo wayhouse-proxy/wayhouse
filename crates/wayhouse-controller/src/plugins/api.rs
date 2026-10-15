@@ -23,7 +23,7 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{middleware, Json, Router};
 use serde::{Deserialize, Serialize};
 use wayhouse_plugin_host::{inspect, Capabilities, CompilePool, PoolError, MAX_MODULE_BYTES};
@@ -103,6 +103,7 @@ pub fn router(state: PluginsState) -> Router {
             "/plugins/modules",
             post(upload_module).layer(DefaultBodyLimit::max(MAX_MODULE_BYTES)),
         )
+        .route("/plugins/modules/{sha256}", delete(delete_upload))
         .route("/plugins", post(install).get(list))
         .route("/plugins/{id}", get(get_one).delete(remove))
         .route("/plugins/{id}/status", get(status))
@@ -172,7 +173,7 @@ async fn upload_module(
                 StatusCode::INSUFFICIENT_STORAGE,
                 format!(
                     "{} MiB of uploaded modules are waiting for an install; install or delete \
-                     them (a restart clears the unused ones) and retry",
+                     them (DELETE /plugins/modules/<sha256> drops an unused one; a restart clears them all) and retry",
                     super::MAX_ORPHAN_BYTES >> 20
                 ),
             )
@@ -189,6 +190,38 @@ async fn upload_module(
         }),
     )
         .into_response()
+}
+
+/// `DELETE /plugins/modules/{sha256}`: drops an uploaded module no install uses, the way out
+/// of a full orphan cap (`507` on upload).
+async fn delete_upload(
+    State(st): State<PluginsState>,
+    headers: HeaderMap,
+    Path(sha256): Path<String>,
+) -> Response {
+    if !super::is_sha256(&sha256) {
+        return err(StatusCode::BAD_REQUEST, "not a sha256 digest");
+    }
+    if let Some(forwarded) = st
+        .to_leader(
+            Method::DELETE,
+            &format!("/plugins/modules/{sha256}"),
+            &headers,
+            Bytes::new(),
+        )
+        .await
+    {
+        return forwarded;
+    }
+    match st.store.delete_upload(&sha256) {
+        Ok(super::UploadDelete::Deleted) => StatusCode::NO_CONTENT.into_response(),
+        Ok(super::UploadDelete::NotFound) => err(StatusCode::NOT_FOUND, "no such uploaded module"),
+        Ok(super::UploadDelete::InUse) => err(
+            StatusCode::CONFLICT,
+            "an install uses this module; remove the install instead",
+        ),
+        Err(e) => internal(e),
+    }
 }
 
 #[derive(Deserialize)]
@@ -329,12 +362,12 @@ async fn install_inner(
         {
             Ok(done) => Ok(match done.data {
                 WriteResponse::PluginApplied(_) => {
-                    if let Err(why) =
-                        restore_blob_after_commit(&st.store, ha, &record.sha256, module).await
-                    {
-                        return Err(err(StatusCode::SERVICE_UNAVAILABLE, why));
-                    }
-                    (StatusCode::CREATED, Json(record)).into_response()
+                    // The install is recorded: answering an error here would invite a
+                    // retry that records it a second time.
+                    let warning = restore_blob_after_commit(&st.store, ha, &record.sha256, module)
+                        .await
+                        .err();
+                    created_with_warning(&record, warning.as_deref())
                 }
                 other => unexpected(&other),
             }),
@@ -394,6 +427,16 @@ async fn restore_blob_after_commit(
         tracing::warn!(%why, "could not push a restored plugin module to the other replicas");
     }
     Ok(())
+}
+
+/// `201` with the install record and, when something about it needs the operator's attention
+/// (the install is recorded, so this is not an error), a `warning` field beside it.
+fn created_with_warning(record: &InstallRecord, warning: Option<&str>) -> Response {
+    let mut body = serde_json::to_value(record).unwrap_or_default();
+    if let (Some(warning), Some(map)) = (warning, body.as_object_mut()) {
+        map.insert("warning".into(), warning.into());
+    }
+    (StatusCode::CREATED, Json(body)).into_response()
 }
 
 /// The status and body of a plugin entry the state machine refused or answered oddly.
@@ -804,7 +847,7 @@ async fn delete_secret(
         return r;
     }
     if let Some(ha) = &st.ha {
-        if let Err(why) = super::peer::check_support(ha).await {
+        if let Err(why) = super::peer::check_revocation_support(ha).await {
             return err(StatusCode::CONFLICT, why);
         }
         let path = format!("/plugins/{id}/secrets/{slot}");
@@ -927,7 +970,7 @@ async fn rewrap_secrets(State(st): State<PluginsState>, headers: HeaderMap) -> R
                 format!("every node needs the active key {active} first: {why}"),
             );
         }
-        if let Err(why) = super::peer::check_support(ha).await {
+        if let Err(why) = super::peer::check_revocation_support(ha).await {
             return err(StatusCode::CONFLICT, why);
         }
     }
@@ -1404,6 +1447,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unused_upload_can_be_deleted_over_http() {
+        let (st0, _d0) = state(None);
+        let (status, _) = call(
+            &router(st0),
+            "DELETE",
+            "/plugins/modules/..%2Fx",
+            vec![],
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (st, _d) = state(None);
+        let app = router(st.clone());
+        let sha = upload(&app, &module(CAPS)).await;
+        let (status, _) = call(
+            &app,
+            "DELETE",
+            &format!("/plugins/modules/{sha}"),
+            vec![],
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(st.store.get_blob(&sha).unwrap().is_none());
+        let (status, _) = call(
+            &app,
+            "DELETE",
+            &format!("/plugins/modules/{sha}"),
+            vec![],
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let sha = upload(&app, &module(CAPS)).await;
+        call(&app, "POST", "/plugins", install_body(&sha, CAPS), None).await;
+        let (status, _) = call(
+            &app,
+            "DELETE",
+            &format!("/plugins/modules/{sha}"),
+            vec![],
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(st.store.get_blob(&sha).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_recorded_install_with_a_problem_is_created_with_a_warning() {
+        let (st, _d) = state(None);
+        let app = router(st);
+        let sha = upload(&app, &module(CAPS)).await;
+        let (_, v) = call(&app, "POST", "/plugins", install_body(&sha, CAPS), None).await;
+        let record: InstallRecord = serde_json::from_value(v).unwrap();
+        let resp = created_with_warning(&record, Some("upload the module again"));
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["id"], serde_json::json!(record.id));
+        assert_eq!(body["warning"], "upload the module again");
+        let plain = created_with_warning(&record, None);
+        let bytes = axum::body::to_bytes(plain.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(body.get("warning").is_none());
+    }
+
+    #[tokio::test]
     async fn a_full_compile_queue_answers_503() {
         let dir = tempfile::tempdir().unwrap();
         let db = sled::open(dir.path()).unwrap();
@@ -1825,7 +1940,8 @@ mod tests {
         let uri = format!("/plugins/{id}/secrets/PANEL_TOKEN");
         let (status, v) = call(&app, "PUT", &uri, put(SENTINEL), None).await;
         assert_eq!(status, StatusCode::OK, "{v}");
-        // A second member that does not answer (an old build, or down) closes the gate.
+        // A second member that does not answer (an old build, or down) closes the gate for
+        // changes, not for revocations.
         let ha = st.ha.clone().unwrap();
         ha.raft
             .add_learner(2, openraft::BasicNode::new("127.0.0.1:1"), false)
@@ -1841,11 +1957,12 @@ mod tests {
             .unwrap();
         let (status, v) = call(&app, "PUT", &uri, put(SENTINEL), None).await;
         assert_eq!(status, StatusCode::CONFLICT, "{v}");
-        let (status, v) = call(&app, "DELETE", &uri, vec![], None).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{v}");
-        assert!(st.store.get_secret(&id, "PANEL_TOKEN").unwrap().is_some());
+        // Revoking is never held up by a silent member (#344).
         let (status, v) = call(&app, "POST", "/admin/plugins/secrets/rewrap", vec![], None).await;
-        assert_eq!(status, StatusCode::CONFLICT, "{v}");
+        assert_eq!(status, StatusCode::OK, "{v}");
+        let (status, v) = call(&app, "DELETE", &uri, vec![], None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{v}");
+        assert!(st.store.get_secret(&id, "PANEL_TOKEN").unwrap().is_none());
     }
 
     #[tokio::test]
