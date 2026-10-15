@@ -137,7 +137,14 @@ impl BroadcastMerger {
                 return false;
             }
         } else if self.last_warn.len() >= MAX_WARNED_ORIGINS {
-            self.last_warn.clear();
+            // Full: reclaim only entries whose window has passed, so a fresh
+            // timestamp is never forgotten. A new origin that still finds no
+            // room stays silent (it is counted by the metric regardless).
+            self.last_warn
+                .retain(|_, at| now_ms.saturating_sub(*at) < DROP_WARN_INTERVAL_MS);
+            if self.last_warn.len() >= MAX_WARNED_ORIGINS {
+                return false;
+            }
         }
         self.last_warn.insert(origin, now_ms);
         true
@@ -947,6 +954,18 @@ mod tests {
             m.warn_due(o, 2_000_000);
         }
         assert!(m.last_warn.len() <= MAX_WARNED_ORIGINS);
+        // A full table never forgets fresh timestamps: a new origin stays
+        // silent until a window expires, and an already-warned one stays muted.
+        let full_at = 2_000_000;
+        let c: SocketAddr = "10.9.9.9:1".parse().unwrap();
+        assert!(
+            !m.warn_due(c, full_at),
+            "no room for a new origin while full"
+        );
+        let warned = SocketAddr::from(([10, 1, 0, 5], 1));
+        assert!(!m.warn_due(warned, full_at + 1), "fresh timestamp survives");
+        // Once the windows expire the table is reclaimed and new origins warn.
+        assert!(m.warn_due(c, full_at + DROP_WARN_INTERVAL_MS));
     }
 
     #[test]

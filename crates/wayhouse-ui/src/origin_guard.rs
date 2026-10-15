@@ -62,7 +62,7 @@ fn unexpected_host(host: Option<&str>) -> String {
     format!(
         "unexpected Host header \"{seen}\": this UI has no login configured, so it only \
          answers loopback names (localhost, 127.0.0.1, [::1]). Set --ui-password or \
-         --users-file to serve other hosts, or have the reverse proxy send `Host: localhost`."
+         --users-file to serve other hosts."
     )
 }
 
@@ -322,7 +322,7 @@ mod tests {
         assert!(body.contains("Host header \"ui.example.com\""), "{body}");
         assert!(body.contains("--ui-password"), "{body}");
         assert!(body.contains("--users-file"), "{body}");
-        assert!(body.contains("Host: localhost"), "{body}");
+        assert!(!body.contains("Host: localhost"), "{body}");
     }
 
     #[tokio::test]
