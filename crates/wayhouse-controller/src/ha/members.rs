@@ -146,6 +146,16 @@ impl MemberError {
 }
 
 /// `GET <addr>/raft/whoami`.
+/// Prefix of a [`fetch_whoami`] error that means the member could not be reached at all
+/// (connect or transport failure), as opposed to one that answered badly.
+const UNREACHABLE: &str = "unreachable: ";
+
+/// Whether a [`fetch_whoami`] error is a transport failure. A member that answers with an
+/// error status or a body that does not decode is reachable and may be an old build.
+pub(crate) fn is_unreachable(why: &str) -> bool {
+    why.starts_with(UNREACHABLE)
+}
+
 pub(crate) async fn fetch_whoami(
     client: &reqwest::Client,
     ha_token: Option<&str>,
@@ -158,7 +168,7 @@ pub(crate) async fn fetch_whoami(
     let resp = req
         .send()
         .await
-        .map_err(|e| wayhouse_http::error_chain(&e))?;
+        .map_err(|e| format!("{UNREACHABLE}{}", wayhouse_http::error_chain(&e)))?;
     if !resp.status().is_success() {
         return Err(format!("answered {}", resp.status()));
     }

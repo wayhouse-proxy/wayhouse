@@ -35,7 +35,10 @@ const REVISION_HEADER: &str = "x-config-revision";
 /// before anything else exists to build a `Snapshot` from (mirrors
 /// `wayhouse_config::load` in file mode).
 pub async fn fetch_current(base_url: &str, token: Option<&str>) -> anyhow::Result<(u64, String)> {
-    let mut req = wayhouse_http::client().get(format!("{base_url}/config"));
+    let mut req = wayhouse_http::client().get(format!(
+        "{base_url}/config?max_schema={}",
+        wayhouse_config::version::CONFIG_SCHEMA_VERSION
+    ));
     if let Some(token) = token {
         req = req.bearer_auth(token);
     }

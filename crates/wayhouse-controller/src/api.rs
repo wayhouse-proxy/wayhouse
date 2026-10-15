@@ -458,9 +458,13 @@ impl AppState {
     /// `O(revisions)` backward scan from the top of the log, not an index —
     /// see the module doc / `docs/10`'s "Staged / canary rollout (design)"
     /// for why that's the right tradeoff at this scale.
+    ///
+    /// With `max_schema`, a revision that needs a newer config schema is passed over like an
+    /// invisible one: the caller gets the newest revision it can parse (#202).
     pub fn current_for_group(
         &self,
         group: Option<&str>,
+        max_schema: Option<u32>,
     ) -> Result<Option<(u64, RevisionBytes)>, StoreError> {
         let Some(mut rev) = self.store.current_revision()? else {
             return Ok(None);
@@ -471,7 +475,14 @@ impl AppState {
                     .store
                     .get(rev)?
                     .expect("a revision number from current_revision/the scan always exists");
-                return Ok(Some((rev, bytes)));
+                let parseable = max_schema.is_none_or(|max| {
+                    wayhouse_config::version::declared_schema_version(&String::from_utf8_lossy(
+                        &bytes,
+                    )) <= max
+                });
+                if parseable {
+                    return Ok(Some((rev, bytes)));
+                }
             }
             if rev == 1 {
                 return Ok(None);
@@ -787,16 +798,19 @@ struct GetConfigParams {
     /// Absent means "no group": only ever see `promoted` revisions, exactly
     /// today's behavior.
     group: Option<String>,
+    /// The newest config schema the caller parses: the answer is the newest
+    /// visible revision that needs no more. Absent means no limit (operators).
+    max_schema: Option<u32>,
 }
 
-/// `GET /config[?group=<name>]` — the current revision *visible to `group`*
+/// `GET /config[?group=<name>][&max_schema=<n>]` — the current revision *visible to `group`*
 /// (see [`AppState::current_for_group`]), or `404` before anything visible
 /// to it has ever landed.
 async fn get_current_config(
     State(state): State<AppState>,
     Query(params): Query<GetConfigParams>,
 ) -> Response {
-    match state.current_for_group(params.group.as_deref()) {
+    match state.current_for_group(params.group.as_deref(), params.max_schema) {
         Ok(Some((revision, bytes))) => {
             let text = String::from_utf8_lossy(&bytes).into_owned();
             (
@@ -1366,6 +1380,25 @@ listeners:
         let rev4 = put_promoted(&store, b"pools: []\n");
         updates_tx.send(rev4).unwrap();
         assert_eq!(rx.recv().await.unwrap().0, rev4);
+    }
+
+    #[tokio::test]
+    async fn the_initial_fetch_returns_the_newest_revision_the_caller_can_parse() {
+        let (state, _dir) = test_state();
+        let old = put_promoted(&state.store, b"schema_version: 1\n");
+        let _new = put_promoted(&state.store, b"schema_version: 2\n");
+        assert_eq!(
+            state.current_for_group(None, Some(1)).unwrap().unwrap().0,
+            old
+        );
+        assert_eq!(
+            state.current_for_group(None, Some(2)).unwrap().unwrap().0,
+            old + 1
+        );
+        assert_eq!(
+            state.current_for_group(None, None).unwrap().unwrap().0,
+            old + 1
+        );
     }
 
     #[tokio::test]

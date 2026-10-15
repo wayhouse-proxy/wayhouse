@@ -32,7 +32,7 @@ use axum::Router;
 use wayhouse_plugin_host::{inspect, MAX_MODULE_BYTES};
 
 use super::{PluginStore, PluginStoreError};
-use crate::ha::members::fetch_whoami;
+use crate::ha::members::{fetch_whoami, is_unreachable};
 use crate::ha::peers::peer_url;
 use crate::ha::routes::{Whoami, PLUGIN_SUPPORT};
 use crate::ha::{HaHandle, NodeId, WriteRequest, WriteResponse};
@@ -215,7 +215,7 @@ pub fn request_purge(ha: &Arc<HaHandle>) {
 }
 
 /// `Ok` when every other member that answers holds the key `active`; otherwise names who
-/// does not. A silent member does not block: rotating a leaked key must work while a
+/// does not. A member that cannot be reached at all does not block: rotating a leaked key must work while a
 /// replica is down (#344), and that replica needs the key before it reads secrets again.
 pub async fn check_active_key(ha: &HaHandle, active: &str) -> Result<(), String> {
     check_active_key_answers(&whoami_all(ha).await, active)
@@ -230,10 +230,11 @@ pub fn check_active_key_answers(
         .filter_map(|(id, who)| match who {
             Ok(w) if w.secret_key_ids.iter().any(|k| k == active) => None,
             Ok(_) => Some(format!("node {id} lacks key {active}")),
-            Err(why) => {
+            Err(why) if is_unreachable(why) => {
                 tracing::warn!(node = id, error = %why, "no answer while checking for the active secret key");
                 None
             }
+            Err(why) => Some(format!("node {id} did not answer properly ({why})")),
         })
         .collect();
     if missing.is_empty() {
@@ -347,7 +348,7 @@ fn support_check(
 ) -> Result<(), String> {
     for (id, answer) in answers {
         match answer {
-            Err(_) if skip_silent => {}
+            Err(why) if skip_silent && is_unreachable(why) => {}
             Err(why) => {
                 return Err(format!(
                     "node {id} did not answer ({why}); plugin installs wait until every member \
@@ -583,11 +584,24 @@ mod tests {
         let old =
             check_support_answers(&[(2, Ok(who(PLUGIN_SUPPORT))), (3, Ok(who(0)))]).unwrap_err();
         assert!(old.contains("node 3") && old.contains("upgrade"), "{old}");
-        let silent = check_support_answers(&[(2, Err("connection refused".into()))]).unwrap_err();
+        let silent = check_support_answers(&[(2, Err(unreachable()))]).unwrap_err();
         assert!(
             silent.contains("node 2") && silent.contains("did not answer"),
             "{silent}"
         );
+    }
+
+    fn unreachable() -> String {
+        format!("{}connection refused", "unreachable: ")
+    }
+
+    #[test]
+    fn a_member_that_answers_badly_still_blocks_revocation_and_rotation() {
+        let bad = || Err("answered 404 Not Found".to_string());
+        let why = check_revocation_support_answers(&[(2, bad())]).unwrap_err();
+        assert!(why.contains("node 2"), "{why}");
+        let why = check_active_key_answers(&[(2, bad())], "k2").unwrap_err();
+        assert!(why.contains("node 2"), "{why}");
     }
 
     #[test]
@@ -595,15 +609,12 @@ mod tests {
         // A leaked secret must be revocable while a replica is down (#344); only a
         // member that answers with a build that cannot decode the entry blocks it.
         assert!(check_revocation_support_answers(&[
-            (2, Err("connection refused".into())),
+            (2, Err(unreachable())),
             (3, Ok(who(PLUGIN_SUPPORT)))
         ])
         .is_ok());
-        let old = check_revocation_support_answers(&[
-            (2, Err("connection refused".into())),
-            (3, Ok(who(0))),
-        ])
-        .unwrap_err();
+        let old = check_revocation_support_answers(&[(2, Err(unreachable())), (3, Ok(who(0)))])
+            .unwrap_err();
         assert!(old.contains("node 3") && old.contains("upgrade"), "{old}");
     }
 
@@ -614,11 +625,11 @@ mod tests {
             ..who(PLUGIN_SUPPORT)
         };
         assert!(
-            check_active_key_answers(&[(2, Err("down".into())), (3, Ok(with(&["k2"])))], "k2")
+            check_active_key_answers(&[(2, Err(unreachable())), (3, Ok(with(&["k2"])))], "k2")
                 .is_ok()
         );
         let lacking =
-            check_active_key_answers(&[(2, Err("down".into())), (3, Ok(with(&["k1"])))], "k2")
+            check_active_key_answers(&[(2, Err(unreachable())), (3, Ok(with(&["k1"])))], "k2")
                 .unwrap_err();
         assert!(
             lacking.contains("node 3") && !lacking.contains("node 2"),

@@ -199,6 +199,9 @@ async fn delete_upload(
     headers: HeaderMap,
     Path(sha256): Path<String>,
 ) -> Response {
+    if !super::is_sha256(&sha256) {
+        return err(StatusCode::BAD_REQUEST, "not a sha256 digest");
+    }
     if let Some(forwarded) = st
         .to_leader(
             Method::DELETE,
@@ -1445,6 +1448,16 @@ mod tests {
 
     #[tokio::test]
     async fn an_unused_upload_can_be_deleted_over_http() {
+        let (st0, _d0) = state(None);
+        let (status, _) = call(
+            &router(st0),
+            "DELETE",
+            "/plugins/modules/..%2Fx",
+            vec![],
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
         let (st, _d) = state(None);
         let app = router(st.clone());
         let sha = upload(&app, &module(CAPS)).await;
@@ -1946,7 +1959,7 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT, "{v}");
         // Revoking is never held up by a silent member (#344).
         let (status, v) = call(&app, "POST", "/admin/plugins/secrets/rewrap", vec![], None).await;
-        assert_ne!(status, StatusCode::CONFLICT, "{v}");
+        assert_eq!(status, StatusCode::OK, "{v}");
         let (status, v) = call(&app, "DELETE", &uri, vec![], None).await;
         assert_eq!(status, StatusCode::NO_CONTENT, "{v}");
         assert!(st.store.get_secret(&id, "PANEL_TOKEN").unwrap().is_none());
