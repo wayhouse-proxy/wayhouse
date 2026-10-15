@@ -51,31 +51,7 @@ examples) or from an external routing service you control.
 
 ## How it fits together
 
-```mermaid
-flowchart LR
-    P(["Players<br/>TCP / UDP"])
-    subgraph PX["wayhouse-proxy (one per host)"]
-        L["Listener<br/>+ filters"] --> R["Router<br/>(+ optional sniffers)"] --> LB["Pool<br/>LB · health"] --> PUMP["Pump"]
-        CFG["Config snapshot<br/>+ admin API"]
-        HC["Health checks<br/>discovery · gossip"]
-    end
-    B(["Game servers"])
-    subgraph CT["wayhouse-controller (optional)"]
-        C["Config + intent<br/>Raft HA"]
-        PH["Plugin host<br/>(WASM)"]
-    end
-    AGG["wayhouse-aggregator<br/>fleet reads"]
-    UI["wayhouse-ui<br/>admin GUI"]
-    P --> L
-    PUMP --> B
-    C -. "config" .-> CFG
-    CFG -. "snapshot" .-> LB
-    HC -. "health" .-> LB
-    CFG -. "state" .-> AGG
-    UI --> C
-    UI --> AGG
-    PH --- C
-```
+![Wayhouse architecture overview: players reach the proxy (listener, optional sniffers, router, pool, pump) which forwards to game servers; the controller with its plugin host, the aggregator, the UI and the sniffers and plugins registries sit off the data path.](docs/img/architecture-overview.svg)
 
 The proxy is the only part that touches player traffic. The controller, aggregator and UI are optional and stay off the data path; see [docs/02-architecture.md](docs/02-architecture.md) for the detailed diagram.
 

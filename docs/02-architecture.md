@@ -4,47 +4,7 @@
 
 One proxy instance in context. Traffic enters on the left and leaves on the right; sniffers run inside the proxy on the data path, while plugins run in the controller, off it.
 
-```mermaid
-flowchart LR
-    P(["Players<br/>TCP / UDP"])
-    subgraph PX["wayhouse-proxy (one per host)"]
-        direction LR
-        L["Listener<br/>TCP accept · UDP recv"] --> F["Filters<br/>ACL · geo · rate limits · caps"] --> S["Sniffers (optional)<br/>WASM, peek first bytes"] --> R["Router<br/>port · dst · CIDR · SNI<br/>first bytes · external"]
-        R --> LB["Pool<br/>LB · affinity"] --> PUMP["Pump<br/>splice · UDP sessions<br/>PROXY protocol out"]
-        R -. "external route" .-> RES["Resolver (optional)<br/>HTTP / gRPC · cache"] -. "pool or target" .-> LB
-        PUMP --> T["Tunnel client<br/>WireGuard (optional)"]
-        CFG["Config loader<br/>validate · snapshot"]
-        ADM["Admin API<br/>drain · metrics"]
-        DISC["Discovery<br/>SRV · Consul · K8s"]
-        HC["Health checker"]
-        G["Gossip (optional)"]
-    end
-    B(["Game servers"])
-    AG["wayhouse-agent<br/>(origin side)"]
-    subgraph CT["wayhouse-controller (optional)"]
-        C["Config + intent log<br/>Raft HA"]
-        PH["Plugin host (WASM)<br/>timers · webhooks · events"]
-    end
-    AGG["wayhouse-aggregator<br/>fleet reads"]
-    UI["wayhouse-ui<br/>admin GUI"]
-    SN[("sniffers repo")]
-    PR[("plugins repo")]
-    P --> L
-    PUMP --> B
-    T -. "encrypted" .-> AG --> B
-    CFG -. "immutable snapshot" .-> F
-    CFG -.-> R
-    DISC -.-> LB
-    HC -.-> LB
-    G -.-> LB
-    C -. "config · plugin routes" .-> CFG
-    ADM -. "state" .-> AGG
-    UI --> C
-    UI --> AGG
-    PH --- C
-    SN -. "install" .-> S
-    PR -. "install" .-> PH
-```
+![Detailed Wayhouse architecture: the proxy data path (listener, filters, optional sniffers, router, optional resolver, pool, pump, tunnel client to agent) and its in-process control components, plus the controller with plugin host, aggregator, UI and the sniffers and plugins registries.](img/architecture-detailed.svg)
 
 Blue boxes are the data path (ingress left, egress right); amber boxes are everything off it. Dotted lines are control, config or state flows.
 
