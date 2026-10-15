@@ -66,7 +66,7 @@ flowchart LR
     LB --> B2[Game server B]
     LB -. "WireGuard" .-> AG["wayhouse-agent<br/>(origin side)"] --> B3[Game server C]
 
-    SN[("sniffers repo<br/>signed registry")] -. "install / update" .-> S
+    SN[("sniffers repo<br/>registry")] -. "install / update" .-> S
     C["wayhouse-controller<br/>(config, Raft HA)"] -. "config + plugin routes" .-> W
     PH["Plugin host (WASM)<br/>timers · webhooks · events"] --- C
     PR[("plugins repo<br/>registry")] -. "install" .-> PH

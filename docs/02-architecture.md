@@ -32,7 +32,7 @@ flowchart LR
     clients(["Clients"]) --> proxy
     subgraph proxy["wayhouse (each instance)"]
         direction TB
-        lst["Listener<br/>ACL · limits · rate limit"] --> sn["Sniffers (WASM)<br/>SNI · Minecraft · A2S …"]
+        lst["Listener<br/>ACL · limits · rate limit"] --> sn["Sniffers (WASM)<br/>Minecraft · A2S …"]
         sn --> rt["Router"] --> pl["Pool<br/>LB · health · affinity"]
         tun["Tunnel client<br/>WireGuard"]
         gos["Gossip<br/>backend health"]
