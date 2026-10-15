@@ -501,7 +501,9 @@ rolling update of many pods costs one fetch, not one per event.
 - A pool needs exactly one of `targets:` / `source:`; `source` must point to a
   `backend_sources[].name`. `refresh_interval_sec >= 1`. `dns_srv` needs
   `record`; `consul` / `kubernetes` need `service` (`consul_token_file`, if
-  given, must not be empty); `tunnel` needs `pubkey`
+  given, must not be empty); a Kubernetes `api` (which receives the pod's service-account token) and a
+  `consul_addr` used together with `consul_token_file` must be `https://` or `http://` to a loopback
+  address, with no user info; `tunnel` needs `pubkey`
   (a base64-encoded 32-byte WireGuard key).
 - Every `action.pool` / `action.resolver` must exist.
 - Every listener needs at least one route. There is currently no warning for a

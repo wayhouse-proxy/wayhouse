@@ -73,3 +73,31 @@ fn memory_too_large() {
 fn too_many_globals() {
     rejected(&"(global i32 (i32.const 0))".repeat(10_000), "globals");
 }
+
+#[test]
+fn table_over_the_runtime_cap_is_rejected_before_compile() {
+    // 20k elements used to pass the scan (cap 100k) and fail at instantiation (cap 10k).
+    rejected("(table 20000 funcref)", "table elements");
+}
+
+#[test]
+fn table_cap_follows_the_limits_value() {
+    let m = module("(table 500 funcref)");
+    let host = PluginHost::new(Limits {
+        max_table_elements: 100,
+        ..Limits::default()
+    })
+    .unwrap();
+    let approved = wayhouse_plugin_host::inspect(&m).unwrap().caps;
+    match host.load(&m, &approved) {
+        Err(ModuleError::TooComplex(msg)) => assert!(msg.contains("table elements"), "{msg}"),
+        other => panic!("expected TooComplex, got {:?}", other.err()),
+    }
+}
+
+#[test]
+fn too_many_locals_in_total() {
+    // 100 functions with 600 locals each: under every per-function bound, 60k in total.
+    let f = format!("(func (local {}))", "i32 ".repeat(600));
+    rejected(&f.repeat(100), "total locals");
+}

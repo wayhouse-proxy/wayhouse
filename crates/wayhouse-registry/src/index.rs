@@ -9,6 +9,10 @@ pub const MAX_INDEX_BYTES: usize = 1024 * 1024;
 /// Largest module a registry may list. Equal to `MAX_MODULE_BYTES` in the proxy's
 /// `sniffer_loader.rs` (the source of truth); keep the two in step.
 pub const MAX_MODULE_BYTES: u64 = 8 * 1024 * 1024;
+/// Largest `limits.max_memory_bytes` an index may declare (the proxy's own cap is lower or equal).
+pub const MAX_LIMIT_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
+/// Largest `limits.call_timeout_ms` an index may declare.
+pub const MAX_LIMIT_CALL_TIMEOUT_MS: u64 = 10_000;
 
 /// What a registry serves. Plugins are reserved for the plugin wave.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +90,17 @@ pub enum IndexError {
         field: &'static str,
         url: String,
     },
+    #[error(
+        "sniffer {sniffer:?} {version}: {field} must have a host and no user info, got {url:?}"
+    )]
+    BadUrlHost {
+        sniffer: String,
+        version: String,
+        field: &'static str,
+        url: String,
+    },
+    #[error("sniffer {sniffer:?} {version}: limits.max_memory_bytes must be 1..={MAX_LIMIT_MEMORY_BYTES} and limits.call_timeout_ms 1..={MAX_LIMIT_CALL_TIMEOUT_MS}")]
+    BadLimits { sniffer: String, version: String },
     #[error("sniffer {sniffer:?} {version}: sha256 must be 64 lowercase hex characters")]
     BadSha256 { sniffer: String, version: String },
     #[error("sniffer {sniffer:?} {version}: size {size} is over the {MAX_MODULE_BYTES} byte module limit")]
@@ -178,16 +193,27 @@ impl VersionEntry {
     fn validate(&self, sniffer: &str) -> Result<(), IndexError> {
         let version = self.version.to_string();
         let https = |field: &'static str, url: &str| {
-            if url.starts_with("https://") {
-                Ok(())
-            } else {
-                Err(IndexError::NotHttps {
+            let Some(rest) = url.strip_prefix("https://") else {
+                return Err(IndexError::NotHttps {
                     sniffer: sniffer.to_owned(),
                     version: version.clone(),
                     field,
                     url: url.to_owned(),
-                })
+                });
+            };
+            // Authority is everything up to the first '/', '?' or '#'. Refuse an empty host
+            // and user info; whether the host is a private address is the fetch-time guard's job.
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
+            if authority.contains('@') || host.is_empty() || host == "[]" {
+                return Err(IndexError::BadUrlHost {
+                    sniffer: sniffer.to_owned(),
+                    version: version.clone(),
+                    field,
+                    url: url.to_owned(),
+                });
             }
+            Ok(())
         };
         https("url", &self.url)?;
         if let Some(sig) = &self.signature_url {
@@ -200,6 +226,14 @@ impl VersionEntry {
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         {
             return Err(IndexError::BadSha256 {
+                sniffer: sniffer.to_owned(),
+                version,
+            });
+        }
+        if !(1..=MAX_LIMIT_MEMORY_BYTES).contains(&self.limits.max_memory_bytes)
+            || !(1..=MAX_LIMIT_CALL_TIMEOUT_MS).contains(&self.limits.call_timeout_ms)
+        {
+            return Err(IndexError::BadLimits {
                 sniffer: sniffer.to_owned(),
                 version,
             });
@@ -344,6 +378,76 @@ mod tests {
             parse(&v),
             Err(IndexError::NotHttps { field: "url", .. })
         ));
+    }
+
+    #[test]
+    fn rejects_empty_host_and_user_info() {
+        for url in [
+            "https://",
+            "https:///a.wasm",
+            "https://:443/a.wasm",
+            "https://user:pw@example.com/a.wasm",
+            "https://example.com@evil.example/a.wasm",
+            "https://?x=1",
+        ] {
+            let mut v = example();
+            first_version(&mut v)["url"] = url.into();
+            assert!(
+                matches!(parse(&v), Err(IndexError::BadUrlHost { field: "url", .. })),
+                "{url}"
+            );
+        }
+        let mut v = example();
+        first_version(&mut v)["signature_url"] = "https://u@example.com/a.minisig".into();
+        assert!(matches!(
+            parse(&v),
+            Err(IndexError::BadUrlHost {
+                field: "signature_url",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn accepts_a_port_and_an_ipv6_host() {
+        for url in [
+            "https://example.com:8443/a.wasm",
+            "https://[::1]:8443/a.wasm",
+        ] {
+            let mut v = example();
+            first_version(&mut v)["url"] = url.into();
+            parse(&v).unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_out_of_range_limits() {
+        for (mem, ms) in [
+            (0u64, 50u64),
+            (u64::MAX, 50),
+            (MAX_LIMIT_MEMORY_BYTES + 1, 50),
+            (1_048_576, 0),
+            (1_048_576, u64::MAX),
+            (1_048_576, MAX_LIMIT_CALL_TIMEOUT_MS + 1),
+        ] {
+            let mut v = example();
+            first_version(&mut v)["limits"] =
+                serde_json::json!({"max_memory_bytes": mem, "call_timeout_ms": ms});
+            assert!(
+                matches!(parse(&v), Err(IndexError::BadLimits { .. })),
+                "{mem} {ms}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_limits_at_the_caps() {
+        let mut v = example();
+        first_version(&mut v)["limits"] = serde_json::json!({
+            "max_memory_bytes": MAX_LIMIT_MEMORY_BYTES,
+            "call_timeout_ms": MAX_LIMIT_CALL_TIMEOUT_MS
+        });
+        parse(&v).unwrap();
     }
 
     #[test]

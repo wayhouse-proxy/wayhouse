@@ -188,7 +188,12 @@ impl PluginHost {
     pub fn load(&self, bytes: &[u8], approved: &Capabilities) -> Result<Plugin, ModuleError> {
         let info = inspect(bytes)?;
         info.caps.check_within(approved)?;
-        crate::bounds::check(bytes, &self.limits.bounds)?;
+        // The scan must not admit a table the runtime cap would then refuse at instantiation.
+        let mut bounds = self.limits.bounds.clone();
+        bounds.max_table_elements = bounds
+            .max_table_elements
+            .min(self.limits.max_table_elements as u64);
+        crate::bounds::check(bytes, &bounds)?;
         let module =
             Module::new(&self.engine, bytes).map_err(|e| ModuleError::Compile(e.to_string()))?;
         for i in module.imports() {
