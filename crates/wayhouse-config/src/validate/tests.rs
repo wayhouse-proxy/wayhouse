@@ -2295,3 +2295,70 @@ fn warns_on_a_short_idle_timeout_behind_a_handshake_only_sniffer() {
     let other = handshake_listener(30, gated).replace("pool: quic", "pool: other");
     assert!(parse_str(&other).unwrap().warnings().is_empty());
 }
+
+fn source_yaml(src: &str) -> String {
+    format!(
+        r#"
+backend_sources:
+  - {src}
+pools:
+  - {{ name: p, source: s }}
+listeners:
+  - {{ name: l, bind: "0.0.0.0:7777", pool: p }}
+"#
+    )
+}
+
+#[test]
+fn kubernetes_api_must_be_https_or_loopback() {
+    let k = |api: &str| {
+        parse_str(&source_yaml(&format!(
+            "{{ name: s, type: kubernetes, service: g, api: \"{api}\" }}"
+        )))
+    };
+    for ok in [
+        "https://kubernetes.default.svc",
+        "https://10.0.0.1:6443",
+        "http://127.0.0.1:8001",
+        "http://localhost:8001",
+        "http://[::1]:8001",
+    ] {
+        k(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
+    }
+    for bad in [
+        "http://kubernetes.default.svc",
+        "http://10.0.0.1:8001",
+        "ftp://127.0.0.1",
+        "http://127.0.0.1@evil.example/",
+        "http://localhost.evil.example",
+        "https://",
+        "https://user:pw@host",
+    ] {
+        let err = k(bad).unwrap_err().to_string();
+        assert!(err.contains("api"), "{bad}: {err}");
+    }
+}
+
+#[test]
+fn consul_addr_must_be_https_or_loopback_when_a_token_is_sent() {
+    let c = |addr: &str, token: bool| {
+        let tok = if token {
+            ", consul_token_file: /run/secrets/c"
+        } else {
+            ""
+        };
+        parse_str(&source_yaml(&format!(
+            "{{ name: s, type: consul, service: g, consul_addr: \"{addr}\"{tok} }}"
+        )))
+    };
+    c("https://consul.internal:8501", true).unwrap();
+    c("http://127.0.0.1:8500", true).unwrap();
+    c("http://localhost:8500", true).unwrap();
+    // No token leaves the host, so plain http to a remote Consul stays allowed.
+    c("http://consul.internal:8500", false).unwrap();
+    let err = c("http://consul.internal:8500", true)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("consul_addr"), "{err}");
+    assert!(c("http://127.0.0.1@evil.example", true).is_err());
+}

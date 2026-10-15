@@ -235,7 +235,7 @@ leader term (automation hooks spec, "Commit rule").
 
 Before a module is compiled, `bounds::check` walks it with `wasmparser` and rejects
 structure out of proportion to a real plugin (`ModuleError::TooComplex`, naming the
-bound): functions, types, locals per function, block nesting depth, declared table and
+bound): functions, types, locals per function (1000) and in total (50 000), block nesting depth, declared table (at most `Limits::max_table_elements`, 10 000) and
 memory sizes, globals, imports, exports and total code bytes (`Bounds`, set through
 `Limits::bounds`). `CompilePool` runs `PluginHost::load` on a fixed set of worker threads
 behind a bounded queue: a full queue answers `Busy` at once and a slow compile answers

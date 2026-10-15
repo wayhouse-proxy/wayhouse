@@ -15,6 +15,8 @@ pub struct Bounds {
     pub max_functions: u32,
     pub max_types: u32,
     pub max_locals_per_function: u32,
+    /// Sum of locals over all functions; compile time grows with it.
+    pub max_total_locals: u64,
     pub max_nesting_depth: u32,
     pub max_table_elements: u64,
     pub max_memory_pages: u64,
@@ -30,8 +32,9 @@ impl Default for Bounds {
             max_functions: 5_000,
             max_types: 1_000,
             max_locals_per_function: 1_000,
+            max_total_locals: 50_000,
             max_nesting_depth: 200,
-            max_table_elements: 100_000,
+            max_table_elements: 10_000,
             max_memory_pages: 1_024,
             max_globals: 1_000,
             max_imports: 16,
@@ -57,6 +60,7 @@ fn malformed(e: &wasmparser::BinaryReaderError) -> ModuleError {
 pub fn check(bytes: &[u8], bounds: &Bounds) -> Result<(), ModuleError> {
     let mut functions: u64 = 0;
     let mut code_bytes: usize = 0;
+    let mut total_locals: u64 = 0;
     for payload in Parser::new(0).parse_all(bytes) {
         match payload.map_err(|e| malformed(&e))? {
             Payload::TypeSection(r) if r.count() > bounds.max_types => {
@@ -117,6 +121,14 @@ pub fn check(bytes: &[u8], bounds: &Bounds) -> Result<(), ModuleError> {
                             bounds.max_locals_per_function,
                         ));
                     }
+                }
+                total_locals += locals;
+                if total_locals > bounds.max_total_locals {
+                    return Err(too_complex(
+                        "total locals",
+                        total_locals,
+                        bounds.max_total_locals,
+                    ));
                 }
                 let mut depth: u32 = 0;
                 for op in body.get_operators_reader().map_err(|e| malformed(&e))? {
