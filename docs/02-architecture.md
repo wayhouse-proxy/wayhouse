@@ -8,50 +8,64 @@ flowchart LR
     backends(["Game servers<br/>private network"])
 
     subgraph proxy["Proxy instance"]
-        direction LR
+        subgraph control["Control plane (off the hot path)"]
+            ctl["Config loader · admin API · discovery adapter<br/>health checker · metrics / log exporter"]
+        end
         subgraph data["Data plane (hot path)"]
-            direction LR
             listener["Listener<br/>accept · ACL · limits"] --> sniff["Sniffers (optional)<br/>peek first bytes"] --> router["Router<br/>match + resolver"]
             router --> pool["Upstream pool<br/>LB + affinity"]
             pool --> pump["Connection / session pump<br/>splice / io"]
         end
-        control["Control plane<br/>config loader · admin API · discovery adapter<br/>health checker · metrics / log exporter"]
-        control -. "publishes immutable snapshot<br/>(read lock-free)" .-> data
     end
 
     clients --> listener
     pump --> backends
+    sniff ~~~ ctl
+    ctl -. "publishes immutable snapshot<br/>(read lock-free)" .- router
 ```
 
 ### Fleet, sniffers and plugins
 
-The same instance in context. Sniffers sit on the data path; plugins live in the controller.
+The same instance in context. Traffic enters on the left and leaves on the right; everything off the data path is below it. Sniffers sit on the data path; plugins live in the controller.
 
 ```mermaid
 flowchart LR
-    clients(["Clients"]) --> proxy
-    subgraph proxy["wayhouse (each instance)"]
-        direction TB
+    subgraph ctl["Control plane (off the data path)"]
+        direction LR
+        cfg["Config loader · admin API<br/>discovery · health checks"]
+        gos["Gossip<br/>backend health"]
+        ctrl["wayhouse-controller (Raft HA)<br/>config + intent log<br/>backend / proxy peer registries"]
+        ph["Plugin host (WASM)<br/>timers · webhooks · events · routes"]
+        agg["wayhouse-aggregator"]
+        ui["wayhouse-ui"]
+        sreg[("sniffers registry")]
+        preg[("plugins registry")]
+    end
+
+    clients(["Clients"]) --> lst
+
+    subgraph data["Data plane (hot path, one proxy instance)"]
         lst["Listener<br/>ACL · limits · rate limit"] --> sn["Sniffers (optional, WASM)<br/>Minecraft · A2S …"]
         sn --> rt["Router"] --> pl["Pool<br/>LB · health · affinity"]
-        tun["Tunnel client<br/>WireGuard"]
-        gos["Gossip<br/>backend health"]
+        pl --> tun["Tunnel client<br/>WireGuard"]
     end
+
     pl --> be(["Backends"])
     tun -. "encrypted transport" .-> agent["wayhouse-agent"] --> be
-    subgraph ctl["wayhouse-controller (Raft HA)"]
-        direction TB
-        cfg["Config + intent log"]
-        reg["Backend / proxy peer registries"]
-        ph["Plugin host (WASM)<br/>timers · webhooks · events · routes"]
-    end
-    ctl -. "config, plugin routes, peers (subscribe)" .-> proxy
-    agent -. "register" .-> reg
-    agg["wayhouse-aggregator"] <-. state .- proxy
-    ui["wayhouse-ui"] --> ctl
+
+    sn ~~~ cfg
+    rt ~~~ gos
+    pl ~~~ ctrl
+    cfg -. "immutable snapshot" .- rt
+    gos -. "health votes" .- pl
+    ctrl -. "config, plugin routes, peers" .- cfg
+    ph --- ctrl
+    agent -. "register" .- ctrl
+    cfg -. "state" .- agg
+    ui --> ctrl
     ui --> agg
-    sreg[("sniffers registry")] -. install .-> proxy
-    preg[("plugins registry")] -. install .-> ph
+    sreg -. install .- sn
+    preg -. install .- ph
 ```
 
 ## Data plane / control plane separation

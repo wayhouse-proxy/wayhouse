@@ -53,28 +53,42 @@ examples) or from an external routing service you control.
 
 ```mermaid
 flowchart LR
-    P[Players] -->|TCP / UDP| L
-
-    subgraph W["wayhouse (proxy)"]
-        direction TB
-        L["Listener<br/>ACL · limits · rate limit"] --> S["Sniffers (optional)<br/>(WASM, in-process)"]
-        S --> R["Router<br/>hostname / hint match"]
-        R --> LB["Pool<br/>LB · health · affinity"]
-        T["Tunnel client<br/>(WireGuard, optional)"]
+    subgraph CP["Control plane (off the data path)"]
+        CL["Config loader · admin API<br/>discovery · health checks"]
         G["Gossip<br/>(backend health, optional)"]
+        C["wayhouse-controller<br/>(config, Raft HA)"]
+        PH["Plugin host (WASM)<br/>timers · webhooks · events"]
+        A["wayhouse-aggregator<br/>(optional)"]
+        U["wayhouse-ui<br/>(admin GUI)"]
+        SN[("sniffers repo")]
+        PR[("plugins repo")]
     end
 
-    LB --> B1[Game server A]
-    LB --> B2[Game server B]
-    LB -. "WireGuard" .-> AG["wayhouse-agent<br/>(origin side)"] --> B3[Game server C]
+    P(["Players<br/>TCP / UDP"]) --> L
 
-    SN[("sniffers repo<br/>registry")] -. "install / update" .-> S
-    C["wayhouse-controller<br/>(config, Raft HA)"] -. "config + plugin routes" .-> W
-    PH["Plugin host (WASM)<br/>timers · webhooks · events"] --- C
-    PR[("plugins repo<br/>registry")] -. "install" .-> PH
-    W -. state .-> A["wayhouse-aggregator<br/>(optional)"]
-    U["wayhouse-ui<br/>(admin GUI)"] --> C
+    subgraph DP["Data plane (hot path)"]
+        L["Listener<br/>ACL · limits · rate limit"] --> S["Sniffers (optional)<br/>WASM, in-process"]
+        S --> R["Router<br/>hostname / hint match"]
+        R --> LB["Pool<br/>LB · health · affinity"]
+        LB --> T["Tunnel client<br/>(WireGuard, optional)"]
+    end
+
+    LB --> B1(["Game server A"])
+    LB --> B2(["Game server B"])
+    T -. "WireGuard" .-> AG["wayhouse-agent<br/>(origin side)"] --> B3(["Game server C"])
+
+    S ~~~ CL
+    R ~~~ G
+    LB ~~~ C
+    CL -. "snapshot" .- R
+    G -. "health votes" .- LB
+    C -. "config + plugin routes" .- CL
+    PH --- C
+    CL -. "state" .- A
+    U --> C
     U --> A
+    SN -. "install / update" .- S
+    PR -. "install" .- PH
 ```
 
 **Sniffers** are small WASM modules that run on the proxy's data path and read the first
