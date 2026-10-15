@@ -4,11 +4,13 @@
 >
 > This project is under active development and is **definitely not finished yet**.
 >
-> - The first release, `0.1.0`, exists, but the container images on GHCR are **private** for now
+> - Tagged releases exist, but the container images on GHCR are **private** for now
 >   (see [Pulling private images](deploy/README.md#pulling-private-images)). The major version
 >   is 0, so breaking changes land in minor versions.
 > - The configuration format, CLI flags, admin/fleet HTTP APIs and on-disk formats
->   **can change at any time without notice or a migration path**.
+>   **can change in any minor release, with no compatibility guarantee**. Each release's
+>   upgrade steps are in [docs/upgrading.md](docs/upgrading.md), but the rolling-upgrade
+>   paths there are only partly tested.
 > - Everything below is covered by automated tests, but **none of it has run in
 >   production**. Parts of the deployment story (the Docker images on a developer
 >   machine, the Kubernetes manifests on a real cluster) have only been exercised in CI.
