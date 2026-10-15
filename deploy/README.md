@@ -39,7 +39,7 @@ HEAD, and `release.yml` the tagged commit; an `unknown` commit fails
 
 **Releasing.** `release.yml` publishes the images when a `v<version>` tag is pushed; the steps and the branching models are in [`RELEASING.md`](../RELEASING.md).
 
-**First release.** The release path has never run end to end (the `publish` job only runs on a tag), so make the first tag a pre-release such as `v0.1.0-rc.1`: it publishes the images but never moves `latest`.
+**Pre-releases.** A pre-release tag such as `v0.1.0-rc.1` publishes the images but never moves `latest`.
 
 **Multi-arch.** `ghcr.io/<owner>/<image>:<version>` (and `:latest` for a non-pre-release) is
 a manifest list for `linux/amd64` and `linux/arm64`; `docker pull` picks the host's. The
