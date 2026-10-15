@@ -13,6 +13,7 @@
 //!   watches them, so a pod change lands in a fetch immediately; the polling
 //!   interval remains as the resync safety net.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -304,6 +305,8 @@ pub struct ConsulSource {
     /// Permit stored by `fetch` when it sets `index`; wakes a `changed()` that
     /// was waiting for one.
     index_ready: Notify,
+    /// Previous addresses of instances whose lookup failed this cycle.
+    carry: ResolveCarry,
 }
 
 /// How long Consul may hold one blocking query open (its default, and ten
@@ -363,6 +366,7 @@ impl ConsulSource {
                 .context("build Consul watch HTTP client")?,
             index: Mutex::new(None),
             index_ready: Notify::new(),
+            carry: ResolveCarry::default(),
         })
     }
 
@@ -522,8 +526,7 @@ impl BackendSource for ConsulSource {
             })?;
         self.set_index(index);
 
-        let mut out = Vec::new();
-        let mut failed = None;
+        let mut results = Vec::with_capacity(entries.len());
         for e in entries {
             let host = if e.service.address.is_empty() {
                 e.node.address
@@ -531,19 +534,16 @@ impl BackendSource for ConsulSource {
                 e.service.address
             };
             // One bad registration must not freeze the pool at its last known
-            // good set; only "nothing resolved at all" fails the fetch.
-            match resolve_host_port(&host, e.service.port).await {
-                Ok(addrs) => out.extend(addrs),
-                Err(err) => {
-                    tracing::warn!(%host, error = %err, "Consul instance does not resolve, skipping");
-                    failed = Some(err);
-                }
+            // good set, nor drop its backend for a refresh on a transient
+            // failure: `carry` keeps the instance's previous address for one
+            // cycle, and only "nothing resolved at all" fails the fetch.
+            let res = resolve_host_port(&host, e.service.port).await;
+            if let Err(err) = &res {
+                tracing::warn!(%host, error = %err, "Consul instance does not resolve");
             }
+            results.push((format!("{host}:{}", e.service.port), res));
         }
-        match failed {
-            Some(err) if out.is_empty() => Err(err),
-            _ => Ok(out),
-        }
+        self.carry.apply(results)
     }
 }
 
@@ -915,6 +915,54 @@ impl BackendSource for KubernetesSource {
             }
         }
         Ok(out)
+    }
+}
+
+/// Remembers the addresses each discovered instance resolved to, so an instance
+/// whose lookup fails keeps its previous addresses for one cycle instead of
+/// dropping out of the pool for a refresh on a transient error. A second failure
+/// in a row drops it; "nothing resolved at all" stays an error (the pool keeps
+/// its last-known-good set).
+#[derive(Default)]
+pub(crate) struct ResolveCarry {
+    /// instance key -> (addresses, whether they were carried over last cycle)
+    prev: Mutex<HashMap<String, (Vec<SocketAddr>, bool)>>,
+}
+
+impl ResolveCarry {
+    /// Merges one cycle's per-instance lookups. Returns the combined addresses,
+    /// or the last error when no instance contributed any.
+    pub(crate) fn apply<E>(
+        &self,
+        results: Vec<(String, Result<Vec<SocketAddr>, E>)>,
+    ) -> Result<Vec<SocketAddr>, E> {
+        let mut prev = self.prev.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut next = HashMap::with_capacity(results.len());
+        let mut out = Vec::new();
+        let mut failed = None;
+        for (key, res) in results {
+            match res {
+                Ok(addrs) => {
+                    out.extend(addrs.iter().copied());
+                    next.insert(key, (addrs, false));
+                }
+                Err(e) => {
+                    match prev.remove(&key) {
+                        Some((addrs, false)) => {
+                            out.extend(addrs.iter().copied());
+                            next.insert(key, (addrs, true));
+                        }
+                        _ => {}
+                    }
+                    failed = Some(e);
+                }
+            }
+        }
+        *prev = next;
+        match failed {
+            Some(e) if out.is_empty() => Err(e),
+            _ => Ok(out),
+        }
     }
 }
 
@@ -1347,6 +1395,58 @@ mod tests {
             .await
             .expect("a renewed version is watched again");
         assert_eq!(server.watch_requests().len(), 2);
+    }
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn a_failed_instance_keeps_its_previous_address_for_one_cycle() {
+        let carry = ResolveCarry::default();
+        let ok = |a: &str| Ok::<_, String>(vec![addr(a)]);
+        let first = carry.apply(vec![
+            ("a".into(), ok("10.0.0.1:1")),
+            ("b".into(), ok("10.0.0.2:1")),
+        ]);
+        assert_eq!(first.unwrap(), [addr("10.0.0.1:1"), addr("10.0.0.2:1")]);
+        // `b` fails once: its previous address stays.
+        let second = carry.apply(vec![
+            ("a".into(), ok("10.0.0.1:1")),
+            ("b".into(), Err("timeout".into())),
+        ]);
+        assert_eq!(second.unwrap(), [addr("10.0.0.1:1"), addr("10.0.0.2:1")]);
+        // A second failure in a row drops it.
+        let third = carry.apply(vec![
+            ("a".into(), ok("10.0.0.1:1")),
+            ("b".into(), Err("timeout".into())),
+        ]);
+        assert_eq!(third.unwrap(), [addr("10.0.0.1:1")]);
+        // A recovery re-arms the carry.
+        carry
+            .apply(vec![
+                ("a".into(), ok("10.0.0.1:1")),
+                ("b".into(), ok("10.0.0.3:1")),
+            ])
+            .unwrap();
+        let fifth = carry.apply(vec![
+            ("a".into(), ok("10.0.0.1:1")),
+            ("b".into(), Err("timeout".into())),
+        ]);
+        assert_eq!(fifth.unwrap(), [addr("10.0.0.1:1"), addr("10.0.0.3:1")]);
+    }
+
+    #[test]
+    fn an_instance_that_never_resolved_is_skipped_and_nothing_resolved_is_an_error() {
+        let carry = ResolveCarry::default();
+        let got = carry.apply(vec![
+            ("a".into(), Ok(vec![addr("10.0.0.1:1")])),
+            ("new".into(), Err("nxdomain".to_string())),
+        ]);
+        assert_eq!(got.unwrap(), [addr("10.0.0.1:1")]);
+        let fresh = ResolveCarry::default();
+        let got = fresh.apply::<String>(vec![("x".into(), Err("nxdomain".into()))]);
+        assert_eq!(got.unwrap_err(), "nxdomain");
     }
 
     const CONSUL_BODY: &str =

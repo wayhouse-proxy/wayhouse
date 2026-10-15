@@ -2139,6 +2139,61 @@ listeners:
 }
 
 #[test]
+fn timeouts_beyond_one_day_are_rejected() {
+    let pool = |field: &str, v: &str| {
+        format!(
+            r#"
+pools:
+  - name: p
+    targets: ["127.0.0.1:1"]
+    {field}: {v}
+listeners:
+  - name: l
+    bind: "0.0.0.0:7777"
+    pool: p
+"#
+        )
+    };
+    for (field, day) in [
+        ("idle_timeout_sec", 86_400),
+        ("connect_timeout_ms", 86_400_000),
+    ] {
+        assert!(parse_str(&pool(field, &day.to_string())).is_ok(), "{field}");
+        for v in [day + 1, u64::MAX] {
+            let err = parse_str(&pool(field, &v.to_string()))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(field) && err.contains("one day"), "{err}");
+        }
+    }
+    let hc = |field: &str, v: u64| {
+        parse_str(&format!(
+            r#"
+pools:
+  - name: p
+    targets: ["127.0.0.1:1"]
+    health_check: {{ {field}: {v} }}
+listeners:
+  - name: l
+    bind: "0.0.0.0:7777"
+    pool: p
+"#
+        ))
+    };
+    assert!(hc("interval_sec", 86_401)
+        .unwrap_err()
+        .to_string()
+        .contains("interval_sec"));
+    assert!(hc("timeout_ms", 86_400_001)
+        .unwrap_err()
+        .to_string()
+        .contains("timeout_ms"));
+    let grace = format!("settings:\n  shutdown_grace_sec: {}\n{MINIMAL}", u64::MAX);
+    let err = parse_str(&grace).unwrap_err().to_string();
+    assert!(err.contains("shutdown_grace_sec"), "{err}");
+}
+
+#[test]
 fn duplicate_pool_targets_are_rejected() {
     let inline = r#"
 pools:
