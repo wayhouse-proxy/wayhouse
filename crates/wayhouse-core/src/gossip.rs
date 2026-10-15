@@ -153,11 +153,14 @@ impl BroadcastMerger {
     /// Counts a dropped register and warns (rate-limited) about its origin.
     fn note_drop(&mut self, origin: SocketAddr, reason: &'static str) {
         metrics::counter!(m::GOSSIP_REGISTERS_DROPPED_TOTAL, "reason" => reason).increment(1);
-        if self.warn_due(origin, wall_ms()) {
+        // `non_member` also happens in normal churn (foca re-delivers a departed
+        // origin's broadcast), so only `future` is worth a warning. The metric
+        // counts both.
+        if reason == "future" && self.warn_due(origin, wall_ms()) {
             tracing::warn!(
                 %origin, reason,
                 "gossip: dropping health registers from this origin; its votes do not count \
-                 (check the clock on that instance if the reason is `future`)"
+                 (check the clock on that instance)"
             );
         }
     }
@@ -937,8 +940,8 @@ mod tests {
         }
     }
 
-    /// #305: a forged `changed_at` far ahead of the wall clock would pin the
-    /// victim origin's register and suppress its real votes for ever.
+    /// #305: drop warnings are rate limited to one a minute per origin, and the
+    /// table of warned origins is bounded.
     #[test]
     fn dropped_registers_warn_once_a_minute_per_origin() {
         let (mut m, _) = merger();
@@ -968,6 +971,8 @@ mod tests {
         assert!(m.warn_due(c, full_at + DROP_WARN_INTERVAL_MS));
     }
 
+    /// #305: a forged `changed_at` far ahead of the wall clock would pin the
+    /// victim origin's register and suppress its real votes for ever.
     #[test]
     fn a_register_far_in_the_future_is_dropped() {
         let (mut m, domain) = merger();

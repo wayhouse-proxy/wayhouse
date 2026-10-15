@@ -18,6 +18,9 @@ pub enum Kind {
     Plugin,
 }
 
+/// `name` is a display name (the official index is "wayhouse official
+/// sniffers"), not an identifier, so the lowercase rule that applies to
+/// [`SnifferEntry`] names is not applied to it (#336).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Index {
     pub schema: u32,
@@ -58,6 +61,8 @@ pub struct Limits {
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
+/// Index `name` is a display name and is not validated like a sniffer name
+/// ([`IndexError::BadName`] covers sniffer entries only).
 pub enum IndexError {
     #[error("index is {0} bytes, over the {MAX_INDEX_BYTES} byte limit")]
     TooLarge(usize),

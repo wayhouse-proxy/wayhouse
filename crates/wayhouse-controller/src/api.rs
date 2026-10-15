@@ -1056,8 +1056,19 @@ async fn subscribe_worker(
 ) {
     let group = group.as_deref();
     let mut last_sent = since;
+    let mut scanned = since;
 
-    if !catch_up(&store, &stage, group, max_schema, &mut last_sent, &tx).await {
+    if !catch_up(
+        &store,
+        &stage,
+        group,
+        max_schema,
+        &mut last_sent,
+        &mut scanned,
+        &tx,
+    )
+    .await
+    {
         return;
     }
 
@@ -1069,13 +1080,33 @@ async fn subscribe_worker(
             // snapshot install wakes once, for its newest revision, and the
             // ones before it must still be sent.
             Ok(_) => {
-                if !catch_up(&store, &stage, group, max_schema, &mut last_sent, &tx).await {
+                if !catch_up(
+                    &store,
+                    &stage,
+                    group,
+                    max_schema,
+                    &mut last_sent,
+                    &mut scanned,
+                    &tx,
+                )
+                .await
+                {
                     return;
                 }
             }
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
                 tracing::warn!(skipped, "subscriber lagged; replaying from the store");
-                if !catch_up(&store, &stage, group, max_schema, &mut last_sent, &tx).await {
+                if !catch_up(
+                    &store,
+                    &stage,
+                    group,
+                    max_schema,
+                    &mut last_sent,
+                    &mut scanned,
+                    &tx,
+                )
+                .await
+                {
                     return;
                 }
             }
@@ -1094,17 +1125,24 @@ async fn catch_up(
     group: Option<&str>,
     max_schema: u32,
     last_sent: &mut u64,
+    scanned: &mut u64,
     tx: &mpsc::Sender<(u64, RevisionBytes)>,
 ) -> bool {
-    let revisions = match store.revisions_after(*last_sent) {
+    // `scanned` is the highest revision the subscriber will never be sent (too new a schema)
+    // with nothing still-undecided before it, so the next pass starts after it instead of
+    // rescanning those revisions.
+    let from = (*last_sent).max(*scanned);
+    let revisions = match store.revisions_after(from) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "store error building the catch-up range");
             return false;
         }
     };
+    let mut settled = true;
     for (revision, bytes) in revisions {
         if !is_visible(stage, revision, group) {
+            settled = false;
             continue;
         }
         let needed =
@@ -1116,6 +1154,9 @@ async fn catch_up(
                 max_schema,
                 "not sending a revision newer than the subscriber's config schema"
             );
+            if settled {
+                *scanned = revision;
+            }
             continue;
         }
         if tx.send((revision, bytes)).await.is_err() {

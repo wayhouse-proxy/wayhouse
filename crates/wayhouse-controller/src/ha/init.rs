@@ -200,7 +200,7 @@ fn authorized(ha: &HaHandle, req: reqwest::RequestBuilder) -> reqwest::RequestBu
     }
 }
 
-async fn whoami(ha: &HaHandle, addr: &str) -> Result<Whoami, String> {
+async fn whoami(ha: &HaHandle, addr: &str) -> Result<Whoami, super::members::WhoamiError> {
     super::members::fetch_whoami(&ha.forward, ha.ha_token.as_deref(), addr).await
 }
 
