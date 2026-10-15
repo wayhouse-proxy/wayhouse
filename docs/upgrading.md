@@ -99,7 +99,9 @@ is applied, so a 0.2.0 node can reject an entry that a 0.1.0 node accepted, and 
 node replaying an old log does the same; the replicas would then hold different registry
 contents. Before the first replica is upgraded, list `GET /peers` and `GET /proxy-peers` on
 the tier and `DELETE` every extra name that shares a public key with another, keeping the
-one that is in use.
+one that is in use. Also rename every name outside `[A-Za-z0-9._-]`, longer than 64 bytes, or
+equal to `subscribe`: since 0.2.0 a registration with such a name is refused (`400`), so a 0.1.0 entry
+under one would be rejected when a 0.2.0 replica applies it.
 
 This sequence is **not covered by an automated test** (the fleet tests do not run a
 rolling Raft upgrade); treat the first use in your environment as a rehearsal. A write
