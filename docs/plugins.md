@@ -176,8 +176,8 @@ call needs every member to run a build that supports it.
 1. A per-source rate limit (IPv6 by /64) runs first, valid token or not: `429`.
    The source is the TCP peer address. Callers behind one load balancer or NAT therefore
    share a single bucket, and the limit applies to all of them together; there is no
-   trusted-proxy header. Put the webhook listener where callers reach it directly, or
-   rely on the per-install limit in step 3.
+   trusted-proxy header. Put the webhook listener where callers reach it directly; there is
+   no setting to relax the source limit.
 2. The token is checked in constant time, against a dummy hash when the install is unknown,
    disabled or has no webhook. Every failure is the same `401`.
 3. A per-install rate limit: `429`.
