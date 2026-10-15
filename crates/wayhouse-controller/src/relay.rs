@@ -44,6 +44,30 @@ pub fn parent_revision_regressed(cursor: u64, revision: u64) -> bool {
     revision < cursor
 }
 
+/// Remembers whether the parent is currently below the relay cursor, so the
+/// regression warning fires once per episode instead of once per event while
+/// the parent catches up. One per relay stream (config, intent).
+#[derive(Default)]
+pub struct RegressionLatch(std::sync::atomic::AtomicBool);
+
+impl RegressionLatch {
+    pub const fn new() -> Self {
+        Self(std::sync::atomic::AtomicBool::new(false))
+    }
+
+    /// Feeds the latest check; true only on the first regressed event after a
+    /// good one (or after startup).
+    pub fn should_warn(&self, regressed: bool) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        if regressed {
+            !self.0.swap(true, Relaxed)
+        } else {
+            self.0.store(false, Relaxed);
+            false
+        }
+    }
+}
+
 /// Whether an SSE block carries a `data:` line. A block that does but does not
 /// parse into a revision (an op this build does not know, a malformed body) is
 /// skipped by the relay and logged by the caller; keep-alive comments are not.
@@ -81,6 +105,17 @@ mod tests {
         assert!(is_data_event("id: 4\ndata: x"));
         assert!(!is_data_event(": keep-alive"));
         assert!(!is_data_event(""));
+    }
+
+    #[test]
+    fn a_regression_warns_once_per_episode() {
+        let latch = RegressionLatch::default();
+        assert!(!latch.should_warn(false));
+        assert!(latch.should_warn(true), "first event below the cursor");
+        assert!(!latch.should_warn(true));
+        assert!(!latch.should_warn(true));
+        assert!(!latch.should_warn(false), "the parent passed the cursor");
+        assert!(latch.should_warn(true), "a new episode warns again");
     }
 
     #[test]

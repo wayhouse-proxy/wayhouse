@@ -67,7 +67,7 @@ pub enum IndexError {
     UnsupportedSchema(u32),
     #[error("registry kind {0:?} is not supported yet (only sniffer registries)")]
     UnsupportedKind(Kind),
-    #[error("invalid sniffer name {0:?}: use only letters, digits, '-' and '_'")]
+    #[error("invalid sniffer name {0:?}: use only lowercase letters, digits, '-' and '_'")]
     BadName(String),
     #[error("sniffer {0:?} is listed twice")]
     DuplicateSniffer(String),
@@ -389,6 +389,12 @@ mod tests {
             v["sniffers"][0]["name"] = bad.into();
             assert!(matches!(parse(&v), Err(IndexError::BadName(_))), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_bad_name_message_says_lowercase() {
+        let msg = IndexError::BadName("Minecraft".into()).to_string();
+        assert!(msg.contains("lowercase letters"), "{msg}");
     }
 
     #[test]

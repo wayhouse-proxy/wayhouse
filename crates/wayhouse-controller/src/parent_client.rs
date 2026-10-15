@@ -212,6 +212,9 @@ fn parse_sse_event(event: &str) -> Option<SseRevision> {
     })
 }
 
+/// Whether the parent has been seen below the relay cursor, so the warning fires once per episode.
+static REGRESSION: crate::relay::RegressionLatch = crate::relay::RegressionLatch::new();
+
 /// Lands one parsed revision in this tier's own store via
 /// [`AppState::relay_revision`] — bypassing the `slave` write gate on
 /// purpose, since this *is* the sanctioned way a slave gets a new revision.
@@ -230,7 +233,8 @@ async fn apply_sse_event(event: &str, state: &AppState) -> Result<Option<u64>, R
         return Ok(None);
     };
     if let Ok(cursor) = state.relay.get() {
-        if crate::relay::parent_revision_regressed(cursor, revision) {
+        let regressed = crate::relay::parent_revision_regressed(cursor, revision);
+        if REGRESSION.should_warn(regressed) {
             tracing::warn!(
                 parent_revision = revision,
                 cursor,
