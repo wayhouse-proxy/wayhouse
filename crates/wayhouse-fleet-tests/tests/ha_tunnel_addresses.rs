@@ -487,10 +487,14 @@ async fn a_fourth_node_joins_then_the_leader_is_removed() -> Result<()> {
 async fn put_moves_a_member_to_a_new_port() -> Result<()> {
     let mut c = cluster().await?;
     c.register(&c.bases[0], "o1").await?;
-    // Never the leader's slot: node 3 is simply the one that moves.
-    c.procs[2].take().unwrap().kill().await?;
+    // Node 1 stays up to take the PUT. Which node leads depends on startup
+    // timing, so never kill the leader (#257): the PUT would land mid-election
+    // and answer 503 "no leader". Move node 3, or node 2 when node 3 leads.
+    let moved_id = if c.leader().await? == 3 { 2 } else { 3 };
+    let slot = (moved_id - 1) as usize;
+    c.procs[slot].take().unwrap().kill().await?;
     let new_port = free_port()?;
-    let _moved = spawn_joiner(c._dirs[2].path(), 3, new_port)?;
+    let _moved = spawn_joiner(c._dirs[slot].path(), moved_id, new_port)?;
     let new_base = format!("http://127.0.0.1:{new_port}");
     wait_http_up(
         &format!("{new_base}/healthz"),
@@ -500,7 +504,7 @@ async fn put_moves_a_member_to_a_new_port() -> Result<()> {
     c.member_change(
         reqwest::Method::PUT,
         &c.bases[0],
-        "/admin/ha/members/3",
+        &format!("/admin/ha/members/{moved_id}"),
         json!({"addr": format!("127.0.0.1:{new_port}")}),
     )
     .await?;
@@ -508,7 +512,7 @@ async fn put_moves_a_member_to_a_new_port() -> Result<()> {
     c.served(
         &new_base,
         "o2",
-        "node 3 to receive registrations at its new port",
+        &format!("node {moved_id} to receive registrations at its new port"),
     )
     .await
 }
