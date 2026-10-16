@@ -1,0 +1,14 @@
+[book]
+title = "wayhouse documentation"
+description = "Game-agnostic reverse proxy for game servers"
+src = "../docs"
+language = "en"
+
+[build]
+# Under target/ so the repo's .gitignore already covers it.
+build-dir = "../target/site/docs"
+
+[output.html]
+git-repository-url = "https://github.com/wayhouse-proxy/wayhouse"
+edit-url-template = "https://github.com/wayhouse-proxy/wayhouse/edit/main/docs/{path}"
+site-url = "/docs/"

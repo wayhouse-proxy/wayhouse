@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>wayhouse: a reverse proxy for game servers</title>
+  <meta name="description" content="Game-agnostic reverse proxy for game servers, written in Rust. One entry point for TCP and UDP.">
+  <style>
+    :root { --bg: #fff; --fg: #1b1f24; --muted: #59636e; --accent: #0969da; --border: #d1d9e0; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --accent: #4493f8; --border: #3d444d; }
+    }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, sans-serif; }
+    main { max-width: 42rem; margin: 0 auto; padding: 4rem 1rem; }
+    h1 { font-size: 2.25rem; margin: 0 0 .25rem; }
+    .tag { color: var(--muted); font-size: 1.15rem; margin: 0 0 2rem; }
+    a { color: var(--accent); }
+    nav { display: flex; flex-wrap: wrap; gap: .75rem; margin: 2rem 0; }
+    nav a { border: 1px solid var(--border); border-radius: 6px; padding: .4rem .9rem; text-decoration: none; }
+    .wip { border: 1px solid var(--border); border-left: 4px solid #d29922; border-radius: 6px; padding: .75rem 1rem; }
+    img { max-width: 100%; height: auto; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>wayhouse</h1>
+  <p class="tag">A game-agnostic reverse proxy for game servers, written in Rust.</p>
+  <p>
+    One entry point in front of arbitrary game servers. It forwards TCP and UDP traffic to
+    backend instances without knowing the game's protocol, hides backend IPs so the proxy is
+    the only DDoS-exposed point, and can run as a highly available fleet.
+  </p>
+  <nav>
+    <a href="docs/">Documentation</a>
+    <a href="docs/02-architecture.html">Architecture</a>
+    <a href="docs/12-deployment.html">Deployment</a>
+    <a href="https://github.com/wayhouse-proxy/wayhouse">GitHub</a>
+  </nav>
+  <p class="wip">
+    <strong>Work in progress.</strong> Releases exist, but the project is not production-ready
+    and the major version is 0, so breaking changes land in minor versions.
+  </p>
+</main>
+</body>
+</html>
