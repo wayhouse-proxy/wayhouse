@@ -1,0 +1,21 @@
+# Accepted RustSec advisories (cargo audit reads this file from .cargo/).
+# Every entry needs a reason and a way out. No blanket ignores.
+
+[advisories]
+ignore = [
+  # sled 0.34 -> fxhash, instant (via parking_lot 0.11). "Unmaintained"
+  # notices, not vulnerabilities: no known exploit, and sled only opens local
+  # on-disk stores of the controller. Leaves the list when the controller store
+  # moves off sled (tracked in the tech-debt issue for the sled replacement).
+  "RUSTSEC-2025-0057", # fxhash
+  "RUSTSEC-2024-0384", # instant
+
+  # atomic-polyfill 1.0.3 via heapless 0.7 <- postcard, which both
+  # wasmtime/cranelift-codegen and wayhouse-core (gossip) depend on. heapless
+  # only pulls it in for avr and riscv32i targets, so it is not compiled into
+  # any wayhouse target (x86_64, aarch64). cargo-audit applies this ID to every
+  # resolved path. Remove the entry when no path in Cargo.lock contains
+  # atomic-polyfill any more (postcard/heapless bump in both wasmtime and
+  # wayhouse-core).
+  "RUSTSEC-2023-0089", # atomic-polyfill
+]
