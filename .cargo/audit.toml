@@ -10,9 +10,12 @@ ignore = [
   "RUSTSEC-2025-0057", # fxhash
   "RUSTSEC-2024-0384", # instant
 
-  # wasmtime -> cranelift-codegen -> postcard -> heapless 0.7 -> atomic-polyfill.
-  # "Unmaintained", and only used for cranelift's compile-time serialization;
-  # no untrusted input reaches it. Leaves the list when wasmtime/cranelift
-  # bump postcard/heapless.
+  # atomic-polyfill 1.0.3 via heapless 0.7 <- postcard, which both
+  # wasmtime/cranelift-codegen and wayhouse-core (gossip) depend on. heapless
+  # only pulls it in for avr and riscv32i targets, so it is not compiled into
+  # any wayhouse target (x86_64, aarch64). cargo-audit applies this ID to every
+  # resolved path. Remove the entry when no path in Cargo.lock contains
+  # atomic-polyfill any more (postcard/heapless bump in both wasmtime and
+  # wayhouse-core).
   "RUSTSEC-2023-0089", # atomic-polyfill
 ]
