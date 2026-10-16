@@ -11,6 +11,8 @@ One proxy instance in context. Traffic enters on the left and leaves on the righ
 
 Blue boxes are the data path (ingress left, egress right); amber boxes are everything off it. Dotted lines are control, config or state flows.
 
+The immutable snapshot is not tied to one component: it carries the listener definitions with their filters and routes, the pools with their backends and health, and the resolver and discovery settings, so the diagram points it at each of them.
+
 ## Data plane / control plane separation
 
 - **Data plane**: accepts connections, makes the routing decision against an
