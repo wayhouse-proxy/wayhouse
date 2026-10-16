@@ -395,8 +395,8 @@ impl Cluster {
             .await?;
         let status = r.status();
         if !status.is_success() {
-            // A 500 here is a controller bug (#257): the nodes' own output
-            // is the only place its cause shows.
+            // A 500 here is a controller bug (#257), a 503 an election in
+            // progress: the nodes' own output is the only place the cause shows.
             let logs: String = self
                 .procs
                 .iter()
@@ -501,13 +501,25 @@ async fn put_moves_a_member_to_a_new_port() -> Result<()> {
         wayhouse_fleet_tests::STARTUP_TIMEOUT,
     )
     .await?;
-    c.member_change(
-        reqwest::Method::PUT,
-        &c.bases[0],
-        &format!("/admin/ha/members/{moved_id}"),
-        json!({"addr": format!("127.0.0.1:{new_port}")}),
-    )
-    .await?;
+    // A spurious leader change under load answers 503 until a leader is back.
+    let mut attempt = 0;
+    loop {
+        let put = c
+            .member_change(
+                reqwest::Method::PUT,
+                &c.bases[0],
+                &format!("/admin/ha/members/{moved_id}"),
+                json!({"addr": format!("127.0.0.1:{new_port}")}),
+            )
+            .await;
+        match put {
+            Err(e) if attempt < 20 && e.to_string().contains(": 503 ") => {
+                attempt += 1;
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            other => break other?,
+        }
+    }
     c.register(&c.bases[0], "o2").await?;
     c.served(
         &new_base,
