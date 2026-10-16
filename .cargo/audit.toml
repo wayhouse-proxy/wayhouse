@@ -1,0 +1,18 @@
+# Accepted RustSec advisories (cargo audit reads this file from .cargo/).
+# Every entry needs a reason and a way out. No blanket ignores.
+
+[advisories]
+ignore = [
+  # sled 0.34 -> fxhash, instant (via parking_lot 0.11). "Unmaintained"
+  # notices, not vulnerabilities: no known exploit, and sled only opens local
+  # on-disk stores of the controller. Leaves the list when the controller store
+  # moves off sled (tracked in the tech-debt issue for the sled replacement).
+  "RUSTSEC-2025-0057", # fxhash
+  "RUSTSEC-2024-0384", # instant
+
+  # wasmtime -> cranelift-codegen -> postcard -> heapless 0.7 -> atomic-polyfill.
+  # "Unmaintained", and only used for cranelift's compile-time serialization;
+  # no untrusted input reaches it. Leaves the list when wasmtime/cranelift
+  # bump postcard/heapless.
+  "RUSTSEC-2023-0089", # atomic-polyfill
+]
