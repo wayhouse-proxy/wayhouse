@@ -62,6 +62,7 @@ fn router(state: AdminState) -> Router {
             patch(patch_backend).delete(delete_backend),
         )
         .route("/config", get(config))
+        .route("/web", get(web))
         .route("/sessions", get(sessions))
         .route("/admin/drain", post(drain))
         .route("/admin/undrain", post(undrain))
@@ -176,6 +177,46 @@ async fn undrain(State(s): State<AdminState>) -> (StatusCode, &'static str) {
     s.runtime.set_draining(false);
     tracing::info!("instance returned to rotation via admin API");
     (StatusCode::OK, "ready\n")
+}
+
+/// `GET /web` — the resolved `web:` section as JSON, for `wayhouse-web-sync`: where
+/// Caddy listens, and per site its hosts and upstreams in final form (`addr`; `pool`
+/// with `via: direct`; `pool` plus the generated loopback `local` address with
+/// `via: wayhouse`). `404` when the config has no `web:` section.
+async fn web(State(s): State<AdminState>) -> Response {
+    use wayhouse_config::WebUpstream;
+    let snap = s.runtime.snapshot();
+    let Some(w) = &snap.web else {
+        return (StatusCode::NOT_FOUND, "no web section configured\n").into_response();
+    };
+    let sites: Vec<_> = w
+        .sites
+        .iter()
+        .map(|site| {
+            let upstreams: Vec<_> = site
+                .upstreams
+                .iter()
+                .map(|u| match u {
+                    WebUpstream::Addr(a) => serde_json::json!({ "addr": a.to_string() }),
+                    WebUpstream::Pool { name } => {
+                        serde_json::json!({ "pool": name, "via": "direct" })
+                    }
+                    WebUpstream::Local { pool, addr } => serde_json::json!({
+                        "pool": pool, "via": "wayhouse", "local": addr.to_string()
+                    }),
+                })
+                .collect();
+            serde_json::json!({ "hosts": site.hosts, "upstreams": upstreams })
+        })
+        .collect();
+    axum::Json(serde_json::json!({
+        "pool": w.pool,
+        "listen": { "http": w.listen_http.to_string(), "https": w.listen_https.to_string() },
+        "trusted_proxy": w.trusted_proxy.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "internal_bind": w.internal_bind.to_string(),
+        "sites": sites,
+    }))
+    .into_response()
 }
 
 /// `GET /config` — a plaintext view of the active snapshot (listeners + pools).
@@ -1011,6 +1052,78 @@ mod tests {
         assert!(body.contains("listeners:"), "config body: {body}");
         assert!(body.contains("\tbind=") && body.contains("pools:"));
 
+        runtime
+            .shutdown_with_grace(Duration::from_millis(100))
+            .await;
+    }
+
+    const WEB_YAML: &str = "schema_version: 3\n\
+        pools:\n  - name: web\n    targets: [\"127.0.0.1:8443\"]\n    proxy_protocol: v2\n  \
+        - name: origin\n    targets: [\"10.0.0.5:8080\"]\n  \
+        - name: other\n    targets: [\"10.0.0.6:8080\"]\n\
+        listeners:\n  - name: https\n    bind: \"127.0.0.1:0\"\n    pool: web\n\
+        web:\n  trusted_proxy: [\"10.0.0.0/8\"]\n  sites:\n    - hosts: [Panel.example.com]\n      \
+        upstreams:\n        - addr: 10.0.0.9:8080\n        - pool: other\n        \
+        - { pool: origin, via: wayhouse, port: 19010 }\n";
+
+    #[tokio::test]
+    async fn web_endpoint_is_404_without_a_web_section() {
+        let (base, runtime) = spawn_admin(
+            "pools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\n\
+             listeners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    pool: p\n",
+        )
+        .await;
+        let r = reqwest::get(format!("{base}/web")).await.unwrap();
+        assert_eq!(r.status(), 404);
+        runtime
+            .shutdown_with_grace(Duration::from_millis(100))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn web_endpoint_returns_resolved_sites_and_follows_a_reload() {
+        let (base, runtime) = spawn_admin_with_token(WEB_YAML, Some("s3cret")).await;
+        let http = reqwest::Client::new();
+        let url = format!("{base}/web");
+        assert_eq!(http.get(&url).send().await.unwrap().status(), 401);
+        let v: serde_json::Value = http
+            .get(&url)
+            .bearer_auth("s3cret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(v["pool"], "web");
+        assert_eq!(v["listen"]["http"], "127.0.0.1:8080");
+        assert_eq!(v["listen"]["https"], "127.0.0.1:8443");
+        assert_eq!(v["trusted_proxy"], serde_json::json!(["10.0.0.0/8"]));
+        let site = &v["sites"][0];
+        assert_eq!(site["hosts"], serde_json::json!(["panel.example.com"]));
+        assert_eq!(
+            site["upstreams"],
+            serde_json::json!([
+                { "addr": "10.0.0.9:8080" },
+                { "pool": "other", "via": "direct" },
+                { "pool": "origin", "via": "wayhouse", "local": "127.0.0.1:19010" },
+            ])
+        );
+
+        // A reload swaps the snapshot; the endpoint follows without a restart.
+        let next = WEB_YAML.replace("port: 19010", "port: 19011");
+        let cfg = wayhouse_config::parse_str(&next).unwrap();
+        runtime.handle().store(Snapshot::from_config(&cfg));
+        let v: serde_json::Value = http
+            .get(&url)
+            .bearer_auth("s3cret")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(v["sites"][0]["upstreams"][2]["local"], "127.0.0.1:19011");
         runtime
             .shutdown_with_grace(Duration::from_millis(100))
             .await;

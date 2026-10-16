@@ -37,6 +37,9 @@ pub struct Snapshot {
     /// label with no socket/mesh lifecycle behind it, so there's no reason
     /// for it to be startup-only.
     pub group: Option<String>,
+    /// The resolved `web:` section, echoed so `GET /web` follows reloads. Never
+    /// consulted by routing (its generated listeners are ordinary listeners).
+    pub web: Option<wayhouse_config::WebConfig>,
 }
 
 impl Snapshot {
@@ -108,6 +111,7 @@ impl Snapshot {
                 .filter_map(|pc| pc.source.clone().map(|s| (pc.name.clone(), s)))
                 .collect(),
             group: cfg.group.clone(),
+            web: cfg.web.clone(),
         })
     }
 
