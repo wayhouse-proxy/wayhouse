@@ -2,7 +2,8 @@
 //! pool (spec `docs/superpowers/specs/2026-10-15-web-routing-design.md`).
 //!
 //! This module only validates and resolves the section; the data path ignores it.
-//! Generated `via: wayhouse` listeners and the renderer are separate slices.
+//! Generated `via: wayhouse` listeners are a separate slice; `view` is the JSON form
+//! the admin API serves to `wayhouse-web-sync`, which renders it for Caddy.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
@@ -14,6 +15,8 @@ use crate::matcher::HostPattern;
 use crate::parse::parse_host_pattern;
 use crate::resolved::{PoolConfig, ProxyProtocol};
 use crate::ConfigError;
+
+pub(crate) mod view;
 
 /// Most ports `internal_ports` may span.
 const MAX_INTERNAL_PORTS: u32 = 1000;
@@ -65,6 +68,23 @@ pub(crate) struct RawSite {
     pub(crate) hosts: Vec<String>,
     #[serde(default)]
     pub(crate) upstreams: Vec<RawUpstream>,
+    /// Operator-supplied certificate files; unset means Caddy gets no certificate
+    /// for these hosts from this section.
+    #[serde(default)]
+    pub(crate) tls: Option<RawSiteTls>,
+    /// How Caddy talks to the upstreams; unset is plain HTTP.
+    #[serde(default)]
+    pub(crate) upstream_tls: Option<serde_norway::Value>,
+    /// Path Caddy probes on each upstream; unset means passive checks only.
+    #[serde(default)]
+    pub(crate) health_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawSiteTls {
+    pub(crate) cert: String,
+    pub(crate) key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,7 +102,7 @@ pub(crate) struct RawUpstream {
 }
 
 /// How Caddy reaches a pool upstream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WebVia {
     /// Caddy connects to the pool's backends itself.
@@ -135,6 +155,30 @@ pub struct WebSite {
     /// Lowercase exact names or `*.suffix` patterns.
     pub hosts: Vec<String>,
     pub upstreams: Vec<WebUpstream>,
+    /// Certificate and key files the sync loads into Caddy for these hosts.
+    pub tls: Option<WebSiteTls>,
+    /// `None` is plain HTTP to the upstreams.
+    pub upstream_tls: Option<UpstreamTls>,
+    /// Active health-check path on each upstream.
+    pub health_path: Option<String>,
+}
+
+/// Paths as the sync sees them (it reads the files, not `wayhouse`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebSiteTls {
+    pub cert: String,
+    pub key: String,
+}
+
+/// HTTPS from Caddy to a site's upstreams.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpstreamTls {
+    /// Verify against the system roots.
+    Verify,
+    /// Do not verify (for a link that is already authenticated, such as a tunnel).
+    Skip,
+    /// Verify against this CA file.
+    CaFile(String),
 }
 
 /// An upstream in its resolved form.
@@ -179,6 +223,28 @@ fn parse_ports(raw: &str) -> Result<(u16, u16), ConfigError> {
         )));
     }
     Ok((lo, hi))
+}
+
+/// `verify`, `skip`, or `{ ca_file: path }`.
+fn parse_upstream_tls(v: &serde_norway::Value) -> Result<UpstreamTls, String> {
+    const HINT: &str = "use verify, skip, or { ca_file: <path> }";
+    if let Some(s) = v.as_str() {
+        return match s {
+            "verify" => Ok(UpstreamTls::Verify),
+            "skip" => Ok(UpstreamTls::Skip),
+            other => Err(format!("unknown mode {other:?} ({HINT})")),
+        };
+    }
+    let ca = v
+        .as_mapping()
+        .filter(|m| m.len() == 1)
+        .and_then(|m| m.get("ca_file"))
+        .and_then(serde_norway::Value::as_str)
+        .ok_or_else(|| HINT.to_string())?;
+    if ca.trim().is_empty() {
+        return Err("ca_file must not be empty".to_string());
+    }
+    Ok(UpstreamTls::CaFile(ca.to_string()))
 }
 
 /// A bare address is a /32 or /128.
@@ -325,7 +391,37 @@ pub(crate) fn validate_web(raw: RawWeb, pools: &[PoolConfig]) -> Result<WebConfi
                 _ => return Err(at("needs exactly one of addr / pool")),
             }
         }
-        sites.push(WebSite { hosts, upstreams });
+        let tls = match &s.tls {
+            None => None,
+            Some(t) => {
+                for (field, v) in [("cert", &t.cert), ("key", &t.key)] {
+                    if v.trim().is_empty() {
+                        return Err(at(&format!("tls: {field} must not be empty")));
+                    }
+                }
+                Some(WebSiteTls {
+                    cert: t.cert.clone(),
+                    key: t.key.clone(),
+                })
+            }
+        };
+        let upstream_tls = s
+            .upstream_tls
+            .as_ref()
+            .map(|v| parse_upstream_tls(v).map_err(|m| at(&format!("upstream_tls: {m}"))))
+            .transpose()?;
+        if let Some(p) = &s.health_path {
+            if !p.starts_with('/') {
+                return Err(at("health_path: must start with '/'"));
+            }
+        }
+        sites.push(WebSite {
+            hosts,
+            upstreams,
+            tls,
+            upstream_tls,
+            health_path: s.health_path.clone(),
+        });
     }
     Ok(WebConfig {
         pool: raw.pool,

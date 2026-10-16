@@ -9,6 +9,12 @@ pub struct Cidr {
     prefix: u8,
 }
 
+impl std::fmt::Display for Cidr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.base, self.prefix)
+    }
+}
+
 impl Cidr {
     /// Parse `"10.0.0.0/8"` / `"2001:db8::/32"`.
     pub fn parse(s: &str) -> Result<Self, String> {

@@ -14,12 +14,14 @@ C=deploy/compose
 base=$(docker compose -f $C/docker-compose.yml config --format json)
 tunnel=$(docker compose -f $C/docker-compose.yml -f $C/compose.tunnel.yml \
          --profile origin-demo config --format json)
+web=$(docker compose -f $C/docker-compose.yml -f $C/compose.web.yml config --format json)
 smoke_plan=$(make -n deploy-smoke)
 
-BASE="$base" TUNNEL="$tunnel" SMOKE_PLAN="$smoke_plan" ruby -rjson -ryaml -e '
+BASE="$base" TUNNEL="$tunnel" WEB="$web" SMOKE_PLAN="$smoke_plan" ruby -rjson -ryaml -e '
 errs = []
 base   = JSON.parse(ENV["BASE"])["services"]
 tunnel = JSON.parse(ENV["TUNNEL"])["services"]
+web    = JSON.parse(ENV["WEB"])["services"]
 
 # curl 8.11.1 (the pinned seed image) rejects `--opt=value`; values must be
 # separate arguments or `seed` exits 2 and wayhouse never starts.
@@ -80,6 +82,26 @@ errs << "tunnel override: wayhouse must not hand-pick --tunnel-address" if tunne
 agent_cmd = tunnel["agent"]["command"]
 errs << "tunnel override: agent must not hand-pick --address" if agent_cmd.any? { |a| a.start_with?("--address") }
 errs << "tunnel override: agent backends should use the :port shorthand" unless agent_cmd.include?("--backends=:25565")
+
+# Web front door: wayhouse reaches Caddy on the host loopback and web-sync reads wayhouse
+# there, so all three share the host network; the sync runs from the wayhouse image and
+# talks to Caddy over the shared socket volume.
+%w[caddy web-sync].each { |n| errs << "web override: #{n} must use host networking" unless web[n]["network_mode"] == "host" }
+errs << "web override: web-sync must run wayhouse-web-sync from the wayhouse image" unless web["web-sync"]["image"] == "wayhouse-deploy/wayhouse:local" && web["web-sync"]["entrypoint"] == ["/usr/local/bin/wayhouse-web-sync"]
+errs << "web override: caddy and web-sync must share /run/caddy" unless [web["caddy"], web["web-sync"]].all? { |x| x["volumes"].any? { |v| v["target"] == "/run/caddy" && v["source"] == "caddy-run" } }
+errs << "web override: caddy must drop all capabilities" unless web["caddy"]["cap_drop"] == ["ALL"]
+gw = YAML.load_stream(File.read("deploy/k8s/60-web-gateway.yaml")).find { |d| d["kind"] == "DaemonSet" }
+gwc = gw["spec"]["template"]["spec"]["containers"]
+errs << "k8s web gateway must use hostNetwork (wayhouse reaches Caddy on the node loopback)" unless gw["spec"]["template"]["spec"]["hostNetwork"] == true
+errs << "k8s web gateway containers must drop all capabilities" unless gwc.all? { |c| c.dig("securityContext", "capabilities", "drop") == ["ALL"] }
+errs << "k8s web gateway: web-sync must point at the socket Caddy serves" unless gwc.find { |c| c["name"] == "web-sync" }["args"].include?("--caddy-admin=/run/caddy/admin.sock")
+
+# The Caddy image: pinned by version AND digest, no file capability left, base config shipped.
+caddy_stage = df[/AS wayhouse-caddy\n.*?(?=\nFROM |\z)/m]
+errs << "wayhouse-caddy must be pinned by `FROM caddy:<version>@sha256:...`" unless df =~ /^FROM caddy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64} AS wayhouse-caddy$/
+errs << "wayhouse-caddy must drop the base image file capability (cp + mv)" unless caddy_stage.include?("cp /usr/bin/caddy /tmp/caddy && mv /tmp/caddy /usr/bin/caddy")
+errs << "wayhouse-caddy must run as 65532" unless caddy_stage.include?("USER 65532:65532")
+errs << "wayhouse image must carry wayhouse-web-sync" unless wayhouse_stage.include?("/out/wayhouse-web-sync /usr/local/bin/wayhouse-web-sync")
 
 if errs.empty? then puts "deploy lint: ok" else warn errs.map { |e| "LINT FAIL: #{e}" }; exit 1 end
 '

@@ -45,6 +45,8 @@ finished. They are kept as a record of why things were built the way they were; 
   [`wayhouse-proxy/sniffers`](https://github.com/wayhouse-proxy/sniffers).
 - [`upgrading.md`](upgrading.md): upgrading a fleet one component at a time: compatibility
   window, version table, order of operations, rollback.
+- [`web-proxy.md`](web-proxy.md): publishing HTTP(S) sites through the packaged Caddy
+  (`wayhouse-web-sync`, the `wayhouse-caddy` image, compose and Kubernetes recipes).
 - [`sniffers.md`](sniffers.md): sniffer manifest, registry index and verification formats.
 - [`../crates/wayhouse-bench/README.md`](../crates/wayhouse-bench/README.md): the latency / load
   harness.

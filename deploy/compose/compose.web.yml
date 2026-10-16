@@ -1,0 +1,45 @@
+# Web front door (docs/web-proxy.md): Caddy plus wayhouse-web-sync next to the demo's
+# wayhouse. Both share the host network with wayhouse, because wayhouse reaches Caddy on
+# the host's loopback (the `web` pool) and Caddy must see the tunnel interface to reach
+# origins behind wayhouse-agent. Use:
+#   docker compose -f docker-compose.yml -f compose.web.yml up --build
+# and give wayhouse a config with a `web:` section (wayhouse-web.yaml shows one).
+services:
+  caddy:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+      target: wayhouse-caddy
+    image: wayhouse-deploy/wayhouse-caddy:local
+    network_mode: host
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      # The admin socket (owner-only) is shared with web-sync through this volume.
+      - caddy-run:/run/caddy
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+  # The sync ships in the wayhouse image: a second service from the same image.
+  web-sync:
+    image: wayhouse-deploy/wayhouse:local
+    entrypoint: ["/usr/local/bin/wayhouse-web-sync"]
+    command:
+      - --wayhouse-admin=http://127.0.0.1:9900
+      - --caddy-admin=/run/caddy/admin.sock
+    network_mode: host
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - caddy-run:/run/caddy
+    depends_on: [caddy]
+    restart: unless-stopped
+
+volumes:
+  caddy-run:
+  caddy-data:
+  caddy-config:

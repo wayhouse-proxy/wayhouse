@@ -31,7 +31,8 @@ pub use resolved::{
     SniffersConfig, SourceConfig, SourceKind, TokenBucket,
 };
 pub use schema::AdminTls;
-pub use web::{WebConfig, WebSite, WebUpstream, WebVia};
+pub use web::view::{UpstreamTlsView, WebSiteTlsView, WebSiteView, WebUpstreamView, WebView};
+pub use web::{UpstreamTls, WebConfig, WebSite, WebSiteTls, WebUpstream, WebVia};
 
 use schema::RawConfig;
 use validate::validate;

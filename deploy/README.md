@@ -9,13 +9,13 @@ background: [`docs/12-deployment.md`](../docs/12-deployment.md).
 
 ## What's here
 
-| Path              | Purpose                                                                                                                              |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `Dockerfile`      | one file, six targets: `wayhouse`, `wayhouse-minimal`, `wayhouse-controller`, `wayhouse-aggregator`, `wayhouse-ui`, `wayhouse-agent` |
-| `build-images.sh` | builds all six, runs `--version` in each, prints sizes                                                                               |
-| `compose/`        | runnable control-plane demo (+ `compose.tunnel.yml` WireGuard override)                                                              |
-| `smoke.sh`        | the HTTP smoke test CI runs against the compose demo                                                                                 |
-| `k8s/`            | plain manifests (namespace, secrets example, controller, aggregator, ui, wayhouse RBAC, wayhouse DaemonSet)                          |
+| Path              | Purpose                                                                                                                                                  |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Dockerfile`      | one file, seven targets: `wayhouse`, `wayhouse-minimal`, `wayhouse-controller`, `wayhouse-aggregator`, `wayhouse-ui`, `wayhouse-agent`, `wayhouse-caddy` |
+| `build-images.sh` | builds all seven, checks each (`--version`; `check-caddy-image.sh` for Caddy), prints sizes                                                              |
+| `compose/`        | runnable control-plane demo (+ `compose.tunnel.yml` WireGuard override, `compose.web.yml` Caddy web front door)                                          |
+| `smoke.sh`        | the HTTP smoke test CI runs against the compose demo                                                                                                     |
+| `k8s/`            | plain manifests (namespace, secrets example, controller, aggregator, ui, wayhouse RBAC, wayhouse DaemonSet, `60-web-gateway.yaml` Caddy sidecars)        |
 
 To move a running deployment to a newer image set one component at a time, follow
 [`docs/upgrading.md`](../docs/upgrading.md).
@@ -51,7 +51,7 @@ sniffers e2e job (`sniffers e2e (arm64)`) runs on an arm64 runner too.
 
 `BIN_SOURCE=prebuilt` (default `builder`) skips the in-Docker compile and copies
 binaries you built yourself from `deploy/prebuilt/` (`wayhouse`, `wayhouse-minimal`, `wayhouse-controller`,
-`wayhouse-aggregator`, `wayhouse-ui`, `wayhouse-agent`). CI uses it so the `deploy` job reuses the
+`wayhouse-aggregator`, `wayhouse-ui`, `wayhouse-agent`, `wayhouse-web-sync`). CI uses it so the `deploy` job reuses the
 `build-release` binaries; they must be built against a glibc no newer than the
 runtime's (2.41). The nightly CI run uses the default, self-contained path.
 
@@ -123,7 +123,7 @@ Ingress/LoadBalancer (with TLS) in front of it.
 - Aggregator intent fan-out (drain etc.) cannot reach `wayhouse` from these examples: the
   `admin_url` a `wayhouse` reports is derived from `settings.admin.listen` and no flag
   overrides it. Fleet _reads_ (pools, sessions) work.
-- `make deploy-scan` runs Trivy over the six images (OS packages, secrets, and the
+- `make deploy-scan` runs Trivy over the seven images (OS packages, secrets, and the
   Rust crates each binary embeds — they're built with `cargo auditable`) and over
   `Cargo.lock` and the UI's `package-lock.json`. It reports
   HIGH/CRITICAL findings that have a fix available, writes JSON + SARIF to

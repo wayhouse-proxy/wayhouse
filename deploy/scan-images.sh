@@ -42,7 +42,7 @@ scan() {
   fi
 }
 sfx=${TRIVY_ARCH:+-$TRIVY_ARCH}
-for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent; do
+for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent wayhouse-caddy; do
   if [ -n "${TRIVY_IMAGE_DIR:-}" ]; then
     scan "image-$t$sfx" vuln,secret image "$@" --scanners vuln,secret --input "$TRIVY_IMAGE_DIR/$t.tar"
   else

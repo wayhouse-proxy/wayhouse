@@ -359,3 +359,93 @@ fn an_upstream_may_not_be_the_web_pool_itself() {
         assert!(m.contains("web.sites[0].upstreams[0]"), "{m}");
     }
 }
+
+fn site_with(extra: &str) -> String {
+    format!("  sites:\n    - hosts: [panel.example.com]\n      upstreams:\n{OK_UP}{extra}")
+}
+
+#[test]
+fn site_tls_upstream_tls_and_health_path_resolve() {
+    use crate::{UpstreamTls, WebSiteTls};
+    let cfg = parse(&site_with(
+        "      tls: { cert: /certs/a.pem, key: /certs/a.key }\n      upstream_tls: skip\n      health_path: /healthz\n",
+    ))
+    .unwrap();
+    let s = &cfg.web.unwrap().sites[0];
+    assert_eq!(
+        s.tls,
+        Some(WebSiteTls {
+            cert: "/certs/a.pem".into(),
+            key: "/certs/a.key".into()
+        })
+    );
+    assert_eq!(s.upstream_tls, Some(UpstreamTls::Skip));
+    assert_eq!(s.health_path.as_deref(), Some("/healthz"));
+
+    let cfg = parse(&site_with("      upstream_tls: verify\n")).unwrap();
+    assert_eq!(
+        cfg.web.unwrap().sites[0].upstream_tls,
+        Some(UpstreamTls::Verify)
+    );
+    let cfg = parse(&site_with("      upstream_tls: { ca_file: /ca.pem }\n")).unwrap();
+    assert_eq!(
+        cfg.web.unwrap().sites[0].upstream_tls,
+        Some(UpstreamTls::CaFile("/ca.pem".into()))
+    );
+    // Unset means plain HTTP and Caddy-side TLS comes from elsewhere.
+    let s = &parse(&site(OK_UP)).unwrap().web.unwrap().sites[0];
+    assert!(s.tls.is_none() && s.upstream_tls.is_none() && s.health_path.is_none());
+}
+
+#[test]
+fn site_tls_needs_both_files_and_a_known_upstream_mode() {
+    let m = err(&site_with("      tls: { cert: /a.pem, key: \"\" }\n"));
+    assert!(
+        m.contains("web.sites[0]: tls: key must not be empty"),
+        "{m}"
+    );
+    let m = err(&site_with("      tls: { cert: /a.pem }\n"));
+    assert!(m.contains("key"), "{m}");
+    let m = err(&site_with("      upstream_tls: maybe\n"));
+    assert!(m.contains("upstream_tls"), "{m}");
+    let m = err(&site_with("      upstream_tls: { ca_file: \"\" }\n"));
+    assert!(
+        m.contains("web.sites[0]: upstream_tls: ca_file must not be empty"),
+        "{m}"
+    );
+}
+
+#[test]
+fn health_path_must_be_an_absolute_path() {
+    let m = err(&site_with("      health_path: healthz\n"));
+    assert!(
+        m.contains("web.sites[0]: health_path: must start with '/'"),
+        "{m}"
+    );
+}
+
+#[test]
+fn view_serializes_the_resolved_section_for_the_sync() {
+    let cfg = parse(&format!(
+        "  trusted_proxy: [10.1.0.2]\n{}",
+        site_with("      upstream_tls: skip\n")
+    ))
+    .unwrap();
+    let v = cfg.web.as_ref().unwrap().view();
+    let json = serde_json::to_value(&v).unwrap();
+    assert_eq!(json["pool"], "web");
+    assert_eq!(json["listen_http"], "127.0.0.1:8080");
+    assert_eq!(json["listen_https"], "127.0.0.1:8443");
+    assert_eq!(json["trusted_proxy"], serde_json::json!(["10.1.0.2/32"]));
+    assert_eq!(
+        json["sites"][0]["hosts"],
+        serde_json::json!(["panel.example.com"])
+    );
+    assert_eq!(
+        json["sites"][0]["upstreams"][0],
+        serde_json::json!({"addr": "10.0.0.9:8080"})
+    );
+    assert_eq!(json["sites"][0]["upstream_tls"], "skip");
+    let back: crate::WebView = serde_json::from_value(json).unwrap();
+    assert_eq!(back, v);
+}

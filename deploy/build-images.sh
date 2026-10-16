@@ -17,4 +17,8 @@ for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayho
     sh deploy/check-image-commit.sh "$img" "$sha"
   fi
 done
+# Caddy for the web front door: its own check (it has no `--version` and no wayhouse commit).
+img=wayhouse-deploy/wayhouse-caddy:local
+docker build -f deploy/Dockerfile --target wayhouse-caddy -t "$img" .
+sh deploy/check-caddy-image.sh "$img"
 docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep '^wayhouse-deploy/'

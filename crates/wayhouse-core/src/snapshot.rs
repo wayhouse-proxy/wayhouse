@@ -37,6 +37,9 @@ pub struct Snapshot {
     /// label with no socket/mesh lifecycle behind it, so there's no reason
     /// for it to be startup-only.
     pub group: Option<String>,
+    /// The `web:` section in its served form (`GET /web`, read by
+    /// `wayhouse-web-sync`). The data path never consults it.
+    pub web: Option<wayhouse_config::WebView>,
 }
 
 impl Snapshot {
@@ -108,6 +111,7 @@ impl Snapshot {
                 .filter_map(|pc| pc.source.clone().map(|s| (pc.name.clone(), s)))
                 .collect(),
             group: cfg.group.clone(),
+            web: cfg.web.as_ref().map(wayhouse_config::WebConfig::view),
         })
     }
 

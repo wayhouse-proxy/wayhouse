@@ -1,0 +1,8 @@
+wayhouse-caddy bundles Caddy (https://github.com/caddyserver/caddy), copyright The Caddy
+Authors, licensed under the Apache License, Version 2.0 (/licenses/LICENSE-APACHE).
+The version is pinned in deploy/Dockerfile; the binary is the unmodified upstream release
+image's, rebuilt only to drop its file capability. Source: the tag of that version in the
+repository above.
+
+The configuration files added here (/etc/caddy/base.json) are part of wayhouse
+(https://github.com/wayhouse-proxy/wayhouse), MIT OR Apache-2.0.

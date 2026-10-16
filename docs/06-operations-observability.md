@@ -147,6 +147,20 @@
 p50/p99 (vs. NFR N1/N2) is the closest thing today, measured out-of-band, not
 exported as a `/metrics` series. See "Planned / not yet built" below.
 
+### `wayhouse-web-sync` (web proxy, [web-proxy.md](web-proxy.md))
+
+Served on the sync's own `GET /metrics` (`--metrics-listen`, default `127.0.0.1:9904`).
+
+- `wayhouse_web_sync_last_ok` (gauge) — unix time of the last cycle that left Caddy on the intended
+  configuration (loaded, or already identical). Alert on `time() - this`.
+- `wayhouse_web_sync_loads_total` (counter) — documents Caddy accepted.
+- `wayhouse_web_sync_rejects_total` (counter) — documents Caddy refused (4xx); it keeps its previous
+  configuration, and the sync does not resend the same document.
+- `wayhouse_web_sync_errors_total{stage="read"|"render"|"send"}` (counter) — cycles that failed before
+  Caddy had a new document: `read` Wayhouse (`/web`, `/pools`), `render` (including unreadable
+  certificate files), `send` (Caddy unreachable, timeout, 5xx).
+- `wayhouse_web_sync_last_render_seconds` (gauge) — how long the last render took.
+
 ### Planned / not yet built
 
 Documented here as real future work, not implemented — none of these exist in
@@ -206,7 +220,9 @@ carried in the PROXY v2 TLV if the backend should correlate it.
 - `GET /metrics` – Prometheus.
 - `GET /config` – plaintext view of the active snapshot (listeners + pools +
   `draining` / `active_conns`). Implemented (phase 5). `GET /pools` – per-pool
-  backend list with health / `state=` / active count.
+  backend list with health / `state=` / active count. `GET /web` – the resolved
+  `web:` section as JSON (`404` without one), read by `wayhouse-web-sync`
+  ([web proxy](web-proxy.md)).
 - `GET /sessions[?listener=&pool=&proto=tcp|udp&src=<ip>]` – plaintext list of
   every live proxied connection / UDP session: id, transport, listener, client
   (`peer=`) and local (`local=`) address, chosen `pool=` / `backend=`, and

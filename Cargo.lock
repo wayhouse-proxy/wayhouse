@@ -4507,6 +4507,7 @@ version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "serde",
+ "serde_json",
  "serde_norway",
  "sha2",
  "thiserror 2.0.21",
@@ -4682,6 +4683,26 @@ dependencies = [
  "wayhouse-http",
  "wayhouse-registry",
  "wayhouse-sniffer-abi",
+]
+
+[[package]]
+name = "wayhouse-web-sync"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "metrics",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wayhouse-config",
+ "wayhouse-http",
 ]
 
 [[package]]

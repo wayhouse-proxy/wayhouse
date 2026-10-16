@@ -169,6 +169,12 @@ pub fn build_tunnel_bins() -> Result<()> {
     build_bins(&["wayhouse", "wayhouse-controller", "wayhouse-agent"])
 }
 
+/// [`build_fleet_bins`] for the web-proxy e2e (`tests/web.rs`), which runs a real Caddy
+/// next to these two.
+pub fn build_web_bins() -> Result<()> {
+    build_bins(&["wayhouse", "wayhouse-web-sync"])
+}
+
 /// The `cargo build` that [`build_tunnel_bins`] runs, for a test that inspects it.
 pub fn tunnel_bins_build_command() -> std::process::Command {
     build_command(&["wayhouse", "wayhouse-controller", "wayhouse-agent"])

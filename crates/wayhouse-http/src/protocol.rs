@@ -22,7 +22,7 @@ pub const HEADER: &str = "x-wayhouse-protocol";
 /// Incompatible wire changes bump this (even while the product is 0.x).
 pub const PROTOCOL_MAJOR: u16 = 1;
 /// Additive wire changes bump this.
-pub const PROTOCOL_MINOR: u16 = 1;
+pub const PROTOCOL_MINOR: u16 = 2;
 
 /// Counter, label `route_group` (`controller`, `aggregator`, `raft`): requests
 /// refused because the caller's protocol major differs or the header is garbage.
