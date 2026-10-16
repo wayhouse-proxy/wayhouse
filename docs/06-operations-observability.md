@@ -220,9 +220,15 @@ carried in the PROXY v2 TLV if the backend should correlate it.
 - `GET /metrics` – Prometheus.
 - `GET /config` – plaintext view of the active snapshot (listeners + pools +
   `draining` / `active_conns`). Implemented (phase 5). `GET /pools` – per-pool
-  backend list with health / `state=` / active count. `GET /web` – the resolved
-  `web:` section as JSON (`404` without one), read by `wayhouse-web-sync`
-  ([web proxy](web-proxy.md)).
+  backend list with health / `state=` / active count.
+- `GET /web` – the resolved `web:` section as JSON for `wayhouse-web-sync`: `pool`,
+  `listen.{http,https}`, `trusted_proxy`, `internal_bind`, and per site its `hosts` and
+  `upstreams` in final form (`{addr}`, `{pool, via: "direct"}`, or `{pool, via: "wayhouse",
+  local: "127.0.0.1:<port>"}` for the generated loopback listener). `via: direct` pools are
+  resolved by the reader from `GET /pools`. Same bearer token and TLS as the other routes;
+  `404` when the config has no `web:` section. Follows reloads. Per site it also carries the
+  optional `tls` (`cert`, `key`), `upstream_tls` (`"verify"`, `"skip"` or `{"ca_file"}`) and
+  `health_path`; read by [`wayhouse-web-sync`](web-proxy.md).
 - `GET /sessions[?listener=&pool=&proto=tcp|udp&src=<ip>]` – plaintext list of
   every live proxied connection / UDP session: id, transport, listener, client
   (`peer=`) and local (`local=`) address, chosen `pool=` / `backend=`, and

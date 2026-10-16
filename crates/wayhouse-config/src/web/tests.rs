@@ -1,4 +1,4 @@
-use crate::{parse_str, Config, ConfigError, WebUpstream, WebVia};
+use crate::{parse_str, Action, Config, ConfigError, Matcher, Protocol, WebUpstream};
 
 const POOLS: &str = "\
 pools:
@@ -64,14 +64,11 @@ fn defaults_resolve_and_upstreams_keep_their_form() {
         vec![
             WebUpstream::Addr("10.0.0.9:8080".parse().unwrap()),
             WebUpstream::Pool {
-                name: "origin".into(),
-                via: WebVia::Direct,
-                port: None
+                name: "origin".into()
             },
-            WebUpstream::Pool {
-                name: "wings1".into(),
-                via: WebVia::Wayhouse,
-                port: Some(19010)
+            WebUpstream::Local {
+                pool: "wings1".into(),
+                addr: "127.0.0.1:19010".parse().unwrap()
             },
         ]
     );
@@ -434,8 +431,8 @@ fn view_serializes_the_resolved_section_for_the_sync() {
     let v = cfg.web.as_ref().unwrap().view();
     let json = serde_json::to_value(&v).unwrap();
     assert_eq!(json["pool"], "web");
-    assert_eq!(json["listen_http"], "127.0.0.1:8080");
-    assert_eq!(json["listen_https"], "127.0.0.1:8443");
+    assert_eq!(json["listen"]["http"], "127.0.0.1:8080");
+    assert_eq!(json["listen"]["https"], "127.0.0.1:8443");
     assert_eq!(json["trusted_proxy"], serde_json::json!(["10.1.0.2/32"]));
     assert_eq!(
         json["sites"][0]["hosts"],
@@ -448,4 +445,198 @@ fn view_serializes_the_resolved_section_for_the_sync() {
     assert_eq!(json["sites"][0]["upstream_tls"], "skip");
     let back: crate::WebView = serde_json::from_value(json).unwrap();
     assert_eq!(back, v);
+}
+
+fn via(pools: &[&str]) -> String {
+    let ups: String = pools
+        .iter()
+        .map(|p| format!("        - {{ pool: {p}, via: wayhouse }}\n"))
+        .collect();
+    site(&ups)
+}
+
+fn local_addr(cfg: &Config, pool: &str) -> std::net::SocketAddr {
+    cfg.web.as_ref().unwrap().sites[0]
+        .upstreams
+        .iter()
+        .find_map(|u| match u {
+            WebUpstream::Local { pool: p, addr } if p == pool => Some(*addr),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn via_wayhouse_appends_a_loopback_listener_per_pool() {
+    let cfg = parse(&via(&["wings1", "wings2"])).unwrap();
+    for pool in ["wings1", "wings2"] {
+        let addr = local_addr(&cfg, pool);
+        assert!(addr.ip().is_loopback());
+        assert!((19000..=19999).contains(&addr.port()));
+        let l = cfg
+            .listeners
+            .iter()
+            .find(|l| l.name == format!("web-up-{pool}"))
+            .unwrap();
+        assert_eq!(l.protocol, Protocol::Tcp);
+        assert_eq!(l.bind, addr);
+        assert_eq!(l.routes.len(), 1);
+        assert_eq!(l.routes[0].matcher, Matcher::Always);
+        assert_eq!(l.routes[0].action, Action::Pool(pool.to_string()));
+    }
+    assert_eq!(cfg.listeners.len(), 3);
+}
+
+#[test]
+fn a_pool_shared_by_sites_gets_one_listener() {
+    let doc = format!(
+        "{}    - hosts: [other.example.com]\n      upstreams:\n        - {{ pool: wings1, via: wayhouse }}\n",
+        via(&["wings1"])
+    );
+    let cfg = parse(&doc).unwrap();
+    assert_eq!(
+        cfg.listeners
+            .iter()
+            .filter(|l| l.name == "web-up-wings1")
+            .count(),
+        1
+    );
+    let w = cfg.web.as_ref().unwrap();
+    assert_eq!(w.sites[0].upstreams, w.sites[1].upstreams);
+}
+
+#[test]
+fn direct_pools_and_addrs_add_no_listener() {
+    let cfg = parse(&site(&format!("{OK_UP}        - pool: origin\n"))).unwrap();
+    assert_eq!(cfg.listeners.len(), 1);
+}
+
+#[test]
+fn a_pinned_port_is_honoured() {
+    let cfg = parse(&site(
+        "        - { pool: wings1, via: wayhouse, port: 19500 }\n",
+    ))
+    .unwrap();
+    assert_eq!(local_addr(&cfg, "wings1").port(), 19500);
+}
+
+#[test]
+fn ports_are_stable_when_other_pools_come_and_go() {
+    let alone = local_addr(&parse(&via(&["wings1"])).unwrap(), "wings1");
+    let with = parse(&via(&["origin", "wings1", "wings2"])).unwrap();
+    assert_eq!(local_addr(&with, "wings1"), alone);
+    let without = parse(&via(&["wings1", "wings2"])).unwrap();
+    assert_eq!(local_addr(&without, "wings1"), alone);
+}
+
+#[test]
+fn a_pin_on_the_hashed_port_moves_the_other_pool_to_the_next_free_one() {
+    let alone = local_addr(&parse(&via(&["wings1"])).unwrap(), "wings1").port();
+    let doc = site(&format!(
+        "        - {{ pool: wings1, via: wayhouse }}\n        - {{ pool: wings2, via: wayhouse, port: {alone} }}\n"
+    ));
+    let cfg = parse(&doc).unwrap();
+    assert_eq!(local_addr(&cfg, "wings2").port(), alone);
+    assert_ne!(local_addr(&cfg, "wings1").port(), alone);
+}
+
+fn with_operator_listener(bind: &str) -> String {
+    let doc = parse(&via(&["wings1"])).unwrap();
+    let hashed = local_addr(&doc, "wings1").port();
+    let extra = format!(
+        "  - name: game\n    bind: \"{}\"\n    pool: origin\n",
+        bind.replace("PORT", &hashed.to_string())
+    );
+    let base = doc_with("schema_version: 3\n", &via(&["wings1"]));
+    base.replacen("listeners:\n", &format!("listeners:\n{extra}"), 1)
+}
+
+#[test]
+fn operator_listeners_on_the_candidate_port_are_skipped() {
+    for bind in ["127.0.0.1:PORT", "0.0.0.0:PORT"] {
+        let cfg = parse_str(&with_operator_listener(bind)).unwrap();
+        let hashed = {
+            let d = parse(&via(&["wings1"])).unwrap();
+            local_addr(&d, "wings1").port()
+        };
+        assert_ne!(local_addr(&cfg, "wings1").port(), hashed, "{bind}");
+    }
+}
+
+#[test]
+fn an_operator_listener_on_another_address_does_not_block_the_port() {
+    let cfg = parse_str(&with_operator_listener("10.1.2.3:PORT")).unwrap();
+    let d = parse(&via(&["wings1"])).unwrap();
+    assert_eq!(local_addr(&cfg, "wings1"), local_addr(&d, "wings1"));
+}
+
+#[test]
+fn a_pin_on_an_operator_bound_port_is_an_error() {
+    let doc = doc_with(
+        "schema_version: 3\n",
+        &site("        - { pool: wings1, via: wayhouse, port: 19100 }\n"),
+    )
+    .replacen(
+        "listeners:\n",
+        "listeners:\n  - name: game\n    bind: \"127.0.0.1:19100\"\n    pool: origin\n",
+        1,
+    );
+    let e = parse_str(&doc).unwrap_err().to_string();
+    assert!(e.contains("already bound by another listener"), "{e}");
+}
+
+#[test]
+fn the_admin_address_port_is_skipped() {
+    let d = parse(&via(&["wings1"])).unwrap();
+    let hashed = local_addr(&d, "wings1").port();
+    let doc = doc_with("schema_version: 3\n", &via(&["wings1"])).replacen(
+        "pools:\n",
+        &format!("settings:\n  admin:\n    listen: \"127.0.0.1:{hashed}\"\npools:\n"),
+        1,
+    );
+    let cfg = parse_str(&doc).unwrap();
+    assert_ne!(local_addr(&cfg, "wings1").port(), hashed);
+}
+
+#[test]
+fn an_operator_listener_cannot_use_a_generated_name() {
+    let doc = doc_with("schema_version: 3\n", &via(&["wings1"])).replacen(
+        "listeners:\n",
+        "listeners:\n  - name: web-up-wings1\n    bind: \"0.0.0.0:7000\"\n    pool: origin\n",
+        1,
+    );
+    let e = parse_str(&doc).unwrap_err().to_string();
+    assert!(
+        e.contains("listener name web-up-wings1 already used"),
+        "{e}"
+    );
+}
+
+#[test]
+fn a_full_range_is_a_clear_error() {
+    // Two pools, a one-port range.
+    let doc = format!(
+        "  internal_ports: \"19000-19000\"\n{}",
+        via(&["wings1", "wings2"])
+    );
+    let e = err(&doc);
+    assert!(
+        e.contains("no free port in internal_ports 19000-19000"),
+        "{e}"
+    );
+}
+
+#[test]
+fn a_game_listener_sharing_the_pool_is_untouched() {
+    let base = doc_with("schema_version: 3\n", &via(&["wings1"]));
+    let with_game = base.replacen(
+        "listeners:\n",
+        "listeners:\n  - name: game\n    bind: \"0.0.0.0:7000\"\n    pool: wings1\n",
+        1,
+    );
+    let cfg = parse_str(&with_game).unwrap();
+    let game = cfg.listeners.iter().find(|l| l.name == "game").unwrap();
+    assert_eq!(game.routes.len(), 1);
+    assert_eq!(game.routes[0].action, Action::Pool("wings1".into()));
+    assert_eq!(cfg.pools.iter().filter(|p| p.name == "wings1").count(), 1);
 }

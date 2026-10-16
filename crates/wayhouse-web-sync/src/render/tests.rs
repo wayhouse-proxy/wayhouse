@@ -23,9 +23,12 @@ fn addr(a: &str) -> WebUpstreamView {
 fn web(sites: Vec<WebSiteView>) -> WebView {
     WebView {
         pool: "web".into(),
-        listen_http: "127.0.0.1:8080".into(),
-        listen_https: "127.0.0.1:8443".into(),
+        listen: wayhouse_config::WebListenView {
+            http: "127.0.0.1:8080".into(),
+            https: "127.0.0.1:8443".into(),
+        },
         trusted_proxy: vec![],
+        internal_bind: "127.0.0.1".into(),
         sites,
     }
 }
@@ -366,7 +369,7 @@ fn rendering_is_deterministic() {
 #[test]
 fn a_listen_address_that_does_not_parse_is_refused() {
     let mut w = web(vec![]);
-    w.listen_https = "not-an-address".into();
+    w.listen.https = "not-an-address".into();
     let admin = AdminAddr::parse("127.0.0.1:2019").unwrap();
     let e = render(&RenderInput {
         web: &w,

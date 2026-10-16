@@ -191,6 +191,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
 | wayhouse-ui frontend | `make ui` (needs Node/npm; builds `crates/wayhouse-ui/web/` to `dist/`, served by `wayhouse-ui --static-dir`; see `crates/wayhouse-ui/web/README.md`) |
 | wayhouse-ui frontend tests | `make ui-test` (vitest) and `make ui-e2e` (Playwright, backend stubbed; both in the `ui` CI job) |
 | Markdown | `make docs-fmt` (Prettier, writes) / `make docs-fmt-check` and `make docs-links` (relative links and anchors); both checks are the `docs` CI job. AGENTS.md, HANDOVER.md and `docs/NN-*.md` are in `.prettierignore` for now |
+| Website | `site/` (landing page + `book.toml`) and `docs/SUMMARY.md` (the book's table of contents) are built by `.github/workflows/pages.yml` into <https://wayhouse-proxy.dev> (mdBook, pinned by digest; deploys on pushes to `main`). Build locally with `mdbook build site && python3 site/fix_links.py target/site/docs`; `fix_links.py` points links that leave `docs/` at GitHub and fails on any broken link |
 | Run | `cargo run -p wayhouse -- --config config.example.yaml` |
 | Validate a config | `cargo run -p wayhouse -- --config <file> --check` |
 | Reload a running proxy | edit the config file, or `kill -HUP <pid>` |
@@ -288,6 +289,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
 | Wire format of a component protocol (HTTP/JSON, SSE, raft RPC, gossip frame) | breaking change: bump `PROTOCOL_MAJOR` (additive: `PROTOCOL_MINOR`) in `wayhouse-http/src/protocol.rs`; a breaking *gossip frame* change bumps `GOSSIP_VERSION` in `wayhouse-core/src/gossip.rs` instead (not `PROTOCOL_MAJOR`: gossip is UDP and has no N / N-1 window); a new component-facing route goes behind `wayhouse_http::protocol::gate`; `docs/10` "Versioning"; add or update the newest row of the version table in `docs/upgrading.md` (checked by `.github/scripts/check_upgrading_doc.py`); the N / N-1 window is in `docs/superpowers/specs/2026-10-05-component-versioning-design.md` |
 | Config field (even optional) | bump `CONFIG_SCHEMA_VERSION` and add the dotted path to `FIELD_SINCE` in `wayhouse-config/src/version.rs` (`docs/05` "Schema version") |
 | Controller store layout | bump `STORE_FORMAT` in `wayhouse-controller/src/store.rs`, migrate older formats in `Store::open`, and add the row to `docs/upgrading.md` |
+| New page under `docs/` (not `docs/superpowers/`) | a line in `docs/SUMMARY.md`, or it is not on the website |
 | New routing matcher / balancer | `docs/03`, `config.example.yaml`, tests |
 | Registry index / manifest format or the sniffer ABI version rules | `wayhouse-registry` (`index.rs`, `compat.rs`), the golden `tests/golden/index.json`, `docs/sniffers.md`, the registry spec |
 | New / changed sniffer seam | `wayhouse_core::sniff`, `docs/03`, `docs/08` (Phase 9). NB: no game sniffers are compiled in — they load as sniffers (Phase 9), never as core code or a fork. |

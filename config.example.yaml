@@ -350,8 +350,9 @@ listeners:
         action: { pool: realtime }
 
 # Web sites published through a Caddy behind the `web` pool (schema 3; Caddy design:
-# issue #297). Validated only for now: the section changes no routing. The `web` pool
-# must set `proxy_protocol: v2`, and a listener must route to it (port / sni route).
+# issue #297). The `web` pool must set `proxy_protocol: v2`, and a listener must route
+# to it (port / sni route). Each `via: wayhouse` pool gets a generated loopback
+# listener `web-up-<pool>`; `GET /web` on the admin API shows the resolved sites.
 # schema_version: 3
 # web:
 #   pool: web

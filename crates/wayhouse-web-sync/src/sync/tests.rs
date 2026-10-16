@@ -56,9 +56,12 @@ fn site(upstream: WebUpstreamView) -> WebSiteView {
 fn web(sites: Vec<WebSiteView>) -> WebView {
     WebView {
         pool: "web".into(),
-        listen_http: "127.0.0.1:8080".into(),
-        listen_https: "127.0.0.1:8443".into(),
+        listen: wayhouse_config::WebListenView {
+            http: "127.0.0.1:8080".into(),
+            https: "127.0.0.1:8443".into(),
+        },
         trusted_proxy: vec![],
+        internal_bind: "127.0.0.1".into(),
         sites,
     }
 }

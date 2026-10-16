@@ -49,8 +49,8 @@ pub struct RenderInput<'a> {
 pub fn render(input: &RenderInput<'_>) -> Result<Value, RenderError> {
     let web = input.web;
     for (what, v) in [
-        ("listen_http", &web.listen_http),
-        ("listen_https", &web.listen_https),
+        ("listen_http", &web.listen.http),
+        ("listen_https", &web.listen.https),
     ] {
         v.parse::<std::net::SocketAddr>()
             .map_err(|_| RenderError::Invalid {
@@ -70,7 +70,7 @@ pub fn render(input: &RenderInput<'_>) -> Result<Value, RenderError> {
     let routes = routes(input)?;
     let wrapper = json!({"wrapper": "proxy_protocol", "allow": allow, "fallback_policy": "REJECT"});
     let https = json!({
-        "listen": [web.listen_https],
+        "listen": [web.listen.https],
         "listener_wrappers": [wrapper, {"wrapper": "tls"}],
         "protocols": ["h1", "h2"],
         "tls_connection_policies": [{}],
@@ -80,7 +80,7 @@ pub fn render(input: &RenderInput<'_>) -> Result<Value, RenderError> {
         "routes": routes.https,
     });
     let http = json!({
-        "listen": [web.listen_http],
+        "listen": [web.listen.http],
         "listener_wrappers": [wrapper],
         "protocols": ["h1", "h2"],
         "automatic_https": {"disable": true},

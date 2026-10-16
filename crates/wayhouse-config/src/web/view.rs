@@ -9,11 +9,18 @@ use super::{UpstreamTls, WebConfig, WebUpstream, WebVia};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebView {
     pub pool: String,
-    pub listen_http: String,
-    pub listen_https: String,
+    pub listen: WebListenView,
     /// CIDRs Caddy trusts PROXY headers from, besides loopback.
     pub trusted_proxy: Vec<String>,
+    /// Loopback address of the generated `via: wayhouse` listeners.
+    pub internal_bind: String,
     pub sites: Vec<WebSiteView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebListenView {
+    pub http: String,
+    pub https: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,9 +52,7 @@ pub enum UpstreamTlsView {
 }
 
 /// `{"addr": "ip:port"}` or `{"pool": name, "via": "direct"|"wayhouse"}`.
-/// `local` is the loopback listener a `via: wayhouse` pool is reached on, once
-/// the routing slice has generated one (until then it is absent and the sync
-/// skips the upstream).
+/// `local` is the generated loopback listener a `via: wayhouse` pool is reached on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum WebUpstreamView {
@@ -67,9 +72,12 @@ impl WebConfig {
     pub fn view(&self) -> WebView {
         WebView {
             pool: self.pool.clone(),
-            listen_http: self.listen_http.to_string(),
-            listen_https: self.listen_https.to_string(),
+            listen: WebListenView {
+                http: self.listen_http.to_string(),
+                https: self.listen_https.to_string(),
+            },
             trusted_proxy: self.trusted_proxy.iter().map(ToString::to_string).collect(),
+            internal_bind: self.internal_bind.to_string(),
             sites: self
                 .sites
                 .iter()
@@ -82,10 +90,15 @@ impl WebConfig {
                             WebUpstream::Addr(a) => WebUpstreamView::Addr {
                                 addr: a.to_string(),
                             },
-                            WebUpstream::Pool { name, via, .. } => WebUpstreamView::Pool {
+                            WebUpstream::Pool { name } => WebUpstreamView::Pool {
                                 pool: name.clone(),
-                                via: *via,
+                                via: WebVia::Direct,
                                 local: None,
+                            },
+                            WebUpstream::Local { pool, addr } => WebUpstreamView::Pool {
+                                pool: pool.clone(),
+                                via: WebVia::Wayhouse,
+                                local: Some(addr.to_string()),
                             },
                         })
                         .collect(),
