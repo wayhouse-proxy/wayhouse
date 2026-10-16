@@ -214,8 +214,9 @@
 > **Web sites (schema 3):** the optional top-level `web:` section describes HTTP(S) sites
 > published through a Caddy that sits behind a Wayhouse pool (design: issue #297, spec
 > `docs/superpowers/specs/2026-10-15-web-routing-design.md`). It is validated and resolved
-> as `Config.web`; the data path does not read it yet, so it needs `schema_version: 3`
-> and changes no routing.
+> as `Config.web` and needs `schema_version: 3`. The only routing it adds are the
+> loopback listeners for `via: wayhouse` upstreams (below); everything else is read by the
+> Caddy renderer (`GET /web`, `docs/06`).
 >
 > ```yaml
 > web:
@@ -246,6 +247,27 @@
 > `allow` must contain the peer. A non-loopback `listen` with an empty `trusted_proxy` logs
 > a warning, as does a `web.pool` that no TCP listener routes to (`--check`, startup and
 > reload).
+>
+> **Listeners for `via: wayhouse` upstreams.** For each distinct pool used with
+> `via: wayhouse` the validator appends a TCP listener `web-up-<pool>` to the config's
+> listeners, bound to `internal_bind:<port>` with one `always` route to that pool. Caddy's
+> upstream is that loopback address, so the connection takes the normal path: pool
+> balancing, health checks, drains, tunnel backends. Several sites sharing a pool share
+> one listener. The port is the pin if there is one, otherwise the first 8 bytes of the
+> SHA-256 of the pool name (big-endian) modulo the range size, moving on to the next free
+> port when taken. Taken means: another pool's pin or generated port, an operator TCP
+> listener bound to the same address or to the wildcard address of the same family, or the
+> admin address. Adding or removing another pool does not move an existing pool's port,
+> except when two names hash to the same port; pools are then handled in name order, so pin
+> a port if you need it fixed whatever else changes. A pin on a port an operator listener or
+> the admin API already holds is an error, as are a listener name that clashes with
+> `web-up-<pool>` and a range with no free port left. Reload reconciles these listeners by
+> name like any other.
+>
+> **Client address.** Caddy sets `X-Forwarded-For` from the PROXY v2 header, so an origin
+> sees the client address in HTTP with either `via` mode. On the `via: wayhouse` hop the TCP
+> peer is Caddy's loopback address, which is expected: Wayhouse does not parse PROXY headers
+> inbound and none is needed for HTTP.
 >
 > **Plugin routes (schema 2):** `plugin_routes: { type: sni }` (or `{ type: sniffer,
 > sniffer: <name> }`) on a TCP listener lets enabled controller plugins add routes to it

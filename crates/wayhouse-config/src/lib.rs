@@ -31,7 +31,7 @@ pub use resolved::{
     SniffersConfig, SourceConfig, SourceKind, TokenBucket,
 };
 pub use schema::AdminTls;
-pub use web::{WebConfig, WebSite, WebUpstream, WebVia};
+pub use web::{local_listener_name, WebConfig, WebSite, WebUpstream, WebVia};
 
 use schema::RawConfig;
 use validate::validate;

@@ -1095,7 +1095,7 @@ pub(crate) fn validate(
 
     let web = raw
         .web
-        .map(|w| crate::web::validate_web(w, &pools))
+        .map(|w| crate::web::validate_web(w, &pools, &mut listeners, admin_listen))
         .transpose()?;
 
     Ok(Config {

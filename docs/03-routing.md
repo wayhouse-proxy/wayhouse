@@ -322,3 +322,22 @@ listener raw-udp-v4
 its own key, and `routes:` entries are `{ match: {...}, action: {...} }`. See
 `docs/05` for the actual shape; the range-bind idea itself (F1.4) is real and
 built.)
+
+### G) Web sites behind Caddy (`web:`)
+```
+listener https   bind 0.0.0.0:443   route 1: sni *.example.com → pool web   (proxy_protocol: v2)
+listener http    bind 0.0.0.0:80    route 1: always            → pool web
+pool web         targets [127.0.0.1:8443] proxy_protocol v2     ← Caddy's PROXY-aware listener
+
+web.sites[].upstreams:  addr 10.0.0.5:8080            Caddy → origin directly
+                        pool panel                    Caddy resolves the pool's backends (via: direct)
+                        pool wings1, via: wayhouse    Caddy → 127.0.0.1:<port> → listener web-up-wings1 → pool wings1
+```
+Wayhouse stays on the public ports and does not parse HTTP. The entry route (a `port` or
+`sni` route to the `web` pool with `proxy_protocol: v2`) delivers a PROXY v2 header with
+the real client address, then the client's bytes untouched. Behind Caddy, a plain `addr`
+or a `via: direct` pool is reached by Caddy itself; a `via: wayhouse` pool goes back
+through a generated loopback listener, so balancing, health checks, drains and tunnel
+backends apply to the origin. Caddy puts the client address in `X-Forwarded-For`; on the
+`via: wayhouse` hop the TCP peer is Caddy's loopback address. Fields, defaults and the
+port allocation are in `docs/05` ("Web sites"); `GET /web` is in `docs/06`.
