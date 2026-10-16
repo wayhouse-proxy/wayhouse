@@ -23,6 +23,7 @@
 - [Upgrading a fleet](upgrading.md)
 - [Plugins](plugins.md)
 - [Sniffers](sniffers.md)
+- [Web proxy (Caddy)](web-proxy.md)
 
 # Reference
 
