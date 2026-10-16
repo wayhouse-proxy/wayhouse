@@ -7,9 +7,10 @@ ports actually works once it's namespaced by a container runtime.
 ## Container images
 
 The reference build is [`deploy/Dockerfile`](../deploy/Dockerfile): one file, a
-shared `rust:1-trixie` builder and six runtime targets (the five binaries plus `wayhouse-minimal`, below) on
-`gcr.io/distroless/cc-debian13:nonroot` (see [`deploy/README.md`](../deploy/README.md);
-`make deploy-images` builds all six; `make deploy-scan` runs an informational Trivy
+shared `rust:1-trixie` builder and seven runtime targets (the five binaries, `wayhouse-minimal`, below, and
+`wayhouse-caddy`, [web proxy](web-proxy.md)) on
+`gcr.io/distroless/cc-debian13:nonroot` (Caddy on its own pinned base; see [`deploy/README.md`](../deploy/README.md);
+`make deploy-images` builds all seven; `make deploy-scan` runs an informational Trivy
 scan of them and of the lockfiles they're built from — CI's `deploy` and `trivy` jobs).
 `wayhouse-minimal` is `wayhouse` built with `--no-default-features` (issue #62): no WASM sniffer loader,
 gRPC resolver, `dns_srv` source, Tier-2 gossip fabric or WireGuard tunnel client, so the

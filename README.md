@@ -206,9 +206,9 @@ The admin API listens on `127.0.0.1:9900` by default:
 
 Set the log level with `WAYHOUSE_LOG` (for example `WAYHOUSE_LOG=debug`).
 
-Container images (six targets in one `Dockerfile`), a Docker Compose demo and plain
+Container images (seven targets in one `Dockerfile`), a Docker Compose demo and plain
 Kubernetes manifests live in [`deploy/`](deploy/); they are reference material, not a
-supported deployment. Sniffers are described in [`docs/sniffers.md`](docs/sniffers.md).
+supported deployment. Web sites go through a packaged Caddy: [`docs/web-proxy.md`](docs/web-proxy.md). Sniffers are described in [`docs/sniffers.md`](docs/sniffers.md).
 
 ## Documentation
 

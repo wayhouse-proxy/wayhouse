@@ -1,0 +1,59 @@
+# Web front door (docs/web-proxy.md): Caddy plus wayhouse-web-sync as a gateway tier. Label
+# the nodes that should terminate HTTPS (`kubectl label node <n> wayhouse/web-gateway=true`);
+# each runs next to its wayhouse pod (50-wayhouse-daemonset.yaml) and shares the node's
+# network, which is how wayhouse reaches Caddy on the node's loopback and how Caddy sees a
+# tunnel interface to origins behind wayhouse-agent. The wayhouse config needs a `web:` section
+# and a `web` pool (compose/wayhouse-web.yaml shows one).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: wayhouse-web, namespace: wayhouse }
+spec:
+  selector: { matchLabels: { app: wayhouse-web } }
+  template:
+    metadata: { labels: { app: wayhouse-web } }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector: { wayhouse/web-gateway: "true" }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: caddy
+          image: wayhouse-deploy/wayhouse-caddy:local
+          # Ready once web-sync has loaded the first configuration (Caddy has no listener before).
+          readinessProbe: { tcpSocket: { host: 127.0.0.1, port: 8443 }, periodSeconds: 5 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: run, mountPath: /run/caddy }
+            - { name: data, mountPath: /data }
+            - { name: config, mountPath: /config }
+            - { name: tmp, mountPath: /tmp }
+        - name: web-sync
+          image: wayhouse-deploy/wayhouse:local
+          command: ["/usr/local/bin/wayhouse-web-sync"]
+          args:
+            - --wayhouse-admin=http://127.0.0.1:9900
+            - --caddy-admin=/run/caddy/admin.sock
+          env:
+            # Only if settings.admin.auth_token is set on wayhouse.
+            - name: WAYHOUSE_ADMIN_TOKEN
+              valueFrom: { secretKeyRef: { name: wayhouse-tokens, key: admin-token, optional: true } }
+          livenessProbe: { httpGet: { host: 127.0.0.1, path: /metrics, port: 9904 }, initialDelaySeconds: 10 }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: run, mountPath: /run/caddy }
+      volumes:
+        - { name: run, emptyDir: {} }
+        - { name: data, emptyDir: {} }
+        - { name: config, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }

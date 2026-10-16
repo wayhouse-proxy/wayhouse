@@ -53,7 +53,8 @@ async fn proxy_one_minor_behind_registers_and_gets_baseline_fields() -> Result<(
         current.minor >= 1,
         "this test plays a peer one minor behind"
     );
-    let older = format!("{}.{}", current.major, current.minor - 1);
+    // Minor 1 introduced the `capabilities` field; a peer below it gets the baseline.
+    let older = format!("{}.0", current.major);
 
     let (status, ours, body) = register(&base, "old-proxy", &older).await?;
     assert_eq!(status, 200, "{body}");

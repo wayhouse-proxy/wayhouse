@@ -1,0 +1,36 @@
+# An example config with a `web:` section for compose.web.yml (docs/web-proxy.md).
+# Submit it to the controller instead of wayhouse.yaml, or mount it as the config file.
+# Needs schema 3. The listeners use high ports so the demo runs unprivileged; a real
+# entry node binds :80 and :443.
+schema_version: 3
+settings:
+  workers: 1
+  shutdown_grace_sec: 5
+  admin:
+    listen: "127.0.0.1:9900"
+pools:
+  # Caddy, as the web-sync renders it (web.listen below). PROXY v2 carries the real client
+  # address, and Caddy only accepts it from wayhouse.
+  - name: web
+    targets: ["127.0.0.1:8443"]
+    proxy_protocol: v2
+    health_check: { type: tcp_connect, interval_sec: 2, timeout_ms: 500, rise: 1, fall: 3 }
+  - name: web-http
+    targets: ["127.0.0.1:8080"]
+    proxy_protocol: v2
+    health_check: { type: tcp_connect, interval_sec: 2, timeout_ms: 500, rise: 1, fall: 3 }
+listeners:
+  - name: https-in
+    bind: "0.0.0.0:8444"
+    protocol: tcp
+    pool: web
+  - name: http-in
+    bind: "0.0.0.0:8081"
+    protocol: tcp
+    pool: web-http
+web:
+  pool: web
+  sites:
+    - hosts: [app.example.com]
+      upstreams:
+        - addr: 127.0.0.1:3000   # your web app

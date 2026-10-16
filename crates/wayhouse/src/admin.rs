@@ -180,43 +180,14 @@ async fn undrain(State(s): State<AdminState>) -> (StatusCode, &'static str) {
 }
 
 /// `GET /web` — the resolved `web:` section as JSON, for `wayhouse-web-sync`: where
-/// Caddy listens, and per site its hosts and upstreams in final form (`addr`; `pool`
-/// with `via: direct`; `pool` plus the generated loopback `local` address with
-/// `via: wayhouse`). `404` when the config has no `web:` section.
+/// Caddy listens, and per site its hosts, upstreams in final form (`addr`; `pool` with
+/// `via: direct`; `pool` plus the generated loopback `local` address with
+/// `via: wayhouse`) and TLS settings. `404` when the config has no `web:` section.
 async fn web(State(s): State<AdminState>) -> Response {
-    use wayhouse_config::WebUpstream;
-    let snap = s.runtime.snapshot();
-    let Some(w) = &snap.web else {
-        return (StatusCode::NOT_FOUND, "no web section configured\n").into_response();
-    };
-    let sites: Vec<_> = w
-        .sites
-        .iter()
-        .map(|site| {
-            let upstreams: Vec<_> = site
-                .upstreams
-                .iter()
-                .map(|u| match u {
-                    WebUpstream::Addr(a) => serde_json::json!({ "addr": a.to_string() }),
-                    WebUpstream::Pool { name } => {
-                        serde_json::json!({ "pool": name, "via": "direct" })
-                    }
-                    WebUpstream::Local { pool, addr } => serde_json::json!({
-                        "pool": pool, "via": "wayhouse", "local": addr.to_string()
-                    }),
-                })
-                .collect();
-            serde_json::json!({ "hosts": site.hosts, "upstreams": upstreams })
-        })
-        .collect();
-    axum::Json(serde_json::json!({
-        "pool": w.pool,
-        "listen": { "http": w.listen_http.to_string(), "https": w.listen_https.to_string() },
-        "trusted_proxy": w.trusted_proxy.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        "internal_bind": w.internal_bind.to_string(),
-        "sites": sites,
-    }))
-    .into_response()
+    match &s.runtime.snapshot().web {
+        Some(w) => axum::Json(w.view()).into_response(),
+        None => (StatusCode::NOT_FOUND, "no web section configured\n").into_response(),
+    }
 }
 
 /// `GET /config` — a plaintext view of the active snapshot (listeners + pools).
@@ -1010,6 +981,47 @@ mod tests {
             .unwrap()
             .local_addr()
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn web_serves_the_resolved_section_and_404s_without_one() {
+        let backend = slow_echo_backend().await;
+        let proxy = free_port();
+        let base_yaml = format!(
+            "pools:\n  - name: web\n    targets: [\"127.0.0.1:8443\"]\n    proxy_protocol: v2\n\
+             \x20 - name: p\n    targets: [\"{backend}\"]\n\
+             listeners:\n  - name: l\n    bind: \"{proxy}\"\n    routes:\n\
+             \x20     - match: {{ type: always }}\n        action: {{ pool: web }}\n"
+        );
+        let http = reqwest::Client::new();
+
+        let (base, runtime) = spawn_admin(&base_yaml).await;
+        let r = http.get(format!("{base}/web")).send().await.unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::NOT_FOUND);
+        runtime
+            .shutdown_with_grace(Duration::from_millis(100))
+            .await;
+
+        let yaml = format!(
+            "schema_version: 3\n{base_yaml}web:\n  sites:\n    - hosts: [Panel.example.com]\n      \
+             upstreams: [{{ addr: \"{backend}\" }}]\n      upstream_tls: skip\n"
+        );
+        let (base, runtime) = spawn_admin(&yaml).await;
+        let v: serde_json::Value = http
+            .get(format!("{base}/web"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(v["pool"], "web");
+        assert_eq!(v["sites"][0]["hosts"][0], "panel.example.com");
+        assert_eq!(v["sites"][0]["upstreams"][0]["addr"], backend.to_string());
+        assert_eq!(v["sites"][0]["upstream_tls"], "skip");
+        runtime
+            .shutdown_with_grace(Duration::from_millis(100))
+            .await;
     }
 
     #[tokio::test]

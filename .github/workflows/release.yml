@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes the six reference images (deploy/Dockerfile) to GHCR for linux/amd64
+# Publishes the seven reference images (deploy/Dockerfile) to GHCR for linux/amd64
 # and linux/arm64 when a version tag is pushed. Nothing else triggers it, so it
 # costs one build per architecture per release. Kubernetes packaging: issue #88.
 #
@@ -8,7 +8,7 @@ name: Release
 #   1. the tag is v<workspace version>, so the tag, the image tags and what
 #      `--version` / wayhouse_build_info report agree;
 #   2. the tagged commit is on main and CI succeeded on it;
-#   3. all six images build on a native runner of each architecture (no
+#   3. all seven images build on a native runner of each architecture (no
 #      emulation, no cross-compiling), each reports the version and carries the
 #      commit, and the compose smoke test passes on them;
 #   4. only then does the `publish` job push them: first the per-architecture
@@ -62,7 +62,7 @@ jobs:
             exit 1
           }
 
-  # One native build per architecture. Builds, tests and labels the six images,
+  # One native build per architecture. Builds, tests and labels the seven images,
   # then hands them to `publish` as a tarball; nothing is pushed from here.
   images:
     needs: verify
@@ -80,13 +80,16 @@ jobs:
       contents: read
     env:
       REGISTRY: ghcr.io
-      IMAGES: wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent
+      IMAGES: wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent wayhouse-caddy
       ARCH: ${{ matrix.arch }}
+      # The images whose `--version` is the wayhouse version; wayhouse-caddy is checked
+      # against the Caddy pinned in deploy/Dockerfile by build-images.sh instead.
+      WAYHOUSE_IMAGES: wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Build all six images, check version and commit, run the compose smoke test
+      - name: Build all seven images, check version and commit, run the compose smoke test
         env:
           WAYHOUSE_GIT_SHA: ${{ github.sha }}
           VERSION: ${{ needs.verify.outputs.version }}
@@ -94,7 +97,7 @@ jobs:
           set -eu
           test "$(docker version --format '{{.Server.Arch}}')" = "$ARCH"
           BIN_SOURCE=builder sh deploy/build-images.sh
-          for t in $IMAGES; do
+          for t in $WAYHOUSE_IMAGES; do
             out=$(docker run --rm "wayhouse-deploy/$t:local" --version)
             case "$out" in *" $VERSION ("*")") ;; *) echo "::error::$t --version is '$out', expected version $VERSION"; exit 1 ;; esac
           done
@@ -112,11 +115,14 @@ jobs:
           refs=""
           for t in $IMAGES; do
             ref="$REGISTRY/$owner/$t:$VERSION-$ARCH"
+            # wayhouse-caddy is Caddy (Apache-2.0) plus our base config.
+            licenses="MIT OR Apache-2.0"
+            [ "$t" != wayhouse-caddy ] || licenses="Apache-2.0"
             printf 'FROM wayhouse-deploy/%s:local\n' "$t" | docker build \
               --label "org.opencontainers.image.source=https://github.com/$REPO" \
               --label "org.opencontainers.image.version=$VERSION" \
               --label "org.opencontainers.image.revision=$SHA" \
-              --label "org.opencontainers.image.licenses=MIT OR Apache-2.0" \
+              --label "org.opencontainers.image.licenses=$licenses" \
               -t "$ref" -
             refs="$refs $ref"
           done
@@ -137,7 +143,7 @@ jobs:
       packages: write   # push to ghcr.io/<owner>/<image>
     env:
       REGISTRY: ghcr.io
-      IMAGES: wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent
+      IMAGES: wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent wayhouse-caddy
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:

@@ -30,7 +30,7 @@ import subprocess
 import sys
 from typing import Dict, FrozenSet, List, NamedTuple, Optional, Set
 
-AREAS = ("ui", "sniffers", "tunnel", "deploy", "fuzz", "release")
+AREAS = ("ui", "sniffers", "tunnel", "deploy", "fuzz", "web", "release")
 
 # The packages each Rust job builds or tests. A name, or a directory ending in
 # "/" for every package under it.
@@ -42,6 +42,8 @@ ROOTS = {
     "tunnel": ["wayhouse", "wayhouse-agent", "wayhouse-controller", "wayhouse-aggregator", "wayhouse-ui", "wayhouse-fleet-tests"],
     # crates/wayhouse-config/fuzz (its own workspace; depends on wayhouse-config).
     "fuzz": ["wayhouse-config-fuzz"],
+    # web-e2e: wayhouse + wayhouse-web-sync against the real Caddy, driven by wayhouse-fleet-tests.
+    "web": ["wayhouse", "wayhouse-web-sync", "wayhouse-fleet-tests"],
 }
 
 # The root manifest (inherited by members of every workspace), the toolchain and
@@ -60,6 +62,8 @@ EXTRA = {
     # already runs everything.)
     "sniffers": re.compile(r"^\.config/|^sniffers\.lock$"),
     "tunnel": re.compile(r"^Makefile$|^\.config/"),
+    # The Caddy under test comes out of the wayhouse-caddy image (deploy/Dockerfile).
+    "web": re.compile(r"^deploy/(Dockerfile|caddy/|check-caddy-image\.sh)"),
     # The UI's npm lockfile is here too: those packages end up in the wayhouse-ui
     # image's bundle, and the deploy job's Trivy scan checks them.
     "deploy": re.compile(

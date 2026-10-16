@@ -215,8 +215,8 @@
 > published through a Caddy that sits behind a Wayhouse pool (design: issue #297, spec
 > `docs/superpowers/specs/2026-10-15-web-routing-design.md`). It is validated and resolved
 > as `Config.web` and needs `schema_version: 3`. The only routing it adds are the
-> loopback listeners for `via: wayhouse` upstreams (below); everything else is read by the
-> Caddy renderer (`GET /web`, `docs/06`).
+> loopback listeners for `via: wayhouse` upstreams (below); everything else is read by
+> [`wayhouse-web-sync`](web-proxy.md) through `GET /web` (`docs/06`) and rendered into Caddy.
 >
 > ```yaml
 > web:
@@ -231,6 +231,9 @@
 >         - addr: 10.0.0.5:8080     # a plain address, or
 >         - pool: panel             # a pool (via defaults to direct), or
 >         - { pool: wings1, via: wayhouse, port: 19010 }   # port pins the loopback listener
+>       tls: { cert: /certs/panel.pem, key: /certs/panel.key }   # served by Caddy (optional)
+>       upstream_tls: skip          # verify | skip | { ca_file: <path> }; absent = plain HTTP
+>       health_path: /healthz       # active health check path on each upstream (optional)
 > ```
 >
 > Rules: `pool` must exist and set `proxy_protocol: v2` (Caddy's PROXY listener rejects plain
@@ -244,7 +247,11 @@
 > `listen` may be a routable address: on a gateway node Caddy cannot listen on loopback only.
 > `trusted_proxy` is a **list** of IPs or CIDRs (a bare address is a /32 or /128); with a
 > `web` pool on another node, put that node's address in it, because Caddy's `proxy_protocol`
-> `allow` must contain the peer. A non-loopback `listen` with an empty `trusted_proxy` logs
+> `allow` must contain the peer. `tls.cert` and `tls.key` are PEM files that `wayhouse-web-sync`
+> reads (paths on its filesystem), both non-empty; without `tls` Caddy has no certificate for the
+> site's hosts and serves them over plain HTTP. `upstream_tls` is per site: `skip` turns off
+> verification (acceptable on an authenticated tunnel), `ca_file` is a path on Caddy's side.
+> `health_path` must start with `/`. A non-loopback `listen` with an empty `trusted_proxy` logs
 > a warning, as does a `web.pool` that no TCP listener routes to (`--check`, startup and
 > reload).
 >

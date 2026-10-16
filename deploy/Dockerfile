@@ -19,7 +19,7 @@ RUN npm ci
 COPY crates/wayhouse-ui/web/ ./
 RUN npm run build
 
-# --- one builder for all five binaries (deps compile once) ---------------
+# --- one builder for all the binaries (deps compile once) ---------------
 # Plus wayhouse-minimal: `wayhouse` built with `--no-default-features` (issue #62), first,
 # so the full build below leaves target/release/wayhouse the full one.
 FROM rust:1-trixie@sha256:3745c050d12adc738eff16ebfc81ed044bfb2cc27c6828850ff1666beb1c7a49 AS builder
@@ -47,9 +47,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cp target/release/wayhouse /out/wayhouse-minimal \
  && cargo auditable build --release --locked \
       -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-agent \
+      -p wayhouse-web-sync \
  && cp target/release/wayhouse target/release/wayhouse-controller \
        target/release/wayhouse-aggregator target/release/wayhouse-ui \
-       target/release/wayhouse-agent /out/ \
+       target/release/wayhouse-agent target/release/wayhouse-web-sync /out/ \
  && chown 65532:65532 /out/data
 
 # --- prebuilt binaries (BIN_SOURCE=prebuilt) -----------------------------
@@ -64,6 +65,9 @@ FROM ${BIN_SOURCE} AS bins
 # distroless/cc-debian13 (glibc 2.41 == the builder's) has CA certs, no shell.
 FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS wayhouse
 COPY --from=bins /out/wayhouse /usr/local/bin/wayhouse
+# The Caddy sync (docs/web-proxy.md): a second service from this same image, started with
+# `entrypoint: /usr/local/bin/wayhouse-web-sync`. Unused unless the config has a `web:` section.
+COPY --from=bins /out/wayhouse-web-sync /usr/local/bin/wayhouse-web-sync
 # Writable by the nonroot uid: the tunnel key file lives on a volume here.
 COPY --from=bins --chown=65532:65532 /out/data /data
 ENTRYPOINT ["/usr/local/bin/wayhouse"]
@@ -102,3 +106,26 @@ COPY --from=bins /out/wayhouse-agent /usr/local/bin/wayhouse-agent
 COPY --from=bins --chown=65532:65532 /out/data /data
 ENTRYPOINT ["/usr/local/bin/wayhouse-agent"]
 CMD ["--data-dir", "/data"]
+
+# Caddy for the web front door (docs/web-proxy.md), published as `wayhouse-caddy`. Stock
+# Caddy, pinned by version and digest: the spike (#355) used built-in modules only. When a
+# DNS-01 module is needed, make this stage `FROM caddy:<ver>-builder`, run
+# `xcaddy build v<ver> --with <module>` and copy the binary over /usr/bin/caddy, then re-pin.
+# Bump: resolve the tag's index digest (`docker manifest inspect caddy:<ver>`), change both
+# here; deploy/check-caddy-image.sh then checks the image reports that version.
+FROM caddy:2.11.7@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af AS wayhouse-caddy
+# The base image grants /usr/bin/caddy cap_net_bind_service as a file capability. We listen
+# on high ports and run unprivileged, and a file capability makes exec fail once a
+# deployment drops all capabilities (a common k8s hardening). `cp` does not copy file
+# capabilities, so replacing the file with a copy removes it.
+RUN cp /usr/bin/caddy /tmp/caddy && mv /tmp/caddy /usr/bin/caddy && chmod 0755 /usr/bin/caddy
+COPY deploy/caddy/base.json /etc/caddy/base.json
+# Caddy is Apache-2.0: ship the text and the attribution.
+COPY LICENSE-APACHE deploy/caddy/NOTICE /licenses/
+# 65532 like the other images: wayhouse-web-sync (the wayhouse image) shares the admin
+# socket directory and the socket is owner-only.
+RUN mkdir -p /run/caddy /data /config && chown 65532:65532 /run/caddy /data /config && chmod 0750 /run/caddy
+ENV XDG_CONFIG_HOME=/config XDG_DATA_HOME=/data
+USER 65532:65532
+ENTRYPOINT ["caddy"]
+CMD ["run", "--config", "/etc/caddy/base.json"]

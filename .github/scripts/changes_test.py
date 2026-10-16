@@ -18,7 +18,7 @@ sys.path.insert(0, HERE)
 
 import changes  # noqa: E402
 
-ALL = {"ui", "sniffers", "tunnel", "deploy", "fuzz", "release"}
+ALL = {"ui", "sniffers", "tunnel", "deploy", "fuzz", "web", "release"}
 
 
 def flags(out):
@@ -40,7 +40,7 @@ class RealRepo(unittest.TestCase):
         # deploy/README.md matches the `^deploy/` rule but builds and scans nothing.
         self.assertEqual(self.areas("deploy/README.md"), set())
         self.assertEqual(self.areas("crates/wayhouse-ui/web/README.md"), set())
-        self.assertEqual(self.areas("deploy/README.md", "deploy/Dockerfile"), {"deploy", "release"})
+        self.assertEqual(self.areas("deploy/README.md", "deploy/Dockerfile"), {"deploy", "web", "release"})
 
     def test_empty_list_is_nothing_not_all(self):
         self.assertEqual(self.areas(), set())
@@ -57,19 +57,19 @@ class RealRepo(unittest.TestCase):
     def test_wayhouse_core_reaches_sniffers_and_tunnel(self):
         self.assertEqual(
             self.areas("crates/wayhouse-core/src/pool.rs"),
-            {"sniffers", "tunnel", "release"},
+            {"sniffers", "tunnel", "web", "release"},
         )
 
     def test_wayhouse_config_also_runs_fuzz(self):
         self.assertEqual(
             self.areas("crates/wayhouse-config/src/lib.rs"),
-            {"sniffers", "tunnel", "fuzz", "release"},
+            {"sniffers", "tunnel", "web", "fuzz", "release"},
         )
 
     def test_wayhouse_http_reaches_sniffers_and_tunnel(self):
         self.assertEqual(
             self.areas("crates/wayhouse-http/tests/fixtures/leaf.pem"),
-            {"sniffers", "tunnel", "release"},
+            {"sniffers", "tunnel", "web", "release"},
         )
 
     def test_fuzz_workspace_only_runs_fuzz(self):
@@ -94,7 +94,7 @@ class RealRepo(unittest.TestCase):
         self.assertEqual(self.areas("crates/wayhouse-ui/src/lib.rs"), {"tunnel"})
 
     def test_fleet_tests_are_tunnel_only(self):
-        self.assertEqual(self.areas("crates/wayhouse-fleet-tests/tests/tunnel.rs"), {"tunnel"})
+        self.assertEqual(self.areas("crates/wayhouse-fleet-tests/tests/tunnel.rs"), {"tunnel", "web"})
 
     def test_wayhouse_bench_runs_no_scoped_job(self):
         self.assertEqual(self.areas("crates/wayhouse-bench/src/main.rs"), set())
@@ -102,13 +102,13 @@ class RealRepo(unittest.TestCase):
     def test_wayhouse_proto_runs_sniffers_and_tunnel(self):
         self.assertEqual(
             self.areas("crates/wayhouse/proto/resolver.proto"),
-            {"sniffers", "tunnel", "release"},
+            {"sniffers", "tunnel", "web", "release"},
         )
 
     def test_an_unknown_path_under_crates_runs_every_rust_job(self):
         self.assertEqual(
             self.areas("crates/wayhouse-new/src/lib.rs"),
-            {"sniffers", "tunnel", "fuzz", "release"},
+            {"sniffers", "tunnel", "web", "fuzz", "release"},
         )
 
     def test_nextest_config_runs_the_nextest_jobs(self):
@@ -116,7 +116,7 @@ class RealRepo(unittest.TestCase):
 
     def test_root_cargo_lock_runs_its_workspace_and_deploy_not_fuzz(self):
         # crates/wayhouse-config/fuzz has its own workspace and lockfile.
-        self.assertEqual(self.areas("Cargo.lock"), {"sniffers", "tunnel", "deploy", "release"})
+        self.assertEqual(self.areas("Cargo.lock"), {"sniffers", "tunnel", "web", "deploy", "release"})
 
     def test_fuzz_lockfile_runs_fuzz_only(self):
         self.assertEqual(self.areas("crates/wayhouse-config/fuzz/Cargo.lock"), {"fuzz"})
@@ -124,12 +124,12 @@ class RealRepo(unittest.TestCase):
     def test_root_manifest_runs_all_rust_and_deploy(self):
         # Inherited by every workspace's members (wayhouse-config uses workspace = true).
         self.assertEqual(
-            self.areas("Cargo.toml"), {"sniffers", "tunnel", "deploy", "fuzz", "release"}
+            self.areas("Cargo.toml"), {"sniffers", "tunnel", "web", "deploy", "fuzz", "release"}
         )
 
     def test_toolchain_runs_all_rust(self):
         self.assertEqual(
-            self.areas("rust-toolchain.toml"), {"sniffers", "tunnel", "fuzz", "release"}
+            self.areas("rust-toolchain.toml"), {"sniffers", "tunnel", "web", "fuzz", "release"}
         )
 
     def test_makefile_runs_tunnel_and_deploy(self):
@@ -146,7 +146,7 @@ class RealRepo(unittest.TestCase):
     def test_mixed_ui_web_and_deploy(self):
         self.assertEqual(
             self.areas("crates/wayhouse-ui/web/package.json", "deploy/Dockerfile"),
-            {"ui", "deploy", "release"},
+            {"ui", "deploy", "web", "release"},
         )
 
     def test_every_package_is_loaded(self):
@@ -172,6 +172,7 @@ class SyntheticGraph(unittest.TestCase):
             "crates/wayhouse-aggregator": pkg("wayhouse-aggregator"),
             "crates/wayhouse-ui": pkg("wayhouse-ui"),
             "crates/wayhouse-fleet-tests": pkg("wayhouse-fleet-tests"),
+            "crates/wayhouse-web-sync": pkg("wayhouse-web-sync"),
             "crates/wayhouse-config/fuzz": pkg("wayhouse-config-fuzz", "crates/wayhouse-config"),
             "crates/wayhouse-sniffer-abi": pkg("wayhouse-sniffer-abi"),
         }

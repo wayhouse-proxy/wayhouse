@@ -56,6 +56,7 @@ jobs:
       tunnel: ${{ steps.f.outputs.tunnel }}
       deploy: ${{ steps.f.outputs.deploy }}
       fuzz: ${{ steps.f.outputs.fuzz }}
+      web: ${{ steps.f.outputs.web }}
       release: ${{ steps.f.outputs.release }}
       code: ${{ steps.f.outputs.code }}
       docs: ${{ steps.f.outputs.docs }}
@@ -201,7 +202,7 @@ jobs:
           cargo auditable build --release --locked -p wayhouse --no-default-features
           cp target/release/wayhouse target/release/wayhouse-minimal
       - name: Build the release binaries
-        run: cargo auditable build --release --locked -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-agent
+        run: cargo auditable build --release --locked -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-agent -p wayhouse-web-sync
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-binaries
@@ -212,6 +213,7 @@ jobs:
             target/release/wayhouse-aggregator
             target/release/wayhouse-ui
             target/release/wayhouse-agent
+            target/release/wayhouse-web-sync
           if-no-files-found: error
           retention-days: 1
 
@@ -238,7 +240,7 @@ jobs:
           cargo auditable build --release --locked -p wayhouse --no-default-features
           cp target/release/wayhouse target/release/wayhouse-minimal
       - name: Build the release binaries
-        run: cargo auditable build --release --locked -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-agent
+        run: cargo auditable build --release --locked -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-agent -p wayhouse-web-sync
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-binaries-arm64
@@ -249,6 +251,7 @@ jobs:
             target/release/wayhouse-aggregator
             target/release/wayhouse-ui
             target/release/wayhouse-agent
+            target/release/wayhouse-web-sync
           if-no-files-found: error
           retention-days: 1
 
@@ -303,6 +306,40 @@ jobs:
           path: target/nextest/ci/junit.xml
           retention-days: 7
           if-no-files-found: ignore
+
+  # wayhouse -> the real Caddy -> an origin, rendered by wayhouse-web-sync (#356, #357): the
+  # request reaches the origin with the real client IP, client-supplied forwarding headers are
+  # replaced, a PROXY header from outside `allow` is dropped, a WebSocket upgrades, HTTPS
+  # serves the operator's certificate. The Caddy is the one inside the wayhouse-caddy image
+  # (pinned in deploy/Dockerfile), copied out so the test runs the shipped bytes. Runs when
+  # wayhouse, the sync, the fleet tests or the image change; in `ci-ok.needs`.
+  web-e2e:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-24.04   # pinned: see the comment above `jobs:`
+    timeout-minutes: 45   # a stuck step must not hold the gate for the 6 h default (#243)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install protoc
+        uses: ./.github/actions/apt-install
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: ./.github/actions/cargo-cache
+        with: { name: web-e2e }
+      - name: Build the wayhouse-caddy image, check it, take its Caddy
+        run: |
+          set -eu
+          img=wayhouse-deploy/wayhouse-caddy:local
+          docker build -f deploy/Dockerfile --target wayhouse-caddy -t "$img" .
+          sh deploy/check-caddy-image.sh "$img"
+          cid=$(docker create "$img")
+          docker cp "$cid:/usr/bin/caddy" "$RUNNER_TEMP/caddy"
+          docker rm "$cid"
+      - name: Web proxy e2e
+        env:
+          CADDY_BIN: ${{ runner.temp }}/caddy
+        run: cargo test -p wayhouse-fleet-tests --test web --locked -- --ignored --nocapture
 
   ui:
     # wayhouse-ui frontend (crates/wayhouse-ui/web) — a standalone npm project, so it
@@ -421,13 +458,13 @@ jobs:
           path: deploy/prebuilt
       - name: Static checks (compose render, k8s wiring)
         run: make deploy-lint
-      - name: Build all six images and run --version on each
+      - name: Build all seven images and check each
         run: make deploy-images
       # For the trivy job, which has no access to this runner's Docker daemon.
       - name: Save the images for the trivy job
         run: |
           mkdir -p "$RUNNER_TEMP/images"
-          for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent; do
+          for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent wayhouse-caddy; do
             docker save -o "$RUNNER_TEMP/images/$t.tar" "wayhouse-deploy/$t:local"
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -462,13 +499,13 @@ jobs:
         with:
           name: release-binaries-arm64
           path: deploy/prebuilt
-      - name: Build all six images and run --version on each
+      - name: Build all seven images and check each
         run: make deploy-images
       # For the trivy-arm64 job, which has no access to this runner's Docker daemon.
       - name: Save the images for the trivy-arm64 job
         run: |
           mkdir -p "$RUNNER_TEMP/images"
-          for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent; do
+          for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent wayhouse-caddy; do
             docker save -o "$RUNNER_TEMP/images/$t.tar" "wayhouse-deploy/$t:local"
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -775,7 +812,7 @@ jobs:
   # passed, a failed or cancelled one fails the gate.
   ci-ok:
     if: always()
-    needs: [changes, test, musl, build-release, build-release-arm64, ui, tunnel, deploy, deploy-arm64, audit, trivy, trivy-arm64, fuzz, docs, release-policy, sniffers-e2e]
+    needs: [changes, test, musl, build-release, build-release-arm64, ui, tunnel, deploy, deploy-arm64, audit, trivy, trivy-arm64, fuzz, docs, release-policy, sniffers-e2e, web-e2e]
     runs-on: ubuntu-24.04   # pinned: see the comment above `jobs:`
     timeout-minutes: 5   # a stuck step must not hold the gate for the 6 h default (#254)
     steps:
