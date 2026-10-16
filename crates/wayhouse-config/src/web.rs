@@ -1,18 +1,22 @@
 //! The `web:` section: sites published through a Caddy that sits behind the `web`
 //! pool (spec `docs/superpowers/specs/2026-10-15-web-routing-design.md`).
 //!
-//! This module only validates and resolves the section; the data path ignores it.
-//! Generated `via: wayhouse` listeners and the renderer are separate slices.
+//! This module validates and resolves the section and appends one loopback
+//! listener `web-up-<pool>` per pool used with `via: wayhouse`; the data path
+//! otherwise ignores it. The Caddy renderer is a separate slice.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
+use crate::cidr::Acl;
 use crate::cidr::Cidr;
 use crate::matcher::HostPattern;
+use crate::matcher::Matcher;
 use crate::parse::parse_host_pattern;
-use crate::resolved::{PoolConfig, ProxyProtocol};
+use crate::resolved::{Action, ListenerConfig, PoolConfig, Protocol, ProxyProtocol, Route};
 use crate::ConfigError;
 
 /// Most ports `internal_ports` may span.
@@ -142,12 +146,16 @@ pub struct WebSite {
 pub enum WebUpstream {
     /// A plain `ip:port`.
     Addr(SocketAddr),
-    /// A defined pool, reached as `via` says; `port` pins a `via: wayhouse` listener.
-    Pool {
-        name: String,
-        via: WebVia,
-        port: Option<u16>,
-    },
+    /// A defined pool reached with `via: direct`: the renderer resolves its backends.
+    Pool { name: String },
+    /// A pool reached with `via: wayhouse`: Caddy connects to the generated loopback
+    /// listener `web-up-<pool>` at `addr`.
+    Local { pool: String, addr: SocketAddr },
+}
+
+/// Name of the generated listener for a `via: wayhouse` pool.
+pub fn local_listener_name(pool: &str) -> String {
+    format!("web-up-{pool}")
 }
 
 fn invalid(msg: String) -> ConfigError {
@@ -192,8 +200,26 @@ fn parse_trusted(raw: &str) -> Result<Cidr, ConfigError> {
     Cidr::parse(&full).map_err(|e| invalid(format!("web.trusted_proxy: {e}")))
 }
 
-/// Validates `raw` against the already-resolved `pools` and returns the section.
-pub(crate) fn validate_web(raw: RawWeb, pools: &[PoolConfig]) -> Result<WebConfig, ConfigError> {
+/// Whether `l` binds `port` on `ip` itself or on the matching wildcard address.
+fn bind_covers(bind: SocketAddr, ip: IpAddr, port: u16) -> bool {
+    bind.port() == port
+        && (bind.ip() == ip || (bind.ip().is_unspecified() && bind.is_ipv4() == ip.is_ipv4()))
+}
+
+/// First 8 bytes of the SHA-256 of the pool name, big-endian.
+fn name_hash(pool: &str) -> u64 {
+    let d = Sha256::digest(pool.as_bytes());
+    u64::from_be_bytes(d[..8].try_into().expect("sha256 digest has 32 bytes"))
+}
+
+/// Validates `raw` against the already-resolved `pools`, appends the `via: wayhouse`
+/// listeners to `listeners` and returns the section. `admin` is the admin API's address.
+pub(crate) fn validate_web(
+    raw: RawWeb,
+    pools: &[PoolConfig],
+    listeners: &mut Vec<ListenerConfig>,
+    admin: SocketAddr,
+) -> Result<WebConfig, ConfigError> {
     let web_pool = pools
         .iter()
         .find(|p| p.name == raw.pool)
@@ -239,6 +265,7 @@ pub(crate) fn validate_web(raw: RawWeb, pools: &[PoolConfig]) -> Result<WebConfi
     let mut pool_pin: BTreeMap<&str, u16> = BTreeMap::new();
     let mut pin_owner: BTreeMap<u16, &str> = BTreeMap::new();
     let mut sites = Vec::with_capacity(raw.sites.len());
+    let mut wayhouse_pools: BTreeSet<&str> = BTreeSet::new();
     for (i, s) in raw.sites.iter().enumerate() {
         let at = |m: &str| invalid(format!("web.sites[{i}]: {m}"));
         if s.hosts.is_empty() {
@@ -315,11 +342,15 @@ pub(crate) fn validate_web(raw: RawWeb, pools: &[PoolConfig]) -> Result<WebConfi
                             pool_pin.insert(p, port);
                             pin_owner.insert(port, p);
                         }
+                        wayhouse_pools.insert(p);
                     }
-                    upstreams.push(WebUpstream::Pool {
-                        name: p.clone(),
-                        via,
-                        port: u.port,
+                    upstreams.push(match via {
+                        WebVia::Direct => WebUpstream::Pool { name: p.clone() },
+                        // Address filled in once ports are allocated below.
+                        WebVia::Wayhouse => WebUpstream::Local {
+                            pool: p.clone(),
+                            addr: SocketAddr::new(internal_bind, 0),
+                        },
                     });
                 }
                 _ => return Err(at("needs exactly one of addr / pool")),
@@ -327,6 +358,83 @@ pub(crate) fn validate_web(raw: RawWeb, pools: &[PoolConfig]) -> Result<WebConfi
         }
         sites.push(WebSite { hosts, upstreams });
     }
+
+    // Reserve what the generated listeners must not collide with, then allocate.
+    for pool in &wayhouse_pools {
+        let name = local_listener_name(pool);
+        if listeners.iter().any(|l| l.name == name) {
+            return Err(invalid(format!(
+                "web: listener name {name} already used (it is reserved for the via: wayhouse \
+                 listener of pool {pool})"
+            )));
+        }
+    }
+    let operator_taken = |port: u16| {
+        bind_covers(admin, internal_bind, port)
+            || listeners
+                .iter()
+                .filter(|l| l.protocol == Protocol::Tcp)
+                .any(|l| l.binds().any(|b| bind_covers(b, internal_bind, port)))
+    };
+    let mut ports: BTreeMap<&str, u16> = BTreeMap::new();
+    let mut used: BTreeSet<u16> = BTreeSet::new();
+    for (&pool, &port) in &pool_pin {
+        if operator_taken(port) {
+            return Err(invalid(format!(
+                "web: pinned port {port} of pool {pool} is already bound by another listener \
+                 or the admin API"
+            )));
+        }
+        ports.insert(pool, port);
+        used.insert(port);
+    }
+    let size = u64::from(hi - lo) + 1;
+    for &pool in wayhouse_pools
+        .iter()
+        .filter(|p| !pool_pin.contains_key(**p))
+    {
+        let start = name_hash(pool) % size;
+        let port = (0..size)
+            .map(|k| lo + ((start + k) % size) as u16)
+            .find(|p| !used.contains(p) && !operator_taken(*p))
+            .ok_or_else(|| {
+                invalid(format!(
+                    "web: no free port in internal_ports {lo}-{hi} for pool {pool}"
+                ))
+            })?;
+        ports.insert(pool, port);
+        used.insert(port);
+    }
+    for site in &mut sites {
+        for u in &mut site.upstreams {
+            if let WebUpstream::Local { pool, addr } = u {
+                *addr = SocketAddr::new(internal_bind, ports[pool.as_str()]);
+            }
+        }
+    }
+    for (&pool, &port) in &ports {
+        listeners.push(ListenerConfig {
+            name: local_listener_name(pool),
+            bind: SocketAddr::new(internal_bind, port),
+            extra_binds: Vec::new(),
+            protocol: Protocol::Tcp,
+            routes: vec![Route {
+                matcher: Matcher::Always,
+                action: Action::Pool(pool.to_string()),
+            }],
+            prefix: None,
+            freebind: false,
+            transparent: false,
+            sniffers: Vec::new(),
+            route_hint: false,
+            first_packet_gate: false,
+            acl: Acl::default(),
+            geo: None,
+            per_source: None,
+            rate_limit: None,
+        });
+    }
+
     Ok(WebConfig {
         pool: raw.pool,
         listen_http,
