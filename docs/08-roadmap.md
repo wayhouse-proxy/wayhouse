@@ -1124,3 +1124,7 @@ slice 1.
 - **v2.1**: + phase 14 (WireGuard backend transport — `wayhouse-agent`, backend /
   proxy-peers registries; proxies reach origins on a different network) — see
   [11-backend-transport.md](11-backend-transport.md).
+- **v0.3 (in progress)**: web front door — Caddy packaged behind a `web` pool (issue #297):
+  `web:` config (#360), generated `via: wayhouse` loopback listeners, `GET /web` and the
+  end-to-end tests (#368 to #370) are built; the renderer (`wayhouse-web-sync`), the Caddy
+  image and ACME are separate slices.
