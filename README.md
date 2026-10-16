@@ -57,6 +57,8 @@ examples) or from an external routing service you control.
 
 The proxy is the only player-facing ingress and routing component (behind a tunnel, the origin-side `wayhouse-agent` carries the traffic the last hop). The controller, aggregator and UI are optional and stay off the data path; see [docs/02-architecture.md](docs/02-architecture.md) for the detailed diagram.
 
+The config loader builds an immutable snapshot (listeners, routes, pools); the listener, router and pool all read it, and health updates feed the pools.
+
 **Sniffers** are small WASM modules that run on the proxy's data path and read the first
 bytes of a connection to find the hostname or protocol (see [docs/sniffers.md](docs/sniffers.md)).
 **Plugins** are WASM modules hosted by the controller, off the data path: they react to timers,
