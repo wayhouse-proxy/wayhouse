@@ -95,7 +95,8 @@ fn interpret(raw: &[u8]) -> Result<(), LoadError> {
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|c| c.parse().ok())
         .ok_or_else(|| LoadError::BadResponse(head.chars().take(80).collect()))?;
-    let body = body.trim().to_string();
+    // Caddy's error text is logged; cap it as cheap insurance against echoing anything large.
+    let body: String = body.trim().chars().take(500).collect();
     match status {
         200..=299 => Ok(()),
         400..=499 => Err(LoadError::Rejected { status, body }),

@@ -25,7 +25,7 @@ spec:
         - name: caddy
           image: wayhouse-deploy/wayhouse-caddy:local
           # Ready once web-sync has loaded the first configuration (Caddy has no listener before).
-          readinessProbe: { tcpSocket: { port: 8443 }, periodSeconds: 5 }
+          readinessProbe: { tcpSocket: { host: 127.0.0.1, port: 8443 }, periodSeconds: 5 }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -45,7 +45,7 @@ spec:
             # Only if settings.admin.auth_token is set on wayhouse.
             - name: WAYHOUSE_ADMIN_TOKEN
               valueFrom: { secretKeyRef: { name: wayhouse-tokens, key: admin-token, optional: true } }
-          livenessProbe: { httpGet: { path: /metrics, port: 9904 }, initialDelaySeconds: 10 }
+          livenessProbe: { httpGet: { host: 127.0.0.1, path: /metrics, port: 9904 }, initialDelaySeconds: 10 }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

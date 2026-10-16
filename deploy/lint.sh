@@ -93,6 +93,7 @@ errs << "web override: caddy must drop all capabilities" unless web["caddy"]["ca
 gw = YAML.load_stream(File.read("deploy/k8s/60-web-gateway.yaml")).find { |d| d["kind"] == "DaemonSet" }
 gwc = gw["spec"]["template"]["spec"]["containers"]
 errs << "k8s web gateway must use hostNetwork (wayhouse reaches Caddy on the node loopback)" unless gw["spec"]["template"]["spec"]["hostNetwork"] == true
+errs << "k8s web gateway probes must set host: 127.0.0.1 (hostNetwork pods probe the node IP; both targets listen on loopback)" unless gwc.flat_map { |c| %w[readinessProbe livenessProbe].map { |k| c[k] } }.compact.all? { |pr| (pr["httpGet"] || pr["tcpSocket"])["host"] == "127.0.0.1" }
 errs << "k8s web gateway containers must drop all capabilities" unless gwc.all? { |c| c.dig("securityContext", "capabilities", "drop") == ["ALL"] }
 errs << "k8s web gateway: web-sync must point at the socket Caddy serves" unless gwc.find { |c| c["name"] == "web-sync" }["args"].include?("--caddy-admin=/run/caddy/admin.sock")
 

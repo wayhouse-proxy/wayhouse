@@ -1,7 +1,7 @@
 //! `wayhouse` -> real Caddy -> origin, with `wayhouse-web-sync` rendering the `web:` section
 //! (slices 2 and 3 of the Caddy front-door model, #356/#357).
 //!
-//! Needs a Caddy binary of the pinned version (`caddy.lock`): set `CADDY_BIN` and run
+//! Needs a Caddy binary of the pinned version (pinned in `deploy/Dockerfile`): set `CADDY_BIN` and run
 //! `cargo test -p wayhouse-fleet-tests --test web -- --ignored`. The CI job `web-e2e`
 //! does; `make check` skips it like the other tests that need outside tools.
 

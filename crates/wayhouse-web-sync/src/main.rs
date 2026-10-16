@@ -21,7 +21,7 @@ use wayhouse_web_sync::sync::{Outcome, Syncer};
 )]
 struct Args {
     /// Base URL of the local `wayhouse` admin API.
-    #[arg(long, default_value = "http://127.0.0.1:9100")]
+    #[arg(long, default_value = "http://127.0.0.1:9900")]
     wayhouse_admin: String,
 
     /// Bearer token for `wayhouse`'s admin API (`settings.admin.auth_token`).

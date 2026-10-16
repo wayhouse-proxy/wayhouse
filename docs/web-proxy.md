@@ -70,8 +70,8 @@ One Caddy JSON document, loaded with `POST /load` on Caddy's admin API:
 - Exact hosts match before `*.suffix` wildcards, across all sites.
 - `upstreams`: an `addr` as is; a `pool` with `via: direct` (default) as that pool's **enabled**
   backends, read from `GET /pools` on every cycle, so a drained or disabled backend leaves Caddy
-  within one interval (Caddy cannot see Wayhouse's admin state). `via: wayhouse` needs the
-  generated loopback listener of the routing slice (#368); until it exists the upstream is left out.
+  within one interval (Caddy cannot see Wayhouse's admin state). `via: wayhouse` uses the
+  generated loopback listener `web-up-<pool>` (`local` in `GET /web`).
   A site with no usable upstream answers `503`.
 - `upstream_tls`: absent is plain HTTP; `verify`, `skip` (no verification) or `{ ca_file: <path> }`
   (a path on the Caddy side). `health_path` adds an active check; passive checks are always on.
@@ -110,7 +110,7 @@ Command line of `wayhouse-web-sync` (`--help` has the rest):
 
 | Flag                                            | Default                 | Meaning                                                               |
 | ----------------------------------------------- | ----------------------- | --------------------------------------------------------------------- |
-| `--wayhouse-admin`                              | `http://127.0.0.1:9100` | The local `wayhouse` admin API (`settings.admin.listen`, https works) |
+| `--wayhouse-admin`                              | `http://127.0.0.1:9900` | The local `wayhouse` admin API (`settings.admin.listen`, https works) |
 | `--wayhouse-token` / env `WAYHOUSE_ADMIN_TOKEN` | none                    | Bearer token if `settings.admin.auth_token` is set                    |
 | `--caddy-admin`                                 | `/run/caddy/admin.sock` | Caddy admin: unix socket or loopback `ip:port`                        |
 | `--interval-sec`                                | 5                       | How often it reads Wayhouse (pool changes, renewed certificates)      |
@@ -124,7 +124,7 @@ ships [`deploy/caddy/base.json`](../deploy/caddy/base.json) (`unix//run/caddy/ad
 [`deploy/k8s/60-web-gateway.yaml`](../deploy/k8s/60-web-gateway.yaml).
 
 The `wayhouse-caddy` image is stock Caddy, pinned by version and digest in
-[`deploy/Dockerfile`](../deploy/Dockerfile) (one place; Dependabot and the Trivy job cover it like the
+[`deploy/Dockerfile`](../deploy/Dockerfile) (one place; bumps are manual, the Trivy job scans it like the
 other images). It runs as uid 65532 on high ports with a read-only root filesystem and no
 capabilities (the base image's `cap_net_bind_service` file capability is removed, which would
 otherwise make the binary fail to start once all capabilities are dropped), with data and config
