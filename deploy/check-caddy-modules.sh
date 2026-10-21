@@ -1,18 +1,23 @@
 #!/bin/sh
-# check-caddy-modules.sh: every Caddy module built into wayhouse-caddy (`--with <module>` in
-# deploy/Dockerfile) has a recognised license recorded in deploy/caddy/MODULES and is named in
-# deploy/caddy/NOTICE. No daemon needed.
+# check-caddy-modules.sh [dockerfile modules notice]: every Caddy module built into
+# wayhouse-caddy (`--with <module>` in deploy/Dockerfile) has a recognised license recorded in
+# deploy/caddy/MODULES and is named in deploy/caddy/NOTICE. No daemon needed. The optional
+# arguments let the self-test (check-caddy-modules-selftest.sh) point it at fixtures.
 set -eu
 cd "$(dirname "$0")/.."
+df=${1:-deploy/Dockerfile}
+modules=${2:-deploy/caddy/MODULES}
+notice=${3:-deploy/caddy/NOTICE}
 known="Apache-2.0 MIT BSD-2-Clause BSD-3-Clause ISC MPL-2.0"
 rc=0
-for mod in $(grep -v '^[[:space:]]*#' deploy/Dockerfile | sed -n 's/.*--with[ =]\([^ @=\\]*\).*/\1/p'); do
-  lic=$(sed -n "s|^$mod[[:space:]]\{1,\}||p" deploy/caddy/MODULES | head -n 1)
+# grep -o yields every `--with` on a line (several per `xcaddy build` line is the usual form).
+for mod in $(grep -v '^[[:space:]]*#' "$df" | grep -o -- '--with[ =][^ @=\\]*' | sed 's/--with[ =]//'); do
+  lic=$(awk -v m="$mod" '$1 == m { print $2; exit }' "$modules")
   case " $known " in
-    *" $lic "*) [ -n "$lic" ] || { echo "check-caddy-modules: $mod has no license in deploy/caddy/MODULES" >&2; rc=1; } ;;
+    *" $lic "*) [ -n "$lic" ] || { echo "check-caddy-modules: $mod has no license in $modules" >&2; rc=1; } ;;
     *) echo "check-caddy-modules: $mod has unrecognised license '$lic' (known: $known)" >&2; rc=1 ;;
   esac
-  grep -q "$mod" deploy/caddy/NOTICE || { echo "check-caddy-modules: $mod is not named in deploy/caddy/NOTICE" >&2; rc=1; }
+  grep -qF -- "$mod" "$notice" || { echo "check-caddy-modules: $mod is not named in $notice" >&2; rc=1; }
 done
-[ "$rc" = 0 ] && echo "ok: no unlicensed Caddy module in deploy/Dockerfile"
+[ "$rc" = 0 ] && echo "ok: no unlicensed Caddy module in $df"
 exit "$rc"
