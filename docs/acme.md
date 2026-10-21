@@ -6,10 +6,13 @@ default**; start it with `--acme`. Design and reasoning:
 [`superpowers/specs/2026-10-15-controller-acme-design.md`](superpowers/specs/2026-10-15-controller-acme-design.md).
 
 Status: built are the sites, the sealed store, replication, the issuance and renewal loop,
-the admin API, the DNS-provider plugin hook (`on_acme_dns`,
+the admin API, HTTP-01, external account binding, CNAME-delegated challenge zones, the
+Certificates page of the web UI, the DNS-provider plugin hook (`on_acme_dns`,
 [#362](https://github.com/wayhouse-proxy/wayhouse/issues/362)) and the distribution of
 certificates to gateways ([#363](https://github.com/wayhouse-proxy/wayhouse/issues/363),
-[Distribution](#distribution-to-gateways)). No DNS-provider plugin ships yet; you write one
+[Distribution](#distribution-to-gateways)). The first DNS-provider plugin,
+[`acme-dns-cloudflare`](https://github.com/wayhouse-proxy/plugins/tree/main/plugins/acme-dns-cloudflare),
+is in the plugins repository ([below](#the-dns-plugin)); for another provider, write one
 against the hook in [`plugins.md`](plugins.md#acme-dns-01-on_acme_dns).
 
 ## Building without ACME
@@ -239,6 +242,17 @@ backoff applies. If you disable the plugin or revoke the approval, orders fail w
 available" until you restore it.
 
 The plugin only ever sees the record name and value. ACME keys stay in the controller.
+
+### Cloudflare
+
+`acme-dns-cloudflare` in [`wayhouse-proxy/plugins`](https://github.com/wayhouse-proxy/plugins)
+sets and removes the TXT record through the Cloudflare API. Create an API token with
+`Zone:Read` and `DNS:Edit` on the zones your sites use, upload and install the module with the
+capabilities in its `caps.json` (the `on_acme_dns` trigger, the `http` host `api.cloudflare.com`
+and the secret slot `CLOUDFLARE_API_TOKEN`), set the slot with `PUT
+/plugins/{id}/secrets/CLOUDFLARE_API_TOKEN`, and give the site `"dns_plugin": "<id>"`. The
+plugin finds the zone by trying the host and its parent names, adds the record with a 60 s TTL
+and removes only the record that carries the challenge value. It talks to no other host.
 
 ## Failure behaviour
 
