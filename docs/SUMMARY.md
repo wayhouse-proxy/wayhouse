@@ -24,6 +24,7 @@
 - [Plugins](plugins.md)
 - [Sniffers](sniffers.md)
 - [Web proxy (Caddy)](web-proxy.md)
+- [Third-party notices](third-party-notices.md)
 
 # Reference
 

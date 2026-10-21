@@ -4,6 +4,7 @@
 # `docker compose up` / cluster — see docs/superpowers/plans/2026-10-01-deploy.md.
 set -eu
 cd "$(dirname "$0")/.."
+sh deploy/check-caddy-modules.sh
 # Render the defaults: CI's deploy job exports BIN_SOURCE=prebuilt, which must not
 # change what these checks see.
 unset BIN_SOURCE
