@@ -105,6 +105,7 @@ errs << "wayhouse-caddy must be pinned by `FROM caddy:<version>@sha256:...`" unl
 errs << "wayhouse-caddy must drop the base image file capability (cp + mv)" unless caddy_stage.include?("cp /usr/bin/caddy /tmp/caddy && mv /tmp/caddy /usr/bin/caddy")
 errs << "wayhouse-caddy must run as 65532" unless caddy_stage.include?("USER 65532:65532")
 errs << "wayhouse image must carry wayhouse-web-sync" unless wayhouse_stage.include?("/out/wayhouse-web-sync /usr/local/bin/wayhouse-web-sync")
+errs << "wayhouse image must carry wayhouse-certsync" unless wayhouse_stage.include?("/out/wayhouse-certsync /usr/local/bin/wayhouse-certsync")
 
 if errs.empty? then puts "deploy lint: ok" else warn errs.map { |e| "LINT FAIL: #{e}" }; exit 1 end
 '

@@ -51,7 +51,7 @@ sniffers e2e job (`sniffers e2e (arm64)`) runs on an arm64 runner too.
 
 `BIN_SOURCE=prebuilt` (default `builder`) skips the in-Docker compile and copies
 binaries you built yourself from `deploy/prebuilt/` (`wayhouse`, `wayhouse-minimal`, `wayhouse-controller`,
-`wayhouse-aggregator`, `wayhouse-ui`, `wayhouse-agent`, `wayhouse-web-sync`). CI uses it so the `deploy` job reuses the
+`wayhouse-aggregator`, `wayhouse-ui`, `wayhouse-agent`, `wayhouse-web-sync`, `wayhouse-certsync`). CI uses it so the `deploy` job reuses the
 `build-release` binaries; they must be built against a glibc no newer than the
 runtime's (2.41). The nightly CI run uses the default, self-contained path.
 

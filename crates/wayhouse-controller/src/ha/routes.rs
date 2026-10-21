@@ -71,8 +71,9 @@ pub struct Whoami {
     pub acme_support: u32,
 }
 
-/// The ACME replication level this build speaks (`1`: sites, account, certificates).
-pub const ACME_SUPPORT: u32 = 1;
+/// The ACME replication level this build speaks (`1`: sites, account, certificates; `2` adds
+/// gateways).
+pub const ACME_SUPPORT: u32 = 2;
 
 /// The plugin replication level this build speaks (a node without plugins, started without
 /// `--plugins` or as a slave, reports `0` instead, so the install gate refuses while it is a

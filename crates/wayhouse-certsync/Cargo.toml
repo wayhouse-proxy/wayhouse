@@ -1,0 +1,37 @@
+[package]
+name = "wayhouse-certsync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "wayhouse_certsync"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wayhouse-certsync"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+# A separate process on each gateway host, like wayhouse-web-sync: a bug or hang here cannot
+# touch the data path. It talks to the controller over HTTP only, so there is no
+# wayhouse-core or wayhouse-controller dependency, and wayhouse-http is the client half.
+[dependencies]
+wayhouse-http.workspace = true
+tokio = { workspace = true, features = ["process"] }
+clap = { workspace = true, features = ["env"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tempfile.workspace = true

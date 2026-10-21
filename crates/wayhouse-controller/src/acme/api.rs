@@ -71,6 +71,11 @@ pub fn router(state: AcmeState) -> Router {
             put(put_site).get(get_site).delete(delete_site),
         )
         .route("/acme/account", get(account))
+        .route("/acme/gateways", get(list_gateways).post(create_gateway))
+        .route(
+            "/acme/gateways/{name}",
+            axum::routing::delete(delete_gateway),
+        )
         .route_layer(middleware::from_fn_with_state(
             wayhouse_http::server::BearerAuth::new(state.auth_token.as_deref()),
             wayhouse_http::server::require_bearer,
@@ -177,12 +182,105 @@ fn answer(applied: &Applied, ok: impl FnOnce() -> Response) -> Response {
             format!("{n} already belongs to another site"),
         ),
         Applied::NoSuchSite => err(StatusCode::NOT_FOUND, "no such site"),
+        Applied::NoSuchGateway => err(StatusCode::NOT_FOUND, "no such gateway"),
+        Applied::Exists => err(
+            StatusCode::CONFLICT,
+            "already exists; delete the gateway first to issue it a new token",
+        ),
         Applied::Invalid(why) => err(StatusCode::BAD_REQUEST, why),
         other => err(
             StatusCode::CONFLICT,
             format!("the write was refused: {other:?}"),
         ),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GatewayBody {
+    name: String,
+}
+
+/// The gateways (never their tokens or hashes) and the sites each may fetch.
+async fn list_gateways(State(st): State<AcmeState>) -> Response {
+    let (gateways, sites) = match (st.store.gateways(), st.store.sites()) {
+        (Ok(g), Ok(s)) => (g, s),
+        (Err(e), _) | (_, Err(e)) => return internal(e),
+    };
+    let out: Vec<_> = gateways
+        .iter()
+        .map(|g| {
+            let reach: Vec<&str> = sites
+                .iter()
+                .filter(|s| s.gateways.contains(&g.name))
+                .map(|s| s.name.as_str())
+                .collect();
+            serde_json::json!({ "name": g.name, "created_at": g.created_at, "sites": reach })
+        })
+        .collect();
+    Json(serde_json::json!({ "gateways": out })).into_response()
+}
+
+/// Registers a gateway. The token is in this response only; the store keeps its hash.
+async fn create_gateway(State(st): State<AcmeState>, headers: HeaderMap, body: Bytes) -> Response {
+    let Ok(parsed) = serde_json::from_slice::<GatewayBody>(&body) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "the body must be {\"name\": \"...\"}",
+        );
+    };
+    if !super::Site::valid_name(&parsed.name) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "a gateway name is 1 to 63 of a-z, 0-9 and '-'",
+        );
+    }
+    let token = super::bundles::new_token();
+    let created_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let name = parsed.name;
+    let op = AcmeOp::GatewaySet(super::Gateway {
+        name: name.clone(),
+        token_hash: super::bundles::hash_token(&token),
+        created_at,
+    });
+    write(
+        &st,
+        op,
+        Method::POST,
+        "/acme/gateways",
+        &headers,
+        body,
+        |_| {
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({ "name": name, "token": token })),
+            )
+                .into_response()
+        },
+    )
+    .await
+}
+
+/// Revokes a gateway: its token stops working at once on every replica. Each renewal creates
+/// a new key, so a key the gateway held is replaced at the next renewal.
+async fn delete_gateway(
+    State(st): State<AcmeState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+) -> Response {
+    let op = AcmeOp::GatewayDelete { name: name.clone() };
+    write(
+        &st,
+        op,
+        Method::DELETE,
+        &format!("/acme/gateways/{name}"),
+        &headers,
+        Bytes::new(),
+        |_| StatusCode::NO_CONTENT.into_response(),
+    )
+    .await
 }
 
 async fn put_site(
@@ -369,6 +467,72 @@ mod tests {
             status,
             serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
         )
+    }
+
+    #[tokio::test]
+    async fn gateways_are_created_once_listed_without_secrets_and_revoked() {
+        let (app, store, _d) = app(None);
+        call(&app, "PUT", "/acme/sites/web", SITE, None).await;
+        let (st, made) = call(&app, "POST", "/acme/gateways", r#"{"name":"gw1"}"#, None).await;
+        assert_eq!(st, StatusCode::CREATED);
+        let token = made["token"].as_str().unwrap().to_string();
+        assert!(token.starts_with("gwt_"));
+        // Only the hash is stored.
+        let stored = store.gateway("gw1").unwrap().unwrap();
+        assert_eq!(stored.token_hash, crate::acme::bundles::hash_token(&token));
+        assert!(!serde_json::to_string(&stored).unwrap().contains(&token));
+        let (_, list) = call(&app, "GET", "/acme/gateways", "", None).await;
+        assert_eq!(list["gateways"][0]["name"], "gw1");
+        assert_eq!(list["gateways"][0]["sites"][0], "web");
+        assert!(!list.to_string().contains(&token));
+        assert!(!list.to_string().contains(&stored.token_hash));
+        // A second POST does not rotate silently.
+        assert_eq!(
+            call(&app, "POST", "/acme/gateways", r#"{"name":"gw1"}"#, None)
+                .await
+                .0,
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            call(&app, "DELETE", "/acme/gateways/gw1", "", None).await.0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            call(&app, "DELETE", "/acme/gateways/gw1", "", None).await.0,
+            StatusCode::NOT_FOUND
+        );
+        for bad in [r#"{"name":"Bad_Name"}"#, r#"{}"#, r#"{"name":"a","x":1}"#] {
+            assert_eq!(
+                call(&app, "POST", "/acme/gateways", bad, None).await.0,
+                StatusCode::BAD_REQUEST,
+                "{bad}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn gateway_routes_need_the_admin_token_and_the_gateway_token_is_not_one() {
+        let (app, _s, _d) = app(Some("admin"));
+        assert_eq!(
+            call(&app, "POST", "/acme/gateways", r#"{"name":"gw1"}"#, None)
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+        let (st, made) = call(
+            &app,
+            "POST",
+            "/acme/gateways",
+            r#"{"name":"gw1"}"#,
+            Some("admin"),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED);
+        let gw = made["token"].as_str().unwrap();
+        assert_eq!(
+            call(&app, "GET", "/acme/gateways", "", Some(gw)).await.0,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     const SITE: &str =

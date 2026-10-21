@@ -826,6 +826,12 @@ async fn main() -> anyhow::Result<()> {
                 .spawn(),
             );
             tracing::info!(ca = %directory_url, "ACME enabled");
+            let bundles = wayhouse_controller::acme::bundles::router(
+                wayhouse_controller::acme::bundles::BundleState {
+                    store: store.clone(),
+                    keyring: keyring.clone(),
+                },
+            );
             wayhouse_controller::acme::api::router(wayhouse_controller::acme::api::AcmeState {
                 store,
                 auth_token: admin_token.clone(),
@@ -834,6 +840,7 @@ async fn main() -> anyhow::Result<()> {
                 directory_url,
                 plugins: plugin_rt.map(|(plugin_store, _)| plugin_store),
             })
+            .merge(bundles)
         }
     } else {
         wayhouse_controller::acme::api::disabled_router(

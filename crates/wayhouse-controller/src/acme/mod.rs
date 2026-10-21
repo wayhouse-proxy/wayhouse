@@ -2,6 +2,7 @@
 //! `docs/superpowers/specs/2026-10-15-controller-acme-design.md`).
 
 pub mod api;
+pub mod bundles;
 #[cfg(feature = "acme")]
 pub mod dns_plugin;
 #[cfg(feature = "acme")]
@@ -10,7 +11,7 @@ pub mod store;
 pub mod types;
 
 pub use store::{AcmeStore, AcmeStoreError};
-pub use types::{AcmeOp, AcmeSnapshot, Applied, Attempt, Site, StoredAccount, StoredCert};
+pub use types::{AcmeOp, AcmeSnapshot, Applied, Attempt, Gateway, Site, StoredAccount, StoredCert};
 
 /// The rolling-upgrade gate for ACME writes under HA: every member must run a build that can
 /// decode the entries. A member that does not answer blocks too, like a plugin install.
@@ -194,8 +195,12 @@ mod tests {
             check_support_answers(&[]).is_ok(),
             "a single node has no peers"
         );
-        assert!(check_support_answers(&[(2, Ok(who(1)))]).is_ok());
-        let old = check_support_answers(&[(2, Ok(who(1))), (3, Ok(who(0)))]).unwrap_err();
+        assert!(check_support_answers(&[(2, Ok(who(crate::ha::routes::ACME_SUPPORT)))]).is_ok());
+        let old = check_support_answers(&[
+            (2, Ok(who(crate::ha::routes::ACME_SUPPORT))),
+            (3, Ok(who(1))),
+        ])
+        .unwrap_err();
         assert!(old.contains("node 3") && old.contains("upgrade"), "{old}");
         let silent = check_support_answers(&[(
             2,
