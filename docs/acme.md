@@ -5,12 +5,12 @@ other) for the sites you publish, and keep their private keys sealed. It is **of
 default**; start it with `--acme`. Design and reasoning:
 [`superpowers/specs/2026-10-15-controller-acme-design.md`](superpowers/specs/2026-10-15-controller-acme-design.md).
 
-Status: **slice 1** is built (sites, the sealed store, replication, the issuance and
-renewal loop, the admin API). Still to come, in this order: the DNS-provider plugin hook
-(`on_acme_dns`, [#362](https://github.com/wayhouse-proxy/wayhouse/issues/362)), then
-distribution of certificates to gateways ([#363](https://github.com/wayhouse-proxy/wayhouse/issues/363)).
-Until the plugin hook exists no order can complete: a site's order fails with "the DNS
-plugin is not available on this node", visible in the site's status.
+Status: the controller side is built (sites, the sealed store, replication, the issuance and
+renewal loop, the admin API) and so is the DNS-provider plugin hook (`on_acme_dns`,
+[#362](https://github.com/wayhouse-proxy/wayhouse/issues/362)). Still to come: distribution of
+certificates to gateways ([#363](https://github.com/wayhouse-proxy/wayhouse/issues/363)). No
+DNS-provider plugin ships yet; you write one against the hook in
+[`plugins.md`](plugins.md#acme-dns-01-on_acme_dns).
 
 ## What it does
 
@@ -68,6 +68,21 @@ Rules: names are lowercase hostnames, optionally `*.zone`; a name belongs to one
 (`409` otherwise); **a wildcard needs at least one gateway** (`422`), because a wildcard key
 should live only on a few hardened nodes. No route returns a private key, a certificate
 chain or ciphertext.
+
+## The DNS plugin
+
+A site's `dns_plugin` is the id of a plugin install that is **enabled** and **approved for the
+`on_acme_dns` trigger** ([`plugins.md`](plugins.md#acme-dns-01-on_acme_dns)); anything else is
+refused with `400`, and so is any site while the controller runs without `--plugins`. For each
+name of an order the leader asks the plugin to set the TXT record, then looks the record up
+itself (the host's resolver, every 5 seconds, up to the site's `propagation_timeout_secs`,
+default 120) before it tells the CA to validate, and always asks the plugin to remove it
+afterwards, also when the order failed. A plugin that does not answer, traps, refuses or is
+disabled mid-order fails that order; the reason is the site's `last_error` and the usual
+backoff applies. If you disable the plugin or revoke the approval, orders fail with "not
+available" until you restore it.
+
+The plugin only ever sees the record name and value. ACME keys stay in the controller.
 
 ## Failure behaviour
 

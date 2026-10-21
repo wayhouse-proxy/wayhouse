@@ -25,8 +25,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use wayhouse_plugin_host::{
-    CallError, CompilePool, Effects, LogLevel, Plugin, PoolError, StateSnapshot, WebhookRequest,
-    WebhookResponse, MAX_TICK_INTERVAL_SECS,
+    AcmeDnsAnswer, AcmeDnsRequest, CallError, CompilePool, Effects, LogLevel, Plugin, PoolError,
+    StateSnapshot, WebhookRequest, WebhookResponse, MAX_TICK_INTERVAL_SECS,
 };
 
 use super::secrets::KeyringHandle;
@@ -75,6 +75,7 @@ pub const HOOK_QUEUE: usize = 4;
 #[derive(Debug, Clone)]
 pub enum Hook {
     Webhook(WebhookRequest),
+    AcmeDns(AcmeDnsRequest),
     Event { kind: String, payload: Vec<u8> },
 }
 
@@ -566,6 +567,24 @@ impl Runner {
         id: &str,
         hook: Hook,
     ) -> Result<Option<WebhookResponse>, HookError> {
+        Ok(self.run_hook_effects(id, hook).await?.webhook)
+    }
+
+    /// Asks the DNS-provider plugin `id` to set or remove one ACME TXT record and returns
+    /// what it reported; `None` when it returned without answering (the caller treats that
+    /// as a failure).
+    pub async fn run_acme_dns(
+        &self,
+        id: &str,
+        request: AcmeDnsRequest,
+    ) -> Result<Option<AcmeDnsAnswer>, HookError> {
+        Ok(self
+            .run_hook_effects(id, Hook::AcmeDns(request))
+            .await?
+            .acme_dns)
+    }
+
+    async fn run_hook_effects(&self, id: &str, hook: Hook) -> Result<Effects, HookError> {
         let Some(term) = self.lead() else {
             return Err(HookError::NotLeader);
         };
@@ -573,6 +592,7 @@ impl Runner {
             rec.enabled
                 && match &hook {
                     Hook::Webhook(_) => rec.approved.triggers.on_webhook && rec.webhook.is_some(),
+                    Hook::AcmeDns(_) => rec.approved.triggers.on_acme_dns,
                     Hook::Event { kind, .. } => rec.approved.triggers.on_event.contains(kind),
                 }
         };
@@ -598,6 +618,7 @@ impl Runner {
         };
         let call: CallFn = match hook {
             Hook::Webhook(req) => Box::new(move |p, s| p.on_webhook(s, &req)),
+            Hook::AcmeDns(req) => Box::new(move |p, s| p.on_acme_dns(s, &req)),
             Hook::Event { kind, payload } => Box::new(move |p, s| p.on_event(s, &kind, &payload)),
         };
         let counted = |failed: bool| {
@@ -612,7 +633,7 @@ impl Runner {
                 match self.commit(id, rev, &fx, term).await {
                     Ok(()) => {
                         counted(false);
-                        Ok(fx.webhook)
+                        Ok(fx)
                     }
                     Err(why) => {
                         counted(true);

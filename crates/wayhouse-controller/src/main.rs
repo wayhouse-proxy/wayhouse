@@ -660,6 +660,11 @@ async fn main() -> anyhow::Result<()> {
         ))
         .merge(wayhouse_controller::addresses::api::router(addresses_state))
         .merge(wayhouse_controller::adopt::router(adopt_state));
+    // The plugin store and runner, when plugins are on: ACME's DNS-01 solver calls them.
+    let mut plugin_rt: Option<(
+        wayhouse_controller::plugins::PluginStore,
+        Arc<wayhouse_controller::plugins::runner::Runner>,
+    )> = None;
     app = app.merge(
         match wayhouse_controller::plugins::availability(args.plugins, args.role == Role::Slave) {
             Ok(()) => {
@@ -703,6 +708,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                     },
                 }
+                plugin_rt = Some((store.clone(), runner.clone()));
                 // Detached on purpose: they run for the life of the process.
                 drop(runner.clone().spawn());
                 drop(wayhouse_controller::plugins::events::spawn(
@@ -780,14 +786,27 @@ async fn main() -> anyhow::Result<()> {
             ),
         };
         let ca = wayhouse_acme::AcmeCa::new(&directory_url, args.acme_accept_tos);
+        // Without plugins there is no DNS provider to call: an order fails with a visible
+        // "not available" error, and a site cannot name a plugin (the API says so).
+        let solvers: Arc<dyn wayhouse_controller::acme::runner::SolverSource> = match &plugin_rt {
+            Some((plugin_store, plugin_runner)) => {
+                Arc::new(wayhouse_controller::acme::dns_plugin::PluginSolvers {
+                    store: plugin_store.clone(),
+                    runner: plugin_runner.clone(),
+                    lookup: Arc::new(
+                        wayhouse_controller::acme::dns_plugin::SystemTxt::new()
+                            .map_err(|e| anyhow::anyhow!(e))?,
+                    ),
+                })
+            }
+            None => Arc::new(wayhouse_controller::acme::runner::NoSolvers),
+        };
         drop(
             wayhouse_controller::acme::runner::Runner::new(
                 store.clone(),
                 ca,
                 &directory_url,
-                // DNS plugins arrive with the on_acme_dns trigger; until then a site's
-                // order fails with a visible "not available" error.
-                Arc::new(wayhouse_controller::acme::runner::NoSolvers),
+                solvers,
                 keyring.clone(),
                 ha.clone(),
                 wayhouse_controller::acme::runner::system_clock(),
@@ -801,6 +820,7 @@ async fn main() -> anyhow::Result<()> {
             ha,
             keyring,
             directory_url,
+            plugins: plugin_rt.map(|(plugin_store, _)| plugin_store),
         })
     } else {
         wayhouse_controller::acme::api::disabled_router(

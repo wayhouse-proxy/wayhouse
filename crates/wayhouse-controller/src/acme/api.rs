@@ -25,6 +25,29 @@ pub struct AcmeState {
     pub ha: Option<Arc<HaHandle>>,
     pub keyring: KeyringHandle,
     pub directory_url: String,
+    /// The plugin installs a site's `dns_plugin` is checked against; `None` when plugins are
+    /// off (then no site can be stored, since nothing could solve its challenge).
+    pub plugins: Option<crate::plugins::PluginStore>,
+}
+
+impl AcmeState {
+    /// A site's `dns_plugin` must be an enabled install that approved `on_acme_dns`.
+    fn check_dns_plugin(&self, id: &str) -> Result<(), String> {
+        let Some(plugins) = &self.plugins else {
+            return Err(
+                "plugins are off; start the controller with --plugins to use a DNS plugin".into(),
+            );
+        };
+        match plugins.get(id) {
+            Ok(Some(rec)) if !rec.enabled => Err(format!("the plugin install {id} is disabled")),
+            Ok(Some(rec)) if rec.approved.triggers.on_acme_dns => Ok(()),
+            Ok(Some(_)) => Err(format!(
+                "the plugin install {id} did not approve the on_acme_dns trigger"
+            )),
+            Ok(None) => Err(format!("no plugin install {id}")),
+            Err(e) => Err(format!("could not read the plugin installs: {e}")),
+        }
+    }
 }
 
 fn err(status: StatusCode, msg: impl std::fmt::Display) -> Response {
@@ -193,6 +216,9 @@ async fn put_site(
             why,
         );
     }
+    if let Err(why) = st.check_dns_plugin(&site.dns_plugin) {
+        return err(StatusCode::BAD_REQUEST, why);
+    }
     let op = AcmeOp::SiteSet(site);
     write(
         &st,
@@ -271,16 +297,50 @@ mod tests {
     use crate::acme::{StoredAccount, StoredCert};
     use crate::plugins::secrets::Sealed;
 
+    fn dns_install(id: &str, enabled: bool, approved: bool) -> crate::plugins::InstallRecord {
+        let approved_caps = wayhouse_plugin_host::Capabilities::parse(
+            format!(
+                r#"{{"triggers":{{"on_timer":true,"on_acme_dns":{approved}}},"tick_interval_secs":30}}"#
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        crate::plugins::InstallRecord {
+            id: id.into(),
+            name: id.into(),
+            sha256: "0".repeat(64),
+            size: 1,
+            approved: approved_caps,
+            config: serde_json::Value::Null,
+            enabled,
+            created_at: 0,
+            created_by: None,
+            webhook: None,
+        }
+    }
+
     fn app(token: Option<&str>) -> (Router, AcmeStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let db = sled::open(dir.path()).unwrap();
         let store = AcmeStore::open(&db).unwrap();
+        let plugins = crate::plugins::PluginStore::open(&db).unwrap();
+        plugins.put_blob(&"0".repeat(64), b"module").unwrap();
+        plugins
+            .create(&dns_install("0123456789abcdef", true, true))
+            .unwrap();
+        plugins
+            .create(&dns_install("notapproved000000", true, false))
+            .unwrap();
+        plugins
+            .create(&dns_install("disabled00000000", false, true))
+            .unwrap();
         let state = AcmeState {
             store: store.clone(),
             auth_token: token.map(Arc::from),
             ha: None,
             keyring: KeyringHandle::default(),
             directory_url: "https://ca.example/dir".into(),
+            plugins: Some(plugins.clone()),
         };
         (router(state), store, dir)
     }
@@ -339,6 +399,33 @@ mod tests {
             call(&app, "DELETE", "/acme/sites/web", "", None).await.0,
             StatusCode::NOT_FOUND
         );
+    }
+
+    #[tokio::test]
+    async fn a_site_needs_an_enabled_install_that_approved_on_acme_dns() {
+        let (app, _s, _d) = app(None);
+        for plugin in ["missing0000000000", "notapproved000000", "disabled00000000"] {
+            let body = format!(r#"{{"names":["a.example.com"],"dns_plugin":"{plugin}"}}"#);
+            let (st, e) = call(&app, "PUT", "/acme/sites/a", &body, None).await;
+            assert_eq!(st, StatusCode::BAD_REQUEST, "{plugin}: {e}");
+        }
+    }
+
+    #[tokio::test]
+    async fn with_plugins_off_no_site_can_be_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = sled::open(dir.path()).unwrap();
+        let state = AcmeState {
+            store: AcmeStore::open(&db).unwrap(),
+            auth_token: None,
+            ha: None,
+            keyring: KeyringHandle::default(),
+            directory_url: "https://ca.example/dir".into(),
+            plugins: None,
+        };
+        let (st, e) = call(&router(state), "PUT", "/acme/sites/a", SITE, None).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        assert!(e["error"].as_str().unwrap().contains("--plugins"), "{e}");
     }
 
     #[tokio::test]
