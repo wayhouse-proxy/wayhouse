@@ -12,6 +12,14 @@ certificates to gateways ([#363](https://github.com/wayhouse-proxy/wayhouse/issu
 DNS-provider plugin ships yet; you write one against the hook in
 [`plugins.md`](plugins.md#acme-dns-01-on_acme_dns).
 
+## Building without ACME
+
+Issuance sits behind the `acme` cargo feature of `wayhouse-controller`, **on by default**. A
+build with `--no-default-features` leaves out the ACME client, the runner and the DNS plugin
+solver (and their dependencies: `instant-acme`, `rcgen`, `x509-parser`, `hickory-resolver`).
+It still decodes, stores and replicates ACME state, so a mixed cluster stays consistent, but
+`--acme` refuses to start and the `/acme` routes answer that ACME is not enabled.
+
 ## What it does
 
 You describe **sites**: a set of hostnames (or a `*.zone` wildcard), the gateways that

@@ -661,6 +661,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(wayhouse_controller::addresses::api::router(addresses_state))
         .merge(wayhouse_controller::adopt::router(adopt_state));
     // The plugin store and runner, when plugins are on: ACME's DNS-01 solver calls them.
+    #[cfg(feature = "acme")]
     let mut plugin_rt: Option<(
         wayhouse_controller::plugins::PluginStore,
         Arc<wayhouse_controller::plugins::runner::Runner>,
@@ -708,7 +709,10 @@ async fn main() -> anyhow::Result<()> {
                         }
                     },
                 }
-                plugin_rt = Some((store.clone(), runner.clone()));
+                #[cfg(feature = "acme")]
+                {
+                    plugin_rt = Some((store.clone(), runner.clone()));
+                }
                 // Detached on purpose: they run for the life of the process.
                 drop(runner.clone().spawn());
                 drop(wayhouse_controller::plugins::events::spawn(
@@ -771,57 +775,66 @@ async fn main() -> anyhow::Result<()> {
         },
     );
     app = app.merge(if args.acme {
-        let directory_url = wayhouse_controller::acme::check_flags(
-            args.acme_ca.as_deref(),
-            !plugin_keys.current().is_empty(),
-            args.role == Role::Slave,
-        )
-        .map_err(|e| anyhow::anyhow!(e))?;
-        let keyring = plugin_keys.clone();
-        let (store, ha) = match &ha_handle {
-            Some((handle, _, _, store)) => (store.clone(), Some(handle.clone())),
-            None => (
-                wayhouse_controller::acme::AcmeStore::open(state.store.db())?,
-                None,
-            ),
-        };
-        let ca = wayhouse_acme::AcmeCa::new(&directory_url, args.acme_accept_tos);
-        // Without plugins there is no DNS provider to call: an order fails with a visible
-        // "not available" error, and a site cannot name a plugin (the API says so).
-        let solvers: Arc<dyn wayhouse_controller::acme::runner::SolverSource> = match &plugin_rt {
-            Some((plugin_store, plugin_runner)) => {
-                Arc::new(wayhouse_controller::acme::dns_plugin::PluginSolvers {
-                    store: plugin_store.clone(),
-                    runner: plugin_runner.clone(),
-                    lookup: Arc::new(
-                        wayhouse_controller::acme::dns_plugin::SystemTxt::new()
-                            .map_err(|e| anyhow::anyhow!(e))?,
-                    ),
-                })
-            }
-            None => Arc::new(wayhouse_controller::acme::runner::NoSolvers),
-        };
-        drop(
-            wayhouse_controller::acme::runner::Runner::new(
-                store.clone(),
-                ca,
-                &directory_url,
-                solvers,
-                keyring.clone(),
-                ha.clone(),
-                wayhouse_controller::acme::runner::system_clock(),
+        #[cfg(not(feature = "acme"))]
+        {
+            anyhow::bail!(
+                "--acme needs a controller built with the `acme` cargo feature; this build leaves it out"
+            );
+        }
+        #[cfg(feature = "acme")]
+        {
+            let directory_url = wayhouse_controller::acme::check_flags(
+                args.acme_ca.as_deref(),
+                !plugin_keys.current().is_empty(),
+                args.role == Role::Slave,
             )
-            .spawn(),
-        );
-        tracing::info!(ca = %directory_url, "ACME enabled");
-        wayhouse_controller::acme::api::router(wayhouse_controller::acme::api::AcmeState {
-            store,
-            auth_token: admin_token.clone(),
-            ha,
-            keyring,
-            directory_url,
-            plugins: plugin_rt.map(|(plugin_store, _)| plugin_store),
-        })
+            .map_err(|e| anyhow::anyhow!(e))?;
+            let keyring = plugin_keys.clone();
+            let (store, ha) = match &ha_handle {
+                Some((handle, _, _, store)) => (store.clone(), Some(handle.clone())),
+                None => (
+                    wayhouse_controller::acme::AcmeStore::open(state.store.db())?,
+                    None,
+                ),
+            };
+            let ca = wayhouse_acme::AcmeCa::new(&directory_url, args.acme_accept_tos);
+            // Without plugins there is no DNS provider to call: an order fails with a visible
+            // "not available" error, and a site cannot name a plugin (the API says so).
+            let solvers: Arc<dyn wayhouse_controller::acme::runner::SolverSource> = match &plugin_rt {
+                Some((plugin_store, plugin_runner)) => {
+                    Arc::new(wayhouse_controller::acme::dns_plugin::PluginSolvers {
+                        store: plugin_store.clone(),
+                        runner: plugin_runner.clone(),
+                        lookup: Arc::new(
+                            wayhouse_controller::acme::dns_plugin::SystemTxt::new()
+                                .map_err(|e| anyhow::anyhow!(e))?,
+                        ),
+                    })
+                }
+                None => Arc::new(wayhouse_controller::acme::runner::NoSolvers),
+            };
+            drop(
+                wayhouse_controller::acme::runner::Runner::new(
+                    store.clone(),
+                    ca,
+                    &directory_url,
+                    solvers,
+                    keyring.clone(),
+                    ha.clone(),
+                    wayhouse_controller::acme::runner::system_clock(),
+                )
+                .spawn(),
+            );
+            tracing::info!(ca = %directory_url, "ACME enabled");
+            wayhouse_controller::acme::api::router(wayhouse_controller::acme::api::AcmeState {
+                store,
+                auth_token: admin_token.clone(),
+                ha,
+                keyring,
+                directory_url,
+                plugins: plugin_rt.map(|(plugin_store, _)| plugin_store),
+            })
+        }
     } else {
         wayhouse_controller::acme::api::disabled_router(
             "ACME is not enabled on this controller (start it with --acme)",

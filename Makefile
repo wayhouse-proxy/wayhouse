@@ -22,7 +22,10 @@ test:
 	cargo test --all
 
 ## test-minimal: the minimal edge build of wayhouse (all optional cargo features off, issue #62)
+## and the controller without ACME issuance
 test-minimal:
+	cargo clippy -p wayhouse-controller --no-default-features --all-targets -- -D warnings
+	cargo test -p wayhouse-controller --no-default-features
 	cargo clippy -p wayhouse --no-default-features --all-targets -- -D warnings
 	cargo test -p wayhouse --no-default-features
 	cargo clippy -p wayhouse-core --no-default-features --all-targets -- -D warnings
