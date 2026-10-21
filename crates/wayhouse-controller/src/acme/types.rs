@@ -95,6 +95,10 @@ pub struct StoredCert {
     pub issued_at: u64,
     pub serial: String,
     pub names: Vec<String>,
+    /// Issued by a staging or local test CA: not publicly trusted, never to be served to
+    /// real clients (see [`super::untrusted_ca`]).
+    #[serde(default)]
+    pub untrusted: bool,
 }
 
 /// Retry state of a site, replicated so a new leader continues the backoff.

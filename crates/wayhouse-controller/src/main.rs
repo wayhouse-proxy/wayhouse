@@ -185,8 +185,9 @@ struct Args {
     #[arg(long, requires = "acme")]
     acme_accept_tos: bool,
 
-    /// Allow `--plugins` with a secret key on a plain-HTTP, non-loopback listener, where
-    /// secret values would cross the network in clear text. Off by default.
+    /// Allow `--plugins` with a secret key, or `--acme`, on a plain-HTTP, non-loopback
+    /// listener, where secret values and the admin token would cross the network in clear
+    /// text. Off by default.
     #[arg(long)]
     allow_insecure_secrets: bool,
 
@@ -260,6 +261,13 @@ async fn main() -> anyhow::Result<()> {
     }
     // Load (and validate) the serving certificate before anything else starts.
     let tls_cert = args.tls.load()?;
+    if args.acme {
+        wayhouse_controller::acme::check_listener(
+            tls_cert.is_none() && !args.listen.ip().is_loopback(),
+            args.allow_insecure_secrets,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+    }
     let plugin_keys =
         wayhouse_controller::plugins::secrets::load(args.plugin_secret_key_file.as_deref())
             .map_err(|e| anyhow::anyhow!("plugin secret key: {e}"))?;

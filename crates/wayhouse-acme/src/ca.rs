@@ -1,10 +1,14 @@
 //! The ACME client: account handling and one DNS-01 order.
 
-use std::time::Duration;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
+use bytes::Bytes;
 use instant_acme::{
-    Account, AccountBuilder, AccountCredentials, AuthorizationStatus, ChallengeType, HttpClient,
-    Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
+    Account, AccountBuilder, AccountCredentials, AuthorizationStatus, BodyWrapper, BytesResponse,
+    ChallengeType, HttpClient, Identifier, NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +37,70 @@ pub enum IssueError {
     Solver(#[from] SolverError),
     #[error("certificate: {0}")]
     Cert(String),
+    /// The CA answered 429 / `rateLimited`. `retry_after` is its `Retry-After` header, if any.
+    #[error("the CA rate limit was hit{}", fmt_retry(*.retry_after))]
+    RateLimited { retry_after: Option<Duration> },
+}
+
+fn fmt_retry(d: Option<Duration>) -> String {
+    d.map_or_else(String::new, |d| format!(" (retry after {}s)", d.as_secs()))
+}
+
+/// Wraps the HTTP client to remember the `Retry-After` of the last 429 answer, which
+/// `instant-acme` does not put into its error.
+struct RetryAfterSlot {
+    inner: Box<dyn HttpClient>,
+    slot: Arc<Mutex<Option<Duration>>>,
+}
+
+impl HttpClient for RetryAfterSlot {
+    fn request(
+        &self,
+        req: http::Request<BodyWrapper<Bytes>>,
+    ) -> Pin<Box<dyn Future<Output = Result<BytesResponse, instant_acme::Error>> + Send>> {
+        let fut = self.inner.request(req);
+        let slot = self.slot.clone();
+        Box::pin(async move {
+            let rsp = fut.await?;
+            if rsp.parts.status == http::StatusCode::TOO_MANY_REQUESTS {
+                let wait = rsp
+                    .parts
+                    .headers
+                    .get(http::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(parse_retry_after);
+                *slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = wait;
+            }
+            Ok(rsp)
+        })
+    }
+}
+
+/// `Retry-After`: delay-seconds or an HTTP-date (a date in the past is zero).
+fn parse_retry_after(value: &str) -> Option<Duration> {
+    let value = value.trim();
+    if let Ok(secs) = value.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    let at = httpdate::parse_http_date(value).ok()?;
+    Some(at.duration_since(SystemTime::now()).unwrap_or_default())
+}
+
+/// The default client: HTTPS only, the platform's certificate verifier.
+fn default_client() -> Result<Box<dyn HttpClient>, IssueError> {
+    let connector = hyper_rustls::HttpsConnectorBuilder::new()
+        .try_with_platform_verifier()
+        .map_err(|e| IssueError::Account(e.to_string()))?
+        .https_only()
+        .enable_http1()
+        .enable_http2()
+        .build();
+    Ok(Box::new(
+        hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .build::<_, BodyWrapper<Bytes>>(connector),
+    ))
 }
 
 type HttpFactory = Box<dyn Fn() -> Box<dyn HttpClient> + Send + Sync>;
@@ -43,6 +111,8 @@ pub struct AcmeCa {
     http: Option<HttpFactory>,
     propagation_timeout: Duration,
     retry: RetryPolicy,
+    /// The `Retry-After` of the newest 429 answer, shared with the HTTP client wrapper.
+    retry_after: Arc<Mutex<Option<Duration>>>,
 }
 
 impl AcmeCa {
@@ -54,6 +124,7 @@ impl AcmeCa {
             http: None,
             propagation_timeout: Duration::from_secs(120),
             retry: RetryPolicy::new().timeout(Duration::from_secs(90)),
+            retry_after: Arc::default(),
         }
     }
 
@@ -81,10 +152,28 @@ impl AcmeCa {
     }
 
     fn builder(&self) -> Result<AccountBuilder, IssueError> {
-        match &self.http {
-            Some(f) => Ok(Account::builder_with_http(f())),
-            None => Account::builder().map_err(|e| IssueError::Account(e.to_string())),
+        let inner = match &self.http {
+            Some(f) => f(),
+            None => default_client()?,
+        };
+        Ok(Account::builder_with_http(Box::new(RetryAfterSlot {
+            inner,
+            slot: self.retry_after.clone(),
+        })))
+    }
+
+    /// An error from the CA's API: a rate limit keeps the CA's `Retry-After`; anything else
+    /// is `other`.
+    fn api_error(&self, e: &instant_acme::Error, other: fn(String) -> IssueError) -> IssueError {
+        if is_rate_limit(e) {
+            let retry_after = self
+                .retry_after
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            return IssueError::RateLimited { retry_after };
         }
+        other(e.to_string())
     }
 
     /// Opens the stored account, or creates one (needs the terms accepted). Returns the
@@ -124,7 +213,7 @@ impl AcmeCa {
                 None,
             )
             .await
-            .map_err(|e| IssueError::Account(e.to_string()))?;
+            .map_err(|e| self.api_error(&e, IssueError::Account))?;
         let json = serde_json::to_string(&creds).map_err(|e| IssueError::Account(e.to_string()))?;
         let stored = AccountCreds {
             account_url: account.id().to_string(),
@@ -142,6 +231,10 @@ impl AcmeCa {
         solver: &dyn DnsSolver,
         now: u64,
     ) -> Result<(CertBundle, AccountCreds), IssueError> {
+        self.retry_after
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         let (account, creds) = self.open(existing).await?;
         let mut presented: Vec<(String, String)> = Vec::new();
         let result = self
@@ -167,10 +260,10 @@ impl AcmeCa {
         let mut order = account
             .new_order(&NewOrder::new(&ids))
             .await
-            .map_err(|e| IssueError::Order(e.to_string()))?;
+            .map_err(|e| self.api_error(&e, IssueError::Order))?;
         let mut authzs = order.authorizations();
         while let Some(next) = authzs.next().await {
-            let mut authz = next.map_err(|e| classify(&e))?;
+            let mut authz = next.map_err(|e| self.classify(&e))?;
             match authz.status {
                 AuthorizationStatus::Valid => continue,
                 AuthorizationStatus::Pending => {}
@@ -189,19 +282,19 @@ impl AcmeCa {
             solver
                 .wait_visible(&fqdn, &value, self.propagation_timeout)
                 .await?;
-            challenge.set_ready().await.map_err(|e| classify(&e))?;
+            challenge.set_ready().await.map_err(|e| self.classify(&e))?;
         }
         let status = order
             .poll_ready(&self.retry)
             .await
-            .map_err(|e| classify(&e))?;
+            .map_err(|e| self.classify(&e))?;
         if status != OrderStatus::Ready {
             return Err(IssueError::Validation(format!("order is {status:?}")));
         }
         let key_pem = order
             .finalize()
             .await
-            .map_err(|e| IssueError::Order(e.to_string()))?;
+            .map_err(|e| self.api_error(&e, IssueError::Order))?;
         let chain_pem = order
             .poll_certificate(&self.retry)
             .await
@@ -218,22 +311,34 @@ impl AcmeCa {
     }
 }
 
-/// A CA problem about the challenge itself (DNS lookup, unauthorized, CAA) is a validation
-/// failure; anything else is an order error.
-fn classify(e: &instant_acme::Error) -> IssueError {
-    let text = e.to_string();
-    let challenge_problem = [
-        "error:dns",
-        "error:unauthorized",
-        "error:connection",
-        "error:caa",
-    ]
-    .iter()
-    .any(|k| text.contains(k));
-    if challenge_problem || matches!(*e, instant_acme::Error::Timeout(_)) {
-        IssueError::Validation(text)
-    } else {
-        IssueError::Order(text)
+/// True for the CA's `rateLimited` problem or any 429 problem.
+fn is_rate_limit(e: &instant_acme::Error) -> bool {
+    matches!(e, instant_acme::Error::Api(p)
+        if p.status == Some(429)
+            || p.r#type.as_deref().is_some_and(|t| t.ends_with(":rateLimited")))
+}
+
+impl AcmeCa {
+    /// A CA problem about the challenge itself (DNS lookup, unauthorized, CAA) is a validation
+    /// failure; a rate limit keeps its `Retry-After`; anything else is an order error.
+    fn classify(&self, e: &instant_acme::Error) -> IssueError {
+        if is_rate_limit(e) {
+            return self.api_error(e, IssueError::Order);
+        }
+        let text = e.to_string();
+        let challenge_problem = [
+            "error:dns",
+            "error:unauthorized",
+            "error:connection",
+            "error:caa",
+        ]
+        .iter()
+        .any(|k| text.contains(k));
+        if challenge_problem || matches!(*e, instant_acme::Error::Timeout(_)) {
+            IssueError::Validation(text)
+        } else {
+            IssueError::Order(text)
+        }
     }
 }
 

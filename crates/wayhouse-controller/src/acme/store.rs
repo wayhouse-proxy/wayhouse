@@ -134,12 +134,15 @@ impl AcmeStore {
     /// Applies `op` on a standalone controller: the next local index, and the entry term is
     /// the one the op was tagged with (there is no other leader).
     pub fn apply_local(&self, op: &AcmeOp) -> Result<Applied, AcmeStoreError> {
+        // The cursor is read under the write lock, so two local writers cannot pick the same
+        // index and have the second one dropped as a replay.
+        let guard = self.lock();
         let next = self.applied_index()?.map_or(1, |i| i + 1);
         let term = match op {
             AcmeOp::CertIssued { tagged_term, .. } => *tagged_term,
             _ => 0,
         };
-        self.apply_at(next, term, op)
+        self.apply_locked(&guard, next, term, op)
     }
 
     /// Applies `op` at Raft `index`, appended in `entry_term`. An entry at or below the
@@ -151,7 +154,17 @@ impl AcmeStore {
         entry_term: u64,
         op: &AcmeOp,
     ) -> Result<Applied, AcmeStoreError> {
-        let _guard = self.lock();
+        let guard = self.lock();
+        self.apply_locked(&guard, index, entry_term, op)
+    }
+
+    fn apply_locked(
+        &self,
+        _guard: &std::sync::MutexGuard<'_, ()>,
+        index: u64,
+        entry_term: u64,
+        op: &AcmeOp,
+    ) -> Result<Applied, AcmeStoreError> {
         // What a transaction cannot scan, read first; the lock keeps it from changing.
         let other_sites: Vec<Site> = match op {
             AcmeOp::SiteSet(site) => self
@@ -411,6 +424,30 @@ mod tests {
         (AcmeStore::open(&db).unwrap(), dir)
     }
 
+    #[test]
+    fn concurrent_local_writes_are_never_lost() {
+        let (store, _dir) = store();
+        let threads: Vec<_> = (0..8)
+            .map(|t| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    for i in 0..25 {
+                        let name = format!("s{t}-{i}");
+                        let host = format!("{name}.example.com");
+                        let applied = store
+                            .apply_local(&AcmeOp::SiteSet(site(&name, &[&host])))
+                            .unwrap();
+                        assert_eq!(applied, Applied::Done, "{name}");
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(store.sites().unwrap().len(), 200);
+    }
+
     fn sealed() -> Sealed {
         Sealed {
             key_id: "k1".into(),
@@ -439,6 +476,7 @@ mod tests {
             issued_at: 10,
             serial: "01".into(),
             names: names.iter().map(ToString::to_string).collect(),
+            untrusted: false,
         }
     }
 

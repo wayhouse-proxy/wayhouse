@@ -39,6 +39,13 @@ wayhouse-controller --plugins --secret-key-file /etc/wayhouse/secret.keys \
 - `--acme-accept-tos` agrees to the CA's terms of service when the cluster's one ACME
   account is created.
 - Not available on a `--role slave` controller.
+- On a plain-HTTP listener that is not loopback the controller **refuses to start** with
+  `--acme` (the admin token and site changes would cross the network in clear text): serve TLS
+  (`--tls-cert/--tls-key`), listen on loopback behind a TLS terminator, or pass
+  `--allow-insecure-secrets`.
+- Certificates from `letsencrypt-staging`, any CA whose host or path says `staging`, and a
+  loopback test CA are stored with `"untrusted": true` (shown in the site's status). They are
+  for rehearsal only and must never be served to real clients.
 
 Under HA every replica needs the same keyring. A replica without it holds issuance and says
 so; if it becomes leader nothing is issued until the key is there.
@@ -65,14 +72,17 @@ chain or ciphertext.
 - A failed order backs off from 5 minutes up to 6 hours and stops after 5 failures in an
   hour, so a broken DNS plugin cannot use up the CA's failed-validation limit. The count and
   last error are in the site's status and survive a leader change.
-- If the controller is down gateways keep serving the last certificate until it expires.
-  That is why renewal starts at a third of the lifetime and not near the end: alert on
-  `wayhouse_acme_cert_expiry_seconds` dropping below a third.
+- Renewal starts at a third of the lifetime and not near the end, so there is room for
+  retries: alert on `wayhouse_acme_cert_expiry_seconds` dropping below a third. What a
+  gateway does while the controller is down is documented with certificate distribution.
+- A CA rate limit (`429`/`rateLimited`) pauses the site for the CA's `Retry-After` (at most 7
+  days) instead of the normal backoff when that is longer.
 - A restart with an expired or nearly expired certificate renews at once.
 
 ## Metrics
 
-`GET /metrics` on the controller: `wayhouse_acme_cert_expiry_seconds{site}` (gauge, seconds
+`GET /metrics` on the **current leader** (a follower does not issue and emits neither the
+expiry nor the held series): `wayhouse_acme_cert_expiry_seconds{site}` (gauge, seconds
 until `notAfter`, negative once expired), `wayhouse_acme_issue_total{result="ok|error"}`
 (counter) and `wayhouse_acme_held` (gauge, `1` while this node has no usable secret key).
 

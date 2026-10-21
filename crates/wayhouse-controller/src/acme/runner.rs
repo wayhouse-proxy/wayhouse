@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use wayhouse_acme::{renew, AccountCreds, AcmeCa, CertBundle, DnsSolver, Redacted};
+use wayhouse_acme::{renew, AccountCreds, AcmeCa, CertBundle, DnsSolver, IssueError, Redacted};
 
 use super::types::{cert_slot, AcmeOp, Applied, Attempt, Site, StoredAccount, StoredCert};
 use super::types::{ACCOUNT_SLOT, SEAL_SCOPE};
@@ -20,6 +20,45 @@ use crate::plugins::secrets::KeyringHandle;
 /// misconfigured DNS plugin cannot burn the CA's failed-validation limit.
 pub const MAX_FAILURES_PER_HOUR: u32 = 5;
 const WINDOW_SECS: u64 = 3600;
+/// The longest pause a CA's `Retry-After` can impose on a site.
+const MAX_RETRY_AFTER_SECS: u64 = 7 * 86_400;
+
+/// Why an order failed, and how long the CA asked to wait (`Retry-After` on a rate limit).
+struct Failure {
+    why: String,
+    pause_secs: Option<u64>,
+}
+
+impl From<String> for Failure {
+    fn from(why: String) -> Self {
+        Self {
+            why,
+            pause_secs: None,
+        }
+    }
+}
+
+impl From<&str> for Failure {
+    fn from(why: &str) -> Self {
+        why.to_string().into()
+    }
+}
+
+impl From<&IssueError> for Failure {
+    fn from(e: &IssueError) -> Self {
+        let pause_secs = match e {
+            IssueError::RateLimited { retry_after } => {
+                // A rate limit without a header still waits out a full backoff window.
+                retry_after.map(|d| d.as_secs().min(MAX_RETRY_AFTER_SECS))
+            }
+            _ => None,
+        };
+        Self {
+            why: e.to_string(),
+            pause_secs,
+        }
+    }
+}
 
 /// Resolves a site's `dns_plugin` to the solver that drives it. `None` means the plugin is
 /// not available on this node (not installed, disabled, not approved for the trigger).
@@ -62,7 +101,7 @@ pub struct Runner {
 pub enum Pass {
     /// Not the leader.
     Follower,
-    /// No usable keyring: nothing is issued.
+    /// Nothing is issued: no usable keyring, or a member that cannot decode ACME entries yet.
     Held,
     /// Ran; the sites that were issued and the ones that failed.
     Ran {
@@ -149,6 +188,12 @@ impl Runner {
             }
             return Pass::Held;
         }
+        if let Some(ha) = &self.ha {
+            if let Err(why) = super::check_support(ha).await {
+                tracing::warn!(%why, "acme: holding issuance");
+                return Pass::Held;
+            }
+        }
         let (mut issued, mut failed) = (vec![], vec![]);
         for site in sites.iter().filter(|s| s.enabled) {
             match self.due(site, now) {
@@ -167,7 +212,7 @@ impl Runner {
                 Err(why) => {
                     metrics::counter!("wayhouse_acme_issue_total", "result" => "error")
                         .increment(1);
-                    tracing::warn!(site = %site.name, error = %why, "acme: issuance failed");
+                    tracing::warn!(site = %site.name, error = %why.why, "acme: issuance failed");
                     self.record_failure(site, &why, now).await;
                     failed.push(site.name.clone());
                 }
@@ -191,7 +236,7 @@ impl Runner {
         })
     }
 
-    async fn issue_site(&self, site: &Site, term: u64, now: u64) -> Result<(), String> {
+    async fn issue_site(&self, site: &Site, term: u64, now: u64) -> Result<(), Failure> {
         let solver = self.solvers.solver_for(&site.dns_plugin).ok_or_else(|| {
             format!(
                 "the DNS plugin {:?} is not available on this node",
@@ -203,7 +248,7 @@ impl Runner {
         let (bundle, _) = ca
             .issue(Some(&creds), &site.names, solver.as_ref(), now)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| Failure::from(&e))?;
         let stored = self.seal_cert(site, &bundle)?;
         let op = AcmeOp::CertIssued {
             site: site.name.clone(),
@@ -218,7 +263,7 @@ impl Runner {
             Applied::Stale => {
                 Err("the site changed during the order; the result was dropped".into())
             }
-            other => Err(format!("the certificate was refused: {other:?}")),
+            other => Err(format!("the certificate was refused: {other:?}").into()),
         }
     }
 
@@ -294,10 +339,11 @@ impl Runner {
             issued_at: bundle.issued_at,
             serial: bundle.serial.clone(),
             names: bundle.names.clone(),
+            untrusted: super::untrusted_ca(&self.directory_url),
         })
     }
 
-    async fn record_failure(&self, site: &Site, why: &str, now: u64) {
+    async fn record_failure(&self, site: &Site, failure: &Failure, now: u64) {
         let prev = self
             .store
             .attempt(&site.name)
@@ -310,13 +356,16 @@ impl Runner {
             (now, 1)
         };
         let mut wait = renew::backoff(prev.failures).as_secs();
+        if let Some(pause) = failure.pause_secs {
+            wait = wait.max(pause);
+        }
         if window_failures >= MAX_FAILURES_PER_HOUR {
             wait = wait.max(window_start + WINDOW_SECS - now);
         }
         let attempt = Attempt {
             failures: prev.failures + 1,
             next_attempt_at: now + wait,
-            last_error: Some(why.chars().take(500).collect()),
+            last_error: Some(failure.why.chars().take(500).collect()),
             window_start,
             window_failures,
         };
@@ -476,6 +525,110 @@ mod tests {
         assert!(f.dns.is_empty());
         let account = f.store.account().unwrap().unwrap();
         assert!(!account.account_url.is_empty());
+    }
+
+    /// Fails if any file under `dir` (sled segments, Raft log, snapshots) holds one of the
+    /// byte strings; the scan must read something.
+    fn assert_absent_on_disk(dir: &std::path::Path, needles: &[(&str, &[u8])]) {
+        let mut dirs = vec![dir.to_path_buf()];
+        let mut scanned = 0;
+        while let Some(d) = dirs.pop() {
+            for entry in std::fs::read_dir(d).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let bytes = std::fs::read(&path).unwrap();
+                scanned += bytes.len();
+                for (what, needle) in needles {
+                    assert!(
+                        !bytes.windows(needle.len()).any(|w| w == *needle),
+                        "{what} is on disk in the clear ({})",
+                        path.display()
+                    );
+                }
+            }
+        }
+        assert!(scanned > 0, "the scan read the files");
+    }
+
+    #[tokio::test]
+    async fn no_key_material_reaches_the_raw_database_files() {
+        use base64::Engine;
+        let f = fixture().await;
+        put(&f, site("web", "panel.example.com"));
+        f.runner.run_once().await;
+        let c = f.store.cert("web").unwrap().unwrap();
+        let pem = f
+            .keyring
+            .current()
+            .open("acme", "cert:web@1", &c.sealed_key)
+            .unwrap();
+        let pem = std::str::from_utf8(pem.expose()).unwrap().to_string();
+        let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+        let der = base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .unwrap();
+        let account = f
+            .keyring
+            .current()
+            .open(
+                "acme",
+                "account",
+                &f.store.account().unwrap().unwrap().sealed,
+            )
+            .unwrap();
+        let account = account.expose().to_vec();
+        f.db.flush().unwrap();
+        assert_absent_on_disk(
+            f._dir.path(),
+            &[
+                ("the key body", b64.as_bytes()),
+                ("the key DER", &der[..32]),
+                ("a PEM key header", b"PRIVATE KEY"),
+                ("the account credentials", &account[..40]),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn a_certificate_from_a_staging_or_local_ca_is_marked_untrusted() {
+        let f = fixture().await;
+        put(&f, site("web", "panel.example.com"));
+        f.runner.run_once().await;
+        // The fake CA is a loopback directory, which counts as untrusted like the staging CA.
+        assert!(f.store.cert("web").unwrap().unwrap().untrusted);
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_pauses_for_the_retry_after_the_ca_sent() {
+        let f = fixture().await;
+        put(&f, site("web", "a.example.com"));
+        f.fake.retry_after(7200);
+        f.fake.fail_next(FailKind::RateLimited);
+        let start = f.now.load(Ordering::SeqCst);
+        assert_eq!(f.runner.run_once().await, ran(&[], &["web"]));
+        let a = f.store.attempt("web").unwrap().unwrap();
+        assert_eq!(
+            a.next_attempt_at,
+            start + 7200,
+            "waits what the CA asked, not 5 minutes"
+        );
+        f.now.store(start + 3600, Ordering::SeqCst);
+        assert_eq!(f.runner.run_once().await, ran(&[], &[]), "still paused");
+    }
+
+    #[tokio::test]
+    async fn a_huge_retry_after_is_capped_at_a_week() {
+        let f = fixture().await;
+        put(&f, site("web", "a.example.com"));
+        f.fake.retry_after(90 * DAY);
+        f.fake.fail_next(FailKind::RateLimited);
+        let start = f.now.load(Ordering::SeqCst);
+        f.runner.run_once().await;
+        let a = f.store.attempt("web").unwrap().unwrap();
+        assert_eq!(a.next_attempt_at, start + 7 * DAY);
     }
 
     #[tokio::test]
@@ -668,6 +821,21 @@ mod tests {
         assert_eq!(runner.run_once().await, ran(&["web"], &[]));
         assert_eq!(store.cert("web").unwrap().unwrap().version, 1);
         assert!(store.account().unwrap().is_some());
+        // Neither the Raft log nor the state machine's files hold the plaintext key.
+        let c = store.cert("web").unwrap().unwrap();
+        let key = KeyringHandle::new(Keyring::parse(KEY).unwrap())
+            .current()
+            .open("acme", "cert:web@1", &c.sealed_key)
+            .unwrap();
+        let pem = std::str::from_utf8(key.expose()).unwrap();
+        let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+        assert_absent_on_disk(
+            _dir.path(),
+            &[
+                ("the key body", body.as_bytes()),
+                ("a PEM key header", b"PRIVATE KEY"),
+            ],
+        );
         // A late result from a deposed leader (another term) is dropped by the state machine.
         let stale = ha
             .raft

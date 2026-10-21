@@ -135,7 +135,23 @@ async fn a_failing_solver_fails_the_order_with_its_message() {
 }
 
 #[tokio::test]
-async fn rate_limit_is_an_order_error() {
+async fn rate_limit_carries_the_retry_after() {
+    let dns = MemDns::default();
+    let fake = FakeCa::start(dns.clone()).await;
+    fake.retry_after(7200);
+    fake.fail_next(FailKind::RateLimited);
+    let err = ca(&fake, true)
+        .issue(None, &names(&["a.example.com"]), &dns, 1)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, IssueError::RateLimited { retry_after: Some(d) } if d == std::time::Duration::from_secs(7200)),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn rate_limit_without_a_header_has_no_retry_after() {
     let dns = MemDns::default();
     let fake = FakeCa::start(dns.clone()).await;
     fake.fail_next(FailKind::RateLimited);
@@ -143,5 +159,8 @@ async fn rate_limit_is_an_order_error() {
         .issue(None, &names(&["a.example.com"]), &dns, 1)
         .await
         .unwrap_err();
-    assert!(matches!(err, IssueError::Order(_)), "{err}");
+    assert!(
+        matches!(err, IssueError::RateLimited { retry_after: None }),
+        "{err}"
+    );
 }

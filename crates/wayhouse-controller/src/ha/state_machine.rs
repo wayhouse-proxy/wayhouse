@@ -2269,6 +2269,7 @@ mod tests {
             issued_at: 1,
             serial: "01".into(),
             names: vec![host.into()],
+            untrusted: false,
         }
     }
 

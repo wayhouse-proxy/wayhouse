@@ -90,6 +90,7 @@ fn status_of(
         serde_json::json!({
             "version": c.version, "not_after": c.not_after, "issued_at": c.issued_at,
             "serial": c.serial, "names": c.names, "key_id": c.sealed_key.key_id, "held": held,
+            "untrusted": c.untrusted,
         })
     });
     Ok(serde_json::json!({
@@ -409,12 +410,14 @@ mod tests {
                     issued_at: 1,
                     serial: "0a".into(),
                     names: vec!["panel.example.com".into()],
+                    untrusted: true,
                 },
             })
             .unwrap();
         let (_, raw) = call(&app, "GET", "/acme/sites/web", "", None).await;
         assert_eq!(raw["certificate"]["version"], 1);
         assert_eq!(raw["certificate"]["held"], "held: no secret key");
+        assert_eq!(raw["certificate"]["untrusted"], true);
         let text = raw.to_string();
         for forbidden in ["CIPHERTEXT", "NONCE", "BEGIN CERTIFICATE"] {
             assert!(

@@ -58,6 +58,8 @@ struct State {
     orders: Vec<OrderRec>,
     authzs: Vec<AuthzRec>,
     fail: Option<FailKind>,
+    /// Sent as `Retry-After` (seconds) on a `rateLimited` problem.
+    retry_after: Option<u64>,
     issued: usize,
 }
 
@@ -118,6 +120,7 @@ impl FakeCa {
                 orders: vec![],
                 authzs: vec![],
                 fail: None,
+                retry_after: None,
                 issued: 0,
             }),
         });
@@ -139,6 +142,11 @@ impl FakeCa {
     /// Makes the next matching request fail.
     pub fn fail_next(&self, kind: FailKind) {
         self.inner.state.lock().unwrap().fail = Some(kind);
+    }
+
+    /// Makes the rate-limit answers carry `Retry-After: <secs>`.
+    pub fn retry_after(&self, secs: u64) {
+        self.inner.state.lock().unwrap().retry_after = Some(secs);
     }
 
     /// How many certificates were issued.
@@ -192,12 +200,18 @@ impl Inner {
     }
 
     fn problem(&self, st: &mut State, status: StatusCode, kind: &str, detail: &str) -> Response {
-        self.reply(
+        let retry_after = st.retry_after.filter(|_| kind == "rateLimited");
+        let mut rsp = self.reply(
             st,
             status,
             None,
             json!({"type": format!("urn:ietf:params:acme:error:{kind}"), "detail": detail}),
-        )
+        );
+        if let Some(secs) = retry_after {
+            rsp.headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from(secs));
+        }
+        rsp
     }
 
     fn handle(&self, method: &Method, path: &str, body: &Bytes) -> Response {

@@ -161,7 +161,7 @@ Served on the sync's own `GET /metrics` (`--metrics-listen`, default `127.0.0.1:
   certificate files), `send` (Caddy unreachable, timeout, 5xx).
 - `wayhouse_web_sync_last_render_seconds` (gauge) — how long the last render took.
 
-**Controller ACME (`--acme`)**, on the controller's `/metrics`, not on `wayhouse`'s (these are
+**Controller ACME (`--acme`)**, on the current leader's `/metrics` (a follower emits none of these), not on `wayhouse`'s (these are
 registered by `wayhouse-controller`, not in `metrics_defs.rs`): `wayhouse_acme_cert_expiry_seconds{site}`,
 `wayhouse_acme_issue_total{result}` and `wayhouse_acme_held`; see [`acme.md`](acme.md).
 
