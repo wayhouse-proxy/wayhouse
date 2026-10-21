@@ -287,7 +287,7 @@ impl Runner {
                 let publisher = Publisher {
                     runner: self,
                     // Long enough for the order, short enough that a crash leaves no litter.
-                    expires_at: now + wait.as_secs() + self.ca.margin().as_secs(),
+                    valid_for: wait.as_secs() + self.ca.margin().as_secs(),
                 };
                 self.ca
                     .issue_http_within(Some(&creds), &site.names, &publisher, now, wait)
@@ -444,7 +444,9 @@ impl Runner {
 /// controller node (the one the gateways ask may be a follower) serves them.
 struct Publisher<'a> {
     runner: &'a Runner,
-    expires_at: u64,
+    /// How long an answer lives, counted from the moment it is published: the sites of one
+    /// pass are issued one after another, so the pass start would already be stale.
+    valid_for: u64,
 }
 
 #[async_trait::async_trait]
@@ -453,7 +455,7 @@ impl HttpSolver for Publisher<'_> {
         let op = AcmeOp::ChallengeSet(HttpChallenge {
             token: token.to_string(),
             key_authorization: key_authorization.to_string(),
-            expires_at: self.expires_at,
+            expires_at: (self.runner.clock)() + self.valid_for,
         });
         match self.runner.propose(op).await {
             Ok(Applied::Done) => Ok(()),
@@ -616,6 +618,28 @@ mod tests {
         assert!(f.store.challenges().unwrap().is_empty(), "withdrawn");
         assert!(f.dns.is_empty());
         assert!(f.dns.log.lock().unwrap().is_empty(), "no DNS plugin call");
+    }
+
+    #[tokio::test]
+    async fn an_answer_lives_from_when_it_is_published_not_from_the_start_of_the_pass() {
+        let f = fixture().await;
+        let (store, now) = (f.store.clone(), f.now.clone());
+        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        // The first site's order takes longer than an answer lives; the second site is
+        // published after that and must still be served.
+        f.fake.serve_http_challenges_from(move |token| {
+            let answer = store
+                .challenge(token, now.load(Ordering::SeqCst))
+                .unwrap()
+                .map(|c| c.key_authorization);
+            if first.swap(false, Ordering::SeqCst) {
+                now.fetch_add(3_600, Ordering::SeqCst);
+            }
+            answer
+        });
+        put(&f, http_site("a", "a.example.com"));
+        put(&f, http_site("b", "b.example.com"));
+        assert_eq!(f.runner.run_once().await, ran(&["a", "b"], &[]));
     }
 
     #[tokio::test]

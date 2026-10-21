@@ -179,6 +179,15 @@ pub struct HttpChallenge {
 }
 
 impl HttpChallenge {
+    /// 1 to 128 of A-Z, a-z, 0-9, '-' and '_'.
+    pub fn valid_token(token: &str) -> bool {
+        !token.is_empty()
+            && token.len() <= 128
+            && token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    }
+
     /// Why this cannot be stored, or `Ok`. A token is what the CA puts in a URL path, so only
     /// URL-safe base64 characters pass, and the key authorization must be `<token>.<thumbprint>`.
     pub fn validate(&self) -> Result<(), String> {

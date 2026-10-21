@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 
-use super::AcmeStore;
+use super::{AcmeStore, HttpChallenge};
 
 #[derive(Clone)]
 pub struct ChallengeState {
@@ -28,6 +28,10 @@ pub fn router(state: ChallengeState) -> Router {
 }
 
 async fn answer(State(st): State<ChallengeState>, Path(token): Path<String>) -> Response {
+    // Nothing that cannot be a stored token reaches the database.
+    if !HttpChallenge::valid_token(&token) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let now = (st.clock)();
     match st.store.challenge(&token, now) {
         Ok(Some(c)) => (
@@ -37,6 +41,10 @@ async fn answer(State(st): State<ChallengeState>, Path(token): Path<String>) -> 
                     HeaderValue::from_static("text/plain; charset=utf-8"),
                 ),
                 (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+                (
+                    header::X_CONTENT_TYPE_OPTIONS,
+                    HeaderValue::from_static("nosniff"),
+                ),
             ],
             c.key_authorization,
         )
@@ -109,6 +117,8 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, "tok-1_A.thumb");
         assert_eq!(cache.as_deref(), Some("no-store"));
+        assert_eq!(get(&app, "bad.token").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(get(&app, &"a".repeat(129)).await.0, StatusCode::NOT_FOUND);
         now.store(2_000, Ordering::SeqCst);
         assert_eq!(get(&app, "tok-1_A").await.0, StatusCode::NOT_FOUND);
     }
