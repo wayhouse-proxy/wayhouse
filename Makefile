@@ -24,6 +24,9 @@ test:
 ## test-minimal: the minimal edge build of wayhouse (all optional cargo features off, issue #62)
 ## and the controller without ACME issuance
 test-minimal:
+	# The dev-dependency on wayhouse-acme/test-support turns `client` back on for tests, so also
+	# check the plain build, which is what proves nothing ungated uses the ACME client.
+	cargo check -p wayhouse-controller --no-default-features --lib --bins
 	cargo clippy -p wayhouse-controller --no-default-features --all-targets -- -D warnings
 	cargo test -p wayhouse-controller --no-default-features
 	cargo clippy -p wayhouse --no-default-features --all-targets -- -D warnings
