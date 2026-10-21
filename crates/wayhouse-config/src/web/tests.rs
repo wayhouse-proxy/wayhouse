@@ -140,7 +140,7 @@ fn bad_host_patterns_are_rejected() {
         "  sites:\n    - hosts: [\"a*.example.com\"]\n      upstreams:\n{OK_UP}"
     ));
     assert!(m.contains("web.sites[0]"), "{m}");
-    assert!(m.contains("`*` only as `*.suffix`"), "{m}");
+    assert!(m.contains("is not a hostname"), "{m}");
 }
 
 #[test]
@@ -639,4 +639,44 @@ fn a_game_listener_sharing_the_pool_is_untouched() {
     assert_eq!(game.routes.len(), 1);
     assert_eq!(game.routes[0].action, Action::Pool("wings1".into()));
     assert_eq!(cfg.pools.iter().filter(|p| p.name == "wings1").count(), 1);
+}
+
+#[test]
+fn hosts_must_be_hostnames() {
+    for bad in [
+        "a.com:443",
+        "https://x",
+        "a b",
+        "10.0.0.1",
+        "x.",
+        ".example.com",
+        "a..b",
+        "*.",
+        "1234",
+    ] {
+        let m = err(&format!(
+            "  sites:\n    - hosts: [{bad:?}]\n      upstreams:\n{OK_UP}"
+        ));
+        assert!(m.contains("web.sites[0]"), "{bad}: {m}");
+    }
+}
+
+#[test]
+fn health_path_rejects_placeholders_and_whitespace() {
+    for bad in ["/a b", "/{http.request.host}", "/x\ty"] {
+        let m = err(&format!(
+            "  sites:\n    - hosts: [panel.example.com]\n      health_path: {bad:?}\n      upstreams:\n{OK_UP}"
+        ));
+        assert!(m.contains("health_path"), "{bad}: {m}");
+    }
+}
+
+#[test]
+fn internal_ports_may_not_cover_caddys_own_listen_ports() {
+    let via = "        - pool: wings1\n          via: wayhouse\n          port: 8443\n";
+    let m = err(&format!(
+        "  listen: {{ http: \"127.0.0.1:8080\", https: \"127.0.0.1:8443\" }}\n  internal_ports: \"8000-8999\"\n{}",
+        site(via)
+    ));
+    assert!(m.contains("pinned port 8443"), "{m}");
 }

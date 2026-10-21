@@ -185,7 +185,9 @@ fn reverse_proxy(site: &WebSiteView, pools: &PoolBackends) -> Value {
             } => dials.extend(local.clone()),
         }
     }
-    dials.dedup();
+    // Keep the first occurrence: a repeated address would double its weight in Caddy's balancer.
+    let mut seen = std::collections::HashSet::new();
+    dials.retain(|d| seen.insert(d.clone()));
     // An empty list is a valid document: the route answers 503 (spike item 9).
     let upstreams: Vec<Value> = dials.iter().map(|d| json!({"dial": d})).collect();
     let mut rp = json!({

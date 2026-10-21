@@ -237,11 +237,11 @@
 > ```
 >
 > Rules: `pool` must exist and set `proxy_protocol: v2` (Caddy's PROXY listener rejects plain
-> connections). Hosts are exact names or `*.suffix`, lowercased, and unique across sites; each
+> connections). Hosts are plain hostnames or `*.suffix` (labels of `a-z0-9_-`; no port, no IP literal, no leading-dot form), lowercased, and unique across sites; each
 > site needs a host and an upstream. An upstream is exactly one of `addr` / `pool`; `via`
 > (`direct` | `wayhouse`) and `port` apply only to a pool, and `port` only with
-> `via: wayhouse`, inside `internal_ports` and unique per pool; a pool used `via: wayhouse`
-> must not set `proxy_protocol` (the next hop is plain HTTP). `internal_bind` must be a
+> `via: wayhouse`, inside `internal_ports`, one port per pool and one pool per port, and not one of `listen`'s ports; a pool used `via: wayhouse`
+> must not set `proxy_protocol` (the next hop is plain HTTP). `health_path` starts with `/` and has no whitespace, control characters, `{` or `}`. `internal_bind` must be a
 > loopback address.
 >
 > `listen` may be a routable address: on a gateway node Caddy cannot listen on loopback only.
@@ -634,7 +634,7 @@ rolling update of many pods costs one fetch, not one per event.
 
 `schema_version` (top level, optional) is the **minimum config schema the document
 needs**; absent means `1`. A build supports up to the schema in
-`wayhouse_config::version::CONFIG_SCHEMA_VERSION` (currently `2`). A document that
+`wayhouse_config::version::CONFIG_SCHEMA_VERSION` (currently `3`). A document that
 asks for more is refused with `config schema_version N is newer than this build
 supports (max M)`, on startup, on a file reload (the running config stays active)
 and on a controller-delivered revision. A string, `0` or a fractional value is
