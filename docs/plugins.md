@@ -49,6 +49,7 @@ declared. The only imports allowed are these, in the `wayhouse` namespace:
 | `state_put(kptr, klen, vptr, vlen) -> i32`       | `state`    | 0, or -1 when over `state.max_bytes`, the key is over 256 bytes or not UTF-8, or the per-call write limit is hit                 |
 
 | `routes_set(ptr, len) -> i32` | `routes` | declares the plugin's whole route set as a JSON array of `{"host", "backend"}`; 0, or -1 when refused (the reason is a `warn` line in the plugin's log) |
+| `acme_dns_result(ok, ptr, len) -> i32` | `on_acme_dns` | answers an `on_acme_dns` call: `ok` 1 or 0 and a message of at most 512 bytes (UTF-8); 0, or -1 when `ok` is neither or the message is too long; the last call wins |
 | `http_request(ptr, len) -> i32` | `http` | sends the JSON request at `ptr`; returns the length of the response document, or -1 when the request is over the size limit |
 | `http_read(out_ptr, out_cap) -> i32` | `http` | copies the pending response document out; -1 (and keeps it) when `out_cap` is too small |
 
@@ -214,6 +215,34 @@ counted as `hooks_dropped` in the status. A restart, a failover (only the Raft l
 a lagging feed also loses some. The list of kinds only grows. A plugin that must not miss a change
 reconciles from the controller's state on its timer and treats an event as a reason to do it
 sooner. A backend-health event is not built yet.
+
+## ACME DNS-01 (`on_acme_dns`)
+
+A DNS-provider plugin declares `"triggers": {"on_timer": true, "on_acme_dns": true}` (the timer
+stays required, like for events), exports `on_acme_dns(ptr, len)` and answers with the
+`acme_dns_result` import. The controller's ACME runner calls it on the **leader** to set and
+remove the TXT record a CA validates ([`acme.md`](acme.md)). The request document is:
+
+```json
+{
+    "op": "present",
+    "fqdn": "_acme-challenge.panel.example.com",
+    "value": "<txt value>",
+    "zone_hint": "panel.example.com"
+}
+```
+
+`op` is `present` (add the TXT record) or `cleanup` (remove it); several values may coexist at
+one name, so remove only the one in `value`. `zone_hint` is the host being validated; the plugin
+finds the provider zone that contains it. The plugin does the provider call with its approved
+`http` capability and `${secret:NAME}` slots, and ends with `acme_dns_result(1, ...)` for done or
+`acme_dns_result(0, message)` for a refusal. A call that never answers, traps or runs past the
+call limit fails that order, and the runner still sends `cleanup`. The message is scrubbed of
+every secret the call expanded and shows in the site's `last_error`.
+
+The plugin never sees an ACME account or certificate key. The trigger is additive: modules that
+do not declare it are unaffected, so the ABI minor does not change. Calls go through the same
+bounded hook queue as webhooks, so a slow provider fails one issuance and never builds a backlog.
 
 ## Approval
 

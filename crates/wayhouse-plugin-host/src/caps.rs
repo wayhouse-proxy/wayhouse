@@ -149,6 +149,10 @@ pub struct Triggers {
     /// event that is missed or fails to commit is caught up by the next timer call.
     #[serde(default)]
     pub on_event: Vec<String>,
+    /// May be asked by the controller's ACME runner to set or remove a DNS-01 TXT record.
+    /// Needs `on_timer`, like the other triggers a plugin must still be ticked for.
+    #[serde(default)]
+    pub on_acme_dns: bool,
 }
 
 /// Limits of the `state` capability.
@@ -170,6 +174,9 @@ impl Capabilities {
         }
         if self.triggers.on_webhook && !approved.triggers.on_webhook {
             return over("trigger on_webhook");
+        }
+        if self.triggers.on_acme_dns && !approved.triggers.on_acme_dns {
+            return over("trigger on_acme_dns");
         }
         if let Some(kind) = self
             .triggers
@@ -236,6 +243,11 @@ impl Capabilities {
             if caps.tick_interval_secs > MAX_TICK_INTERVAL_SECS {
                 return Err(ModuleError::TickIntervalTooLong(caps.tick_interval_secs));
             }
+        }
+        if caps.triggers.on_acme_dns && !caps.triggers.on_timer {
+            return Err(ModuleError::CapsInvalid(
+                "on_acme_dns needs on_timer".into(),
+            ));
         }
         if !caps.triggers.on_event.is_empty() {
             if !caps.triggers.on_timer {
@@ -357,6 +369,14 @@ mod tests {
 
     fn parse(json: &str) -> Result<Capabilities, ModuleError> {
         Capabilities::parse(json.as_bytes())
+    }
+
+    #[test]
+    fn on_acme_dns_needs_on_timer() {
+        let ok = r#"{"triggers":{"on_timer":true,"on_acme_dns":true},"tick_interval_secs":30}"#;
+        assert!(parse(ok).unwrap().triggers.on_acme_dns);
+        let bad = r#"{"triggers":{"on_acme_dns":true}}"#;
+        assert!(matches!(parse(bad), Err(ModuleError::CapsInvalid(_))));
     }
 
     #[test]

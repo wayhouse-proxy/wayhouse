@@ -96,6 +96,9 @@ pub struct Effects {
     pub routes: Option<Vec<crate::routes::RouteEntry>>,
     /// What the guest answered a webhook with (`webhook_respond`); `None` if it did not.
     pub webhook: Option<crate::webhook::WebhookResponse>,
+    /// What the guest answered an `on_acme_dns` call with (`acme_dns_result`, the last call
+    /// wins); `None` if it did not answer.
+    pub acme_dns: Option<crate::acme_dns::AcmeDnsAnswer>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -126,6 +129,7 @@ struct CallState {
     used_http: bool,
     routes: Option<Vec<crate::routes::RouteEntry>>,
     webhook: Option<crate::webhook::WebhookResponse>,
+    acme_dns: Option<crate::acme_dns::AcmeDnsAnswer>,
     denied: Option<&'static str>,
     http: Option<Arc<HttpEngine>>,
     http_call: HttpCall,
@@ -207,6 +211,7 @@ impl PluginHost {
                         | "http_read"
                         | "routes_set"
                         | "webhook_respond"
+                        | "acme_dns_result"
                 );
             if !known {
                 return Err(ModuleError::UnexpectedImport(format!(
@@ -246,6 +251,9 @@ impl PluginHost {
         }
         if info.caps.triggers.on_webhook {
             want("on_webhook", &[ValType::I32, ValType::I32], &[])?;
+        }
+        if info.caps.triggers.on_acme_dns {
+            want("on_acme_dns", &[ValType::I32, ValType::I32], &[])?;
         }
         if !info.caps.triggers.on_event.is_empty() {
             want(
@@ -346,6 +354,24 @@ impl Plugin {
         })
     }
 
+    /// Call `on_acme_dns(request)`; the answer is [`Effects::acme_dns`]. A plugin that did
+    /// not declare the trigger is never called.
+    pub fn on_acme_dns(
+        &self,
+        state: &StateSnapshot,
+        request: &crate::acme_dns::AcmeDnsRequest,
+    ) -> Result<Effects, CallError> {
+        if !self.info.caps.triggers.on_acme_dns {
+            return Err(CallError::CapabilityDenied("on_acme_dns"));
+        }
+        let doc = serde_json::to_vec(request).map_err(|e| CallError::Trap(e.to_string()))?;
+        self.run(state, |store, inst| {
+            let args = write_args(store, inst, &[&doc])?;
+            inst.get_typed_func::<(i32, i32), ()>(&mut *store, "on_acme_dns")?
+                .call(&mut *store, (args[0].0, args[0].1))
+        })
+    }
+
     /// Call `on_event(kind, payload)` for an event the plugin declared.
     pub fn on_event(
         &self,
@@ -389,6 +415,7 @@ impl Plugin {
             used_http: false,
             routes: None,
             webhook: None,
+            acme_dns: None,
             denied: None,
             http: self.http.clone(),
             http_call: HttpCall::default(),
@@ -427,6 +454,10 @@ impl Plugin {
                 line.msg = st.http_call.scrubber.scrub_str(&line.msg);
             }
         }
+        let mut acme_dns = st.acme_dns;
+        if let Some(answer) = &mut acme_dns {
+            answer.message = st.http_call.scrubber.scrub_str(&answer.message);
+        }
         Ok(Effects {
             state_puts: st.puts,
             logs,
@@ -436,6 +467,7 @@ impl Plugin {
             used_http: st.used_http,
             routes: st.routes,
             webhook: st.webhook,
+            acme_dns,
         })
     }
 }
@@ -668,6 +700,35 @@ fn linker(engine: &Engine) -> Linker<CallState> {
             },
         )
         .expect("defining wayhouse.webhook_respond");
+    linker
+        .func_wrap(
+            "wayhouse",
+            "acme_dns_result",
+            |mut caller: Caller<'_, CallState>,
+             ok: i32,
+             ptr: i32,
+             len: i32|
+             -> wasmtime::Result<i32> {
+                if !caller.data().caps.triggers.on_acme_dns {
+                    return Err(deny(&mut caller, "on_acme_dns"));
+                }
+                if !(0..=1).contains(&ok)
+                    || usize::try_from(len).map_or(true, |l| l > crate::acme_dns::MAX_MESSAGE_BYTES)
+                {
+                    return Ok(-1);
+                }
+                let raw = read_guest(&mut caller, ptr, len)?;
+                let Ok(message) = String::from_utf8(raw) else {
+                    return Ok(-1);
+                };
+                caller.data_mut().acme_dns = Some(crate::acme_dns::AcmeDnsAnswer {
+                    ok: ok == 1,
+                    message,
+                });
+                Ok(0)
+            },
+        )
+        .expect("defining wayhouse.acme_dns_result");
     linker
         .func_wrap(
             "wayhouse",
