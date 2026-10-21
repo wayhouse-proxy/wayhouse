@@ -999,7 +999,7 @@ schema-driven settings form over the same submitted YAML text (a raw-YAML
 panel stays underneath so every field — including ones the form has no
 control for yet — is always reachable), and a Sniffers page for managing
 sniffer modules. (Later, 2026-10-03: a read-only Tunnel addresses page over
-the controller's `GET /tunnel/addresses`, `docs/11` "Address authority".) Sniffer management needed new backend surface: `wayhouse` gained
+the controller's `GET /tunnel/addresses`, `docs/11` "Address authority"; and, 2026-10-21, a read-only Certificates page over the controller's `/acme/sites`, `/acme/gateways` and `/acme/account`, [`acme.md`](acme.md).) Sniffer management needed new backend surface: `wayhouse` gained
 `GET/POST /admin/sniffers` + `DELETE /admin/sniffers/{name}` (writes into
 `settings.sniffers.dir`, then reuses the existing live rescan-on-reload
 mechanism — no new hot-reload path), fanned out fleet-wide via
