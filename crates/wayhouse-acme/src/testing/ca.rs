@@ -71,6 +71,9 @@ struct Inner {
     ca: Issuer<'static, KeyPair>,
     ca_pem: String,
     state: Mutex<State>,
+    /// When set, a new account must carry a valid external account binding for this
+    /// `(key id, raw HMAC key)`.
+    eab: Mutex<Option<(String, Vec<u8>)>>,
 }
 
 /// An in-process ACME server on a loopback port. Dropping it stops the server.
@@ -123,6 +126,7 @@ impl FakeCa {
                 retry_after: None,
                 issued: 0,
             }),
+            eab: Mutex::new(None),
         });
         let svc = inner.clone();
         let app = Router::new().fallback(move |m: Method, u: Uri, b: Bytes| {
@@ -150,6 +154,11 @@ impl FakeCa {
     }
 
     /// How many certificates were issued.
+    pub fn require_eab(&self, kid: &str, hmac_key_b64url: &str) {
+        let raw = B64.decode(hmac_key_b64url).expect("a base64url key");
+        *self.inner.eab.lock().unwrap() = Some((kid.to_string(), raw));
+    }
+
     pub fn issued(&self) -> usize {
         self.inner.state.lock().unwrap().issued
     }
@@ -168,6 +177,55 @@ impl FakeCa {
             Box::new(c)
         })
     }
+}
+
+/// Checks the `externalAccountBinding` of a new-account payload: an HS256 JWS over the
+/// account's own public key, naming `kid`.
+fn verify_eab(
+    base: &str,
+    payload: &Value,
+    kid: &str,
+    key: &[u8],
+    account_key: &[u8],
+) -> Result<(), &'static str> {
+    let eab = payload
+        .get("externalAccountBinding")
+        .ok_or("an external account binding is required")?;
+    let field = |k: &str| eab[k].as_str().unwrap_or_default();
+    let (protected, body, sig) = (field("protected"), field("payload"), field("signature"));
+    let hdr: Value = B64
+        .decode(protected)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or("bad binding header")?;
+    if hdr["alg"] != "HS256" || hdr["kid"].as_str() != Some(kid) {
+        return Err("unknown external account key id");
+    }
+    if hdr["url"].as_str() != Some(&format!("{base}/acct")) {
+        return Err("the binding names another url");
+    }
+    let sig = B64.decode(sig).map_err(|_| "bad binding signature")?;
+    let mac = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key);
+    ring::hmac::verify(&mac, format!("{protected}.{body}").as_bytes(), &sig)
+        .map_err(|_| "the binding signature does not verify")?;
+    let jwk: Value = B64
+        .decode(body)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or("bad binding payload")?;
+    let mut expect = vec![4u8];
+    expect.extend(
+        B64.decode(jwk["x"].as_str().unwrap_or_default())
+            .unwrap_or_default(),
+    );
+    expect.extend(
+        B64.decode(jwk["y"].as_str().unwrap_or_default())
+            .unwrap_or_default(),
+    );
+    if expect != account_key {
+        return Err("the binding is for another account key");
+    }
+    Ok(())
 }
 
 fn rand_token() -> String {
@@ -393,6 +451,19 @@ impl Inner {
         match (parts[0], idx) {
             ("acct", None) if is_new => {
                 let i = acct;
+                if let Some((kid, key)) = self.eab.lock().unwrap().clone() {
+                    if let Err(why) =
+                        verify_eab(&self.base, &payload, &kid, &key, &st.accounts[i].key)
+                    {
+                        st.accounts.pop();
+                        return self.problem(
+                            st,
+                            StatusCode::UNAUTHORIZED,
+                            "externalAccountRequired",
+                            why,
+                        );
+                    }
+                }
                 if payload["termsOfServiceAgreed"] != json!(true) {
                     st.accounts.pop();
                     return self.problem(

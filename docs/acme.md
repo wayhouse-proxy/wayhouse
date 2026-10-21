@@ -64,18 +64,51 @@ so; if it becomes leader nothing is issued until the key is there.
 
 All routes need the admin bearer token like the rest of the controller API.
 
-| Route                       | Does                                                                                   |
-| --------------------------- | -------------------------------------------------------------------------------------- |
-| `PUT /acme/sites/{name}`    | Create or replace a site. Body: `names`, `dns_plugin`, optional `gateways`, `enabled`. |
-| `GET /acme/sites`           | Every site with its certificate status and last error.                                 |
-| `GET /acme/sites/{name}`    | One site.                                                                              |
-| `DELETE /acme/sites/{name}` | Remove the site, its certificates and its retry state.                                 |
-| `GET /acme/account`         | The account URL, for pinning `CAA accounturi=` at your DNS provider. No key.           |
+| Route                       | Does                                                                                                     |
+| --------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `PUT /acme/sites/{name}`    | Create or replace a site. Body: `names`, `dns_plugin`, optional `gateways`, `challenge_zone`, `enabled`. |
+| `GET /acme/sites`           | Every site with its certificate status and last error.                                                   |
+| `GET /acme/sites/{name}`    | One site.                                                                                                |
+| `DELETE /acme/sites/{name}` | Remove the site, its certificates and its retry state.                                                   |
+| `GET /acme/account`         | The account URL, for pinning `CAA accounturi=` at your DNS provider. No key.                             |
 
 Rules: names are lowercase hostnames, optionally `*.zone`; a name belongs to one site
 (`409` otherwise); **a wildcard needs at least one gateway** (`422`), because a wildcard key
 should live only on a few hardened nodes. No route returns a private key, a certificate
 chain or ciphertext.
+
+## CNAME-delegated challenge zones
+
+If the DNS provider that holds your zone has no plugin, or you do not want to give a plugin
+access to it, point the challenge names at a zone you can automate. Create once, per name:
+
+```text
+_acme-challenge.panel.example.com.  CNAME  _acme-challenge.panel.example.com.acme.other.net.
+```
+
+and set `"challenge_zone": "acme.other.net"` on the site. The DNS plugin is then asked to set
+and remove the TXT record at `_acme-challenge.panel.example.com.acme.other.net`
+(`zone_hint` is `panel.example.com.acme.other.net`), and `example.com` itself is never
+changed. The controller still waits until the _original_ name shows the value, so a missing
+or wrong CNAME fails the order with a message that names the CNAME it expected. A wildcard
+`*.example.com` uses `_acme-challenge.example.com`. `challenge_zone` is a plain hostname, not
+a wildcard.
+
+## External account binding
+
+Some CAs (ZeroSSL, Google Trust Services, ...) tie an ACME account to a customer. Give the
+controller the binding the CA shows you when it starts:
+
+```sh
+wayhouse-controller --acme --acme-ca https://acme.example/directory --acme-accept-tos \
+  --acme-eab-kid KID --acme-eab-hmac-key-file /etc/wayhouse/eab.key
+```
+
+The key file holds the HMAC key as the CA prints it (base64url) and must not be readable by
+group or others. The binding is used once, when the cluster's account is created; the account
+key is sealed like every other ACME secret, and the binding key is not stored. Every replica
+needs the same flags, as with `--acme-ca`. If you change the CA, the account for the new CA is
+created with whatever binding the flags carry at that time.
 
 ## Distribution to gateways
 

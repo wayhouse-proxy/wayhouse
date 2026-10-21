@@ -8,7 +8,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use wayhouse_acme::{renew, AccountCreds, AcmeCa, CertBundle, DnsSolver, IssueError, Redacted};
+use wayhouse_acme::{
+    renew, AccountCreds, AcmeCa, CertBundle, DelegatedSolver, DnsSolver, IssueError, Redacted,
+};
 
 use super::types::{cert_slot, AcmeOp, Applied, Attempt, Site, StoredAccount, StoredCert};
 use super::types::{ACCOUNT_SLOT, SEAL_SCOPE};
@@ -249,6 +251,11 @@ impl Runner {
                 site.dns_plugin
             )
         })?;
+        // A site whose challenge names are CNAMEd elsewhere writes its records there.
+        let solver: Arc<dyn DnsSolver> = match &site.challenge_zone {
+            Some(zone) => Arc::new(DelegatedSolver::new(solver, zone)),
+            None => solver,
+        };
         let creds = self.account().await?;
         let ca = &self.ca;
         let (bundle, _) = ca
@@ -489,6 +496,7 @@ mod tests {
             names: vec![host.into()],
             gateways: vec!["gw1".into()],
             dns_plugin: "dns".into(),
+            challenge_zone: None,
             propagation_timeout_secs: 120,
             enabled: true,
         }
@@ -506,6 +514,26 @@ mod tests {
             issued: issued.iter().map(ToString::to_string).collect(),
             failed: failed.iter().map(ToString::to_string).collect(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_site_with_a_challenge_zone_writes_its_records_there() {
+        let f = fixture().await;
+        f.dns.cname(
+            "_acme-challenge.web.example.com",
+            "_acme-challenge.web.example.com.acme.other.net",
+        );
+        let mut s = site("web", "web.example.com");
+        s.challenge_zone = Some("acme.other.net".into());
+        put(&f, s);
+        assert_eq!(f.runner.run_once().await, ran(&["web"], &[]));
+        let log = f.dns.log.lock().unwrap().clone();
+        assert!(
+            log.iter()
+                .all(|(_, name)| name == "_acme-challenge.web.example.com.acme.other.net"),
+            "{log:?}"
+        );
+        assert!(f.store.cert("web").unwrap().is_some());
     }
 
     #[tokio::test]

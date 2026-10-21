@@ -70,6 +70,11 @@ pub fn validate_names(names: &[String]) -> Result<(), NameError> {
     Ok(())
 }
 
+/// A zone name for a delegated challenge: a hostname without a wildcard.
+pub fn valid_zone(zone: &str) -> bool {
+    !zone.starts_with("*.") && valid_name(zone)
+}
+
 fn valid_name(n: &str) -> bool {
     let host = n.strip_prefix("*.").unwrap_or(n);
     if n.len() > 253 || host.split('.').count() < 2 {

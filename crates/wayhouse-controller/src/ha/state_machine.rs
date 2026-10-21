@@ -2251,6 +2251,7 @@ mod tests {
             names: vec![host.into()],
             gateways: vec!["gw1".into()],
             dns_plugin: "dns".into(),
+            challenge_zone: None,
             propagation_timeout_secs: 120,
             enabled: true,
         }

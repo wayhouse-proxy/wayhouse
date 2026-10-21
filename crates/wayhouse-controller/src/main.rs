@@ -185,6 +185,17 @@ struct Args {
     #[arg(long, requires = "acme")]
     acme_accept_tos: bool,
 
+    /// External account binding key id, for CAs that tie accounts to a customer (ZeroSSL,
+    /// Google Trust Services, ...). Used once, when the cluster's account is created. Every
+    /// replica needs the same flags, like `--acme-ca`.
+    #[arg(long, requires_all = ["acme", "acme_eab_hmac_key_file"], value_name = "KID")]
+    acme_eab_kid: Option<String>,
+
+    /// File holding the binding's HMAC key as the CA shows it (base64url). Must not be
+    /// readable by group or others.
+    #[arg(long, requires = "acme_eab_kid", value_name = "FILE")]
+    acme_eab_hmac_key_file: Option<PathBuf>,
+
     /// Allow `--plugins` with a secret key, or `--acme`, on a plain-HTTP, non-loopback
     /// listener, where secret values and the admin token would cross the network in clear
     /// text. Off by default.
@@ -797,7 +808,15 @@ async fn main() -> anyhow::Result<()> {
                     None,
                 ),
             };
-            let ca = wayhouse_acme::AcmeCa::new(&directory_url, args.acme_accept_tos);
+            let mut ca = wayhouse_acme::AcmeCa::new(&directory_url, args.acme_accept_tos);
+            if let (Some(kid), Some(file)) = (&args.acme_eab_kid, &args.acme_eab_hmac_key_file) {
+                let hmac = wayhouse_controller::acme::read_eab_key(file)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                ca = ca
+                    .external_account(kid, &hmac)
+                    .map_err(|e| anyhow::anyhow!("--acme-eab-kid: {e}"))?;
+                tracing::info!(kid = %kid, "ACME accounts are created with an external account binding");
+            }
             // Without plugins there is no DNS provider to call: an order fails with a visible
             // "not available" error, and a site cannot name a plugin (the API says so).
             let solvers: Arc<dyn wayhouse_controller::acme::runner::SolverSource> = match &plugin_rt {

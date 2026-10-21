@@ -224,6 +224,7 @@ mod tests {
             names: vec![host.into()],
             gateways: gateways.iter().map(|g| (*g).into()).collect(),
             dns_plugin: "p".into(),
+            challenge_zone: None,
             propagation_timeout_secs: 120,
             enabled: true,
         }

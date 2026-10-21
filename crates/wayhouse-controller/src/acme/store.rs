@@ -514,6 +514,7 @@ mod tests {
             names: names.iter().map(ToString::to_string).collect(),
             gateways: vec!["gw1".into()],
             dns_plugin: "dns".into(),
+            challenge_zone: None,
             propagation_timeout_secs: 120,
             enabled: true,
         }
