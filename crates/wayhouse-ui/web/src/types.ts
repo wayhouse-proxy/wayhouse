@@ -210,3 +210,39 @@ export interface PluginInstall {
   created_at: number;
   created_by: string | null;
 }
+
+/** One ACME site (`GET /api/acme/sites`, proxied from the controller). */
+export interface AcmeSite {
+  name: string;
+  names: string[];
+  gateways: string[];
+  challenge: "dns-01" | "http-01";
+  dns_plugin: string;
+  enabled: boolean;
+  challenge_zone: string | null;
+  propagation_timeout_secs: number;
+  certificate: {
+    version: number;
+    /** Unix seconds. */
+    not_after: number;
+    issued_at: number;
+    serial: string;
+    names: string[];
+    /** Why this controller cannot unseal the key, or `null` when it can. */
+    held: string | null;
+    /** Issued by a staging CA: browsers will not trust it. */
+    untrusted: boolean;
+  } | null;
+  attempt: { failures: number; next_attempt_at: number; last_error: string | null } | null;
+}
+
+export interface AcmeGateway {
+  name: string;
+  created_at: number;
+  sites: string[];
+}
+
+export interface AcmeAccount {
+  directory_url: string;
+  account_url: string | null;
+}

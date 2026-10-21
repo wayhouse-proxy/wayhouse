@@ -9,6 +9,7 @@ import { SniffersPage } from "./pages/SniffersPage";
 import { PluginsPage } from "./pages/PluginsPage";
 import { ConfigHistoryPage } from "./pages/ConfigHistoryPage";
 import { TunnelAddressesPage } from "./pages/TunnelAddressesPage";
+import { CertificatesPage } from "./pages/CertificatesPage";
 
 export function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
@@ -36,6 +37,7 @@ export function App() {
         <Route path="/plugins" element={<PluginsPage />} />
         <Route path="/config-history" element={<ConfigHistoryPage />} />
         <Route path="/tunnel" element={<TunnelAddressesPage />} />
+        <Route path="/certificates" element={<CertificatesPage />} />
         <Route path="*" element={<Navigate to="/fleet" replace />} />
       </Route>
     </Routes>

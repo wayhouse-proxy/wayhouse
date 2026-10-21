@@ -4,6 +4,9 @@
 // the controller/aggregator itself (docs/10 "The admin GUI").
 
 import type {
+  AcmeAccount,
+  AcmeGateway,
+  AcmeSite,
   FanoutResponse,
   InstallResponse,
   PluginInstall,
@@ -300,4 +303,18 @@ export function releaseTunnelAddress(
 ): Promise<{ revision: number; released: string | null }> {
   const base = role === "origin" ? "origins" : "proxies";
   return requestJson(`/api/tunnel/${base}/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+// --- ACME status (proxied to wayhouse-controller, read-only) ---
+
+export function listAcmeSites(): Promise<{ sites: AcmeSite[] }> {
+  return requestJson("/api/acme/sites");
+}
+
+export function listAcmeGateways(): Promise<{ gateways: AcmeGateway[] }> {
+  return requestJson("/api/acme/gateways");
+}
+
+export function getAcmeAccount(): Promise<AcmeAccount> {
+  return requestJson("/api/acme/account");
 }
