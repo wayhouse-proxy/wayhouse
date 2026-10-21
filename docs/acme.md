@@ -82,13 +82,13 @@ chain or ciphertext.
 A gateway host gets its certificates from the controller, not from the CA. Each gateway has
 its own **token**; a token reads only the sites that list that gateway's name in `gateways`.
 
-| Route                              | Auth          | Does                                                                                   |
-| ---------------------------------- | ------------- | -------------------------------------------------------------------------------------- |
-| `POST /acme/gateways`              | admin token   | Register a gateway. Body `{"name": "edge-1"}`. Answers `201` with the token, **once**. |
-| `GET /acme/gateways`               | admin token   | The gateways and the sites each may read. No token, no hash.                           |
-| `DELETE /acme/gateways/{name}`     | admin token   | Revoke: its token answers `401` at once on every replica.                              |
-| `GET /acme/bundles`                | gateway token | The sites this gateway may read that have a certificate: `{site, version, not_after}`. |
-| `GET /acme/bundles/{site}`         | gateway token | `{version, chain_pem, key_pem, not_after, serial, untrusted}`.                         |
+| Route                          | Auth          | Does                                                                                   |
+| ------------------------------ | ------------- | -------------------------------------------------------------------------------------- |
+| `POST /acme/gateways`          | admin token   | Register a gateway. Body `{"name": "edge-1"}`. Answers `201` with the token, **once**. |
+| `GET /acme/gateways`           | admin token   | The gateways and the sites each may read. No token, no hash.                           |
+| `DELETE /acme/gateways/{name}` | admin token   | Revoke: its token answers `401` at once on every replica.                              |
+| `GET /acme/bundles`            | gateway token | The sites this gateway may read that have a certificate: `{site, version, not_after}`. |
+| `GET /acme/bundles/{site}`     | gateway token | `{version, chain_pem, key_pem, not_after, serial, untrusted}`.                         |
 
 The controller stores only the SHA-256 of a token and replicates only that. To rotate a
 token, delete the gateway and register it again (a second `POST` of a taken name is `409`).
