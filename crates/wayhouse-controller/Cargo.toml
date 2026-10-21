@@ -17,11 +17,18 @@ path = "src/main.rs"
 [lints]
 workspace = true
 
+[features]
+default = ["acme"]
+# ACME issuance (`--acme`): the ACME client, the leader-only runner and the DNS-01 plugin solver.
+# Without it the controller still decodes, stores and replicates ACME state (so a mixed cluster
+# stays consistent) but cannot order certificates; `--acme` then refuses to start.
+acme = ["wayhouse-acme/client", "dep:hickory-resolver"]
+
 [dependencies]
 wayhouse-http = { workspace = true, features = ["server"] }
 wayhouse-config = { path = "../wayhouse-config" }
 wayhouse-plugin-host = { path = "../wayhouse-plugin-host" }
-wayhouse-acme = { path = "../wayhouse-acme" }
+wayhouse-acme = { path = "../wayhouse-acme", default-features = false }
 
 sled.workspace = true
 thiserror.workspace = true
@@ -38,7 +45,7 @@ similar.workspace = true
 reqwest.workspace = true
 openraft = { version = "0.9.25", features = ["serde", "storage-v2"] }
 async-trait.workspace = true
-hickory-resolver.workspace = true
+hickory-resolver = { workspace = true, optional = true }
 rand.workspace = true
 base64 = "0.22"
 chacha20poly1305 = { version = "0.11", features = ["zeroize"] }

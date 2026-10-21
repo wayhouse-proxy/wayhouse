@@ -133,6 +133,9 @@ jobs:
           cargo nextest run --profile ci -p wayhouse --no-default-features
           cargo clippy -p wayhouse-core --no-default-features --all-targets
           cargo nextest run --profile ci -p wayhouse-core --no-default-features
+          cargo check -p wayhouse-controller --no-default-features --lib --bins
+          cargo clippy -p wayhouse-controller --no-default-features --all-targets
+          cargo nextest run --profile ci -p wayhouse-controller --no-default-features
       - name: Test report
         if: always()
         run: python3 .github/scripts/test_summary.py --title "test" target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"

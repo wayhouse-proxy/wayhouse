@@ -2,7 +2,9 @@
 //! `docs/superpowers/specs/2026-10-15-controller-acme-design.md`).
 
 pub mod api;
+#[cfg(feature = "acme")]
 pub mod dns_plugin;
+#[cfg(feature = "acme")]
 pub mod runner;
 pub mod store;
 pub mod types;
