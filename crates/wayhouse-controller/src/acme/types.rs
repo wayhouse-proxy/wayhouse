@@ -120,7 +120,8 @@ pub enum AcmeOp {
     SiteDelete {
         name: String,
     },
-    /// Stores the account unless one exists (the first writer wins).
+    /// Stores the account unless one exists for the same CA (the first writer wins); an
+    /// account for a different CA replaces the stored one.
     AccountSet(StoredAccount),
     /// A finished order. Applied only if proposed in `tagged_term` (the leader's term),
     /// `cert.version` is the next one and `cert.names` are the site's current names.

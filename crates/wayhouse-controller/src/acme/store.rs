@@ -249,8 +249,14 @@ impl AcmeStore {
                         Ok(Applied::Done)
                     }
                     AcmeOp::AccountSet(acct) => {
-                        if account.get(ACCOUNT_KEY)?.is_some() {
-                            return Ok(Applied::Exists);
+                        if let Some(old) = account.get(ACCOUNT_KEY)? {
+                            // The first writer wins per CA; an account for another CA
+                            // (after `--acme-ca` changed) replaces the stored one.
+                            let old: StoredAccount =
+                                serde_json::from_slice(&old).map_err(|e| abort(e.into()))?;
+                            if old.directory_url == acct.directory_url {
+                                return Ok(Applied::Exists);
+                            }
                         }
                         account.insert(ACCOUNT_KEY, json(acct)?)?;
                         Ok(Applied::Done)
@@ -548,6 +554,26 @@ mod tests {
             Applied::Exists
         );
         assert_eq!(s.account().unwrap().unwrap().account_url, "one");
+    }
+
+    #[test]
+    fn an_account_for_another_ca_replaces_the_stored_one() {
+        let (s, _d) = store();
+        let acct = |dir: &str, u: &str| StoredAccount {
+            directory_url: dir.into(),
+            account_url: u.into(),
+            sealed: sealed(),
+        };
+        let set = |a| s.apply_local(&AcmeOp::AccountSet(a)).unwrap();
+        assert_eq!(set(acct("https://staging", "one")), Applied::Done);
+        assert_eq!(set(acct("https://prod", "two")), Applied::Done);
+        assert_eq!(s.account().unwrap().unwrap().account_url, "two");
+        assert_eq!(
+            set(acct("https://prod", "three")),
+            Applied::Exists,
+            "a second leader at the same CA still loses"
+        );
+        assert_eq!(s.account().unwrap().unwrap().account_url, "two");
     }
 
     #[test]

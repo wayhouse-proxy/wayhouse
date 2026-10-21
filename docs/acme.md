@@ -32,7 +32,9 @@ wayhouse-controller --plugins --secret-key-file /etc/wayhouse/secret.keys \
 
 - `--acme-ca` is required and has no default: `letsencrypt`, `letsencrypt-staging` or an
   `https://` ACME directory URL. Try `letsencrypt-staging` first; its certificates are not
-  trusted by browsers but its rate limits are generous.
+  trusted by browsers but its rate limits are generous. When you switch `--acme-ca` later (staging to
+  production), the controller creates a new account at the new CA and replaces the
+  `untrusted` rehearsal certificates at once; certificates already trusted are left alone.
 - `--secret-key-file` is the same keyring plugin secrets use (`--plugin-secret-key-file`
   is the old name and still works; so does `WAYHOUSE_PLUGIN_SECRET_KEY`). `--acme` refuses
   to start without it.

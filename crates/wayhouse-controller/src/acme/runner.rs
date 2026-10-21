@@ -90,6 +90,9 @@ pub struct Runner {
     store: AcmeStore,
     ca: AcmeCa,
     directory_url: String,
+    /// Whether this CA's certificates are untrusted (staging, loopback); see
+    /// [`super::untrusted_ca`].
+    untrusted_ca: bool,
     solvers: Arc<dyn SolverSource>,
     keyring: KeyringHandle,
     ha: Option<Arc<HaHandle>>,
@@ -124,6 +127,7 @@ impl Runner {
             store,
             ca,
             directory_url: directory_url.to_string(),
+            untrusted_ca: super::untrusted_ca(directory_url),
             solvers,
             keyring,
             ha,
@@ -231,6 +235,8 @@ impl Runner {
             None => true,
             Some(c) => {
                 c.names != site.names
+                    // Moved from a staging CA to a trusted one: replace the rehearsal cert.
+                    || (c.untrusted && !self.untrusted_ca)
                     || renew::due(c.issued_at, c.not_after, now, jitter(&site.name))
             }
         })
@@ -267,10 +273,12 @@ impl Runner {
         }
     }
 
-    /// The stored account's credentials; creates the account on first use. Two leaders that
-    /// race converge on the first stored one, the other's account is orphaned at the CA.
+    /// The stored account's credentials; creates the account on first use and again when
+    /// `--acme-ca` moved to another CA (an account belongs to one CA). Two leaders that race
+    /// converge on the first stored one, the other's account is orphaned at the CA.
     async fn account(&self) -> Result<AccountCreds, String> {
-        if self.store.account().map_err(|e| e.to_string())?.is_none() {
+        let current = self.store.account().map_err(|e| e.to_string())?;
+        if current.is_none_or(|a| a.directory_url != self.directory_url) {
             let fresh = self
                 .ca
                 .ensure_account(None)
@@ -298,10 +306,7 @@ impl Runner {
             .map_err(|e| e.to_string())?
             .ok_or("the account was not stored")?;
         if stored.directory_url != self.directory_url {
-            return Err(format!(
-                "the stored account belongs to {} but --acme-ca is {}; a CA change needs a new account",
-                stored.directory_url, self.directory_url
-            ));
+            return Err("the stored account belongs to another CA".into());
         }
         let plain = self
             .keyring
@@ -339,7 +344,7 @@ impl Runner {
             issued_at: bundle.issued_at,
             serial: bundle.serial.clone(),
             names: bundle.names.clone(),
-            untrusted: super::untrusted_ca(&self.directory_url),
+            untrusted: self.untrusted_ca,
         })
     }
 
@@ -766,11 +771,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_ca_change_needs_a_new_account() {
+    async fn a_ca_change_gets_a_new_account_and_reissues() {
         let f = fixture().await;
         put(&f, site("web", "a.example.com"));
         f.runner.run_once().await;
-        let other = FakeCa::start(MemDns::default()).await;
+        let clock: Clock = {
+            let now = f.now.clone();
+            Arc::new(move || now.load(Ordering::SeqCst))
+        };
+        let other = FakeCa::start_with(f.dns.clone(), clock, 90 * DAY).await;
         let ca = AcmeCa::new(&other.directory_url(), true)
             .with_http(FakeCa::http_factory())
             .fast_retry();
@@ -785,9 +794,38 @@ mod tests {
             Arc::new(move || now.load(Ordering::SeqCst)),
         );
         f.now.fetch_add(80 * DAY, Ordering::SeqCst);
-        assert_eq!(moved.run_once().await, ran(&[], &["web"]));
-        let err = f.store.attempt("web").unwrap().unwrap().last_error.unwrap();
-        assert!(err.contains("needs a new account"), "{err}");
+        assert_eq!(moved.run_once().await, ran(&["web"], &[]));
+        assert_eq!(
+            f.store.account().unwrap().unwrap().directory_url,
+            other.directory_url()
+        );
+        assert_eq!(other.accounts(), 1);
+        assert_eq!(f.store.cert("web").unwrap().unwrap().version, 2);
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_certificate_is_reissued_once_the_ca_is_trusted() {
+        let mut f = fixture().await;
+        put(&f, site("web", "a.example.com"));
+        f.runner.run_once().await;
+        assert!(f.store.cert("web").unwrap().unwrap().untrusted);
+        assert_eq!(
+            f.runner.run_once().await,
+            ran(&[], &[]),
+            "not due while staging"
+        );
+        // The operator moves from the staging CA to a trusted one: same directory here, but
+        // the CA no longer counts as untrusted.
+        Arc::get_mut(&mut f.runner).unwrap().untrusted_ca = false;
+        assert_eq!(f.runner.run_once().await, ran(&["web"], &[]));
+        let c = f.store.cert("web").unwrap().unwrap();
+        assert_eq!(c.version, 2);
+        assert!(!c.untrusted);
+        assert_eq!(
+            f.runner.run_once().await,
+            ran(&[], &[]),
+            "trusted is not due again"
+        );
     }
 
     #[tokio::test]
