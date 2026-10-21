@@ -59,7 +59,9 @@ One Caddy JSON document, loaded with `POST /load` on Caddy's admin API:
 
 - Two servers. **HTTPS** (`web.listen.https`): `proxy_protocol` then `tls`, a route per site. **HTTP**
   (`web.listen.http`): `proxy_protocol` only; a site with a certificate redirects to HTTPS (`308`), a
-  site without one is served over HTTP.
+  site without one is served over HTTP. The redirect target is `https://{host}{uri}` with no port, so it
+  is right only when HTTPS is served on 443; behind a non-standard port (for example 8081 to 8444 in a
+  demo) browsers follow it to the wrong place.
 - `proxy_protocol` accepts headers only from loopback and `web.trusted_proxy`
   (`fallback_policy: REJECT`): a connection from anywhere else that sends a header is dropped, so a
   client cannot claim another address.
@@ -84,7 +86,10 @@ One Caddy JSON document, loaded with `POST /load` on Caddy's admin API:
 
 Caddy's own ACME is **off** (`automatic_https.disable`). Certificates come from files; controller-issued
 certificates are a separate work stream (#361 to #366). Running Caddy's built-in ACME next to the sync
-is not supported: every load replaces the whole configuration.
+is not supported: every load replaces the whole configuration. The recipe items that ACME in Caddy
+would need (`http_port: 8080`, `alternate_port`, `disable_redirects`) are deliberately deferred until
+that work; the ACME design lives in
+`docs/superpowers/specs/2026-10-15-controller-acme-design.md` (with the ACME work, #372).
 
 ## Safety rules
 
@@ -128,7 +133,9 @@ The `wayhouse-caddy` image is stock Caddy, pinned by version and digest in
 other images). It runs as uid 65532 on high ports with a read-only root filesystem and no
 capabilities (the base image's `cap_net_bind_service` file capability is removed, which would
 otherwise make the binary fail to start once all capabilities are dropped), with data and config
-volumes only for Caddy's state. It carries the Apache-2.0 text and a NOTICE under `/licenses`.
+volumes only for Caddy's state. It carries the Apache-2.0 text and a NOTICE under `/licenses`; see
+[Third-party notices](third-party-notices.md) for the license and trademark decisions and the rule for
+adding modules.
 Modules (for example DNS-01) would mean building it with `xcaddy` instead; the Dockerfile says where.
 
 ## Topologies
@@ -160,3 +167,10 @@ Modules (for example DNS-01) would mean building it with `xcaddy` instead; the D
   IP at the origin, a spoofed `X-Forwarded-For` replaced, a spoofed PROXY header dropped, a
   WebSocket upgrade, HTTPS with an operator certificate, the HTTP redirect.
   Run it by hand with `CADDY_BIN=<caddy> cargo test -p wayhouse-fleet-tests --test web -- --ignored`.
+
+- **Restart edge.** If the sync restarts while Caddy still serves old sites and `web:` now has zero
+  sites, the sync stays idle (it never sends an empty document) and Caddy keeps the stale sites until
+  a site exists again or Caddy restarts.
+- **Unrouted warning.** The "no listener routes to the web pool" warning counts only direct pool routes;
+  a resolver route or routes added later by `plugin_routes` can reach the pool unseen, so the warning
+  can be a false positive.

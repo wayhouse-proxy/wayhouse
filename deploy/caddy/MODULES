@@ -1,0 +1,4 @@
+# Third-party Caddy modules built into wayhouse-caddy: `<module path> <license SPDX id>`.
+# The image is stock Caddy today, so this list is empty. A module may only be added with
+# a license recorded here (checked by deploy/check-caddy-modules.sh); one with no license
+# grant stays out of the image. Update docs/third-party-notices.md and deploy/caddy/NOTICE too.

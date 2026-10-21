@@ -265,6 +265,30 @@ fn parse_trusted(raw: &str) -> Result<Cidr, ConfigError> {
     Cidr::parse(&full).map_err(|e| invalid(format!("web.trusted_proxy: {e}")))
 }
 
+/// A site host is a plain hostname (`a.example.com`) or `*.suffix`: labels of `[a-z0-9_-]`, no
+/// port, no scheme, no empty label, no trailing dot and no IP literal. The leading-dot suffix
+/// form accepted by route matchers is not accepted here. Hosts reach Caddy matchers and
+/// later ACME names, so a typo should fail at `--check`, not at render time.
+fn check_web_host(h: &str) -> Result<(), String> {
+    let h = h.trim().to_ascii_lowercase();
+    let name = h.strip_prefix("*.").unwrap_or(&h);
+    let bad =
+        || format!("host {h:?} is not a hostname (use `name.example.com` or `*.example.com`)");
+    let labels: Vec<&str> = name.split('.').collect();
+    let ok = labels.iter().all(|l| {
+        !l.is_empty()
+            && l.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+    });
+    if !ok
+        || name.parse::<IpAddr>().is_ok()
+        || labels.iter().all(|l| l.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return Err(bad());
+    }
+    Ok(())
+}
+
 /// Whether `l` binds `port` on `ip` itself or on the matching wildcard address.
 fn bind_covers(bind: SocketAddr, ip: IpAddr, port: u16) -> bool {
     bind.port() == port
@@ -341,6 +365,7 @@ pub(crate) fn validate_web(
         }
         let mut hosts = Vec::with_capacity(s.hosts.len());
         for h in &s.hosts {
+            check_web_host(h).map_err(|e| at(&e))?;
             let key = host_key(&parse_host_pattern(h).map_err(|e| at(&e))?);
             if let Some(first) = seen_hosts.insert(key.clone(), i) {
                 return Err(at(&format!(
@@ -444,6 +469,15 @@ pub(crate) fn validate_web(
             if !p.starts_with('/') {
                 return Err(at("health_path: must start with '/'"));
             }
+            // Caddy expands `{placeholders}` in the path; whitespace and control characters
+            // would corrupt the probe request line.
+            if p.chars()
+                .any(|c| c.is_whitespace() || c.is_control() || c == '{' || c == '}')
+            {
+                return Err(at(
+                    "health_path: must not contain whitespace, control characters, '{' or '}'",
+                ));
+            }
         }
         sites.push(WebSite {
             hosts,
@@ -454,7 +488,8 @@ pub(crate) fn validate_web(
         });
     }
 
-    // Reserve what the generated listeners must not collide with, then allocate.
+    // Reserve what the generated listeners must not collide with, then allocate. Caddy's own
+    // ports count: `internal_ports` may legitimately span 8080 or 8443.
     for pool in &wayhouse_pools {
         let name = local_listener_name(pool);
         if listeners.iter().any(|l| l.name == name) {
@@ -466,6 +501,8 @@ pub(crate) fn validate_web(
     }
     let operator_taken = |port: u16| {
         bind_covers(admin, internal_bind, port)
+            || bind_covers(listen_http, internal_bind, port)
+            || bind_covers(listen_https, internal_bind, port)
             || listeners
                 .iter()
                 .filter(|l| l.protocol == Protocol::Tcp)
