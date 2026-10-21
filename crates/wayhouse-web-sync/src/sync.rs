@@ -10,6 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use wayhouse_config::{WebUpstreamView, WebVia, WebView};
 
+use crate::acme_forward::AcmeForward;
 use crate::admin_addr::AdminAddr;
 use crate::caddy::{CaddyClient, LoadError};
 use crate::certs;
@@ -44,6 +45,7 @@ pub enum Outcome {
 }
 
 pub struct Syncer<S, L> {
+    acme: Option<AcmeForward>,
     source: S,
     loader: L,
     admin: AdminAddr,
@@ -58,6 +60,7 @@ pub struct Syncer<S, L> {
 impl<S: Source, L: Loader> Syncer<S, L> {
     pub fn new(source: S, loader: L, admin: AdminAddr) -> Self {
         Self {
+            acme: None,
             source,
             loader,
             admin,
@@ -65,6 +68,13 @@ impl<S: Source, L: Loader> Syncer<S, L> {
             last_web: None,
             rejected: None,
         }
+    }
+
+    /// Forwards HTTP-01 challenge requests on the HTTP server to the controller.
+    #[must_use]
+    pub fn with_acme_forward(mut self, forward: Option<AcmeForward>) -> Self {
+        self.acme = forward;
+        self
     }
 
     /// `resend`: send even if the document equals the last one loaded. The caller
@@ -117,6 +127,7 @@ impl<S: Source, L: Loader> Syncer<S, L> {
             pools: &pools,
             certs: &site_certs,
             admin: &self.admin,
+            acme: self.acme.as_ref(),
         }) {
             Ok(d) => d,
             Err(e) => {

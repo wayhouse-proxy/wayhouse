@@ -6,6 +6,7 @@
 //! The renderer ([`render`]) is a pure function; everything that does I/O sits behind
 //! [`sync::Source`] and [`sync::Loader`] so the cycle logic is tested without sockets.
 
+pub mod acme_forward;
 pub mod admin_addr;
 pub mod caddy;
 pub mod certs;

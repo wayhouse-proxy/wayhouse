@@ -12,11 +12,14 @@
 //! * `protocols: [h1, h2]`, or Caddy opens an HTTP/3 UDP listener;
 //! * a client-supplied `X-Real-IP` is overwritten (`X-Forwarded-For` is already
 //!   rebuilt from the PROXY address, so `trusted_proxies` is not needed);
-//! * certificates are inline PEM, so a renewal changes the document and reloads.
+//! * certificates are inline PEM, so a renewal changes the document and reloads;
+//! * with `--acme-challenge-upstream`, `/.well-known/acme-challenge/*` on the HTTP server is
+//!   forwarded to the controller before any site route, so HTTP-01 works for every host.
 
 use serde_json::{json, Value};
 use wayhouse_config::{UpstreamTlsView, WebSiteView, WebUpstreamView, WebVia, WebView};
 
+use crate::acme_forward::{AcmeForward, CHALLENGE_PATH};
 use crate::admin_addr::AdminAddr;
 use crate::certs::SiteCerts;
 use crate::pools::PoolBackends;
@@ -44,6 +47,8 @@ pub struct RenderInput<'a> {
     pub pools: &'a PoolBackends,
     pub certs: &'a SiteCerts,
     pub admin: &'a AdminAddr,
+    /// Where HTTP-01 challenge requests go, if the controller issues certificates.
+    pub acme: Option<&'a AcmeForward>,
 }
 
 pub fn render(input: &RenderInput<'_>) -> Result<Value, RenderError> {
@@ -67,7 +72,10 @@ pub fn render(input: &RenderInput<'_>) -> Result<Value, RenderError> {
         }
     }
 
-    let routes = routes(input)?;
+    let mut routes = routes(input)?;
+    if let Some(forward) = input.acme {
+        routes.http.insert(0, acme_route(forward));
+    }
     let wrapper = json!({"wrapper": "proxy_protocol", "allow": allow, "fallback_policy": "REJECT"});
     let https = json!({
         "listen": [web.listen.https],
@@ -148,6 +156,25 @@ fn routes(input: &RenderInput<'_>) -> Result<Routes, RenderError> {
     exact.https.append(&mut wild.https);
     exact.http.append(&mut wild.http);
     Ok(exact)
+}
+
+/// The HTTP-01 forward: any host, only the challenge path, terminal.
+fn acme_route(forward: &AcmeForward) -> Value {
+    let upstreams: Vec<Value> = forward.dials.iter().map(|d| json!({"dial": d})).collect();
+    let mut rp = json!({
+        "handler": "reverse_proxy",
+        "upstreams": upstreams,
+        "health_checks": {"passive": {"fail_duration": "10s", "max_fails": 2}},
+        "load_balancing": {"selection_policy": {"policy": "first"}, "try_duration": "3s"},
+    });
+    if forward.tls {
+        let tls = match &forward.ca_file {
+            Some(p) => json!({"root_ca_pem_files": [p]}),
+            None => json!({}),
+        };
+        rp["transport"] = json!({"protocol": "http", "tls": tls});
+    }
+    route(&json!([{"path": [CHALLENGE_PATH]}]), &rp)
 }
 
 fn route(matcher: &Value, handler: &Value) -> Value {
