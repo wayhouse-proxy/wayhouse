@@ -96,6 +96,9 @@ pub struct SnapshotContent {
     /// without plugins has none, which installs as no plugins.
     #[serde(default)]
     pub plugins: PluginSnapshot,
+    /// ACME sites, account, certificates (keys sealed) and retry state.
+    #[serde(default)]
+    pub acme: crate::acme::AcmeSnapshot,
 }
 
 /// Parses a received snapshot. One in an older format (a section missing)
@@ -145,6 +148,8 @@ pub struct StateMachineStore {
     cluster: Arc<ClusterState>,
     /// Replicated plugin installs and state, applied on every replica.
     plugins: PluginStore,
+    /// Replicated ACME state, applied on every replica.
+    acme: crate::acme::AcmeStore,
     /// `Some((node id, data dir))` to warn about unimported pre-HA data.
     pre_ha_notice: Option<(NodeId, std::path::PathBuf)>,
     meta: sled::Tree,
@@ -177,6 +182,7 @@ impl StateMachineStore {
             book: registries.book,
             cluster: Arc::new(ClusterState::open(db)?),
             plugins: PluginStore::open(db)?,
+            acme: crate::acme::AcmeStore::open(db)?,
             pre_ha_notice: None,
             meta: db.open_tree("raft_sm_meta")?,
             snapshots: db.open_tree("raft_snapshot")?,
@@ -214,6 +220,11 @@ impl StateMachineStore {
     /// The replicated plugin installs and state.
     pub fn plugins(&self) -> &PluginStore {
         &self.plugins
+    }
+
+    /// The replicated ACME state.
+    pub fn acme(&self) -> &crate::acme::AcmeStore {
+        &self.acme
     }
 
     /// The replicated cluster state (the recorded tunnel network).
@@ -321,6 +332,10 @@ impl StateMachineStore {
                     .map_err(|e| StorageIOError::read_state_machine(&e))?,
                 plugins: self
                     .plugins
+                    .snapshot()
+                    .map_err(|e| StorageIOError::read_state_machine(&e))?,
+                acme: self
+                    .acme
                     .snapshot()
                     .map_err(|e| StorageIOError::read_state_machine(&e))?,
             },
@@ -439,6 +454,9 @@ impl StateMachineStore {
             .map_err(|e| StorageIOError::write_state_machine(&e))?;
         self.plugins
             .replace(&content.plugins)
+            .map_err(|e| StorageIOError::write_state_machine(&e))?;
+        self.acme
+            .replace(&content.acme)
             .map_err(|e| StorageIOError::write_state_machine(&e))?;
 
         // Wake live subscribers so they re-read from the replaced store.
@@ -779,6 +797,16 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                                 }
                             }
                             r
+                        }
+                        WriteRequest::Acme(op) => {
+                            let applied = self
+                                .acme
+                                .apply_at(index, entry_term, &op)
+                                .map_err(|e| StorageIOError::write_state_machine(&e))?;
+                            if let crate::acme::Applied::Invalid(why) = &applied {
+                                tracing::warn!(index, %why, "refused a malformed acme entry");
+                            }
+                            WriteResponse::AcmeResult(applied)
                         }
                         WriteRequest::Import(content) => {
                             let response = import::apply_import(
@@ -2213,5 +2241,100 @@ mod tests {
         json.as_object_mut().unwrap().remove("plugins");
         let content = decode_snapshot(&serde_json::to_vec(&json).unwrap()).unwrap();
         assert_eq!(content.plugins, PluginSnapshot::default());
+    }
+
+    // ---- acme entries ----
+
+    fn acme_site(name: &str, host: &str) -> crate::acme::Site {
+        crate::acme::Site {
+            name: name.into(),
+            names: vec![host.into()],
+            gateways: vec!["gw1".into()],
+            dns_plugin: "dns".into(),
+            propagation_timeout_secs: 120,
+            enabled: true,
+        }
+    }
+
+    fn acme_cert(version: u64, host: &str) -> crate::acme::StoredCert {
+        crate::acme::StoredCert {
+            version,
+            chain_pem: "chain".into(),
+            sealed_key: crate::plugins::secrets::Sealed {
+                key_id: "k".into(),
+                nonce: "n".into(),
+                ciphertext: "c".into(),
+            },
+            not_after: 100,
+            issued_at: 1,
+            serial: "01".into(),
+            names: vec![host.into()],
+            untrusted: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn acme_entries_apply_on_every_replica_and_a_snapshot_catches_up() {
+        use crate::acme::{AcmeOp, Applied};
+        let done = WriteResponse::AcmeResult(Applied::Done);
+        let (mut a, _a) = test_sm();
+        let (mut b, _b) = test_sm();
+        let log = [
+            WriteRequest::Acme(AcmeOp::SiteSet(acme_site("web", "a.example.com"))),
+            WriteRequest::Acme(AcmeOp::SiteSet(acme_site("dup", "a.example.com"))),
+            WriteRequest::Acme(AcmeOp::CertIssued {
+                site: "web".into(),
+                tagged_term: TERM,
+                cert: acme_cert(1, "a.example.com"),
+            }),
+            WriteRequest::Acme(AcmeOp::CertIssued {
+                site: "web".into(),
+                tagged_term: TERM + 1,
+                cert: acme_cert(2, "a.example.com"),
+            }),
+        ];
+        let want = [
+            done.clone(),
+            WriteResponse::AcmeResult(Applied::NameTaken("a.example.com".into())),
+            done,
+            WriteResponse::AcmeResult(Applied::WrongTerm),
+        ];
+        for (i, req) in log.iter().enumerate() {
+            let index = i as u64 + 1;
+            let on_a = apply_one(&mut a, index, req.clone()).await;
+            let on_b = apply_one(&mut b, index, req.clone()).await;
+            assert_eq!(on_a, want[i], "entry {index}");
+            assert_eq!(on_a, on_b);
+        }
+        assert_eq!(a.acme().snapshot().unwrap(), b.acme().snapshot().unwrap());
+        assert_eq!(a.acme().cert("web").unwrap().unwrap().version, 1);
+
+        let snapshot = a
+            .get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
+        let (mut c, _c) = test_sm();
+        apply_one(
+            &mut c,
+            1,
+            WriteRequest::Acme(AcmeOp::SiteSet(acme_site("old", "old.example.com"))),
+        )
+        .await;
+        c.install_snapshot(&snapshot.meta, snapshot.snapshot)
+            .await
+            .unwrap();
+        assert_eq!(c.acme().snapshot().unwrap(), a.acme().snapshot().unwrap());
+        assert!(c.acme().site("old").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_snapshot_without_an_acme_section_decodes_as_no_acme() {
+        let (sm, _d) = test_sm();
+        let mut json = serde_json::to_value(&sm.copy().unwrap().content).unwrap();
+        json.as_object_mut().unwrap().remove("acme");
+        let content = decode_snapshot(&serde_json::to_vec(&json).unwrap()).unwrap();
+        assert_eq!(content.acme, crate::acme::AcmeSnapshot::default());
     }
 }

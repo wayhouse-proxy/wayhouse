@@ -532,6 +532,7 @@ mod tests {
             pre_ha: crate::ha::import::PreHaSummary::default(),
             plugin_support,
             secret_key_ids: Vec::new(),
+            acme_support: 0,
         }
     }
 
@@ -624,6 +625,7 @@ mod tests {
     fn rotating_the_key_does_not_wait_for_a_silent_member() {
         let with = |ids: &[&str]| Whoami {
             secret_key_ids: ids.iter().map(|s| (*s).to_string()).collect(),
+            acme_support: 0,
             ..who(PLUGIN_SUPPORT)
         };
         assert!(

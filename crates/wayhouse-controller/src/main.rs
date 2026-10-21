@@ -166,11 +166,28 @@ struct Args {
     /// only. Every controller of a tier needs the same file; the file is re-read when it
     /// changes. Without it (and without `WAYHOUSE_PLUGIN_SECRET_KEY`) the secrets API
     /// answers `409` and plugins that use secret slots are held, not run.
-    #[arg(long)]
+    #[arg(long, alias = "secret-key-file")]
     plugin_secret_key_file: Option<PathBuf>,
 
-    /// Allow `--plugins` with a secret key on a plain-HTTP, non-loopback listener, where
-    /// secret values would cross the network in clear text. Off by default.
+    /// Issue and renew ACME certificates for the sites in `/acme/sites` (DNS-01 through a
+    /// DNS plugin). Off by default. Needs the secret key above and `--acme-ca`. Design:
+    /// `docs/superpowers/specs/2026-10-15-controller-acme-design.md`.
+    #[arg(long, requires = "acme_ca")]
+    acme: bool,
+
+    /// The CA: `letsencrypt`, `letsencrypt-staging` or an https:// ACME directory URL. No
+    /// default, so nobody gets production rate limits (or untrusted staging certificates) by
+    /// accident.
+    #[arg(long, value_name = "NAME|URL")]
+    acme_ca: Option<String>,
+
+    /// Agree to the CA's terms of service when the cluster's ACME account is created.
+    #[arg(long, requires = "acme")]
+    acme_accept_tos: bool,
+
+    /// Allow `--plugins` with a secret key, or `--acme`, on a plain-HTTP, non-loopback
+    /// listener, where secret values and the admin token would cross the network in clear
+    /// text. Off by default.
     #[arg(long)]
     allow_insecure_secrets: bool,
 
@@ -244,6 +261,13 @@ async fn main() -> anyhow::Result<()> {
     }
     // Load (and validate) the serving certificate before anything else starts.
     let tls_cert = args.tls.load()?;
+    if args.acme {
+        wayhouse_controller::acme::check_listener(
+            tls_cert.is_none() && !args.listen.ip().is_loopback(),
+            args.allow_insecure_secrets,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+    }
     let plugin_keys =
         wayhouse_controller::plugins::secrets::load(args.plugin_secret_key_file.as_deref())
             .map_err(|e| anyhow::anyhow!("plugin secret key: {e}"))?;
@@ -410,6 +434,7 @@ async fn main() -> anyhow::Result<()> {
         Arc<HaHandle>,
         Arc<ha::cluster_state::ClusterState>,
         wayhouse_controller::plugins::PluginStore,
+        wayhouse_controller::acme::AcmeStore,
     )> = if !ha_enabled {
         None
     } else {
@@ -448,6 +473,7 @@ async fn main() -> anyhow::Result<()> {
 
         let cluster = state_machine.cluster().clone();
         let plugin_store = state_machine.plugins().clone();
+        let acme_store = state_machine.acme().clone();
         let network = ha::network::Network::new(ha_token.clone());
         let raft_config = Arc::new(
             ha::raft_config(args.ha_snapshot_after)
@@ -518,12 +544,12 @@ async fn main() -> anyhow::Result<()> {
         } else {
             tracing::info!(node_id, peers = ?peers.keys().collect::<Vec<_>>(), "intra-tier HA enabled");
         }
-        Some((handle, cluster, plugin_store))
+        Some((handle, cluster, plugin_store, acme_store))
     };
 
     // Under HA the registries propose through Raft instead of writing: the
     // state machine's own copies (handed to it above) stay the writers.
-    if let Some((handle, cluster, _)) = &ha_handle {
+    if let Some((handle, cluster, _, _)) = &ha_handle {
         let registry_ha = wayhouse_controller::registry::RegistryHa {
             handle: handle.clone(),
             cluster: cluster.clone(),
@@ -545,7 +571,7 @@ async fn main() -> anyhow::Result<()> {
     let schema_source = proxy_peers_state.clone();
     config_state =
         config_state.with_schema_floor(Arc::new(move || schema_source.min_live_config_schema()));
-    let leader_handle = ha_handle.as_ref().map(|(h, _, _)| h.clone());
+    let leader_handle = ha_handle.as_ref().map(|(h, _, _, _)| h.clone());
     let lease_leader = leader_handle.clone();
     tokio::spawn(wayhouse_controller::lease::lease_loop(
         book.clone(),
@@ -649,7 +675,7 @@ async fn main() -> anyhow::Result<()> {
                 // Under HA the state machine's store is the one every replica applies
                 // into; otherwise the plugin trees sit next to the config revisions.
                 let (store, ha) = match &ha_handle {
-                    Some((handle, _, store)) => (store.clone(), Some(handle.clone())),
+                    Some((handle, _, store, _)) => (store.clone(), Some(handle.clone())),
                     None => (
                         wayhouse_controller::plugins::PluginStore::open(state.store.db())?,
                         None,
@@ -738,7 +764,50 @@ async fn main() -> anyhow::Result<()> {
             Err(reason) => wayhouse_controller::plugins::api::disabled_router(reason),
         },
     );
-    if let Some((handle, _, _)) = ha_handle {
+    app = app.merge(if args.acme {
+        let directory_url = wayhouse_controller::acme::check_flags(
+            args.acme_ca.as_deref(),
+            !plugin_keys.current().is_empty(),
+            args.role == Role::Slave,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+        let keyring = plugin_keys.clone();
+        let (store, ha) = match &ha_handle {
+            Some((handle, _, _, store)) => (store.clone(), Some(handle.clone())),
+            None => (
+                wayhouse_controller::acme::AcmeStore::open(state.store.db())?,
+                None,
+            ),
+        };
+        let ca = wayhouse_acme::AcmeCa::new(&directory_url, args.acme_accept_tos);
+        drop(
+            wayhouse_controller::acme::runner::Runner::new(
+                store.clone(),
+                ca,
+                &directory_url,
+                // DNS plugins arrive with the on_acme_dns trigger; until then a site's
+                // order fails with a visible "not available" error.
+                Arc::new(wayhouse_controller::acme::runner::NoSolvers),
+                keyring.clone(),
+                ha.clone(),
+                wayhouse_controller::acme::runner::system_clock(),
+            )
+            .spawn(),
+        );
+        tracing::info!(ca = %directory_url, "ACME enabled");
+        wayhouse_controller::acme::api::router(wayhouse_controller::acme::api::AcmeState {
+            store,
+            auth_token: admin_token.clone(),
+            ha,
+            keyring,
+            directory_url,
+        })
+    } else {
+        wayhouse_controller::acme::api::disabled_router(
+            "ACME is not enabled on this controller (start it with --acme)",
+        )
+    });
+    if let Some((handle, _, _, _)) = ha_handle {
         app = app
             .merge(ha::members::router(handle.clone(), admin_token))
             .merge(ha::routes::router(handle));

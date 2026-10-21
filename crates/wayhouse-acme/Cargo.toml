@@ -1,0 +1,49 @@
+[package]
+name = "wayhouse-acme"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# ACME certificate issuance for the controller (DNS-01): the client wrapper, the DNS solver
+# trait, the certificate model and renewal arithmetic. No Raft, no HTTP server, no plugin
+# dependency. The fake CA behind the `test-support` feature is what the controller's tests
+# issue against: no real CA or DNS in CI.
+# Spec: docs/superpowers/specs/2026-10-15-controller-acme-design.md
+
+[features]
+# The in-process fake CA and fake DNS records; used by this crate's and the controller's tests.
+test-support = ["dep:axum", "dep:ring", "dep:sha2", "dep:http-body-util", "dep:time", "dep:rustls-pki-types", "dep:rand", "rcgen/x509-parser"]
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize = { version = "1", features = ["serde"] }
+async-trait.workspace = true
+base64 = "0.22"
+tokio = { workspace = true }
+tracing.workspace = true
+instant-acme = { version = "0.8", default-features = false, features = ["ring", "hyper-rustls", "rcgen"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+x509-parser = "0.18"
+axum = { workspace = true, optional = true }
+ring = { version = "0.17", optional = true }
+sha2 = { workspace = true, optional = true }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "native-tokio", "tls12", "rustls-platform-verifier"] }
+bytes = "1"
+http = "1"
+httpdate = "1"
+http-body-util = { version = "0.1", optional = true }
+time = { version = "0.3", optional = true }
+rustls-pki-types = { version = "1", optional = true }
+rand = { workspace = true, optional = true }
+
+[dev-dependencies]
+wayhouse-acme = { path = ".", features = ["test-support"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
