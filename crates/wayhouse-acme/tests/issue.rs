@@ -1,7 +1,7 @@
 //! `AcmeCa` against the in-process fake CA: no network, no real DNS.
 
 use wayhouse_acme::testing::{FailKind, FakeCa, MemDns};
-use wayhouse_acme::{AcmeCa, IssueError};
+use wayhouse_acme::{AcmeCa, DelegatedSolver, IssueError};
 
 fn ca(fake: &FakeCa, tos: bool) -> AcmeCa {
     AcmeCa::new(&fake.directory_url(), tos)
@@ -202,5 +202,112 @@ async fn a_hung_solver_fails_the_order_and_still_cleans_up() {
         matches!(&err, IssueError::Order(m) if m.contains("did not finish")),
         "{err}"
     );
+    assert!(dns.is_empty());
+}
+
+const EAB_KEY: &str = "c2VjcmV0LWhtYWMta2V5LWZvci10ZXN0cw";
+
+#[tokio::test]
+async fn an_account_is_created_with_the_external_account_binding_the_ca_requires() {
+    let dns = MemDns::default();
+    let fake = FakeCa::start(dns.clone()).await;
+    fake.require_eab("kid-1", EAB_KEY);
+    let with = ca(&fake, true).external_account("kid-1", EAB_KEY).unwrap();
+    let (_, creds) = with
+        .issue(None, &names(&["a.example.com"]), &dns, 1)
+        .await
+        .unwrap();
+    assert!(!creds.account_url.is_empty());
+    assert_eq!(fake.accounts(), 1);
+    // The standard-alphabet, padded spelling of the same key works too.
+    let fake2 = FakeCa::start(dns.clone()).await;
+    fake2.require_eab("kid-1", EAB_KEY);
+    ca(&fake2, true)
+        .external_account("kid-1", "c2VjcmV0LWhtYWMta2V5LWZvci10ZXN0cw==")
+        .unwrap()
+        .ensure_account(None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_ca_that_requires_a_binding_refuses_an_account_without_a_valid_one() {
+    let dns = MemDns::default();
+    let fake = FakeCa::start(dns.clone()).await;
+    fake.require_eab("kid-1", EAB_KEY);
+    let none = ca(&fake, true).ensure_account(None).await.unwrap_err();
+    assert!(none.to_string().contains("binding"), "{none}");
+    let wrong_id = ca(&fake, true)
+        .external_account("other", EAB_KEY)
+        .unwrap()
+        .ensure_account(None)
+        .await
+        .unwrap_err();
+    assert!(wrong_id.to_string().contains("key id"), "{wrong_id}");
+    let wrong_key = ca(&fake, true)
+        .external_account("kid-1", "d3Jvbmcta2V5")
+        .unwrap()
+        .ensure_account(None)
+        .await
+        .unwrap_err();
+    assert!(wrong_key.to_string().contains("verify"), "{wrong_key}");
+    assert_eq!(fake.accounts(), 0);
+}
+
+#[tokio::test]
+async fn a_malformed_binding_is_refused_before_any_request() {
+    let fake_url = "https://ca.example/dir";
+    assert!(AcmeCa::new(fake_url, true)
+        .external_account("", EAB_KEY)
+        .is_err());
+    assert!(AcmeCa::new(fake_url, true)
+        .external_account("kid", "***")
+        .is_err());
+    assert!(AcmeCa::new(fake_url, true)
+        .external_account("kid", "")
+        .is_err());
+}
+
+#[tokio::test]
+async fn a_delegated_zone_gets_the_record_and_the_original_name_is_a_cname_to_it() {
+    let dns = MemDns::default();
+    let fake = FakeCa::start(dns.clone()).await;
+    dns.cname(
+        "_acme-challenge.panel.example.com",
+        "_acme-challenge.panel.example.com.acme.other.net",
+    );
+    let solver = DelegatedSolver::new(dns.clone(), "acme.other.net");
+    ca(&fake, true)
+        .issue(None, &names(&["panel.example.com"]), &solver, 1)
+        .await
+        .unwrap();
+    let log = dns.log.lock().unwrap().clone();
+    assert_eq!(
+        log,
+        [
+            (
+                "present",
+                "_acme-challenge.panel.example.com.acme.other.net".to_string()
+            ),
+            (
+                "cleanup",
+                "_acme-challenge.panel.example.com.acme.other.net".to_string()
+            ),
+        ],
+        "only the delegated name is ever written"
+    );
+    assert!(dns.is_empty());
+}
+
+#[tokio::test]
+async fn a_missing_cname_fails_the_order_with_a_hint_and_still_cleans_up() {
+    let dns = MemDns::default();
+    let fake = FakeCa::start(dns.clone()).await;
+    let solver = DelegatedSolver::new(dns.clone(), "acme.other.net");
+    let err = ca(&fake, true)
+        .issue(None, &names(&["panel.example.com"]), &solver, 1)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("CNAME"), "{err}");
     assert!(dns.is_empty());
 }

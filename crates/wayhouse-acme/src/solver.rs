@@ -25,3 +25,77 @@ pub trait DnsSolver: Send + Sync {
         timeout: Duration,
     ) -> Result<(), SolverError>;
 }
+
+#[async_trait]
+impl<T: DnsSolver + ?Sized> DnsSolver for std::sync::Arc<T> {
+    async fn present(&self, fqdn: &str, value: &str) -> Result<(), SolverError> {
+        (**self).present(fqdn, value).await
+    }
+
+    async fn cleanup(&self, fqdn: &str, value: &str) -> Result<(), SolverError> {
+        (**self).cleanup(fqdn, value).await
+    }
+
+    async fn wait_visible(
+        &self,
+        fqdn: &str,
+        value: &str,
+        timeout: Duration,
+    ) -> Result<(), SolverError> {
+        (**self).wait_visible(fqdn, value, timeout).await
+    }
+}
+
+/// A solver for a site whose `_acme-challenge` names are CNAMEs into another zone, so the DNS
+/// provider that holds the real zone is never asked to change it. The operator creates, once,
+/// `_acme-challenge.<host> CNAME _acme-challenge.<host>.<zone>`; this wrapper writes and
+/// removes the TXT record at the second name. The visibility check still looks at the name the
+/// CA queries, which proves the CNAME is in place.
+pub struct DelegatedSolver<S> {
+    inner: S,
+    zone: String,
+}
+
+impl<S> DelegatedSolver<S> {
+    /// `zone` is a hostname such as `acme.other.net`.
+    pub fn new(inner: S, zone: &str) -> Self {
+        Self {
+            inner,
+            zone: zone.trim_matches('.').to_ascii_lowercase(),
+        }
+    }
+
+    /// `_acme-challenge.host` becomes `_acme-challenge.host.<zone>`.
+    pub fn delegated(&self, fqdn: &str) -> String {
+        format!("{}.{}", fqdn.trim_end_matches('.'), self.zone)
+    }
+}
+
+#[async_trait]
+impl<S: DnsSolver> DnsSolver for DelegatedSolver<S> {
+    async fn present(&self, fqdn: &str, value: &str) -> Result<(), SolverError> {
+        self.inner.present(&self.delegated(fqdn), value).await
+    }
+
+    async fn cleanup(&self, fqdn: &str, value: &str) -> Result<(), SolverError> {
+        self.inner.cleanup(&self.delegated(fqdn), value).await
+    }
+
+    async fn wait_visible(
+        &self,
+        fqdn: &str,
+        value: &str,
+        timeout: Duration,
+    ) -> Result<(), SolverError> {
+        // The CA queries the original name; a resolver follows the CNAME to the record.
+        self.inner
+            .wait_visible(fqdn, value, timeout)
+            .await
+            .map_err(|e| {
+                SolverError(format!(
+                    "{e}; is `{fqdn}` a CNAME to `{}`?",
+                    self.delegated(fqdn)
+                ))
+            })
+    }
+}

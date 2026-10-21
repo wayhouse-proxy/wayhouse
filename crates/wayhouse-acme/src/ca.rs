@@ -115,6 +115,9 @@ pub struct AcmeCa {
     retry: RetryPolicy,
     /// The `Retry-After` of the newest 429 answer, shared with the HTTP client wrapper.
     retry_after: Arc<Mutex<Option<Duration>>>,
+    /// External account binding (RFC 8555 7.3.4) for CAs that tie accounts to a customer:
+    /// the key id and the raw HMAC key. Used only when the account is created.
+    eab: Option<(String, zeroize::Zeroizing<Vec<u8>>)>,
 }
 
 impl AcmeCa {
@@ -128,7 +131,29 @@ impl AcmeCa {
             order_margin: Duration::from_secs(300),
             retry: RetryPolicy::new().timeout(Duration::from_secs(90)),
             retry_after: Arc::default(),
+            eab: None,
         }
+    }
+
+    /// Creates the account with an external account binding. `hmac_key` is the key as the CA
+    /// hands it out: base64url (standard base64 and padding are accepted too).
+    ///
+    /// # Errors
+    /// [`IssueError::Account`] if `kid` is empty or `hmac_key` is not base64.
+    pub fn external_account(mut self, kid: &str, hmac_key: &str) -> Result<Self, IssueError> {
+        use base64::Engine;
+        if kid.trim().is_empty() {
+            return Err(IssueError::Account("the EAB key id is empty".into()));
+        }
+        let text = hmac_key.trim().trim_end_matches('=');
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(text.replace('+', "-").replace('/', "_"))
+            .map_err(|_| IssueError::Account("the EAB HMAC key is not base64".into()))?;
+        if raw.is_empty() {
+            return Err(IssueError::Account("the EAB HMAC key is empty".into()));
+        }
+        self.eab = Some((kid.trim().to_string(), zeroize::Zeroizing::new(raw)));
+        Ok(self)
     }
 
     /// Replaces the HTTP client; tests point it at a plain-HTTP fake CA.
@@ -213,6 +238,10 @@ impl AcmeCa {
         if !self.accept_tos {
             return Err(IssueError::TosNotAccepted);
         }
+        let eab = self
+            .eab
+            .as_ref()
+            .map(|(kid, key)| instant_acme::ExternalAccountKey::new(kid.clone(), key));
         let (account, creds) = builder
             .create(
                 &NewAccount {
@@ -221,7 +250,7 @@ impl AcmeCa {
                     only_return_existing: false,
                 },
                 self.directory_url.clone(),
-                None,
+                eab.as_ref(),
             )
             .await
             .map_err(|e| self.api_error(&e, IssueError::Account))?;

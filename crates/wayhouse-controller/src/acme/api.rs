@@ -98,6 +98,8 @@ struct SiteBody {
     #[serde(default)]
     gateways: Vec<String>,
     dns_plugin: String,
+    #[serde(default)]
+    challenge_zone: Option<String>,
     propagation_timeout_secs: Option<u64>,
     enabled: Option<bool>,
 }
@@ -124,6 +126,7 @@ fn status_of(
     Ok(serde_json::json!({
         "name": site.name, "names": site.names, "gateways": site.gateways,
         "dns_plugin": site.dns_plugin, "enabled": site.enabled,
+        "challenge_zone": site.challenge_zone,
         "propagation_timeout_secs": site.propagation_timeout_secs,
         "certificate": cert_json,
         "attempt": attempt.map(|a| serde_json::json!({
@@ -300,6 +303,7 @@ async fn put_site(
         names: parsed.names,
         gateways: parsed.gateways,
         dns_plugin: parsed.dns_plugin,
+        challenge_zone: parsed.challenge_zone,
         propagation_timeout_secs: parsed.propagation_timeout_secs.unwrap_or(120),
         enabled: parsed.enabled.unwrap_or(true),
     };
@@ -533,6 +537,35 @@ mod tests {
             call(&app, "GET", "/acme/gateways", "", Some(gw)).await.0,
             StatusCode::UNAUTHORIZED
         );
+    }
+
+    #[tokio::test]
+    async fn a_site_may_name_a_challenge_zone_that_must_be_a_hostname() {
+        let (app, _s, _d) = app(None);
+        let with = |zone: &str| {
+            format!(
+                r#"{{"names":["panel.example.com"],"dns_plugin":"0123456789abcdef","challenge_zone":"{zone}"}}"#
+            )
+        };
+        for bad in ["*.acme.other.net", "not a zone", "x", "-bad.example", ""] {
+            let (st, e) = call(&app, "PUT", "/acme/sites/web", &with(bad), None).await;
+            assert_eq!(st, StatusCode::BAD_REQUEST, "{bad:?}: {e}");
+        }
+        let (st, _) = call(
+            &app,
+            "PUT",
+            "/acme/sites/web",
+            &with("acme.other.net"),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, one) = call(&app, "GET", "/acme/sites/web", "", None).await;
+        assert_eq!(one["challenge_zone"], "acme.other.net");
+        let (_, plain) = call(&app, "PUT", "/acme/sites/web", SITE, None).await;
+        assert_eq!(plain["stored"], true);
+        let (_, one) = call(&app, "GET", "/acme/sites/web", "", None).await;
+        assert!(one["challenge_zone"].is_null());
     }
 
     const SITE: &str =

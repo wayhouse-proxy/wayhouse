@@ -26,6 +26,10 @@ pub struct Site {
     pub gateways: Vec<String>,
     /// The plugin install that sets and removes the DNS TXT records.
     pub dns_plugin: String,
+    /// A zone the `_acme-challenge` names are CNAMEd into: the TXT records are written under
+    /// it (`_acme-challenge.<host>.<zone>`) instead of in the site's own zone.
+    #[serde(default)]
+    pub challenge_zone: Option<String>,
     #[serde(default = "default_propagation")]
     pub propagation_timeout_secs: u64,
     #[serde(default = "default_true")]
@@ -69,6 +73,11 @@ impl Site {
         }
         if self.names.iter().any(|n| n.starts_with("*.")) && self.gateways.is_empty() {
             return Err("a wildcard site must name at least one gateway".into());
+        }
+        if let Some(zone) = &self.challenge_zone {
+            if !wayhouse_acme::valid_zone(zone) {
+                return Err("challenge_zone must be a hostname such as acme.other.net".into());
+            }
         }
         if !(10..=3600).contains(&self.propagation_timeout_secs) {
             return Err("propagation_timeout_secs must be 10 to 3600".into());

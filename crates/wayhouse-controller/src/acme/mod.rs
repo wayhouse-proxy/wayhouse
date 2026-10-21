@@ -103,6 +103,34 @@ pub fn check_listener(plain_remote: bool, allow_insecure: bool) -> Result<(), St
     Ok(())
 }
 
+/// The EAB HMAC key in `path`. On unix the file must not be readable by group or others.
+pub fn read_eab_key(path: &std::path::Path) -> Result<String, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)
+            .map_err(|e| format!("--acme-eab-hmac-key-file {}: {e}", path.display()))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "--acme-eab-hmac-key-file {} is readable by group or others; chmod 600 it",
+                path.display()
+            ));
+        }
+    }
+    let key = std::fs::read_to_string(path)
+        .map_err(|e| format!("--acme-eab-hmac-key-file {}: {e}", path.display()))?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(format!(
+            "--acme-eab-hmac-key-file {} is empty",
+            path.display()
+        ));
+    }
+    Ok(key.to_string())
+}
+
 /// Startup checks for `--acme`. Returns the CA directory URL.
 pub fn check_flags(ca: Option<&str>, have_keyring: bool, slave: bool) -> Result<String, String> {
     if slave {
@@ -160,6 +188,22 @@ mod tests {
         assert!(check_flags(Some("letsencrypt"), true, true)
             .unwrap_err()
             .contains("slave"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_eab_key_file_must_be_private_and_not_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("eab");
+        std::fs::write(&path, "c2VjcmV0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(read_eab_key(&path).unwrap_err().contains("chmod 600"));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(read_eab_key(&path).unwrap(), "c2VjcmV0");
+        std::fs::write(&path, " \n").unwrap();
+        assert!(read_eab_key(&path).unwrap_err().contains("empty"));
+        assert!(read_eab_key(&dir.path().join("missing")).is_err());
     }
 
     #[test]

@@ -10,6 +10,6 @@ pub mod testing;
 
 #[cfg(feature = "client")]
 pub use ca::{AccountCreds, AcmeCa, IssueError};
-pub use model::{validate_names, CertBundle, NameError, Redacted};
+pub use model::{valid_zone, validate_names, CertBundle, NameError, Redacted};
 pub use renew::{backoff, due, JITTER_MAX};
-pub use solver::{DnsSolver, SolverError};
+pub use solver::{DelegatedSolver, DnsSolver, SolverError};
