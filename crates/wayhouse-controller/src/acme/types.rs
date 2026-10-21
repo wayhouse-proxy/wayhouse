@@ -113,6 +113,15 @@ pub struct Attempt {
     pub window_failures: u32,
 }
 
+/// A gateway that may fetch certificate bundles. Only the hash of its token is stored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gateway {
+    pub name: String,
+    /// Lowercase hex SHA-256 of the bearer token.
+    pub token_hash: String,
+    pub created_at: u64,
+}
+
 /// A replicated ACME write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AcmeOp {
@@ -134,6 +143,11 @@ pub enum AcmeOp {
         site: String,
         attempt: Attempt,
     },
+    /// Registers a gateway; `Exists` if the name is taken (delete it first to rotate).
+    GatewaySet(Gateway),
+    GatewayDelete {
+        name: String,
+    },
 }
 
 /// What applying one op did. Everything but `Replayed` and `Done` changed nothing.
@@ -146,6 +160,7 @@ pub enum Applied {
     /// Another site already covers this name.
     NameTaken(String),
     NoSuchSite,
+    NoSuchGateway,
     /// The entry was not appended in the term it was proposed in.
     WrongTerm,
     /// The version or names moved since the order started.
@@ -161,6 +176,8 @@ pub struct AcmeSnapshot {
     /// `(site, cert)` pairs.
     pub certs: Vec<(String, StoredCert)>,
     pub attempts: Vec<(String, Attempt)>,
+    #[serde(default)]
+    pub gateways: Vec<Gateway>,
     #[serde(default)]
     pub applied_index: Option<u64>,
 }

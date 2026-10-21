@@ -47,10 +47,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cp target/release/wayhouse /out/wayhouse-minimal \
  && cargo auditable build --release --locked \
       -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-agent \
-      -p wayhouse-web-sync \
+      -p wayhouse-web-sync -p wayhouse-certsync \
  && cp target/release/wayhouse target/release/wayhouse-controller \
        target/release/wayhouse-aggregator target/release/wayhouse-ui \
-       target/release/wayhouse-agent target/release/wayhouse-web-sync /out/ \
+       target/release/wayhouse-agent target/release/wayhouse-web-sync \
+       target/release/wayhouse-certsync /out/ \
  && chown 65532:65532 /out/data
 
 # --- prebuilt binaries (BIN_SOURCE=prebuilt) -----------------------------
@@ -68,6 +69,9 @@ COPY --from=bins /out/wayhouse /usr/local/bin/wayhouse
 # The Caddy sync (docs/web-proxy.md): a second service from this same image, started with
 # `entrypoint: /usr/local/bin/wayhouse-web-sync`. Unused unless the config has a `web:` section.
 COPY --from=bins /out/wayhouse-web-sync /usr/local/bin/wayhouse-web-sync
+# The ACME certificate sync for gateway hosts (docs/acme.md), also started with `entrypoint:`.
+# Unused unless the controller runs with --acme.
+COPY --from=bins /out/wayhouse-certsync /usr/local/bin/wayhouse-certsync
 # Writable by the nonroot uid: the tunnel key file lives on a volume here.
 COPY --from=bins --chown=65532:65532 /out/data /data
 ENTRYPOINT ["/usr/local/bin/wayhouse"]

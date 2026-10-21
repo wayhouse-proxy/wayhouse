@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 use sled::transaction::{ConflictableTransactionError, TransactionError};
 use sled::Transactional;
 
-use super::types::{AcmeOp, AcmeSnapshot, Applied, Attempt, Site, StoredAccount, StoredCert};
+use super::types::{
+    AcmeOp, AcmeSnapshot, Applied, Attempt, Gateway, Site, StoredAccount, StoredCert,
+};
 
 const APPLIED_KEY: &[u8] = b"applied";
 const ACCOUNT_KEY: &[u8] = b"account";
@@ -30,6 +32,7 @@ pub struct AcmeStore {
     /// `<site>\0<version, big-endian>` to a [`StoredCert`].
     certs: sled::Tree,
     attempts: sled::Tree,
+    gateways: sled::Tree,
     meta: sled::Tree,
     write: Arc<Mutex<()>>,
     changed: Arc<tokio::sync::watch::Sender<u64>>,
@@ -62,6 +65,7 @@ impl AcmeStore {
             account: db.open_tree("acme_account")?,
             certs: db.open_tree("acme_certs")?,
             attempts: db.open_tree("acme_attempts")?,
+            gateways: db.open_tree("acme_gateways")?,
             meta: db.open_tree("acme_meta")?,
             write: Arc::default(),
             changed: Arc::new(tokio::sync::watch::channel(0).0),
@@ -127,6 +131,18 @@ impl AcmeStore {
 
     pub fn attempt(&self, site: &str) -> Result<Option<Attempt>, AcmeStoreError> {
         read(self.attempts.get(site.as_bytes())?)
+    }
+
+    pub fn gateways(&self) -> Result<Vec<Gateway>, AcmeStoreError> {
+        self.gateways
+            .iter()
+            .values()
+            .map(|v| Ok(serde_json::from_slice(&v?)?))
+            .collect()
+    }
+
+    pub fn gateway(&self, name: &str) -> Result<Option<Gateway>, AcmeStoreError> {
+        read(self.gateways.get(name.as_bytes())?)
     }
 
     // ---- writes ----
@@ -200,9 +216,10 @@ impl AcmeStore {
             &self.account,
             &self.certs,
             &self.attempts,
+            &self.gateways,
             &self.meta,
         )
-            .transaction(|(sites, account, certs, attempts, meta)| {
+            .transaction(|(sites, account, certs, attempts, gateways, meta)| {
                 let covered = meta
                     .get(APPLIED_KEY)?
                     .and_then(|v| <[u8; 8]>::try_from(v.as_ref()).ok())
@@ -291,6 +308,24 @@ impl AcmeStore {
                         attempts.insert(site.as_bytes(), json(attempt)?)?;
                         Ok(Applied::Done)
                     }
+                    AcmeOp::GatewaySet(gw) => {
+                        if !Site::valid_name(&gw.name) {
+                            return Ok(Applied::Invalid(
+                                "a gateway name is 1 to 63 of a-z, 0-9 and '-'".into(),
+                            ));
+                        }
+                        if gateways.get(gw.name.as_bytes())?.is_some() {
+                            return Ok(Applied::Exists);
+                        }
+                        gateways.insert(gw.name.as_bytes(), json(gw)?)?;
+                        Ok(Applied::Done)
+                    }
+                    AcmeOp::GatewayDelete { name } => {
+                        if gateways.remove(name.as_bytes())?.is_none() {
+                            return Ok(Applied::NoSuchGateway);
+                        }
+                        Ok(Applied::Done)
+                    }
                 }
             })
             .map_err(|e| match e {
@@ -302,6 +337,7 @@ impl AcmeStore {
             &self.account,
             &self.certs,
             &self.attempts,
+            &self.gateways,
             &self.meta,
         ] {
             t.flush()?;
@@ -333,6 +369,7 @@ impl AcmeStore {
             account: self.account()?,
             certs,
             attempts,
+            gateways: self.gateways()?,
             applied_index: self.applied_index()?,
         })
     }
@@ -342,19 +379,21 @@ impl AcmeStore {
         let _guard = self.lock();
         let keys =
             |t: &sled::Tree| -> Result<Vec<sled::IVec>, sled::Error> { t.iter().keys().collect() };
-        let (old_sites, old_certs, old_attempts) = (
+        let (old_sites, old_certs, old_attempts, old_gateways) = (
             keys(&self.sites)?,
             keys(&self.certs)?,
             keys(&self.attempts)?,
+            keys(&self.gateways)?,
         );
         (
             &self.sites,
             &self.account,
             &self.certs,
             &self.attempts,
+            &self.gateways,
             &self.meta,
         )
-            .transaction(|(sites, account, certs, attempts, meta)| {
+            .transaction(|(sites, account, certs, attempts, gateways, meta)| {
                 let err = |e: serde_json::Error| {
                     ConflictableTransactionError::Abort(AcmeStoreError::from(e))
                 };
@@ -367,7 +406,13 @@ impl AcmeStore {
                 for k in &old_attempts {
                     attempts.remove(k.clone())?;
                 }
+                for k in &old_gateways {
+                    gateways.remove(k.clone())?;
+                }
                 account.remove(ACCOUNT_KEY)?;
+                for g in &snap.gateways {
+                    gateways.insert(g.name.as_bytes(), serde_json::to_vec(g).map_err(err)?)?;
+                }
                 for s in &snap.sites {
                     sites.insert(s.name.as_bytes(), serde_json::to_vec(s).map_err(err)?)?;
                 }
@@ -398,6 +443,7 @@ impl AcmeStore {
             &self.account,
             &self.certs,
             &self.attempts,
+            &self.gateways,
             &self.meta,
         ] {
             t.flush()?;
@@ -675,6 +721,47 @@ mod tests {
         );
         assert!(s.site("a").unwrap().is_some());
         assert_eq!(s.applied_index().unwrap(), Some(5));
+    }
+
+    #[test]
+    fn gateways_are_registered_once_deleted_and_carried_by_a_snapshot() {
+        let (store, _dir) = store();
+        let gw = |name: &str, hash: &str| Gateway {
+            name: name.into(),
+            token_hash: hash.into(),
+            created_at: 7,
+        };
+        let set = |g: Gateway| store.apply_local(&AcmeOp::GatewaySet(g)).unwrap();
+        assert_eq!(set(gw("edge", "aa")), Applied::Done);
+        assert_eq!(
+            set(gw("edge", "bb")),
+            Applied::Exists,
+            "a taken name is not rotated"
+        );
+        assert_eq!(store.gateway("edge").unwrap().unwrap().token_hash, "aa");
+        assert!(matches!(set(gw("Bad_Name", "cc")), Applied::Invalid(_)));
+        assert_eq!(set(gw("edge-2", "dd")), Applied::Done);
+        let snap = store.snapshot().unwrap();
+        assert_eq!(snap.gateways.len(), 2);
+
+        let (other, _d2) = self::store();
+        other.replace(&snap).unwrap();
+        assert_eq!(other.gateways().unwrap(), store.gateways().unwrap());
+
+        let del = |n: &str| {
+            store
+                .apply_local(&AcmeOp::GatewayDelete { name: n.into() })
+                .unwrap()
+        };
+        assert_eq!(del("edge"), Applied::Done);
+        assert_eq!(del("edge"), Applied::NoSuchGateway);
+        assert!(store.gateway("edge").unwrap().is_none());
+        // A snapshot taken before gateways existed still decodes.
+        let old: AcmeSnapshot = serde_json::from_str(
+            r#"{"sites":[],"account":null,"certs":[],"attempts":[],"applied_index":null}"#,
+        )
+        .unwrap();
+        assert!(old.gateways.is_empty());
     }
 
     #[test]

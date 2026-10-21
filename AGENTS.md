@@ -140,6 +140,7 @@ crates/
     proxy_subscribe.rs      phase 14 slice 7 (`docs/11`): subscribes to `wayhouse-controller`'s proxy-peers registry and reconciles every registered proxy onto this origin's interface — the mirror image of `wayhouse`'s `tunnel_client.rs`
     live_interface.rs       the running WireGuard interface; `readdress` deletes the old tunnel address and assigns a new controller-assigned one, keeping key, port and peers (`docs/11` "Address changes"), via `netlink_addr.rs` (the delete the library lacks). Mirrored in `wayhouse`
   wayhouse-web-sync/              binary — renders the `web:` section into Caddy's JSON and loads it over Caddy's admin API (`docs/web-proxy.md`); a separate process, no `wayhouse-core` dependency (only `wayhouse-config`'s serialisable `WebView`)
+  wayhouse-certsync/              binary — keeps `<dir>/<site>/{fullchain.pem,privkey.pem,meta.json}` current from the controller's `GET /acme/bundles` with a gateway token (`docs/acme.md`); HTTP client only, no `wayhouse-core` or controller dependency
     render.rs               `render(&RenderInput) -> Value`: the pure renderer, golden-tested; every choice traces to the spike findings (#355)
     sync.rs                 one cycle (`Syncer::run_once`) behind the `Source`/`Loader` traits; the rule: never send Caddy an empty or partial document
     caddy.rs / admin_addr.rs / certs.rs / pools.rs / source.rs   Caddy admin client (unix socket or loopback only), inline PEM, `GET /pools` parser, the wayhouse admin client

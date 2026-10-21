@@ -485,6 +485,13 @@ leader imports exactly one node's copy, whichever node wins the first election.
 - **A TLS proxy is a trust boundary.** It sees every token and registration in the
   clear. Run it on a host you control — or use native TLS where it exists.
 
+## Certificates from the controller
+
+With `--acme` the controller can issue the web front door's certificates; a gateway host
+fetches them with `wayhouse-certsync`, which ships in the `wayhouse` image. See
+[`acme.md`](acme.md#distribution-to-gateways) for the gateway token, the files it writes and
+how to run it.
+
 ## Tunnel addressing
 
 Tunnel-internal addressing (the WireGuard-side space between proxies and origins) is

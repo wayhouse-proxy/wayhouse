@@ -4808,6 +4808,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayhouse-certsync"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wayhouse-http",
+]
+
+[[package]]
 name = "wayhouse-config"
 version = "0.2.0"
 dependencies = [

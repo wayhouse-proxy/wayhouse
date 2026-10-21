@@ -16,6 +16,7 @@ members = [
     "crates/wayhouse-plugin-abi",
     "crates/wayhouse-plugin-host",
     "crates/wayhouse-web-sync",
+    "crates/wayhouse-certsync",
     "crates/wayhouse-acme",
 ]
 

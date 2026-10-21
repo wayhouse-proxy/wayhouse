@@ -5,12 +5,12 @@ other) for the sites you publish, and keep their private keys sealed. It is **of
 default**; start it with `--acme`. Design and reasoning:
 [`superpowers/specs/2026-10-15-controller-acme-design.md`](superpowers/specs/2026-10-15-controller-acme-design.md).
 
-Status: the controller side is built (sites, the sealed store, replication, the issuance and
-renewal loop, the admin API) and so is the DNS-provider plugin hook (`on_acme_dns`,
-[#362](https://github.com/wayhouse-proxy/wayhouse/issues/362)). Still to come: distribution of
-certificates to gateways ([#363](https://github.com/wayhouse-proxy/wayhouse/issues/363)). No
-DNS-provider plugin ships yet; you write one against the hook in
-[`plugins.md`](plugins.md#acme-dns-01-on_acme_dns).
+Status: built are the sites, the sealed store, replication, the issuance and renewal loop,
+the admin API, the DNS-provider plugin hook (`on_acme_dns`,
+[#362](https://github.com/wayhouse-proxy/wayhouse/issues/362)) and the distribution of
+certificates to gateways ([#363](https://github.com/wayhouse-proxy/wayhouse/issues/363),
+[Distribution](#distribution-to-gateways)). No DNS-provider plugin ships yet; you write one
+against the hook in [`plugins.md`](plugins.md#acme-dns-01-on_acme_dns).
 
 ## Building without ACME
 
@@ -77,6 +77,71 @@ Rules: names are lowercase hostnames, optionally `*.zone`; a name belongs to one
 should live only on a few hardened nodes. No route returns a private key, a certificate
 chain or ciphertext.
 
+## Distribution to gateways
+
+A gateway host gets its certificates from the controller, not from the CA. Each gateway has
+its own **token**; a token reads only the sites that list that gateway's name in `gateways`.
+
+| Route                              | Auth          | Does                                                                                   |
+| ---------------------------------- | ------------- | -------------------------------------------------------------------------------------- |
+| `POST /acme/gateways`              | admin token   | Register a gateway. Body `{"name": "edge-1"}`. Answers `201` with the token, **once**. |
+| `GET /acme/gateways`               | admin token   | The gateways and the sites each may read. No token, no hash.                           |
+| `DELETE /acme/gateways/{name}`     | admin token   | Revoke: its token answers `401` at once on every replica.                              |
+| `GET /acme/bundles`                | gateway token | The sites this gateway may read that have a certificate: `{site, version, not_after}`. |
+| `GET /acme/bundles/{site}`         | gateway token | `{version, chain_pem, key_pem, not_after, serial, untrusted}`.                         |
+
+The controller stores only the SHA-256 of a token and replicates only that. To rotate a
+token, delete the gateway and register it again (a second `POST` of a taken name is `409`).
+`GET /acme/bundles/{site}` answers `ETag: "<version>"` and `304` to a matching
+`If-None-Match`; a site the token may not read answers `404`, the same as a site that does not
+exist. **Any controller node serves bundles**, followers included, so a gateway can use the
+nearest replica; a node without the cluster secret key answers `503` instead of a key. Every
+served bundle writes one log line with the site, gateway and version, never the key.
+
+The key travels in the bundle response in plaintext, so serve the controller over TLS (or
+reach it on loopback). `--acme` already refuses a plain-HTTP listener on a non-loopback
+address unless `--allow-insecure-secrets` is given. A deleted gateway may have copied the
+keys it could read: the next renewal creates a new key for every site, so remove the gateway
+from the sites it should no longer serve and, for a wildcard, renew early.
+
+### `wayhouse-certsync`
+
+`wayhouse-certsync` runs on the gateway host (it ships in the `wayhouse` image next to
+`wayhouse-web-sync`: start it with `entrypoint: /usr/local/bin/wayhouse-certsync`). Create the
+gateway, put its token in a file only the sync user can read, and point the sync at every
+controller replica:
+
+```sh
+curl -sS -H "Authorization: Bearer $ADMIN" -d '{"name":"edge-1"}' \
+  https://ctl-1:9443/acme/gateways          # copy "token" into /etc/wayhouse/gw.token
+chmod 600 /etc/wayhouse/gw.token
+wayhouse-certsync --controller https://ctl-1:9443,https://ctl-2:9443 \
+  --token-file /etc/wayhouse/gw.token --dir /var/lib/wayhouse/certs \
+  --interval 60s --reload-cmd "caddy reload --config /etc/caddy/Caddyfile"
+```
+
+Every interval it lists the readable sites and fetches those whose version differs from
+`<dir>/<site>/meta.json`. Files per site: `fullchain.pem`, `privkey.pem` (mode `0600`) and
+`meta.json` (`version`, `not_after`, `serial`, `untrusted`). Each file is written to a temp
+file and renamed; the chain is replaced first, the key second and `meta.json` last, so
+`meta.json` names a version only when both files of it are in place. A reader that opens the
+chain and the key between the two renames can briefly see a new chain with the old key;
+reload after the sync (`--reload-cmd`), or retry on a mismatch.
+
+- Nothing is rewritten when the version is unchanged, and `--reload-cmd` runs only after a
+  change. It runs without a shell (the command is split on spaces), at most 30 seconds, and
+  is retried on the next pass if it fails.
+- When no controller answers, the files on disk stay as they are and the sync retries every
+  interval. `--controller` takes several URLs and tries the one that answered last first.
+  A refused token (`401`) is logged with the hint to check the token file; nothing is
+  deleted.
+- Files of a site that is no longer listed are left in place.
+- `untrusted: true` marks a certificate from a staging or test CA; the sync logs a warning.
+- `--once` runs a single pass and exits non-zero on failure, for cron or a systemd timer.
+  `--ca-file` trusts an extra CA for an https controller. Plain http is accepted only for a
+  loopback controller, or with `--allow-insecure-secrets`.
+- There is no push channel yet: changes arrive within one interval.
+
 ## The DNS plugin
 
 A site's `dns_plugin` is the id of a plugin install that is **enabled** and **approved for the
@@ -98,8 +163,8 @@ The plugin only ever sees the record name and value. ACME keys stay in the contr
   hour, so a broken DNS plugin cannot use up the CA's failed-validation limit. The count and
   last error are in the site's status and survive a leader change.
 - Renewal starts at a third of the lifetime and not near the end, so there is room for
-  retries: alert on `wayhouse_acme_cert_expiry_seconds` dropping below a third. What a
-  gateway does while the controller is down is documented with certificate distribution.
+  retries: alert on `wayhouse_acme_cert_expiry_seconds` dropping below a third. A gateway
+  whose controller is down keeps serving the files it has ([below](#distribution-to-gateways)).
 - A CA rate limit (`429`/`rateLimited`) pauses the site for the CA's `Retry-After` (at most 7
   days) instead of the normal backoff when that is longer.
 - A restart with an expired or nearly expired certificate renews at once.
