@@ -1,6 +1,6 @@
 //! The issuance and renewal loop. Only the Raft leader (or a standalone controller) runs it.
 //!
-//! Per enabled site that is due, it runs one DNS-01 order through the site's solver, seals the
+//! Per enabled site that is due, it runs one DNS-01 or HTTP-01 order through the site's solver, seals the
 //! new private key under the cluster keyring and commits the certificate as one entry tagged
 //! with the leader's term, so a deposed leader's late result is dropped. A failure advances a
 //! replicated backoff, so a new leader continues it instead of hammering the CA.
@@ -9,10 +9,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use wayhouse_acme::{
-    renew, AccountCreds, AcmeCa, CertBundle, DelegatedSolver, DnsSolver, IssueError, Redacted,
+    renew, AccountCreds, AcmeCa, CertBundle, DelegatedSolver, DnsSolver, HttpSolver, IssueError,
+    Redacted, SolverError,
 };
 
-use super::types::{cert_slot, AcmeOp, Applied, Attempt, Site, StoredAccount, StoredCert};
+use super::types::{
+    cert_slot, AcmeOp, Applied, Attempt, ChallengeKind, HttpChallenge, Site, StoredAccount,
+    StoredCert,
+};
 use super::types::{ACCOUNT_SLOT, SEAL_SCOPE};
 use super::AcmeStore;
 use crate::ha::{HaHandle, WriteRequest, WriteResponse};
@@ -200,6 +204,7 @@ impl Runner {
                 return Pass::Held;
             }
         }
+        self.prune_challenges(now).await;
         let (mut issued, mut failed) = (vec![], vec![]);
         for site in sites.iter().filter(|s| s.enabled) {
             match self.due(site, now) {
@@ -227,6 +232,19 @@ impl Runner {
         Pass::Ran { issued, failed }
     }
 
+    /// Drops HTTP-01 answers a crashed order left behind.
+    async fn prune_challenges(&self, now: u64) {
+        let stale = self
+            .store
+            .challenges()
+            .is_ok_and(|all| all.iter().any(|c| c.expires_at <= now));
+        if stale {
+            if let Err(e) = self.propose(AcmeOp::ChallengesPrune { now }).await {
+                tracing::warn!(error = %e, "acme: could not prune expired HTTP-01 answers");
+            }
+        }
+    }
+
     fn due(&self, site: &Site, now: u64) -> Result<bool, super::AcmeStoreError> {
         if let Some(a) = self.store.attempt(&site.name)? {
             if a.next_attempt_at > now {
@@ -245,29 +263,38 @@ impl Runner {
     }
 
     async fn issue_site(&self, site: &Site, term: u64, now: u64) -> Result<(), Failure> {
-        let solver = self.solvers.solver_for(&site.dns_plugin).ok_or_else(|| {
-            format!(
-                "the DNS plugin {:?} is not available on this node",
-                site.dns_plugin
-            )
-        })?;
-        // A site whose challenge names are CNAMEd elsewhere writes its records there.
-        let solver: Arc<dyn DnsSolver> = match &site.challenge_zone {
-            Some(zone) => Arc::new(DelegatedSolver::new(solver, zone)),
-            None => solver,
-        };
-        let creds = self.account().await?;
-        let ca = &self.ca;
-        let (bundle, _) = ca
-            .issue_within(
-                Some(&creds),
-                &site.names,
-                solver.as_ref(),
-                now,
-                Duration::from_secs(site.propagation_timeout_secs),
-            )
-            .await
-            .map_err(|e| Failure::from(&e))?;
+        let wait = Duration::from_secs(site.propagation_timeout_secs);
+        let (bundle, _) = match site.challenge {
+            ChallengeKind::Dns01 => {
+                let solver = self.solvers.solver_for(&site.dns_plugin).ok_or_else(|| {
+                    format!(
+                        "the DNS plugin {:?} is not available on this node",
+                        site.dns_plugin
+                    )
+                })?;
+                // A site whose challenge names are CNAMEd elsewhere writes its records there.
+                let solver: Arc<dyn DnsSolver> = match &site.challenge_zone {
+                    Some(zone) => Arc::new(DelegatedSolver::new(solver, zone)),
+                    None => solver,
+                };
+                let creds = self.account().await?;
+                self.ca
+                    .issue_within(Some(&creds), &site.names, solver.as_ref(), now, wait)
+                    .await
+            }
+            ChallengeKind::Http01 => {
+                let creds = self.account().await?;
+                let publisher = Publisher {
+                    runner: self,
+                    // Long enough for the order, short enough that a crash leaves no litter.
+                    expires_at: now + wait.as_secs() + self.ca.margin().as_secs(),
+                };
+                self.ca
+                    .issue_http_within(Some(&creds), &site.names, &publisher, now, wait)
+                    .await
+            }
+        }
+        .map_err(|e| Failure::from(&e))?;
         let stored = self.seal_cert(site, &bundle)?;
         let op = AcmeOp::CertIssued {
             site: site.name.clone(),
@@ -413,6 +440,40 @@ impl Runner {
     }
 }
 
+/// Publishes HTTP-01 answers through the same replicated log as everything else, so every
+/// controller node (the one the gateways ask may be a follower) serves them.
+struct Publisher<'a> {
+    runner: &'a Runner,
+    expires_at: u64,
+}
+
+#[async_trait::async_trait]
+impl HttpSolver for Publisher<'_> {
+    async fn present(&self, token: &str, key_authorization: &str) -> Result<(), SolverError> {
+        let op = AcmeOp::ChallengeSet(HttpChallenge {
+            token: token.to_string(),
+            key_authorization: key_authorization.to_string(),
+            expires_at: self.expires_at,
+        });
+        match self.runner.propose(op).await {
+            Ok(Applied::Done) => Ok(()),
+            Ok(other) => Err(SolverError(format!("the answer was refused: {other:?}"))),
+            Err(e) => Err(SolverError(e)),
+        }
+    }
+
+    async fn cleanup(&self, token: &str) -> Result<(), SolverError> {
+        let op = AcmeOp::ChallengeDelete {
+            token: token.to_string(),
+        };
+        self.runner
+            .propose(op)
+            .await
+            .map(|_| ())
+            .map_err(SolverError)
+    }
+}
+
 /// A stable value in `[0, 1]` per site, so sites issued together do not renew together.
 fn jitter(site: &str) -> f64 {
     let h = site
@@ -495,6 +556,7 @@ mod tests {
             name: name.into(),
             names: vec![host.into()],
             gateways: vec!["gw1".into()],
+            challenge: crate::acme::ChallengeKind::Dns01,
             dns_plugin: "dns".into(),
             challenge_zone: None,
             propagation_timeout_secs: 120,
@@ -514,6 +576,81 @@ mod tests {
             issued: issued.iter().map(ToString::to_string).collect(),
             failed: failed.iter().map(ToString::to_string).collect(),
         }
+    }
+
+    fn http_site(name: &str, host: &str) -> Site {
+        Site {
+            challenge: ChallengeKind::Http01,
+            dns_plugin: String::new(),
+            ..site(name, host)
+        }
+    }
+
+    /// Lets the fake CA read the answers from the store, as a gateway forwarding to a
+    /// controller would, and records every token it was shown.
+    fn serve_from_store(f: &Fixture) -> Arc<std::sync::Mutex<Vec<String>>> {
+        let (store, now) = (f.store.clone(), f.now.clone());
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        f.fake.serve_http_challenges_from(move |token| {
+            let answer = store
+                .challenge(token, now.load(Ordering::SeqCst))
+                .unwrap()
+                .map(|c| c.key_authorization);
+            if answer.is_some() {
+                log.lock().unwrap().push(token.to_string());
+            }
+            answer
+        });
+        seen
+    }
+
+    #[tokio::test]
+    async fn an_http_01_site_is_issued_from_answers_the_store_serves_and_leaves_none_behind() {
+        let f = fixture().await;
+        let seen = serve_from_store(&f);
+        put(&f, http_site("web", "web.example.com"));
+        assert_eq!(f.runner.run_once().await, ran(&["web"], &[]));
+        assert_eq!(seen.lock().unwrap().len(), 1, "the CA read the answer");
+        assert!(f.store.cert("web").unwrap().is_some());
+        assert!(f.store.challenges().unwrap().is_empty(), "withdrawn");
+        assert!(f.dns.is_empty());
+        assert!(f.dns.log.lock().unwrap().is_empty(), "no DNS plugin call");
+    }
+
+    #[tokio::test]
+    async fn an_http_01_order_the_ca_cannot_validate_fails_visibly_and_withdraws_its_answer() {
+        let f = fixture().await;
+        // The CA looks somewhere the controller never published to.
+        f.fake.serve_http_challenges_from(|_| None);
+        put(&f, http_site("web", "web.example.com"));
+        assert_eq!(f.runner.run_once().await, ran(&[], &["web"]));
+        let attempt = f.store.attempt("web").unwrap().unwrap();
+        assert!(attempt.last_error.unwrap().contains("rejected"));
+        assert!(f.store.challenges().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn expired_answers_left_by_a_crashed_order_are_pruned_on_the_next_pass() {
+        let f = fixture().await;
+        let now = f.now.load(Ordering::SeqCst);
+        for (token, expires_at) in [("old", now - 1), ("live", now + 600)] {
+            let op = AcmeOp::ChallengeSet(HttpChallenge {
+                token: token.into(),
+                key_authorization: format!("{token}.t"),
+                expires_at,
+            });
+            assert_eq!(f.store.apply_local(&op).unwrap(), Applied::Done);
+        }
+        f.runner.run_once().await;
+        let left: Vec<_> = f
+            .store
+            .challenges()
+            .unwrap()
+            .into_iter()
+            .map(|c| c.token)
+            .collect();
+        assert_eq!(left, ["live"]);
     }
 
     #[tokio::test]

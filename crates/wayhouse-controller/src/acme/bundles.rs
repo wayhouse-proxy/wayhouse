@@ -223,6 +223,7 @@ mod tests {
             name: name.into(),
             names: vec![host.into()],
             gateways: gateways.iter().map(|g| (*g).into()).collect(),
+            challenge: crate::acme::ChallengeKind::Dns01,
             dns_plugin: "p".into(),
             challenge_zone: None,
             propagation_timeout_secs: 120,

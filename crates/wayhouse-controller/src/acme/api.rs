@@ -97,6 +97,10 @@ struct SiteBody {
     names: Vec<String>,
     #[serde(default)]
     gateways: Vec<String>,
+    /// `dns-01` (the default) or `http-01`.
+    #[serde(default)]
+    challenge: super::ChallengeKind,
+    #[serde(default)]
     dns_plugin: String,
     #[serde(default)]
     challenge_zone: Option<String>,
@@ -125,6 +129,7 @@ fn status_of(
     });
     Ok(serde_json::json!({
         "name": site.name, "names": site.names, "gateways": site.gateways,
+        "challenge": site.challenge.as_str(),
         "dns_plugin": site.dns_plugin, "enabled": site.enabled,
         "challenge_zone": site.challenge_zone,
         "propagation_timeout_secs": site.propagation_timeout_secs,
@@ -295,13 +300,14 @@ async fn put_site(
     let Ok(parsed) = serde_json::from_slice::<SiteBody>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
-            "the body must be {\"names\": [...], \"dns_plugin\": \"...\", \"gateways\": [...]}",
+            "the body must be {\"names\": [...], \"dns_plugin\": \"...\", \"gateways\": [...]} (dns-01) or {\"names\": [...], \"challenge\": \"http-01\"}",
         );
     };
     let site = super::Site {
         name: name.clone(),
         names: parsed.names,
         gateways: parsed.gateways,
+        challenge: parsed.challenge,
         dns_plugin: parsed.dns_plugin,
         challenge_zone: parsed.challenge_zone,
         propagation_timeout_secs: parsed.propagation_timeout_secs.unwrap_or(120),
@@ -318,8 +324,10 @@ async fn put_site(
             why,
         );
     }
-    if let Err(why) = st.check_dns_plugin(&site.dns_plugin) {
-        return err(StatusCode::BAD_REQUEST, why);
+    if site.challenge == super::ChallengeKind::Dns01 {
+        if let Err(why) = st.check_dns_plugin(&site.dns_plugin) {
+            return err(StatusCode::BAD_REQUEST, why);
+        }
     }
     let op = AcmeOp::SiteSet(site);
     write(
@@ -570,6 +578,56 @@ mod tests {
 
     const SITE: &str =
         r#"{"names":["panel.example.com"],"gateways":["gw1"],"dns_plugin":"0123456789abcdef"}"#;
+
+    #[tokio::test]
+    async fn an_http_01_site_needs_no_dns_plugin_and_cannot_cover_a_wildcard() {
+        let (app, _s, _d) = app(None);
+        let (st, _) = call(
+            &app,
+            "PUT",
+            "/acme/sites/web",
+            r#"{"names":["a.example.com","b.example.com"],"challenge":"http-01"}"#,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, one) = call(&app, "GET", "/acme/sites/web", "", None).await;
+        assert_eq!(one["challenge"], "http-01");
+        let (_, dns) = call(&app, "PUT", "/acme/sites/dns", SITE, None).await;
+        assert_eq!(dns["stored"], true);
+        let (_, one) = call(&app, "GET", "/acme/sites/dns", "", None).await;
+        assert_eq!(one["challenge"], "dns-01", "the default");
+        for (why, body, expect) in [
+            (
+                "wildcard",
+                r#"{"names":["*.example.com"],"challenge":"http-01","gateways":["gw1"]}"#,
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                "plugin",
+                r#"{"names":["x.example.com"],"challenge":"http-01","dns_plugin":"0123456789abcdef"}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "zone",
+                r#"{"names":["x.example.com"],"challenge":"http-01","challenge_zone":"acme.other.net"}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "unknown challenge",
+                r#"{"names":["x.example.com"],"challenge":"tls-alpn-01"}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "dns-01 without a plugin",
+                r#"{"names":["x.example.com"]}"#,
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            let (st, e) = call(&app, "PUT", "/acme/sites/bad", body, None).await;
+            assert_eq!(st, expect, "{why}: {e}");
+        }
+    }
 
     #[tokio::test]
     async fn sites_are_created_listed_read_and_deleted() {

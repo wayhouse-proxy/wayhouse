@@ -1,4 +1,4 @@
-//! The ACME client: account handling and one DNS-01 order.
+//! The ACME client: account handling and one DNS-01 or HTTP-01 order.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -13,7 +13,7 @@ use instant_acme::{
 use serde::{Deserialize, Serialize};
 
 use crate::model::{CertBundle, Redacted};
-use crate::solver::{DnsSolver, SolverError};
+use crate::solver::{DnsSolver, HttpSolver, SolverError};
 
 /// What the controller persists (sealed) to reuse the account: the URL is public, the
 /// credentials JSON holds the account key.
@@ -33,7 +33,7 @@ pub enum IssueError {
     Order(String),
     #[error("the CA rejected the challenge: {0}")]
     Validation(String),
-    #[error("dns solver: {0}")]
+    #[error("challenge solver: {0}")]
     Solver(#[from] SolverError),
     #[error("certificate: {0}")]
     Cert(String),
@@ -118,6 +118,22 @@ pub struct AcmeCa {
     /// External account binding (RFC 8555 7.3.4) for CAs that tie accounts to a customer:
     /// the key id and the raw HMAC key. Used only when the account is created.
     eab: Option<(String, zeroize::Zeroizing<Vec<u8>>)>,
+    /// Pause between publishing an HTTP-01 answer and telling the CA to look, so a replicated
+    /// answer reaches the node the gateways ask.
+    http_settle: Duration,
+}
+
+/// Which challenge an order answers, and with what.
+#[derive(Clone, Copy)]
+enum Solver<'a> {
+    Dns(&'a dyn DnsSolver),
+    Http(&'a dyn HttpSolver),
+}
+
+/// What a solver was asked to publish, so it can be withdrawn.
+enum Presented {
+    Dns { fqdn: String, value: String },
+    Http { token: String },
 }
 
 impl AcmeCa {
@@ -132,6 +148,7 @@ impl AcmeCa {
             retry: RetryPolicy::new().timeout(Duration::from_secs(90)),
             retry_after: Arc::default(),
             eab: None,
+            http_settle: Duration::from_secs(2),
         }
     }
 
@@ -177,6 +194,11 @@ impl AcmeCa {
         self
     }
 
+    /// The time an order is allowed on top of the challenge wait.
+    pub fn margin(&self) -> Duration {
+        self.order_margin
+    }
+
     /// Short poll delays, for tests.
     #[must_use]
     pub fn fast_retry(mut self) -> Self {
@@ -184,6 +206,7 @@ impl AcmeCa {
             .initial_delay(Duration::from_millis(20))
             .timeout(Duration::from_secs(20));
         self.order_margin = Duration::from_secs(60);
+        self.http_settle = Duration::ZERO;
         self
     }
 
@@ -286,12 +309,43 @@ impl AcmeCa {
         now: u64,
         propagation: Duration,
     ) -> Result<(CertBundle, AccountCreds), IssueError> {
+        self.issue_order(existing, names, Solver::Dns(solver), now, propagation)
+            .await
+    }
+
+    /// Runs one order for `names` over HTTP-01, bounded like [`AcmeCa::issue_within`] by `wait`
+    /// plus the CA round trips. Wildcard names cannot be validated this way.
+    pub async fn issue_http_within(
+        &self,
+        existing: Option<&AccountCreds>,
+        names: &[String],
+        solver: &dyn HttpSolver,
+        now: u64,
+        wait: Duration,
+    ) -> Result<(CertBundle, AccountCreds), IssueError> {
+        if let Some(w) = names.iter().find(|n| n.starts_with("*.")) {
+            return Err(IssueError::Order(format!(
+                "{w} is a wildcard, which HTTP-01 cannot validate"
+            )));
+        }
+        self.issue_order(existing, names, Solver::Http(solver), now, wait)
+            .await
+    }
+
+    async fn issue_order(
+        &self,
+        existing: Option<&AccountCreds>,
+        names: &[String],
+        solver: Solver<'_>,
+        now: u64,
+        propagation: Duration,
+    ) -> Result<(CertBundle, AccountCreds), IssueError> {
         self.retry_after
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         let (account, creds) = self.open(existing).await?;
-        let mut presented: Vec<(String, String)> = Vec::new();
+        let mut presented: Vec<Presented> = Vec::new();
         let limit = propagation + self.order_margin;
         let result = match tokio::time::timeout(
             limit,
@@ -305,9 +359,19 @@ impl AcmeCa {
                 limit.as_secs()
             ))),
         };
-        for (fqdn, value) in &presented {
-            if let Err(e) = solver.cleanup(fqdn, value).await {
-                tracing::warn!(%fqdn, error = %e, "acme: dns cleanup failed");
+        for p in &presented {
+            match (p, solver) {
+                (Presented::Dns { fqdn, value }, Solver::Dns(s)) => {
+                    if let Err(e) = s.cleanup(fqdn, value).await {
+                        tracing::warn!(%fqdn, error = %e, "acme: dns cleanup failed");
+                    }
+                }
+                (Presented::Http { token }, Solver::Http(s)) => {
+                    if let Err(e) = s.cleanup(token).await {
+                        tracing::warn!(%token, error = %e, "acme: http cleanup failed");
+                    }
+                }
+                _ => {}
             }
         }
         result.map(|b| (b, creds))
@@ -317,10 +381,10 @@ impl AcmeCa {
         &self,
         account: &Account,
         names: &[String],
-        solver: &dyn DnsSolver,
+        solver: Solver<'_>,
         now: u64,
         propagation: Duration,
-        presented: &mut Vec<(String, String)>,
+        presented: &mut Vec<Presented>,
     ) -> Result<CertBundle, IssueError> {
         let ids: Vec<Identifier> = names.iter().map(|n| Identifier::Dns(n.clone())).collect();
         let mut order = account
@@ -335,17 +399,37 @@ impl AcmeCa {
                 AuthorizationStatus::Pending => {}
                 other => return Err(IssueError::Order(format!("authorization is {other:?}"))),
             }
+            let (kind, label) = match solver {
+                Solver::Dns(_) => (ChallengeType::Dns01, "dns-01"),
+                Solver::Http(_) => (ChallengeType::Http01, "http-01"),
+            };
             let mut challenge = authz
-                .challenge(ChallengeType::Dns01)
-                .ok_or_else(|| IssueError::Order("the CA offers no dns-01 challenge".into()))?;
+                .challenge(kind)
+                .ok_or_else(|| IssueError::Order(format!("the CA offers no {label} challenge")))?;
             let Identifier::Dns(host) = challenge.identifier().identifier else {
                 return Err(IssueError::Order("not a DNS identifier".into()));
             };
-            let fqdn = format!("_acme-challenge.{host}");
-            let value = challenge.key_authorization().dns_value();
-            presented.push((fqdn.clone(), value.clone()));
-            solver.present(&fqdn, &value).await?;
-            solver.wait_visible(&fqdn, &value, propagation).await?;
+            match solver {
+                Solver::Dns(solver) => {
+                    let fqdn = format!("_acme-challenge.{host}");
+                    let value = challenge.key_authorization().dns_value();
+                    presented.push(Presented::Dns {
+                        fqdn: fqdn.clone(),
+                        value: value.clone(),
+                    });
+                    solver.present(&fqdn, &value).await?;
+                    solver.wait_visible(&fqdn, &value, propagation).await?;
+                }
+                Solver::Http(solver) => {
+                    let token = challenge.token.clone();
+                    let answer = challenge.key_authorization().as_str().to_string();
+                    presented.push(Presented::Http {
+                        token: token.clone(),
+                    });
+                    solver.present(&token, &answer).await?;
+                    tokio::time::sleep(self.http_settle).await;
+                }
+            }
             challenge.set_ready().await.map_err(|e| self.classify(&e))?;
         }
         let status = order

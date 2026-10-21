@@ -851,6 +851,12 @@ async fn main() -> anyhow::Result<()> {
                     keyring: keyring.clone(),
                 },
             );
+            let challenges = wayhouse_controller::acme::challenge::router(
+                wayhouse_controller::acme::challenge::ChallengeState {
+                    store: store.clone(),
+                    clock: wayhouse_controller::acme::runner::system_clock(),
+                },
+            );
             wayhouse_controller::acme::api::router(wayhouse_controller::acme::api::AcmeState {
                 store,
                 auth_token: admin_token.clone(),
@@ -860,6 +866,7 @@ async fn main() -> anyhow::Result<()> {
                 plugins: plugin_rt.map(|(plugin_store, _)| plugin_store),
             })
             .merge(bundles)
+            .merge(challenges)
         }
     } else {
         wayhouse_controller::acme::api::disabled_router(

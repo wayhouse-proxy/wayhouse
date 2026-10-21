@@ -2250,6 +2250,7 @@ mod tests {
             name: name.into(),
             names: vec![host.into()],
             gateways: vec!["gw1".into()],
+            challenge: crate::acme::ChallengeKind::Dns01,
             dns_plugin: "dns".into(),
             challenge_zone: None,
             propagation_timeout_secs: 120,

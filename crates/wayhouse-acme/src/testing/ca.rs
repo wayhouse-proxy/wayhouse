@@ -20,17 +20,20 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::dns::MemDns;
+use super::http::MemHttp;
 
 /// What the next challenge or order should do wrong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailKind {
-    /// The next challenge is declared invalid (`urn:ietf:params:acme:error:dns`).
+    /// The next challenge, of either type, is declared invalid.
     Dns,
     /// The next `newOrder` answers `429 rateLimited`.
     RateLimited,
 }
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+/// Answers `GET /.well-known/acme-challenge/<token>`.
+type HttpLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 struct AuthzRec {
     order: usize,
@@ -74,6 +77,8 @@ struct Inner {
     /// When set, a new account must carry a valid external account binding for this
     /// `(key id, raw HMAC key)`.
     eab: Mutex<Option<(String, Vec<u8>)>>,
+    /// Where `http-01` answers are looked up; without it every `http-01` challenge fails.
+    http: Mutex<Option<HttpLookup>>,
 }
 
 /// An in-process ACME server on a loopback port. Dropping it stops the server.
@@ -127,6 +132,7 @@ impl FakeCa {
                 issued: 0,
             }),
             eab: Mutex::new(None),
+            http: Mutex::new(None),
         });
         let svc = inner.clone();
         let app = Router::new().fallback(move |m: Method, u: Uri, b: Bytes| {
@@ -153,12 +159,27 @@ impl FakeCa {
         self.inner.state.lock().unwrap().retry_after = Some(secs);
     }
 
-    /// How many certificates were issued.
+    /// Validates `http-01` challenges against the answers in `http`.
+    pub fn serve_http_challenges(&self, http: MemHttp) {
+        self.serve_http_challenges_from(move |token| http.answer(token));
+    }
+
+    /// Validates `http-01` challenges against whatever `lookup` answers for a token.
+    pub fn serve_http_challenges_from(
+        &self,
+        lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+    ) {
+        *self.inner.http.lock().unwrap() = Some(Arc::new(lookup));
+    }
+
+    /// A new account must carry a valid external account binding for this key id and
+    /// base64url HMAC key.
     pub fn require_eab(&self, kid: &str, hmac_key_b64url: &str) {
         let raw = B64.decode(hmac_key_b64url).expect("a base64url key");
         *self.inner.eab.lock().unwrap() = Some((kid.to_string(), raw));
     }
 
+    /// How many certificates were issued.
     pub fn issued(&self) -> usize {
         self.inner.state.lock().unwrap().issued
     }
@@ -404,20 +425,34 @@ impl Inner {
 
     fn authz_json(&self, st: &State, a: usize) -> Value {
         let z = &st.authzs[a];
-        let mut ch = json!({
-            "type": "dns-01",
-            "url": format!("{}/chall/{a}", self.base),
-            "status": z.status,
-            "token": z.token,
-        });
-        if z.status == "invalid" {
-            ch["error"] =
-                json!({"type": "urn:ietf:params:acme:error:dns", "detail": "no TXT record found"});
+        let challenge = |kind: &str, path: &str, error: &str| {
+            let mut ch = json!({
+                "type": kind,
+                "url": format!("{}/{path}/{a}", self.base),
+                "status": z.status,
+                "token": z.token,
+            });
+            if z.status == "invalid" {
+                ch["error"] = json!({"type": error, "detail": "the challenge was not answered"});
+            }
+            ch
+        };
+        let mut challenges = vec![challenge(
+            "dns-01",
+            "chall",
+            "urn:ietf:params:acme:error:dns",
+        )];
+        if !z.wildcard {
+            challenges.push(challenge(
+                "http-01",
+                "challh",
+                "urn:ietf:params:acme:error:unauthorized",
+            ));
         }
         let mut v = json!({
             "status": z.status,
             "identifier": {"type": "dns", "value": z.host},
-            "challenges": [ch],
+            "challenges": challenges,
         });
         if z.wildcard {
             v["wildcard"] = json!(true);
@@ -531,14 +566,26 @@ impl Inner {
                 let v = self.authz_json(st, a);
                 self.reply(st, StatusCode::OK, None, v)
             }
-            ("chall", Some(a)) if a < st.authzs.len() => {
+            ("chall" | "challh", Some(a)) if a < st.authzs.len() => {
+                let over_http = parts[0] == "challh";
                 let thumb = st.accounts[acct].thumbprint.clone();
                 let z = &st.authzs[a];
-                let expected =
-                    B64.encode(Sha256::digest(format!("{}.{thumb}", z.token).as_bytes()));
-                let present = self
-                    .dns
-                    .has(&format!("_acme-challenge.{}", z.host), &expected);
+                let present = if over_http {
+                    let answer = format!("{}.{thumb}", z.token);
+                    !z.wildcard
+                        && self
+                            .http
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .and_then(|lookup| lookup(&z.token))
+                            .is_some_and(|got| got == answer)
+                } else {
+                    let expected =
+                        B64.encode(Sha256::digest(format!("{}.{thumb}", z.token).as_bytes()));
+                    self.dns
+                        .has(&format!("_acme-challenge.{}", z.host), &expected)
+                };
                 let forced = st.fail == Some(FailKind::Dns);
                 if forced {
                     st.fail = None;
@@ -548,7 +595,8 @@ impl Inner {
                 let order = st.authzs[a].order;
                 self.refresh_order(st, order);
                 let v = self.authz_json(st, a);
-                self.reply(st, StatusCode::OK, None, v["challenges"][0].clone())
+                let which = usize::from(over_http);
+                self.reply(st, StatusCode::OK, None, v["challenges"][which].clone())
             }
             ("finalize", Some(i)) if i < st.orders.len() => {
                 if st.orders[i].status != "ready" {
