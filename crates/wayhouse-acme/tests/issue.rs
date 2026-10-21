@@ -1,7 +1,7 @@
 //! `AcmeCa` against the in-process fake CA: no network, no real DNS.
 
-use wayhouse_acme::testing::{FailKind, FakeCa, MemDns};
-use wayhouse_acme::{AcmeCa, DelegatedSolver, IssueError};
+use wayhouse_acme::testing::{FailKind, FakeCa, MemDns, MemHttp};
+use wayhouse_acme::{AcmeCa, DelegatedSolver, HttpSolver, IssueError};
 
 fn ca(fake: &FakeCa, tos: bool) -> AcmeCa {
     AcmeCa::new(&fake.directory_url(), tos)
@@ -310,4 +310,82 @@ async fn a_missing_cname_fails_the_order_with_a_hint_and_still_cleans_up() {
         .unwrap_err();
     assert!(err.to_string().contains("CNAME"), "{err}");
     assert!(dns.is_empty());
+}
+
+const WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[tokio::test]
+async fn http_01_publishes_each_token_and_withdraws_it() {
+    let (dns, http) = (MemDns::default(), MemHttp::default());
+    let fake = FakeCa::start(dns.clone()).await;
+    fake.serve_http_challenges(http.clone());
+    let (bundle, _) = ca(&fake, true)
+        .issue_http_within(
+            None,
+            &names(&["a.example.com", "b.example.com"]),
+            &http,
+            7,
+            WAIT,
+        )
+        .await
+        .unwrap();
+    assert_eq!(bundle.names.len(), 2);
+    assert_eq!(fake.issued(), 1);
+    let log = http.log.lock().unwrap().clone();
+    let count = |op: &str| log.iter().filter(|(o, _)| *o == op).count();
+    assert_eq!((count("present"), count("cleanup")), (2, 2));
+    assert!(http.is_empty(), "answers withdrawn after the order");
+    assert!(dns.is_empty(), "no DNS record was involved");
+}
+
+#[tokio::test]
+async fn http_01_refuses_a_wildcard_before_asking_the_ca() {
+    let (dns, http) = (MemDns::default(), MemHttp::default());
+    let fake = FakeCa::start(dns).await;
+    fake.serve_http_challenges(http.clone());
+    let err = ca(&fake, true)
+        .issue_http_within(None, &names(&["*.example.com"]), &http, 1, WAIT)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("wildcard"), "{err}");
+    assert_eq!(fake.accounts(), 0);
+}
+
+#[tokio::test]
+async fn http_01_fails_when_the_answer_is_not_served() {
+    struct Liar;
+    #[async_trait::async_trait]
+    impl HttpSolver for Liar {
+        async fn present(&self, _: &str, _: &str) -> Result<(), wayhouse_acme::SolverError> {
+            Ok(())
+        }
+        async fn cleanup(&self, _: &str) -> Result<(), wayhouse_acme::SolverError> {
+            Ok(())
+        }
+    }
+    let fake = FakeCa::start(MemDns::default()).await;
+    fake.serve_http_challenges(MemHttp::default());
+    let err = ca(&fake, true)
+        .issue_http_within(None, &names(&["a.example.com"]), &Liar, 1, WAIT)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, IssueError::Validation(_)), "{err}");
+    assert_eq!(fake.issued(), 0);
+}
+
+#[tokio::test]
+async fn a_failing_http_solver_fails_the_order_and_still_cleans_up() {
+    let http = MemHttp::default();
+    let fake = FakeCa::start(MemDns::default()).await;
+    fake.serve_http_challenges(http.clone());
+    http.fail_next_present("replication failed");
+    let err = ca(&fake, true)
+        .issue_http_within(None, &names(&["a.example.com"]), &http, 1, WAIT)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, IssueError::Solver(e) if e.0 == "replication failed"),
+        "{err}"
+    );
+    assert!(http.is_empty());
 }

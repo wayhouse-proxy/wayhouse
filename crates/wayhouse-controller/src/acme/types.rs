@@ -15,6 +15,28 @@ pub fn cert_slot(site: &str, version: u64) -> String {
     format!("cert:{site}@{version}")
 }
 
+/// How a site proves it controls its names.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChallengeKind {
+    /// A TXT record, set through the site's DNS plugin. Wildcards need this.
+    #[default]
+    #[serde(rename = "dns-01")]
+    Dns01,
+    /// A file the CA fetches over plain HTTP from the site's names, which the gateways
+    /// forward to the controller.
+    #[serde(rename = "http-01")]
+    Http01,
+}
+
+impl ChallengeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dns01 => "dns-01",
+            Self::Http01 => "http-01",
+        }
+    }
+}
+
 /// A published site: the names one certificate covers and where it is served.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Site {
@@ -24,7 +46,11 @@ pub struct Site {
     /// Gateways that may fetch this site's key. A wildcard needs at least one.
     #[serde(default)]
     pub gateways: Vec<String>,
-    /// The plugin install that sets and removes the DNS TXT records.
+    /// The challenge the CA is answered with. Defaults to DNS-01.
+    #[serde(default)]
+    pub challenge: ChallengeKind,
+    /// The plugin install that sets and removes the DNS TXT records (DNS-01 only).
+    #[serde(default)]
     pub dns_plugin: String,
     /// A zone the `_acme-challenge` names are CNAMEd into: the TXT records are written under
     /// it (`_acme-challenge.<host>.<zone>`) instead of in the site's own zone.
@@ -61,8 +87,19 @@ impl Site {
             return Err("a site name is 1 to 63 of a-z, 0-9 and '-'".into());
         }
         wayhouse_acme::validate_names(&self.names).map_err(|e| e.to_string())?;
-        if self.dns_plugin.is_empty() {
-            return Err("dns_plugin is required".into());
+        match self.challenge {
+            ChallengeKind::Dns01 if self.dns_plugin.is_empty() => {
+                return Err("dns_plugin is required".into());
+            }
+            ChallengeKind::Http01 => {
+                if self.names.iter().any(|n| n.starts_with("*.")) {
+                    return Err("a wildcard name needs the dns-01 challenge".into());
+                }
+                if !self.dns_plugin.is_empty() || self.challenge_zone.is_some() {
+                    return Err("dns_plugin and challenge_zone belong to dns-01 sites".into());
+                }
+            }
+            ChallengeKind::Dns01 => {}
         }
         if self.gateways.iter().any(|g| !Self::valid_name(g)) {
             return Err("a gateway name is 1 to 63 of a-z, 0-9 and '-'".into());
@@ -131,6 +168,50 @@ pub struct Gateway {
     pub created_at: u64,
 }
 
+/// An HTTP-01 answer the controller serves until `expires_at`. The key authorization is
+/// public by design (the CA gets it from any client that asks), so it is stored in clear.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpChallenge {
+    pub token: String,
+    pub key_authorization: String,
+    /// Unix seconds; the answer is neither served nor kept after this.
+    pub expires_at: u64,
+}
+
+impl HttpChallenge {
+    /// 1 to 128 of A-Z, a-z, 0-9, '-' and '_'.
+    pub fn valid_token(token: &str) -> bool {
+        !token.is_empty()
+            && token.len() <= 128
+            && token
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    }
+
+    /// Why this cannot be stored, or `Ok`. A token is what the CA puts in a URL path, so only
+    /// URL-safe base64 characters pass, and the key authorization must be `<token>.<thumbprint>`.
+    pub fn validate(&self) -> Result<(), String> {
+        let t = &self.token;
+        if t.is_empty()
+            || t.len() > 128
+            || !t
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err("an HTTP-01 token is 1 to 128 of A-Z, a-z, 0-9, '-' and '_'".into());
+        }
+        let k = &self.key_authorization;
+        if k.len() > 512
+            || !k
+                .strip_prefix(t.as_str())
+                .is_some_and(|r| r.starts_with('.'))
+        {
+            return Err("the key authorization must be `<token>.<thumbprint>`".into());
+        }
+        Ok(())
+    }
+}
+
 /// A replicated ACME write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AcmeOp {
@@ -156,6 +237,16 @@ pub enum AcmeOp {
     GatewaySet(Gateway),
     GatewayDelete {
         name: String,
+    },
+    /// Publishes (or replaces) an HTTP-01 answer.
+    ChallengeSet(HttpChallenge),
+    ChallengeDelete {
+        token: String,
+    },
+    /// Drops every answer that expired at `now`; the leader proposes it, so every replica
+    /// drops the same ones.
+    ChallengesPrune {
+        now: u64,
     },
 }
 
@@ -187,6 +278,8 @@ pub struct AcmeSnapshot {
     pub attempts: Vec<(String, Attempt)>,
     #[serde(default)]
     pub gateways: Vec<Gateway>,
+    #[serde(default)]
+    pub challenges: Vec<HttpChallenge>,
     #[serde(default)]
     pub applied_index: Option<u64>,
 }

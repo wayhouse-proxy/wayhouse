@@ -23,9 +23,9 @@ It still decodes, stores and replicates ACME state, so a mixed cluster stays con
 ## What it does
 
 You describe **sites**: a set of hostnames (or a `*.zone` wildcard), the gateways that
-serve them and the DNS plugin that can publish `_acme-challenge` TXT records. The leader
-of the controller tier orders one certificate per site, proves control with the DNS-01
-challenge, seals the new private key under the cluster secret key and stores certificate
+serve them and either the DNS plugin that can publish `_acme-challenge` TXT records (DNS-01)
+or nothing at all (HTTP-01, [below](#http-01)). The leader of the controller tier orders one
+certificate per site, proves control with the site's challenge, seals the new private key under the cluster secret key and stores certificate
 and sealed key (replicated under HA). It renews when less than a third of the lifetime is
 left, with backoff after failures.
 
@@ -64,18 +64,65 @@ so; if it becomes leader nothing is issued until the key is there.
 
 All routes need the admin bearer token like the rest of the controller API.
 
-| Route                       | Does                                                                                                     |
-| --------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `PUT /acme/sites/{name}`    | Create or replace a site. Body: `names`, `dns_plugin`, optional `gateways`, `challenge_zone`, `enabled`. |
-| `GET /acme/sites`           | Every site with its certificate status and last error.                                                   |
-| `GET /acme/sites/{name}`    | One site.                                                                                                |
-| `DELETE /acme/sites/{name}` | Remove the site, its certificates and its retry state.                                                   |
-| `GET /acme/account`         | The account URL, for pinning `CAA accounturi=` at your DNS provider. No key.                             |
+| Route                       | Does                                                                                                                  |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `PUT /acme/sites/{name}`    | Create or replace a site. Body: `names`, `dns_plugin`, optional `challenge`, `gateways`, `challenge_zone`, `enabled`. |
+| `GET /acme/sites`           | Every site with its certificate status and last error.                                                                |
+| `GET /acme/sites/{name}`    | One site.                                                                                                             |
+| `DELETE /acme/sites/{name}` | Remove the site, its certificates and its retry state.                                                                |
+| `GET /acme/account`         | The account URL, for pinning `CAA accounturi=` at your DNS provider. No key.                                          |
 
 Rules: names are lowercase hostnames, optionally `*.zone`; a name belongs to one site
 (`409` otherwise); **a wildcard needs at least one gateway** (`422`), because a wildcard key
 should live only on a few hardened nodes. No route returns a private key, a certificate
 chain or ciphertext.
+
+## HTTP-01
+
+`"challenge": "http-01"` proves control by answering `GET /.well-known/acme-challenge/<token>`
+on port 80 of each name instead of publishing a TXT record. Use it when no DNS plugin fits
+and the names are reachable from the internet; it cannot cover a wildcard (`422`), and
+`dns_plugin` and `challenge_zone` are refused on such a site (`400`). The default is `dns-01`.
+
+```sh
+curl -X PUT -H "Authorization: Bearer $ADMIN" https://controller:7000/acme/sites/panel \
+  -d '{"names":["panel.example.com"],"challenge":"http-01","gateways":["edge-1"]}'
+```
+
+How the answer reaches the CA:
+
+1. The leader gets the token and key authorization from the CA and commits them as one
+   replicated entry, so **every controller node**, followers included, can answer.
+2. The CA fetches `http://panel.example.com/.well-known/acme-challenge/<token>`. Your
+   gateway has to forward exactly that path prefix to any controller node, for example in
+   Caddy:
+
+    ```text
+    handle /.well-known/acme-challenge/* {
+        reverse_proxy https://controller-1:7000 https://controller-2:7000
+    }
+    ```
+
+3. `GET /.well-known/acme-challenge/{token}` on the controller needs no token: the body is
+   what the CA is meant to read, the token is chosen by the CA per order, and anything unknown
+   or expired is a plain `404`. The answer is withdrawn when the order ends. If the leader
+   dies mid-order, the next pass drops what is left once it has expired (the order time plus
+   the site's `propagation_timeout_secs`).
+
+Point the forwarding at **every** controller node (as above) or at the leader: a follower
+that has not applied the entry yet answers `404`, and the CA does not retry a failed
+validation. The leader waits two seconds after publishing so a follower has applied the entry.
+The expiry is set by the leader's clock and checked on each serving node's, which the five
+minutes of slack covers as long as the nodes run NTP.
+
+Rolling upgrade: the cluster-wide ACME level is now 4, so while any member still runs an older
+build, **all** ACME writes and issuance (DNS-01 renewals and gateway changes included) pause,
+as for the earlier levels. Once an HTTP-01 site exists, an older build cannot decode its
+entries, so do not downgrade past this release. A site
+whose gateways do not forward the path fails the order with the CA's own message (usually
+`unauthorized` or `connection`) in the site's `last_error`, and it counts toward the hourly
+failure cap like any other failure. Holding port 80 open to the internet is the price of
+HTTP-01; with DNS-01 nothing needs to be reachable.
 
 ## CNAME-delegated challenge zones
 

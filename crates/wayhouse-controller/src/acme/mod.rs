@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod bundles;
+pub mod challenge;
 #[cfg(feature = "acme")]
 pub mod dns_plugin;
 #[cfg(feature = "acme")]
@@ -11,7 +12,10 @@ pub mod store;
 pub mod types;
 
 pub use store::{AcmeStore, AcmeStoreError};
-pub use types::{AcmeOp, AcmeSnapshot, Applied, Attempt, Gateway, Site, StoredAccount, StoredCert};
+pub use types::{
+    AcmeOp, AcmeSnapshot, Applied, Attempt, ChallengeKind, Gateway, HttpChallenge, Site,
+    StoredAccount, StoredCert,
+};
 
 /// The rolling-upgrade gate for ACME writes under HA: every member must run a build that can
 /// decode the entries. A member that does not answer blocks too, like a plugin install.

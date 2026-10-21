@@ -9,7 +9,7 @@ use sled::transaction::{ConflictableTransactionError, TransactionError};
 use sled::Transactional;
 
 use super::types::{
-    AcmeOp, AcmeSnapshot, Applied, Attempt, Gateway, Site, StoredAccount, StoredCert,
+    AcmeOp, AcmeSnapshot, Applied, Attempt, Gateway, HttpChallenge, Site, StoredAccount, StoredCert,
 };
 
 const APPLIED_KEY: &[u8] = b"applied";
@@ -33,6 +33,8 @@ pub struct AcmeStore {
     certs: sled::Tree,
     attempts: sled::Tree,
     gateways: sled::Tree,
+    /// Token to [`HttpChallenge`].
+    challenges: sled::Tree,
     meta: sled::Tree,
     write: Arc<Mutex<()>>,
     changed: Arc<tokio::sync::watch::Sender<u64>>,
@@ -66,6 +68,7 @@ impl AcmeStore {
             certs: db.open_tree("acme_certs")?,
             attempts: db.open_tree("acme_attempts")?,
             gateways: db.open_tree("acme_gateways")?,
+            challenges: db.open_tree("acme_challenges")?,
             meta: db.open_tree("acme_meta")?,
             write: Arc::default(),
             changed: Arc::new(tokio::sync::watch::channel(0).0),
@@ -145,6 +148,26 @@ impl AcmeStore {
         read(self.gateways.get(name.as_bytes())?)
     }
 
+    /// The HTTP-01 answer for `token` while it is still valid at `now`.
+    pub fn challenge(
+        &self,
+        token: &str,
+        now: u64,
+    ) -> Result<Option<HttpChallenge>, AcmeStoreError> {
+        Ok(
+            read::<HttpChallenge>(self.challenges.get(token.as_bytes())?)?
+                .filter(|c| c.expires_at > now),
+        )
+    }
+
+    pub fn challenges(&self) -> Result<Vec<HttpChallenge>, AcmeStoreError> {
+        self.challenges
+            .iter()
+            .values()
+            .map(|v| Ok(serde_json::from_slice(&v?)?))
+            .collect()
+    }
+
     // ---- writes ----
 
     /// Applies `op` on a standalone controller: the next local index, and the entry term is
@@ -210,6 +233,15 @@ impl AcmeStore {
                 .collect::<Result<_, _>>()?,
             _ => Vec::new(),
         };
+        let expired: Vec<sled::IVec> = match op {
+            AcmeOp::ChallengesPrune { now } => self
+                .challenges()?
+                .into_iter()
+                .filter(|c| c.expires_at <= *now)
+                .map(|c| sled::IVec::from(c.token.as_bytes()))
+                .collect(),
+            _ => Vec::new(),
+        };
         let abort = ConflictableTransactionError::Abort;
         let outcome = (
             &self.sites,
@@ -217,117 +249,141 @@ impl AcmeStore {
             &self.certs,
             &self.attempts,
             &self.gateways,
+            &self.challenges,
             &self.meta,
         )
-            .transaction(|(sites, account, certs, attempts, gateways, meta)| {
-                let covered = meta
-                    .get(APPLIED_KEY)?
-                    .and_then(|v| <[u8; 8]>::try_from(v.as_ref()).ok())
-                    .map(u64::from_be_bytes);
-                if covered.is_some_and(|c| c >= index) {
-                    return Ok(Applied::Replayed);
-                }
-                meta.insert(APPLIED_KEY, &index.to_be_bytes())?;
-                let json =
-                    |v: &dyn erased::Ser| v.to_json().map_err(|e| abort(AcmeStoreError::from(e)));
-                let get_site = |name: &str| -> Result<
-                    Option<Site>,
-                    ConflictableTransactionError<AcmeStoreError>,
-                > {
-                    match sites.get(name.as_bytes())? {
-                        Some(v) => Ok(Some(
-                            serde_json::from_slice(&v).map_err(|e| abort(e.into()))?,
-                        )),
-                        None => Ok(None),
+            .transaction(
+                |(sites, account, certs, attempts, gateways, challenges, meta)| {
+                    let covered = meta
+                        .get(APPLIED_KEY)?
+                        .and_then(|v| <[u8; 8]>::try_from(v.as_ref()).ok())
+                        .map(u64::from_be_bytes);
+                    if covered.is_some_and(|c| c >= index) {
+                        return Ok(Applied::Replayed);
                     }
-                };
-                match op {
-                    AcmeOp::SiteSet(site) => {
-                        if let Err(why) = site.validate() {
-                            return Ok(Applied::Invalid(why));
+                    meta.insert(APPLIED_KEY, &index.to_be_bytes())?;
+                    let json = |v: &dyn erased::Ser| {
+                        v.to_json().map_err(|e| abort(AcmeStoreError::from(e)))
+                    };
+                    let get_site = |name: &str| -> Result<
+                        Option<Site>,
+                        ConflictableTransactionError<AcmeStoreError>,
+                    > {
+                        match sites.get(name.as_bytes())? {
+                            Some(v) => Ok(Some(
+                                serde_json::from_slice(&v).map_err(|e| abort(e.into()))?,
+                            )),
+                            None => Ok(None),
                         }
-                        for other in &other_sites {
-                            if let Some(n) = site.names.iter().find(|n| other.names.contains(n)) {
-                                return Ok(Applied::NameTaken(n.clone()));
+                    };
+                    match op {
+                        AcmeOp::SiteSet(site) => {
+                            if let Err(why) = site.validate() {
+                                return Ok(Applied::Invalid(why));
                             }
+                            for other in &other_sites {
+                                if let Some(n) = site.names.iter().find(|n| other.names.contains(n))
+                                {
+                                    return Ok(Applied::NameTaken(n.clone()));
+                                }
+                            }
+                            sites.insert(site.name.as_bytes(), json(site)?)?;
+                            Ok(Applied::Done)
                         }
-                        sites.insert(site.name.as_bytes(), json(site)?)?;
-                        Ok(Applied::Done)
-                    }
-                    AcmeOp::SiteDelete { name } => {
-                        if get_site(name)?.is_none() {
-                            return Ok(Applied::NoSuchSite);
+                        AcmeOp::SiteDelete { name } => {
+                            if get_site(name)?.is_none() {
+                                return Ok(Applied::NoSuchSite);
+                            }
+                            sites.remove(name.as_bytes())?;
+                            attempts.remove(name.as_bytes())?;
+                            for k in &wipe_certs {
+                                certs.remove(k.clone())?;
+                            }
+                            Ok(Applied::Done)
                         }
-                        sites.remove(name.as_bytes())?;
-                        attempts.remove(name.as_bytes())?;
-                        for k in &wipe_certs {
-                            certs.remove(k.clone())?;
+                        AcmeOp::AccountSet(acct) => {
+                            if let Some(old) = account.get(ACCOUNT_KEY)? {
+                                // The first writer wins per CA; an account for another CA
+                                // (after `--acme-ca` changed) replaces the stored one.
+                                let old: StoredAccount =
+                                    serde_json::from_slice(&old).map_err(|e| abort(e.into()))?;
+                                if old.directory_url == acct.directory_url {
+                                    return Ok(Applied::Exists);
+                                }
+                            }
+                            account.insert(ACCOUNT_KEY, json(acct)?)?;
+                            Ok(Applied::Done)
                         }
-                        Ok(Applied::Done)
-                    }
-                    AcmeOp::AccountSet(acct) => {
-                        if let Some(old) = account.get(ACCOUNT_KEY)? {
-                            // The first writer wins per CA; an account for another CA
-                            // (after `--acme-ca` changed) replaces the stored one.
-                            let old: StoredAccount =
-                                serde_json::from_slice(&old).map_err(|e| abort(e.into()))?;
-                            if old.directory_url == acct.directory_url {
+                        AcmeOp::CertIssued {
+                            site,
+                            tagged_term,
+                            cert,
+                        } => {
+                            let Some(current) = get_site(site)? else {
+                                return Ok(Applied::NoSuchSite);
+                            };
+                            if *tagged_term != entry_term {
+                                return Ok(Applied::WrongTerm);
+                            }
+                            if cert.version != newest.unwrap_or(0) + 1
+                                || cert.names != current.names
+                            {
+                                return Ok(Applied::Stale);
+                            }
+                            certs.insert(cert_key(site, cert.version), json(cert)?)?;
+                            // Keep the newest KEEP_VERSIONS; `old_versions` is oldest first.
+                            let drop = (old_versions.len() + 1).saturating_sub(KEEP_VERSIONS);
+                            for k in old_versions.iter().take(drop) {
+                                certs.remove(k.clone())?;
+                            }
+                            attempts.remove(site.as_bytes())?;
+                            Ok(Applied::Done)
+                        }
+                        AcmeOp::Attempt { site, attempt } => {
+                            if get_site(site)?.is_none() {
+                                return Ok(Applied::NoSuchSite);
+                            }
+                            attempts.insert(site.as_bytes(), json(attempt)?)?;
+                            Ok(Applied::Done)
+                        }
+                        AcmeOp::GatewaySet(gw) => {
+                            if !Site::valid_name(&gw.name) {
+                                return Ok(Applied::Invalid(
+                                    "a gateway name is 1 to 63 of a-z, 0-9 and '-'".into(),
+                                ));
+                            }
+                            if gateways.get(gw.name.as_bytes())?.is_some() {
                                 return Ok(Applied::Exists);
                             }
+                            gateways.insert(gw.name.as_bytes(), json(gw)?)?;
+                            Ok(Applied::Done)
                         }
-                        account.insert(ACCOUNT_KEY, json(acct)?)?;
-                        Ok(Applied::Done)
+                        AcmeOp::GatewayDelete { name } => {
+                            if gateways.remove(name.as_bytes())?.is_none() {
+                                return Ok(Applied::NoSuchGateway);
+                            }
+                            Ok(Applied::Done)
+                        }
+                        AcmeOp::ChallengeSet(c) => {
+                            if let Err(why) = c.validate() {
+                                return Ok(Applied::Invalid(why));
+                            }
+                            challenges.insert(c.token.as_bytes(), json(c)?)?;
+                            Ok(Applied::Done)
+                        }
+                        AcmeOp::ChallengeDelete { token } => {
+                            challenges.remove(token.as_bytes())?;
+                            Ok(Applied::Done)
+                        }
+                        AcmeOp::ChallengesPrune { .. } => {
+                            for k in &expired {
+                                challenges.remove(k.clone())?;
+                            }
+                            Ok(Applied::Done)
+                        }
                     }
-                    AcmeOp::CertIssued {
-                        site,
-                        tagged_term,
-                        cert,
-                    } => {
-                        let Some(current) = get_site(site)? else {
-                            return Ok(Applied::NoSuchSite);
-                        };
-                        if *tagged_term != entry_term {
-                            return Ok(Applied::WrongTerm);
-                        }
-                        if cert.version != newest.unwrap_or(0) + 1 || cert.names != current.names {
-                            return Ok(Applied::Stale);
-                        }
-                        certs.insert(cert_key(site, cert.version), json(cert)?)?;
-                        // Keep the newest KEEP_VERSIONS; `old_versions` is oldest first.
-                        let drop = (old_versions.len() + 1).saturating_sub(KEEP_VERSIONS);
-                        for k in old_versions.iter().take(drop) {
-                            certs.remove(k.clone())?;
-                        }
-                        attempts.remove(site.as_bytes())?;
-                        Ok(Applied::Done)
-                    }
-                    AcmeOp::Attempt { site, attempt } => {
-                        if get_site(site)?.is_none() {
-                            return Ok(Applied::NoSuchSite);
-                        }
-                        attempts.insert(site.as_bytes(), json(attempt)?)?;
-                        Ok(Applied::Done)
-                    }
-                    AcmeOp::GatewaySet(gw) => {
-                        if !Site::valid_name(&gw.name) {
-                            return Ok(Applied::Invalid(
-                                "a gateway name is 1 to 63 of a-z, 0-9 and '-'".into(),
-                            ));
-                        }
-                        if gateways.get(gw.name.as_bytes())?.is_some() {
-                            return Ok(Applied::Exists);
-                        }
-                        gateways.insert(gw.name.as_bytes(), json(gw)?)?;
-                        Ok(Applied::Done)
-                    }
-                    AcmeOp::GatewayDelete { name } => {
-                        if gateways.remove(name.as_bytes())?.is_none() {
-                            return Ok(Applied::NoSuchGateway);
-                        }
-                        Ok(Applied::Done)
-                    }
-                }
-            })
+                },
+            )
             .map_err(|e| match e {
                 TransactionError::Abort(e) => e,
                 TransactionError::Storage(e) => e.into(),
@@ -338,6 +394,7 @@ impl AcmeStore {
             &self.certs,
             &self.attempts,
             &self.gateways,
+            &self.challenges,
             &self.meta,
         ] {
             t.flush()?;
@@ -370,6 +427,7 @@ impl AcmeStore {
             certs,
             attempts,
             gateways: self.gateways()?,
+            challenges: self.challenges()?,
             applied_index: self.applied_index()?,
         })
     }
@@ -379,11 +437,12 @@ impl AcmeStore {
         let _guard = self.lock();
         let keys =
             |t: &sled::Tree| -> Result<Vec<sled::IVec>, sled::Error> { t.iter().keys().collect() };
-        let (old_sites, old_certs, old_attempts, old_gateways) = (
+        let (old_sites, old_certs, old_attempts, old_gateways, old_challenges) = (
             keys(&self.sites)?,
             keys(&self.certs)?,
             keys(&self.attempts)?,
             keys(&self.gateways)?,
+            keys(&self.challenges)?,
         );
         (
             &self.sites,
@@ -391,49 +450,59 @@ impl AcmeStore {
             &self.certs,
             &self.attempts,
             &self.gateways,
+            &self.challenges,
             &self.meta,
         )
-            .transaction(|(sites, account, certs, attempts, gateways, meta)| {
-                let err = |e: serde_json::Error| {
-                    ConflictableTransactionError::Abort(AcmeStoreError::from(e))
-                };
-                for k in &old_sites {
-                    sites.remove(k.clone())?;
-                }
-                for k in &old_certs {
-                    certs.remove(k.clone())?;
-                }
-                for k in &old_attempts {
-                    attempts.remove(k.clone())?;
-                }
-                for k in &old_gateways {
-                    gateways.remove(k.clone())?;
-                }
-                account.remove(ACCOUNT_KEY)?;
-                for g in &snap.gateways {
-                    gateways.insert(g.name.as_bytes(), serde_json::to_vec(g).map_err(err)?)?;
-                }
-                for s in &snap.sites {
-                    sites.insert(s.name.as_bytes(), serde_json::to_vec(s).map_err(err)?)?;
-                }
-                for (site, c) in &snap.certs {
-                    certs.insert(
-                        cert_key(site, c.version),
-                        serde_json::to_vec(c).map_err(err)?,
-                    )?;
-                }
-                for (site, a) in &snap.attempts {
-                    attempts.insert(site.as_bytes(), serde_json::to_vec(a).map_err(err)?)?;
-                }
-                if let Some(a) = &snap.account {
-                    account.insert(ACCOUNT_KEY, serde_json::to_vec(a).map_err(err)?)?;
-                }
-                match snap.applied_index {
-                    Some(i) => meta.insert(APPLIED_KEY, &i.to_be_bytes())?,
-                    None => meta.remove(APPLIED_KEY)?,
-                };
-                Ok::<_, ConflictableTransactionError<AcmeStoreError>>(())
-            })
+            .transaction(
+                |(sites, account, certs, attempts, gateways, challenges, meta)| {
+                    let err = |e: serde_json::Error| {
+                        ConflictableTransactionError::Abort(AcmeStoreError::from(e))
+                    };
+                    for k in &old_sites {
+                        sites.remove(k.clone())?;
+                    }
+                    for k in &old_certs {
+                        certs.remove(k.clone())?;
+                    }
+                    for k in &old_attempts {
+                        attempts.remove(k.clone())?;
+                    }
+                    for k in &old_gateways {
+                        gateways.remove(k.clone())?;
+                    }
+                    for k in &old_challenges {
+                        challenges.remove(k.clone())?;
+                    }
+                    for c in &snap.challenges {
+                        challenges
+                            .insert(c.token.as_bytes(), serde_json::to_vec(c).map_err(err)?)?;
+                    }
+                    account.remove(ACCOUNT_KEY)?;
+                    for g in &snap.gateways {
+                        gateways.insert(g.name.as_bytes(), serde_json::to_vec(g).map_err(err)?)?;
+                    }
+                    for s in &snap.sites {
+                        sites.insert(s.name.as_bytes(), serde_json::to_vec(s).map_err(err)?)?;
+                    }
+                    for (site, c) in &snap.certs {
+                        certs.insert(
+                            cert_key(site, c.version),
+                            serde_json::to_vec(c).map_err(err)?,
+                        )?;
+                    }
+                    for (site, a) in &snap.attempts {
+                        attempts.insert(site.as_bytes(), serde_json::to_vec(a).map_err(err)?)?;
+                    }
+                    if let Some(a) = &snap.account {
+                        account.insert(ACCOUNT_KEY, serde_json::to_vec(a).map_err(err)?)?;
+                    }
+                    match snap.applied_index {
+                        Some(i) => meta.insert(APPLIED_KEY, &i.to_be_bytes())?,
+                        None => meta.remove(APPLIED_KEY)?,
+                    };
+                    Ok::<_, ConflictableTransactionError<AcmeStoreError>>(())
+                },
+            )
             .map_err(|e| match e {
                 TransactionError::Abort(e) => e,
                 TransactionError::Storage(e) => e.into(),
@@ -444,6 +513,7 @@ impl AcmeStore {
             &self.certs,
             &self.attempts,
             &self.gateways,
+            &self.challenges,
             &self.meta,
         ] {
             t.flush()?;
@@ -513,6 +583,7 @@ mod tests {
             name: name.into(),
             names: names.iter().map(ToString::to_string).collect(),
             gateways: vec!["gw1".into()],
+            challenge: crate::acme::ChallengeKind::Dns01,
             dns_plugin: "dns".into(),
             challenge_zone: None,
             propagation_timeout_secs: 120,

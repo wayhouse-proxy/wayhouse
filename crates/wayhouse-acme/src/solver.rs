@@ -1,4 +1,5 @@
-//! The DNS-01 side of an order: put a TXT record where the CA will look, and remove it.
+//! The challenge side of an order: put a TXT record (DNS-01) or a key authorization (HTTP-01)
+//! where the CA will look, and remove it.
 
 use std::time::Duration;
 
@@ -24,6 +25,27 @@ pub trait DnsSolver: Send + Sync {
         value: &str,
         timeout: Duration,
     ) -> Result<(), SolverError>;
+}
+
+/// Publishes and withdraws HTTP-01 answers. The controller's implementation replicates them
+/// to every controller node, which serve them at `/.well-known/acme-challenge/<token>`.
+#[async_trait]
+pub trait HttpSolver: Send + Sync {
+    /// Makes `GET /.well-known/acme-challenge/<token>` answer `key_authorization`.
+    async fn present(&self, token: &str, key_authorization: &str) -> Result<(), SolverError>;
+    /// Withdraws that answer. Always called after `present`, also after a failed order.
+    async fn cleanup(&self, token: &str) -> Result<(), SolverError>;
+}
+
+#[async_trait]
+impl<T: HttpSolver + ?Sized> HttpSolver for std::sync::Arc<T> {
+    async fn present(&self, token: &str, key_authorization: &str) -> Result<(), SolverError> {
+        (**self).present(token, key_authorization).await
+    }
+
+    async fn cleanup(&self, token: &str) -> Result<(), SolverError> {
+        (**self).cleanup(token).await
+    }
 }
 
 #[async_trait]
