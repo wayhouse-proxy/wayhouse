@@ -109,6 +109,23 @@ removes every listener):
 - The admin API is only reachable on a unix socket or a loopback address; the sync refuses any other
   `--caddy-admin`.
 
+## HTTP-01 challenges
+
+With controller-issued certificates ([`acme.md`](acme.md#http-01)), a site can prove control
+with HTTP-01. Give the sync the controller nodes and it adds one route to the **HTTP** server
+(port 80), ahead of every site route and redirect:
+
+```text
+wayhouse-web-sync --acme-challenge-upstream https://controller-1:7000,https://controller-2:7000
+```
+
+Only `/.well-known/acme-challenge/*` is forwarded, for every host, to the first controller
+that is up. A site that serves its own files under that path is shadowed by it, so do not set
+the flag if no site uses HTTP-01. All controllers must use the same scheme; for https, add
+`--acme-challenge-ca-file` if the controllers' certificate is not signed by a CA Caddy
+trusts. The route is part of the rendered document, so it exists only while `wayhouse` has a
+`web:` section with sites. The sync never sends Caddy a partial document.
+
 ## Run
 
 Command line of `wayhouse-web-sync` (`--help` has the rest):
@@ -119,6 +136,8 @@ Command line of `wayhouse-web-sync` (`--help` has the rest):
 | `--wayhouse-token` / env `WAYHOUSE_ADMIN_TOKEN` | none                    | Bearer token if `settings.admin.auth_token` is set                    |
 | `--caddy-admin`                                 | `/run/caddy/admin.sock` | Caddy admin: unix socket or loopback `ip:port`                        |
 | `--interval-sec`                                | 5                       | How often it reads Wayhouse (pool changes, renewed certificates)      |
+| `--acme-challenge-upstream`                     | none                    | Controller URLs that answer ACME HTTP-01 (see below)                  |
+| `--acme-challenge-ca-file`                      | none                    | CA (path on the Caddy side) for an https `--acme-challenge-upstream`  |
 | `--metrics-listen`                              | `127.0.0.1:9904`        | `GET /metrics`; a non-loopback address needs `--metrics-token`        |
 
 Caddy has to start with a base configuration whose `admin.listen` is the same address: the image

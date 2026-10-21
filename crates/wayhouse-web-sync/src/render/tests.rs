@@ -40,6 +40,7 @@ fn render_with(web: &WebView, pools: &PoolBackends, certs: &SiteCerts) -> Value 
         pools,
         certs,
         admin: &admin,
+        acme: None,
     })
     .unwrap()
 }
@@ -161,6 +162,7 @@ fn a_tls_site_without_a_loaded_certificate_is_an_error_not_a_partial_document() 
         pools: &PoolBackends::new(),
         certs: &SiteCerts::new(),
         admin: &admin,
+        acme: None,
     })
     .unwrap_err();
     assert_eq!(e, RenderError::MissingCert { site: 0 });
@@ -317,6 +319,7 @@ fn the_unix_socket_admin_block_matches_what_the_client_connects_to() {
         pools: &PoolBackends::new(),
         certs: &SiteCerts::new(),
         admin: &admin,
+        acme: None,
     })
     .unwrap();
     assert_eq!(
@@ -376,6 +379,7 @@ fn a_listen_address_that_does_not_parse_is_refused() {
         pools: &PoolBackends::new(),
         certs: &SiteCerts::new(),
         admin: &admin,
+        acme: None,
     })
     .unwrap_err();
     assert!(matches!(
@@ -385,4 +389,86 @@ fn a_listen_address_that_does_not_parse_is_refused() {
             ..
         }
     ));
+}
+
+fn render_acme(web: &WebView, forward: &AcmeForward) -> Value {
+    let admin = AdminAddr::parse("127.0.0.1:2019").unwrap();
+    render(&RenderInput {
+        web,
+        pools: &PoolBackends::new(),
+        certs: &SiteCerts::new(),
+        admin: &admin,
+        acme: Some(forward),
+    })
+    .unwrap()
+}
+
+#[test]
+fn the_acme_challenge_path_is_forwarded_first_on_the_http_server_only() {
+    let w = web(vec![site(&["a.example.com"], vec![addr("10.0.0.5:8080")])]);
+    let forward = AcmeForward::parse("http://c1:7000,http://c2:7000", None).unwrap();
+    let doc = render_acme(&w, &forward);
+    let http = &doc["apps"]["http"]["servers"]["http"]["routes"];
+    assert_eq!(
+        http.as_array().unwrap().len(),
+        2,
+        "the forward plus the site"
+    );
+    let first = &http[0];
+    assert_eq!(
+        first["match"],
+        json!([{"path": ["/.well-known/acme-challenge/*"]}])
+    );
+    assert_eq!(first["terminal"], true);
+    let rp = &first["handle"][0];
+    assert_eq!(rp["handler"], "reverse_proxy");
+    assert_eq!(
+        rp["upstreams"],
+        json!([{"dial": "c1:7000"}, {"dial": "c2:7000"}])
+    );
+    assert!(
+        rp.get("transport").is_none(),
+        "plain http to the controller"
+    );
+    assert_eq!(http[1]["match"], json!([{"host": ["a.example.com"]}]));
+    let https = &doc["apps"]["http"]["servers"]["https"]["routes"];
+    assert_eq!(https.as_array().unwrap().len(), 1, "nothing on https");
+}
+
+#[test]
+fn an_https_controller_is_dialled_over_tls_with_the_given_ca() {
+    let w = web(vec![]);
+    let plain = AcmeForward::parse("https://c1:7000", None).unwrap();
+    let rp = &render_acme(&w, &plain)["apps"]["http"]["servers"]["http"]["routes"][0]["handle"][0];
+    assert_eq!(rp["transport"], json!({"protocol": "http", "tls": {}}));
+    let pinned = AcmeForward::parse("https://c1:7000", Some("/etc/caddy/ca.pem")).unwrap();
+    let rp = &render_acme(&w, &pinned)["apps"]["http"]["servers"]["http"]["routes"][0]["handle"][0];
+    assert_eq!(
+        rp["transport"]["tls"],
+        json!({"root_ca_pem_files": ["/etc/caddy/ca.pem"]})
+    );
+}
+
+#[test]
+fn the_forward_also_precedes_the_redirect_of_a_site_with_a_certificate() {
+    let mut s = site(&["a.example.com"], vec![addr("10.0.0.5:8080")]);
+    s.tls = Some(WebSiteTlsView {
+        cert: "c".into(),
+        key: "k".into(),
+    });
+    let mut certs = SiteCerts::new();
+    certs.insert(0, pem());
+    let admin = AdminAddr::parse("127.0.0.1:2019").unwrap();
+    let forward = AcmeForward::parse("http://c1:7000", None).unwrap();
+    let doc = render(&RenderInput {
+        web: &web(vec![s]),
+        pools: &PoolBackends::new(),
+        certs: &certs,
+        admin: &admin,
+        acme: Some(&forward),
+    })
+    .unwrap();
+    let http = &doc["apps"]["http"]["servers"]["http"]["routes"];
+    assert_eq!(http[0]["handle"][0]["handler"], "reverse_proxy");
+    assert_eq!(http[1]["handle"][0]["status_code"], 308);
 }

@@ -94,8 +94,10 @@ How the answer reaches the CA:
 1. The leader gets the token and key authorization from the CA and commits them as one
    replicated entry, so **every controller node**, followers included, can answer.
 2. The CA fetches `http://panel.example.com/.well-known/acme-challenge/<token>`. Your
-   gateway has to forward exactly that path prefix to any controller node, for example in
-   Caddy:
+   gateway forwards exactly that path prefix to a controller node. With
+   [`wayhouse-web-sync`](web-proxy.md#http-01-challenges) that is one flag,
+   `--acme-challenge-upstream https://controller-1:7000,https://controller-2:7000`; with a
+   Caddy you configure yourself:
 
     ```text
     handle /.well-known/acme-challenge/* {
@@ -109,7 +111,7 @@ How the answer reaches the CA:
    dies mid-order, the next pass drops what is left once it has expired (the order time plus
    the site's `propagation_timeout_secs`).
 
-Point the forwarding at **every** controller node (as above) or at the leader: a follower
+List **every** controller node (as above) so the forward survives a node going down, or point it at the leader: a follower
 that has not applied the entry yet answers `404`, and the CA does not retry a failed
 validation. The leader waits two seconds after publishing so a follower has applied the entry.
 The expiry is set by the leader's clock and checked on each serving node's, which the five
@@ -118,8 +120,9 @@ minutes of slack covers as long as the nodes run NTP.
 Rolling upgrade: the cluster-wide ACME level is now 4, so while any member still runs an older
 build, **all** ACME writes and issuance (DNS-01 renewals and gateway changes included) pause,
 as for the earlier levels. Once an HTTP-01 site exists, an older build cannot decode its
-entries, so do not downgrade past this release. A site
-whose gateways do not forward the path fails the order with the CA's own message (usually
+entries, so do not downgrade past this release.
+
+A site whose gateways do not forward the path fails the order with the CA's own message (usually
 `unauthorized` or `connection`) in the site's `last_error`, and it counts toward the hourly
 failure cap like any other failure. Holding port 80 open to the internet is the price of
 HTTP-01; with DNS-01 nothing needs to be reachable.

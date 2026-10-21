@@ -252,3 +252,17 @@ async fn an_unreadable_certificate_sends_nothing() {
     assert_eq!(s.run_once(false).await, Outcome::Failed("render"));
     assert_eq!(sent(&s), 0);
 }
+
+#[tokio::test]
+async fn the_acme_forward_reaches_the_document_sent_to_caddy() {
+    let w = web(vec![addr_site()]);
+    let forward = crate::acme_forward::AcmeForward::parse("https://c1:7000", None).unwrap();
+    let mut s = syncer(vec![Ok(Some(w))]).with_acme_forward(Some(forward));
+    assert_eq!(s.run_once(false).await, Outcome::Loaded);
+    let doc = s.loader.sent.borrow()[0].clone();
+    let first = &doc["apps"]["http"]["servers"]["http"]["routes"][0];
+    assert_eq!(
+        first["match"],
+        serde_json::json!([{"path": ["/.well-known/acme-challenge/*"]}])
+    );
+}

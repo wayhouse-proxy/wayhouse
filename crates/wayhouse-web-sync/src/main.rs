@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
+use wayhouse_web_sync::acme_forward::AcmeForward;
 use wayhouse_web_sync::admin_addr::AdminAddr;
 use wayhouse_web_sync::caddy::CaddyClient;
 use wayhouse_web_sync::source::HttpSource;
@@ -56,6 +57,16 @@ struct Args {
     #[arg(long, env = "WAYHOUSE_WEB_SYNC_METRICS_TOKEN", hide_env_values = true)]
     metrics_token: Option<String>,
 
+    /// Controller nodes that answer ACME HTTP-01 challenges, comma-separated
+    /// (`https://c1:7000,https://c2:7000`). When set, `/.well-known/acme-challenge/*` on the
+    /// HTTP server is forwarded there for every host (docs/acme.md, "HTTP-01").
+    #[arg(long, value_name = "URLS")]
+    acme_challenge_upstream: Option<String>,
+
+    /// PEM file (a path on the Caddy side) that signs an https `--acme-challenge-upstream`.
+    #[arg(long, requires = "acme_challenge_upstream", value_name = "FILE")]
+    acme_challenge_ca_file: Option<String>,
+
     /// PEM file of extra CA certificates to trust when `--wayhouse-admin` is https.
     #[arg(long)]
     ca_file: Option<PathBuf>,
@@ -101,7 +112,12 @@ async fn main() -> anyhow::Result<()> {
     let timeout = Duration::from_secs(args.timeout_sec);
     let source = HttpSource::new(&args.wayhouse_admin, args.wayhouse_token, timeout)?;
     let caddy = CaddyClient::new(admin.clone(), timeout);
-    let mut syncer = Syncer::new(source, caddy, admin);
+    let acme = args
+        .acme_challenge_upstream
+        .as_deref()
+        .map(|urls| AcmeForward::parse(urls, args.acme_challenge_ca_file.as_deref()))
+        .transpose()?;
+    let mut syncer = Syncer::new(source, caddy, admin).with_acme_forward(acme);
     tracing::info!(
         wayhouse = %args.wayhouse_admin,
         caddy = %args.caddy_admin,
