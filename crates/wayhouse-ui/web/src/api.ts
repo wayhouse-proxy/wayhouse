@@ -4,59 +4,59 @@
 // the controller/aggregator itself (docs/10 "The admin GUI").
 
 import type {
-    AcmeAccount,
-    AcmeGateway,
-    AcmeSite,
-    FanoutResponse,
-    InstallResponse,
-    PluginInstall,
-    PluginModule,
-    PluginCapabilities,
-    RegistryList,
-    RegistryRef,
-    RegistrySniffers,
-    RevisionSummary,
-    SnifferInfo,
-    UpdateCheck,
-    TunnelAddresses,
+  AcmeAccount,
+  AcmeGateway,
+  AcmeSite,
+  FanoutResponse,
+  InstallResponse,
+  PluginInstall,
+  PluginModule,
+  PluginCapabilities,
+  RegistryList,
+  RegistryRef,
+  RegistrySniffers,
+  RevisionSummary,
+  SnifferInfo,
+  UpdateCheck,
+  TunnelAddresses,
 } from "./types";
 
 export class ApiError extends Error {
-    status: number;
-    constructor(status: number, message: string) {
-        super(message);
-        this.status = status;
-    }
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
 }
 
 async function request(path: string, init?: RequestInit): Promise<Response> {
-    const resp = await fetch(path, { credentials: "same-origin", ...init });
-    return resp;
+  const resp = await fetch(path, { credentials: "same-origin", ...init });
+  return resp;
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const resp = await request(path, init);
-    const text = await resp.text();
-    if (!resp.ok) {
-        let message = text;
-        try {
-            const body = JSON.parse(text);
-            if (typeof body?.error === "string") message = body.error;
-        } catch {
-            // not JSON; use the raw text as-is
-        }
-        throw new ApiError(resp.status, message || resp.statusText);
+  const resp = await request(path, init);
+  const text = await resp.text();
+  if (!resp.ok) {
+    let message = text;
+    try {
+      const body = JSON.parse(text);
+      if (typeof body?.error === "string") message = body.error;
+    } catch {
+      // not JSON; use the raw text as-is
     }
-    return text ? (JSON.parse(text) as T) : (undefined as T);
+    throw new ApiError(resp.status, message || resp.statusText);
+  }
+  return text ? (JSON.parse(text) as T) : (undefined as T);
 }
 
 async function requestText(path: string, init?: RequestInit): Promise<string> {
-    const resp = await request(path, init);
-    const text = await resp.text();
-    if (!resp.ok) {
-        throw new ApiError(resp.status, text || resp.statusText);
-    }
-    return text;
+  const resp = await request(path, init);
+  const text = await resp.text();
+  if (!resp.ok) {
+    throw new ApiError(resp.status, text || resp.statusText);
+  }
+  return text;
 }
 
 // --- session ---
@@ -67,108 +67,108 @@ async function requestText(path: string, init?: RequestInit): Promise<string> {
 // JSON.parse("ok").
 
 export async function login(password: string): Promise<void> {
-    await requestText("/ui/login", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ password }),
-    });
+  await requestText("/ui/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
 }
 
 export async function logout(): Promise<void> {
-    await requestText("/ui/logout", { method: "POST" });
+  await requestText("/ui/logout", { method: "POST" });
 }
 
 export async function checkSession(): Promise<boolean> {
-    const resp = await request("/ui/session");
-    return resp.ok;
+  const resp = await request("/ui/session");
+  return resp.ok;
 }
 
 // --- fleet (proxied to wayhouse-aggregator) ---
 
 export function drainInstance(instance: string): Promise<string> {
-    return requestText(`/api/fleet/instances/${encodeURIComponent(instance)}/drain`, {
-        method: "POST",
-    });
+  return requestText(`/api/fleet/instances/${encodeURIComponent(instance)}/drain`, {
+    method: "POST",
+  });
 }
 
 export function undrainInstance(instance: string): Promise<string> {
-    return requestText(`/api/fleet/instances/${encodeURIComponent(instance)}/undrain`, {
-        method: "POST",
-    });
+  return requestText(`/api/fleet/instances/${encodeURIComponent(instance)}/undrain`, {
+    method: "POST",
+  });
 }
 
 export function addBackend(pool: string, addr: string): Promise<FanoutResponse> {
-    return requestJson(`/api/fleet/pools/${encodeURIComponent(pool)}/backends`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ addr }),
-    });
+  return requestJson(`/api/fleet/pools/${encodeURIComponent(pool)}/backends`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ addr }),
+  });
 }
 
 export function patchBackend(
-    pool: string,
-    addr: string,
-    state: "enabled" | "draining" | "disabled",
+  pool: string,
+  addr: string,
+  state: "enabled" | "draining" | "disabled",
 ): Promise<FanoutResponse> {
-    return requestJson(
-        `/api/fleet/pools/${encodeURIComponent(pool)}/backends/${encodeURIComponent(addr)}`,
-        {
-            method: "PATCH",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ state }),
-        },
-    );
+  return requestJson(
+    `/api/fleet/pools/${encodeURIComponent(pool)}/backends/${encodeURIComponent(addr)}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ state }),
+    },
+  );
 }
 
 export function deleteBackend(pool: string, addr: string): Promise<FanoutResponse> {
-    return requestJson(
-        `/api/fleet/pools/${encodeURIComponent(pool)}/backends/${encodeURIComponent(addr)}`,
-        { method: "DELETE" },
-    );
+  return requestJson(
+    `/api/fleet/pools/${encodeURIComponent(pool)}/backends/${encodeURIComponent(addr)}`,
+    { method: "DELETE" },
+  );
 }
 
 export function routeHint(srcIp: string, pool: string, ttlSec: number): Promise<FanoutResponse> {
-    return requestJson("/api/fleet/route-hint", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ src_ip: srcIp, pool, ttl_sec: ttlSec }),
-    });
+  return requestJson("/api/fleet/route-hint", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ src_ip: srcIp, pool, ttl_sec: ttlSec }),
+  });
 }
 
 // --- sniffers (proxied to wayhouse-aggregator, fanned out to instances) ---
 
 export function listInstanceSniffers(instance: string): Promise<SnifferInfo[]> {
-    return requestJson(`/api/fleet/instances/${encodeURIComponent(instance)}/sniffers`);
+  return requestJson(`/api/fleet/instances/${encodeURIComponent(instance)}/sniffers`);
 }
 
 export function uploadSniffer(name: string, bytes: ArrayBuffer): Promise<FanoutResponse> {
-    return requestJson(`/api/fleet/sniffers?name=${encodeURIComponent(name)}`, {
-        method: "POST",
-        headers: { "content-type": "application/octet-stream" },
-        body: bytes,
-    });
+  return requestJson(`/api/fleet/sniffers?name=${encodeURIComponent(name)}`, {
+    method: "POST",
+    headers: { "content-type": "application/octet-stream" },
+    body: bytes,
+  });
 }
 
 // --- sniffer registries (wayhouse-ui's own routes) ---
 
 export function listRegistries(): Promise<RegistryList> {
-    return requestJson("/api/registries");
+  return requestJson("/api/registries");
 }
 
 export function addRegistry(url: string, name?: string): Promise<RegistryRef> {
-    return requestJson("/api/registries", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(name ? { url, name } : { url }),
-    });
+  return requestJson("/api/registries", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(name ? { url, name } : { url }),
+  });
 }
 
 export function removeRegistry(id: string): Promise<void> {
-    return requestJson(`/api/registries/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return requestJson(`/api/registries/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export function listRegistrySniffers(id: string): Promise<RegistrySniffers> {
-    return requestJson(`/api/registries/${encodeURIComponent(id)}/sniffers`);
+  return requestJson(`/api/registries/${encodeURIComponent(id)}/sniffers`);
 }
 
 /**
@@ -177,151 +177,144 @@ export function listRegistrySniffers(id: string): Promise<RegistrySniffers> {
  * carries `results` means no proxy accepted it, which the page shows per
  * instance like any other outcome. Any other error body is thrown.
  */
-export async function installFromRegistry(
-    id: string,
-    name: string,
-    version?: string,
-): Promise<InstallResponse> {
-    const resp = await request(`/api/registries/${encodeURIComponent(id)}/install`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(version ? { name, version } : { name }),
-    });
-    const text = await resp.text();
-    let body: unknown;
-    try {
-        body = JSON.parse(text);
-    } catch {
-        body = undefined;
-    }
-    const parsed = body as Partial<InstallResponse> & { error?: string };
-    if (resp.ok || (resp.status === 502 && Array.isArray(parsed?.results))) {
-        return parsed as InstallResponse;
-    }
-    throw new ApiError(
-        resp.status,
-        (typeof parsed?.error === "string" ? parsed.error : text) || resp.statusText,
-    );
+export async function installFromRegistry(id: string, name: string, version?: string): Promise<InstallResponse> {
+  const resp = await request(`/api/registries/${encodeURIComponent(id)}/install`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(version ? { name, version } : { name }),
+  });
+  const text = await resp.text();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = undefined;
+  }
+  const parsed = body as Partial<InstallResponse> & { error?: string };
+  if (resp.ok || (resp.status === 502 && Array.isArray(parsed?.results))) {
+    return parsed as InstallResponse;
+  }
+  throw new ApiError(resp.status, (typeof parsed?.error === "string" ? parsed.error : text) || resp.statusText);
 }
 
 export function deleteSniffer(name: string): Promise<FanoutResponse> {
-    return requestJson(`/api/fleet/sniffers/${encodeURIComponent(name)}`, {
-        method: "DELETE",
-    });
+  return requestJson(`/api/fleet/sniffers/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
 }
 
 /** Swaps every instance's `<name>` with its kept previous version. */
 export function rollbackSniffer(name: string): Promise<FanoutResponse> {
-    return requestJson(`/api/fleet/sniffers/${encodeURIComponent(name)}/rollback`, {
-        method: "POST",
-    });
+  return requestJson(`/api/fleet/sniffers/${encodeURIComponent(name)}/rollback`, {
+    method: "POST",
+  });
 }
 
 /** On demand only: refetches every registry and asks each proxy what it runs. */
 export function checkUpdates(): Promise<UpdateCheck> {
-    return requestJson("/api/registries/updates/check", { method: "POST" });
+  return requestJson("/api/registries/updates/check", { method: "POST" });
 }
 
 // --- plugins (proxied to wayhouse-controller) ---
 
 export function listPlugins(): Promise<PluginInstall[]> {
-    return requestJson("/api/plugins");
+  return requestJson("/api/plugins");
 }
 
 /** Stores the module on the controller and returns what it declares; nothing is installed yet. */
 export function uploadPluginModule(bytes: ArrayBuffer): Promise<PluginModule> {
-    return requestJson("/api/plugins/modules", {
-        method: "POST",
-        headers: { "content-type": "application/octet-stream" },
-        body: bytes,
-    });
+  return requestJson("/api/plugins/modules", {
+    method: "POST",
+    headers: { "content-type": "application/octet-stream" },
+    body: bytes,
+  });
 }
 
 export function installPlugin(req: {
-    name: string;
-    sha256: string;
-    approved: PluginCapabilities;
-    enabled: boolean;
+  name: string;
+  sha256: string;
+  approved: PluginCapabilities;
+  enabled: boolean;
 }): Promise<PluginInstall> {
-    return requestJson("/api/plugins", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(req),
-    });
+  return requestJson("/api/plugins", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(req),
+  });
 }
 
 export function setPluginEnabled(id: string, enabled: boolean): Promise<PluginInstall> {
-    return requestJson(`/api/plugins/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`, {
-        method: "POST",
-    });
+  return requestJson(`/api/plugins/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`, {
+    method: "POST",
+  });
 }
 
 export function deletePlugin(id: string): Promise<void> {
-    return requestJson(`/api/plugins/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return requestJson(`/api/plugins/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 // --- config (proxied to wayhouse-controller) ---
 
 export interface CurrentConfig {
-    text: string;
-    revision: string | null;
+  text: string;
+  revision: string | null;
 }
 
 export async function getCurrentConfig(): Promise<CurrentConfig> {
-    const resp = await request("/api/config");
-    const text = await resp.text();
-    if (!resp.ok) {
-        throw new ApiError(resp.status, text || resp.statusText);
-    }
-    return { text, revision: resp.headers.get("x-config-revision") };
+  const resp = await request("/api/config");
+  const text = await resp.text();
+  if (!resp.ok) {
+    throw new ApiError(resp.status, text || resp.statusText);
+  }
+  return { text, revision: resp.headers.get("x-config-revision") };
 }
 
 export function submitConfig(text: string): Promise<{ revision: number }> {
-    return requestJson("/api/config", { method: "POST", body: text });
+  return requestJson("/api/config", { method: "POST", body: text });
 }
 
 export function listRevisions(): Promise<RevisionSummary[]> {
-    return requestJson("/api/config/revisions");
+  return requestJson("/api/config/revisions");
 }
 
 export function getRevision(revision: number): Promise<string> {
-    return requestText(`/api/config/revisions/${revision}`);
+  return requestText(`/api/config/revisions/${revision}`);
 }
 
 export function diffRevision(revision: number, against?: number): Promise<string> {
-    const q = against !== undefined ? `?against=${against}` : "";
-    return requestText(`/api/config/revisions/${revision}/diff${q}`);
+  const q = against !== undefined ? `?against=${against}` : "";
+  return requestText(`/api/config/revisions/${revision}/diff${q}`);
 }
 
 export function rollbackTo(revision: number): Promise<{ revision: number }> {
-    return requestJson(`/api/config/rollback/${revision}`, { method: "POST" });
+  return requestJson(`/api/config/rollback/${revision}`, { method: "POST" });
 }
 
 // --- tunnel addresses (proxied to wayhouse-controller) ---
 
 export function getTunnelAddresses(): Promise<TunnelAddresses> {
-    return requestJson("/api/tunnel/addresses");
+  return requestJson("/api/tunnel/addresses");
 }
 
 /** Frees an owner's address: the controller's registry `DELETE /peers|/proxy-peers/{name}`. */
 export function releaseTunnelAddress(
-    role: "origin" | "proxy",
-    name: string,
+  role: "origin" | "proxy",
+  name: string,
 ): Promise<{ revision: number; released: string | null }> {
-    const base = role === "origin" ? "origins" : "proxies";
-    return requestJson(`/api/tunnel/${base}/${encodeURIComponent(name)}`, { method: "DELETE" });
+  const base = role === "origin" ? "origins" : "proxies";
+  return requestJson(`/api/tunnel/${base}/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
 // --- ACME status (proxied to wayhouse-controller, read-only) ---
 
 export function listAcmeSites(): Promise<{ sites: AcmeSite[] }> {
-    return requestJson("/api/acme/sites");
+  return requestJson("/api/acme/sites");
 }
 
 export function listAcmeGateways(): Promise<{ gateways: AcmeGateway[] }> {
-    return requestJson("/api/acme/gateways");
+  return requestJson("/api/acme/gateways");
 }
 
 export function getAcmeAccount(): Promise<AcmeAccount> {
-    return requestJson("/api/acme/account");
+  return requestJson("/api/acme/account");
 }
