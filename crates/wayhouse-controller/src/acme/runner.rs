@@ -252,7 +252,13 @@ impl Runner {
         let creds = self.account().await?;
         let ca = &self.ca;
         let (bundle, _) = ca
-            .issue(Some(&creds), &site.names, solver.as_ref(), now)
+            .issue_within(
+                Some(&creds),
+                &site.names,
+                solver.as_ref(),
+                now,
+                Duration::from_secs(site.propagation_timeout_secs),
+            )
             .await
             .map_err(|e| Failure::from(&e))?;
         let stored = self.seal_cert(site, &bundle)?;

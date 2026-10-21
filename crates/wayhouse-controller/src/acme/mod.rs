@@ -40,8 +40,8 @@ pub fn check_support_answers(
     Ok(())
 }
 
-/// The CA directory URL for `--acme-ca`: a preset name or an https URL (plain http only
-/// for a loopback CA, which is what the tests and a local Pebble use).
+/// The CA directory URL for `--acme-ca`: a preset name or an https URL. The CA client is
+/// https only, so plain http is refused here rather than failing every order later.
 pub fn resolve_ca(value: &str) -> Result<String, String> {
     match value {
         "letsencrypt" => return Ok("https://acme-v02.api.letsencrypt.org/directory".into()),
@@ -55,8 +55,7 @@ pub fn resolve_ca(value: &str) -> Result<String, String> {
     };
     let url = url::Url::parse(value).map_err(|_| bad())?;
     match url.scheme() {
-        "https" if url.has_host() => Ok(url.into()),
-        "http" if is_loopback_host(&url) && url.username().is_empty() => Ok(url.into()),
+        "https" if url.has_host() && url.username().is_empty() => Ok(url.into()),
         _ => Err(bad()),
     }
 }
@@ -135,13 +134,13 @@ mod tests {
             resolve_ca("https://ca.example/dir").unwrap(),
             "https://ca.example/dir"
         );
-        assert!(resolve_ca("http://127.0.0.1:14000/dir").is_ok());
+        assert!(resolve_ca("http://127.0.0.1:14000/dir").is_err());
+        assert!(resolve_ca("https://user:pw@ca.example/dir").is_err());
         assert!(resolve_ca("http://ca.example/dir").is_err());
         assert!(resolve_ca("http://localhost.example.net/dir").is_err());
         assert!(resolve_ca("http://127.0.0.1.example.net/dir").is_err());
         assert!(resolve_ca("http://127.0.0.1@ca.example/dir").is_err());
-        assert!(resolve_ca("http://[::1]:14000/dir").is_ok());
-        assert!(resolve_ca("http://localhost:14000/dir").is_ok());
+        assert!(resolve_ca("https://localhost:14000/dir").is_ok());
         assert!(resolve_ca("zerossl").is_err());
     }
 

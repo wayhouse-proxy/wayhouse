@@ -164,3 +164,43 @@ async fn rate_limit_without_a_header_has_no_retry_after() {
         "{err}"
     );
 }
+
+#[tokio::test]
+async fn a_hung_solver_fails_the_order_and_still_cleans_up() {
+    struct Hangs(MemDns);
+    #[async_trait::async_trait]
+    impl wayhouse_acme::DnsSolver for Hangs {
+        async fn present(&self, f: &str, v: &str) -> Result<(), wayhouse_acme::SolverError> {
+            self.0.present(f, v).await
+        }
+        async fn cleanup(&self, f: &str, v: &str) -> Result<(), wayhouse_acme::SolverError> {
+            self.0.cleanup(f, v).await
+        }
+        async fn wait_visible(
+            &self,
+            _: &str,
+            _: &str,
+            _: std::time::Duration,
+        ) -> Result<(), wayhouse_acme::SolverError> {
+            std::future::pending().await
+        }
+    }
+    let dns = MemDns::default();
+    let fake = FakeCa::start(dns.clone()).await;
+    let err = ca(&fake, true)
+        .order_margin(std::time::Duration::from_millis(200))
+        .issue_within(
+            None,
+            &names(&["a.example.com"]),
+            &Hangs(dns.clone()),
+            1,
+            std::time::Duration::from_millis(100),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, IssueError::Order(m) if m.contains("did not finish")),
+        "{err}"
+    );
+    assert!(dns.is_empty());
+}

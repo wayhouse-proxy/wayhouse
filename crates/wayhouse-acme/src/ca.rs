@@ -110,6 +110,8 @@ pub struct AcmeCa {
     accept_tos: bool,
     http: Option<HttpFactory>,
     propagation_timeout: Duration,
+    /// Allowed on top of the propagation wait for the CA round trips and both polls.
+    order_margin: Duration,
     retry: RetryPolicy,
     /// The `Retry-After` of the newest 429 answer, shared with the HTTP client wrapper.
     retry_after: Arc<Mutex<Option<Duration>>>,
@@ -123,6 +125,7 @@ impl AcmeCa {
             accept_tos,
             http: None,
             propagation_timeout: Duration::from_secs(120),
+            order_margin: Duration::from_secs(300),
             retry: RetryPolicy::new().timeout(Duration::from_secs(90)),
             retry_after: Arc::default(),
         }
@@ -142,12 +145,20 @@ impl AcmeCa {
         self
     }
 
+    /// Time allowed on top of the propagation wait before an order is abandoned.
+    #[must_use]
+    pub fn order_margin(mut self, d: Duration) -> Self {
+        self.order_margin = d;
+        self
+    }
+
     /// Short poll delays, for tests.
     #[must_use]
     pub fn fast_retry(mut self) -> Self {
         self.retry = RetryPolicy::new()
             .initial_delay(Duration::from_millis(20))
             .timeout(Duration::from_secs(20));
+        self.order_margin = Duration::from_secs(60);
         self
     }
 
@@ -231,15 +242,40 @@ impl AcmeCa {
         solver: &dyn DnsSolver,
         now: u64,
     ) -> Result<(CertBundle, AccountCreds), IssueError> {
+        self.issue_within(existing, names, solver, now, self.propagation_timeout)
+            .await
+    }
+
+    /// [`AcmeCa::issue`] with a per-order `propagation` wait. The whole order is bounded by
+    /// that wait plus the two CA polls, so one hung request cannot stall the runner; the
+    /// cleanup below still runs when the limit fires.
+    pub async fn issue_within(
+        &self,
+        existing: Option<&AccountCreds>,
+        names: &[String],
+        solver: &dyn DnsSolver,
+        now: u64,
+        propagation: Duration,
+    ) -> Result<(CertBundle, AccountCreds), IssueError> {
         self.retry_after
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         let (account, creds) = self.open(existing).await?;
         let mut presented: Vec<(String, String)> = Vec::new();
-        let result = self
-            .run_order(&account, names, solver, now, &mut presented)
-            .await;
+        let limit = propagation + self.order_margin;
+        let result = match tokio::time::timeout(
+            limit,
+            self.run_order(&account, names, solver, now, propagation, &mut presented),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => Err(IssueError::Order(format!(
+                "the order did not finish within {}s",
+                limit.as_secs()
+            ))),
+        };
         for (fqdn, value) in &presented {
             if let Err(e) = solver.cleanup(fqdn, value).await {
                 tracing::warn!(%fqdn, error = %e, "acme: dns cleanup failed");
@@ -254,6 +290,7 @@ impl AcmeCa {
         names: &[String],
         solver: &dyn DnsSolver,
         now: u64,
+        propagation: Duration,
         presented: &mut Vec<(String, String)>,
     ) -> Result<CertBundle, IssueError> {
         let ids: Vec<Identifier> = names.iter().map(|n| Identifier::Dns(n.clone())).collect();
@@ -279,9 +316,7 @@ impl AcmeCa {
             let value = challenge.key_authorization().dns_value();
             presented.push((fqdn.clone(), value.clone()));
             solver.present(&fqdn, &value).await?;
-            solver
-                .wait_visible(&fqdn, &value, self.propagation_timeout)
-                .await?;
+            solver.wait_visible(&fqdn, &value, propagation).await?;
             challenge.set_ready().await.map_err(|e| self.classify(&e))?;
         }
         let status = order
