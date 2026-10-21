@@ -38,6 +38,9 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/config/revisions/{revision}/diff", get(diff_revision))
         .route("/api/tunnel/addresses", get(tunnel_addresses))
         .route("/api/plugins", get(list_plugins))
+        .route("/api/acme/sites", get(acme_sites))
+        .route("/api/acme/gateways", get(acme_gateways))
+        .route("/api/acme/account", get(acme_account))
 }
 
 /// Config-changing writes — `Role::Admin`.
@@ -58,6 +61,27 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/plugins/{id}", delete(delete_plugin))
         .route("/api/plugins/{id}/enable", post(enable_plugin))
         .route("/api/plugins/{id}/disable", post(disable_plugin))
+}
+
+/// The ACME status page is read-only: sites with their certificate and last error, the
+/// gateways that may fetch them, and the CA account. Writes stay in the controller's API.
+async fn acme_sites(State(state): State<AppState>) -> Response {
+    proxy(&state, Method::GET, "/acme/sites".to_string(), None, None).await
+}
+
+async fn acme_gateways(State(state): State<AppState>) -> Response {
+    proxy(
+        &state,
+        Method::GET,
+        "/acme/gateways".to_string(),
+        None,
+        None,
+    )
+    .await
+}
+
+async fn acme_account(State(state): State<AppState>) -> Response {
+    proxy(&state, Method::GET, "/acme/account".to_string(), None, None).await
 }
 
 async fn list_plugins(State(state): State<AppState>) -> Response {
@@ -689,6 +713,30 @@ mod tests {
                 "POST /plugins/0123abcd/disable",
                 "DELETE /plugins/0123abcd"
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn acme_status_reads_hit_the_controller_acme_paths() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        for path in ["/api/acme/sites", "/api/acme/gateways", "/api/acme/account"] {
+            let resp = app
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        }
+        let paths: Vec<_> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(m, p, _, _)| format!("{m} {p}"))
+            .collect();
+        assert_eq!(
+            paths,
+            ["GET /acme/sites", "GET /acme/gateways", "GET /acme/account"]
         );
     }
 
