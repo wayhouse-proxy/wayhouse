@@ -58,6 +58,9 @@ impl Syncer {
                 Ok(Fetched::NotModified | Fetched::Gone) => {}
                 Ok(Fetched::Bundle(bundle)) => match install::install(&self.dir, &site, &bundle) {
                     Ok(()) => {
+                        // Recorded now: a later early return (controller down, token
+                        // revoked) must not lose the reload for a file already replaced.
+                        self.reload_pending = true;
                         tracing::info!(
                             site = %site,
                             version = bundle.version,
@@ -83,9 +86,6 @@ impl Syncer {
                 }
                 Err(e) => report.failed.push((site, e.to_string())),
             }
-        }
-        if !report.updated.is_empty() {
-            self.reload_pending = true;
         }
         if self.reload_pending {
             if let Some(cmd) = &self.reload {
@@ -141,6 +141,8 @@ mod tests {
         fetches: Vec<String>,
         lists: usize,
         down: bool,
+        /// Answer 503 to bundle requests once this many have been served.
+        down_after_fetches: Option<usize>,
     }
 
     type Shared = Arc<Mutex<Fake>>;
@@ -171,6 +173,9 @@ mod tests {
             return StatusCode::UNAUTHORIZED.into_response();
         }
         let mut f = f.lock().unwrap();
+        if f.down_after_fetches.is_some_and(|n| f.fetches.len() >= n) {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
         f.fetches.push(site.clone());
         let Some(v) = f.sites.get(&site).copied() else {
             return StatusCode::NOT_FOUND.into_response();
@@ -329,6 +334,50 @@ mod tests {
         assert_eq!(report.updated, ["web"]);
         assert_eq!(report.failed.len(), 1);
         assert!(!dir.path().parent().unwrap().join("evil").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_reload_is_not_lost_when_a_later_site_fails_in_the_same_pass() {
+        let server = serve(&[("a", 1), ("b", 1)]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("reloaded");
+        let c = Controller::new(
+            vec![server.url.clone()],
+            TOKEN.into(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let script = format!("echo x >> {}", marker.display());
+        let mut s = Syncer::new(
+            c,
+            dir.path().join("certs"),
+            Some(vec!["sh".into(), "-c".into(), script]),
+        );
+        // Site "a" is written, then the controller goes away before "b" is fetched.
+        server.state.lock().unwrap().down_after_fetches = Some(1);
+        assert!(matches!(
+            s.run_once().await,
+            Err(FetchError::Unreachable(_))
+        ));
+        assert_eq!(
+            install::local_version(&dir.path().join("certs"), "a"),
+            Some(1)
+        );
+        assert!(!marker.exists(), "the pass failed before it could reload");
+        // By the next pass nothing is left to write, so only the pending reload can run.
+        {
+            let mut f = server.state.lock().unwrap();
+            f.down_after_fetches = None;
+            f.sites.remove("b");
+        }
+        let report = s.run_once().await.unwrap();
+        assert!(report.updated.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&marker).unwrap(),
+            "x\n",
+            "the reload for site a runs on the next pass"
+        );
     }
 
     #[cfg(unix)]
