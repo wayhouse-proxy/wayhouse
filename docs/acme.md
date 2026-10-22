@@ -214,9 +214,21 @@ file and renamed; the chain is replaced first, the key second and `meta.json` la
 chain and the key between the two renames can briefly see a new chain with the old key;
 reload after the sync (`--reload-cmd`), or retry on a mismatch.
 
-- Nothing is rewritten when the version is unchanged, and `--reload-cmd` runs only after a
-  change. It runs without a shell (the command is split on spaces), at most 30 seconds, and
-  is retried on the next pass if it fails.
+- Nothing is rewritten when the version is unchanged and both PEM files are intact; a
+  deleted or truncated file is fetched again. A site is never downgraded: a controller that
+  lists a lower version with an expiry no later than the installed one (a follower that has
+  not applied the newest issuance) is ignored, while a recreated site with a later expiry is
+  installed.
+- `--reload-cmd` runs after a change and on the first successful pass after startup, `--once` runs included (a crash between the rename and the
+  reload would otherwise leave the proxy on the old certificate). It runs without a shell
+  (the command is split on spaces, so a path with spaces does not work; wrap it in a
+  script), at most 30 seconds, and is retried on the next pass if it fails.
+- Gateway registration: if a forwarded `POST /acme/gateways` answers `504`, the write may
+  have been applied while the token never reached you. Delete the gateway and register it
+  again. Over plain-http `--ha-peers` the freshly minted token crosses the peer link in clear
+  text during the forward, like other forwarded tokens; use https peers.
+- The private key sits in plaintext in the heap of the serving controller node for the length
+  of a response, and in the `wayhouse-certsync` process while it writes the file.
 - When no controller answers, the files on disk stay as they are and the sync retries every
   interval. `--controller` takes several URLs and tries the one that answered last first.
   A refused token (`401`) is logged with the hint to check the token file; nothing is

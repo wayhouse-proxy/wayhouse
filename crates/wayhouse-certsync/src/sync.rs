@@ -22,7 +22,7 @@ pub struct Syncer {
     dir: PathBuf,
     /// The command and its arguments; run without a shell.
     reload: Option<Vec<String>>,
-    /// Files changed but the reload has not succeeded yet.
+    /// Files changed (or the process just started) and the reload has not succeeded yet.
     reload_pending: bool,
 }
 
@@ -31,8 +31,10 @@ impl Syncer {
         Self {
             controller,
             dir,
+            // Also once at startup: a crash between a rename and the reload would otherwise
+            // leave a running proxy on the old certificate.
+            reload_pending: reload.is_some(),
             reload,
-            reload_pending: false,
         }
     }
 
@@ -50,8 +52,17 @@ impl Syncer {
                     .push((site, "not a valid site name; skipped".into()));
                 continue;
             }
-            let local = install::local_version(&self.dir, &site);
+            let installed = install::local_state(&self.dir, &site);
+            let local = installed.map(|l| l.version);
             if local == Some(entry.version) {
+                continue;
+            }
+            // A follower that has not applied the newest issuance lists an older version.
+            // Versions only restart when a site is deleted and recreated, and then the new
+            // certificate expires later than the old one.
+            if installed
+                .is_some_and(|l| entry.version < l.version && entry.not_after <= l.not_after)
+            {
                 continue;
             }
             match self.controller.fetch(&site, local).await {
@@ -143,6 +154,8 @@ mod tests {
         down: bool,
         /// Answer 503 to bundle requests once this many have been served.
         down_after_fetches: Option<usize>,
+        /// The `not_after` served in lists and bundles.
+        not_after: u64,
     }
 
     type Shared = Arc<Mutex<Fake>>;
@@ -163,7 +176,7 @@ mod tests {
         let sites: Vec<_> = f
             .sites
             .iter()
-            .map(|(s, v)| serde_json::json!({"site": s, "version": v, "not_after": 2_000_000_000u64}))
+            .map(|(s, v)| serde_json::json!({"site": s, "version": v, "not_after": f.not_after}))
             .collect();
         Json(serde_json::json!({ "sites": sites })).into_response()
     }
@@ -184,7 +197,7 @@ mod tests {
             "version": v,
             "chain_pem": format!("-----BEGIN CERTIFICATE-----\nchain-{site}-{v}\n-----END CERTIFICATE-----\n"),
             "key_pem": format!("-----BEGIN PRIVATE KEY-----\nkey-{site}-{v}\n-----END PRIVATE KEY-----\n"),
-            "not_after": 2_000_000_000u64,
+            "not_after": f.not_after,
             "serial": "01",
         }))
         .into_response()
@@ -198,6 +211,7 @@ mod tests {
 
     async fn serve(sites: &[(&str, u64)]) -> Server {
         let state: Shared = Arc::new(Mutex::new(Fake {
+            not_after: 2_000_000_000,
             sites: sites.iter().map(|(s, v)| ((*s).into(), *v)).collect(),
             ..Fake::default()
         }));
@@ -419,5 +433,77 @@ mod tests {
             "x\n",
             "an unchanged pass does not reload"
         );
+    }
+
+    #[tokio::test]
+    async fn a_lagging_replica_does_not_downgrade_the_installed_bundle() {
+        let server = serve(&[("web", 5)]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = syncer(vec![server.url.clone()], TOKEN, dir.path());
+        s.run_once().await.unwrap();
+        // A follower that has not applied the newest issuance answers with version 4.
+        server.state.lock().unwrap().sites.insert("web".into(), 4);
+        let fetched = server.state.lock().unwrap().fetches.len();
+        let report = s.run_once().await.unwrap();
+        assert_eq!(report, Report::default());
+        assert_eq!(server.state.lock().unwrap().fetches.len(), fetched);
+        assert_eq!(install::local_version(dir.path(), "web"), Some(5));
+    }
+
+    #[tokio::test]
+    async fn a_recreated_site_with_a_newer_certificate_is_installed_despite_a_lower_version() {
+        let server = serve(&[("web", 5)]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = syncer(vec![server.url.clone()], TOKEN, dir.path());
+        s.run_once().await.unwrap();
+        {
+            let mut f = server.state.lock().unwrap();
+            f.sites.insert("web".into(), 1);
+            f.not_after = 2_100_000_000;
+        }
+        let report = s.run_once().await.unwrap();
+        assert_eq!(report.updated, ["web"]);
+        assert_eq!(install::local_version(dir.path(), "web"), Some(1));
+    }
+
+    #[tokio::test]
+    async fn a_deleted_or_truncated_file_is_repaired() {
+        let server = serve(&[("web", 1)]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = syncer(vec![server.url.clone()], TOKEN, dir.path());
+        s.run_once().await.unwrap();
+        let key = dir.path().join("web").join(KEY_FILE);
+        std::fs::remove_file(&key).unwrap();
+        assert_eq!(s.run_once().await.unwrap().updated, ["web"]);
+        assert!(key.exists());
+        std::fs::write(dir.path().join("web").join(CHAIN_FILE), "").unwrap();
+        assert_eq!(s.run_once().await.unwrap().updated, ["web"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_reload_command_runs_once_at_startup_even_when_nothing_changed() {
+        let server = serve(&[("web", 1)]).await;
+        let dir = tempfile::tempdir().unwrap();
+        let certs = dir.path().join("certs");
+        let marker = dir.path().join("reloaded");
+        let mk = |certs: &std::path::Path| {
+            let c = Controller::new(
+                vec![server.url.clone()],
+                TOKEN.into(),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+            let script = format!("echo x >> {}", marker.display());
+            Syncer::new(
+                c,
+                certs.to_path_buf(),
+                Some(vec!["sh".into(), "-c".into(), script]),
+            )
+        };
+        mk(&certs).run_once().await.unwrap();
+        // A restart (say after a crash between the rename and the reload) finds matching files.
+        mk(&certs).run_once().await.unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "x\nx\n");
     }
 }

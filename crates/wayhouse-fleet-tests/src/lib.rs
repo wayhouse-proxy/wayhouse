@@ -63,8 +63,8 @@ pub async fn http_get(url: impl reqwest::IntoUrl) -> reqwest::Result<reqwest::Re
 /// an openraft assertion (#334).
 ///
 /// So ports come from below the kernel's ephemeral range, where outgoing
-/// connections never land, and each is claimed with an exclusive file in the
-/// temp dir, which every test process shares. A claim is never released; it
+/// connections never land, and each is claimed with an exclusive file in a
+/// per-user temp dir, which every test process of that user shares. A claim is never released; it
 /// expires after [`PORT_CLAIM_TTL`].
 pub fn free_port() -> Result<u16> {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -72,7 +72,7 @@ pub fn free_port() -> Result<u16> {
 
     let (lo, hi) = port_window()?;
     let span = u32::from(hi - lo);
-    let dir = std::env::temp_dir().join("wayhouse-fleet-ports");
+    let dir = port_claim_dir();
     std::fs::create_dir_all(&dir).context("creating the port claim dir")?;
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -130,7 +130,9 @@ fn claim_port(path: &Path) -> bool {
                     .ok()
                     .and_then(|t| t.elapsed().ok())
                     .is_some_and(|age| age > PORT_CLAIM_TTL);
-                if !expired || std::fs::remove_file(path).is_err() {
+                // Rename before removing: only one of two callers that see the same stale
+                // claim wins the rename, so the port cannot end up with both.
+                if !expired || !take_stale(path) {
                     return false;
                 }
             }
@@ -138,6 +140,30 @@ fn claim_port(path: &Path) -> bool {
         }
     }
     false
+}
+
+/// Where claims live. Per user: a directory another user created in the shared temp dir would
+/// fail every claim.
+pub fn port_claim_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("wayhouse-fleet-ports-{}", current_uid()))
+}
+
+/// Moves an expired claim aside and deletes it; `true` only for the caller whose rename won.
+fn take_stale(path: &Path) -> bool {
+    let mut aside = path.as_os_str().to_owned();
+    aside.push(format!(".stale-{}", std::process::id()));
+    let aside = PathBuf::from(aside);
+    if std::fs::rename(path, &aside).is_err() {
+        return false;
+    }
+    let _ = std::fs::remove_file(&aside);
+    true
+}
+
+/// The owner of this process, read from `/proc/self`; 0 where that is not available.
+fn current_uid() -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self").map_or(0, |m| m.uid())
 }
 
 fn workspace_root() -> PathBuf {
