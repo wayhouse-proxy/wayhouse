@@ -117,7 +117,8 @@ CMD ["--data-dir", "/data"]
 # is built with Go 1.26.8; Trivy flags crypto/x509, crypto/tls and net/http, fixed in Go
 # 1.26.9 and 1.26.10, and golang.org/x/net/http2). The build stage below compiles the pinned
 # Caddy with a patched Go and golang.org/x/net and the final stage swaps that binary in.
-# Bump: change CADDY_VERSION, the golang tag/digest (`docker manifest inspect golang:<ver>-alpine`)
+# Bump: change CADDY_VERSION and XCADDY_VERSION / GOLANG_X_NET_VERSION (Dependabot does not track
+# these ARGs), the golang tag/digest (`docker manifest inspect golang:<ver>-alpine`)
 # and the `FROM caddy:<ver>@sha256:…` line (index digest of `docker manifest inspect caddy:<ver>`);
 # deploy/check-caddy-image.sh then checks the image reports that version. Drop the build stage
 # once the official caddy image ships a Go with the fixes. For a DNS-01 module add

@@ -6,12 +6,12 @@ redistributed as a binary.
 
 ## Caddy (`wayhouse-caddy` image)
 
-| Item         | Value                                                                                               |
-| ------------ | --------------------------------------------------------------------------------------------------- |
+| Item         | Value                                                                                                      |
+| ------------ | ---------------------------------------------------------------------------------------------------------- |
 | Software     | [Caddy](https://github.com/caddyserver/caddy) 2.11.7, unmodified source, built with a patched Go toolchain |
-| License      | Apache-2.0                                                                                          |
-| Pinned in    | `deploy/Dockerfile` (version and digest), checked by `deploy/check-caddy-image.sh`                  |
-| In the image | `/licenses/LICENSE-APACHE` and `/licenses/NOTICE` ([`deploy/caddy/NOTICE`](../deploy/caddy/NOTICE)) |
+| License      | Apache-2.0                                                                                                 |
+| Pinned in    | `deploy/Dockerfile` (version and digest), checked by `deploy/check-caddy-image.sh`                         |
+| In the image | `/licenses/LICENSE-APACHE` and `/licenses/NOTICE` ([`deploy/caddy/NOTICE`](../deploy/caddy/NOTICE))        |
 
 Apache-2.0 allows redistribution. What we do to meet its terms: ship the license text, keep the
 attribution in the NOTICE, and state changes. We change no Caddy source: the image builds the upstream tag with `xcaddy`, a patched Go toolchain
