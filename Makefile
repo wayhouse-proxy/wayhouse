@@ -1,7 +1,7 @@
 # Convenience wrapper around the cargo commands CI runs.
 # Requires `cargo` on PATH (rustup: `source "$HOME/.cargo/env"`).
 
-.PHONY: check fmt lint test test-minimal audit build run fuzz bench sniffers-fetch ui ui-test ui-e2e tunnel-ns-check tunnel-e2e tunnel-e2e-ci deploy-images deploy-scan deploy-lint deploy-smoke docs-fmt docs-fmt-check docs-links help
+.PHONY: check fmt lint test test-minimal audit build run fuzz bench bench-udp-batch sniffers-fetch ui ui-test ui-e2e tunnel-ns-check tunnel-e2e tunnel-e2e-ci deploy-images deploy-scan deploy-lint deploy-smoke docs-fmt docs-fmt-check docs-links help
 
 ## check: everything CI runs — format check, clippy (deny warnings), tests
 check: fmt-check lint test test-minimal
@@ -50,6 +50,10 @@ run:
 BENCH_ARGS ?=
 bench:
 	cargo run --release -p wayhouse-bench -- $(BENCH_ARGS)
+
+## bench-udp-batch: ns and heap allocations per 16-datagram UDP send+receive round (#167)
+bench-udp-batch:
+	cargo test --release -p wayhouse-core --lib bench_batch_round_trip -- --ignored --nocapture
 
 ## fuzz: short pass of each wayhouse-config fuzz target (needs nightly + cargo-fuzz)
 FUZZ_TIME ?= 60
