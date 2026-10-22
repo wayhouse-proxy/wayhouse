@@ -168,12 +168,15 @@ impl DnsSolver for PluginDnsSolver {
         value: &str,
         timeout: Duration,
     ) -> Result<(), SolverError> {
+        // The first lookup waits one interval: asked in the instant before the provider serves
+        // the record, a caching resolver would remember "does not exist" for the zone's
+        // negative TTL (30 minutes at Cloudflare) and every later poll and retry would get it.
         let poll = async {
             loop {
+                tokio::time::sleep(self.poll).await;
                 if self.lookup.txt(fqdn).await.iter().any(|t| t == value) {
                     return;
                 }
-                tokio::time::sleep(self.poll).await;
             }
         };
         tokio::time::timeout(timeout, poll).await.map_err(|_| {
@@ -380,6 +383,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(f.lookup.asked.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn wait_visible_leaves_the_provider_a_moment_before_the_first_lookup() {
+        // A lookup in the instant between the plugin's API call and the provider serving the
+        // record makes a caching resolver remember "does not exist" for the zone's negative TTL.
+        let f = fixture(&module(CAPS, ACCEPT), true);
+        f.lookup.after.store(0, Ordering::SeqCst);
+        let s = PluginDnsSolver {
+            poll: Duration::from_millis(150),
+            ..solver(&f)
+        };
+        let start = std::time::Instant::now();
+        s.wait_visible(FQDN, "the-value", Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(
+            start.elapsed() >= Duration::from_millis(150),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(f.lookup.asked.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
