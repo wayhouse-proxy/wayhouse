@@ -48,7 +48,7 @@ pub struct Capabilities {
     /// May call `port_routes_set` / `port_routes_get`: which entry ports it may be given
     /// and where they may point.
     #[serde(default)]
-    pub port_routes: Option<crate::port_routes::PortRouteCap>,
+    pub port_routes: Option<Box<crate::port_routes::PortRouteCap>>,
 }
 
 /// Most hosts an `http` declaration may list.
@@ -228,7 +228,9 @@ impl Capabilities {
                 .as_ref()
                 .is_some_and(|a| want.within(a))
             {
-                return over("port_routes (a port, protocol, network or count beyond the approval)");
+                return over(
+                    "port_routes (a port, protocol, network or count beyond the approval)",
+                );
             }
         }
         match (self.state, approved.state) {

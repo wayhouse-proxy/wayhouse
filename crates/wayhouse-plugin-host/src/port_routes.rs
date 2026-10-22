@@ -100,7 +100,10 @@ fn nets(list: &[String]) -> Vec<Net> {
 impl PortRouteCap {
     /// The declared port ranges, parsed. Only call after [`validate`](Self::validate).
     pub fn ranges(&self) -> Vec<RangeInclusive<u16>> {
-        self.ports.iter().filter_map(|p| parse_range(p).ok()).collect()
+        self.ports
+            .iter()
+            .filter_map(|p| parse_range(p).ok())
+            .collect()
     }
 
     /// Shape checks on a declaration.
@@ -113,7 +116,8 @@ impl PortRouteCap {
         for p in &self.ports {
             parse_range(p)?;
         }
-        if self.proto.is_empty() || self.proto.iter().collect::<BTreeSet<_>>().len() != self.proto.len()
+        if self.proto.is_empty()
+            || self.proto.iter().collect::<BTreeSet<_>>().len() != self.proto.len()
         {
             return Err("port_routes.proto lists udp and/or tcp, each once".into());
         }

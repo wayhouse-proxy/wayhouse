@@ -79,9 +79,10 @@ pub const ACME_SUPPORT: u32 = 4;
 /// `--plugins` or as a slave, reports `0` instead, so the install gate refuses while it is a
 /// member): `1` replicated installs and state, `2`
 /// adds module blob replication (`/raft/plugin-blob`), `3` adds webhooks
-/// (`PluginSetWebhook`, `/raft/plugin-hook`). A leader proposes a new plugin install, or a
+/// (`PluginSetWebhook`, `/raft/plugin-hook`), `4` adds port routes (`PluginState.port_routes` and the clock that
+/// quarantine counts from). A leader proposes a new plugin install, or a
 /// webhook change, only when every member reports at least this.
-pub const PLUGIN_SUPPORT: u32 = 3;
+pub const PLUGIN_SUPPORT: u32 = 4;
 
 async fn whoami(State(ha): State<Arc<HaHandle>>) -> impl IntoResponse {
     Json(Whoami {

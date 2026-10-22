@@ -568,7 +568,7 @@ async fn remove(
         let path = format!("/plugins/{id}");
         return propose_write_as(
             ha,
-            WriteRequest::PluginDelete { id },
+            WriteRequest::PluginDelete { id, now: now() },
             Method::DELETE,
             &path,
             String::new(),

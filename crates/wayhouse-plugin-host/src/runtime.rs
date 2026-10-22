@@ -715,8 +715,7 @@ fn linker(engine: &Engine) -> Linker<CallState> {
                 let st = caller.data_mut();
                 let cap = st.caps.port_routes.clone().expect("checked above");
                 let parsed: Result<Vec<crate::port_routes::PortRouteEntry>, String> =
-                    serde_json::from_slice(&raw)
-                        .map_err(|e| format!("not a port route list: {e}"));
+                    serde_json::from_slice(&raw).map_err(|e| format!("not a port route list: {e}"));
                 match parsed.and_then(|set| cap.check_set(&set).map(|()| set)) {
                     Ok(mut set) => {
                         set.sort();
@@ -740,7 +739,10 @@ fn linker(engine: &Engine) -> Linker<CallState> {
         .func_wrap(
             "wayhouse",
             "port_routes_get",
-            |mut caller: Caller<'_, CallState>, out_ptr: i32, out_cap: i32| -> wasmtime::Result<i32> {
+            |mut caller: Caller<'_, CallState>,
+             out_ptr: i32,
+             out_cap: i32|
+             -> wasmtime::Result<i32> {
                 if caller.data().caps.port_routes.is_none() {
                     return Err(deny(&mut caller, "port_routes"));
                 }

@@ -187,6 +187,9 @@ pub enum WriteRequest {
     /// Removes an install and its state.
     PluginDelete {
         id: String,
+        /// Unix seconds: when the install's entry ports start their quarantine.
+        #[serde(default)]
+        now: u64,
     },
     /// Turns an install's webhook on with the hash of a new token, or off with `None`.
     PluginSetWebhook {
@@ -206,6 +209,13 @@ pub enum WriteRequest {
         /// The plugin's whole route set when the call declared one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         routes: Option<Vec<wayhouse_plugin_host::RouteEntry>>,
+        /// The plugin's whole port route set when the call declared one; the entry ports
+        /// are allocated when the entry applies.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        port_routes: Option<Vec<wayhouse_plugin_host::PortRouteEntry>>,
+        /// The proposer's clock (unix seconds): quarantine counts from it.
+        #[serde(default)]
+        now: u64,
     },
     /// Stores or replaces one plugin secret. The value is already encrypted by the node
     /// that received the API call: plaintext never reaches the log or the peer link.

@@ -33,6 +33,16 @@ static OVERLAY: Mutex<Vec<PluginRoute>> = Mutex::new(Vec::new());
 #[derive(Deserialize)]
 struct Doc {
     routes: Vec<Entry>,
+    /// Entry-port routes; absent from a controller that predates them.
+    #[serde(default)]
+    port_routes: Vec<PortEntry>,
+}
+
+#[derive(Deserialize)]
+struct PortEntry {
+    port: u16,
+    proto: String,
+    backend: String,
 }
 
 #[derive(Deserialize)]
@@ -94,7 +104,20 @@ fn parse_event(event: &str) -> Option<Vec<PluginRoute>> {
         .find_map(|l| l.strip_prefix("data:"))?
         .trim_start();
     let doc: Doc = serde_json::from_str(data).ok()?;
-    Some(doc.routes.into_iter().filter_map(Entry::route).collect())
+    let ports = doc.port_routes.into_iter().filter_map(|p| {
+        Some(PluginRoute::port(
+            p.port,
+            PortProto::parse(&p.proto)?,
+            p.backend,
+        ))
+    });
+    Some(
+        doc.routes
+            .into_iter()
+            .filter_map(Entry::route)
+            .chain(ports)
+            .collect(),
+    )
 }
 
 /// Replaces the overlay; returns whether it changed.
@@ -197,6 +220,18 @@ mod tests {
                 PluginRoute::port(30003, PortProto::Udp, "10.0.0.1:7777"),
                 PluginRoute::port(30004, PortProto::Both, "10.0.0.2:1"),
             ]
+        );
+    }
+
+    #[test]
+    fn the_port_routes_list_of_a_document_is_read() {
+        let r = parse_event(
+            r#"data: {"routes":[],"port_routes":[{"key":"k","port":30003,"proto":"both","backend":"10.0.0.1:7777","owner":"plugin:1","plugin":"p"},{"key":"x","port":30004,"proto":"sctp","backend":"10.0.0.2:1","owner":"plugin:1","plugin":"p"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            r,
+            vec![PluginRoute::port(30003, PortProto::Both, "10.0.0.1:7777")]
         );
     }
 

@@ -227,6 +227,10 @@ schemes, used alone or combined:
   matcher (`30001 → pool-survival`).
 - Limits: some clients hard-code the port; restrictive client firewalls; SRV support
   is rare outside a few protocols.
+- With controller plugins the ports need no hand-kept inventory: a plugin declares
+  `{key, backend}` and the controller assigns a stable entry port per key from the range the
+  operator approved, which the listener's `plugin_routes: { type: port }` serves
+  ([Port routes](plugins.md#port-routes)).
 
 ### Scheme C – pre-registration via launcher/API (push resolver)
 

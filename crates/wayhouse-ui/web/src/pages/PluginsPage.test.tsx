@@ -5,6 +5,7 @@ import { ApiError } from "../api";
 
 const api = vi.hoisted(() => ({
   listPlugins: vi.fn(),
+  listPluginRoutes: vi.fn(),
   uploadPluginModule: vi.fn(),
   installPlugin: vi.fn(),
   setPluginEnabled: vi.fn(),
@@ -45,6 +46,7 @@ function wasm(name = "demo.wasm") {
 beforeEach(() => {
   vi.spyOn(Date, "now").mockReturnValue(NOW * 1000);
   api.listPlugins.mockReset().mockResolvedValue([install()]);
+  api.listPluginRoutes.mockReset().mockResolvedValue({ routes: [], conflicts: [] });
   api.uploadPluginModule
     .mockReset()
     .mockResolvedValue({ sha256: SHA, size: 2048, abi: "0.1", capabilities: CAPS });
@@ -77,6 +79,84 @@ describe("PluginsPage list", () => {
     api.listPlugins.mockResolvedValue([]);
     render(<PluginsPage />);
     expect(await screen.findByText(/No plugins installed/)).toBeInTheDocument();
+  });
+});
+
+const PORT_CAPS = {
+  ...CAPS,
+  port_routes: {
+    ports: ["30000-30099"],
+    proto: ["udp", "tcp"],
+    backends: ["10.0.0.0/16"],
+    max_entries: 256,
+  },
+};
+
+describe("PluginsPage port routes", () => {
+  it("lists the entry port first and says which plugin and backend it serves", async () => {
+    api.listPluginRoutes.mockResolvedValue({
+      routes: [],
+      conflicts: [],
+      port_routes: [
+        { key: "srv-b", port: 30007, proto: "both", backend: "10.0.1.3:25565", owner: "plugin:1", plugin: "pelican-sync" },
+        { key: "srv-a", port: 30005, proto: "udp", backend: "10.0.1.2:7777", owner: "plugin:1", plugin: "pelican-sync" },
+      ],
+    });
+    render(<PluginsPage />);
+    const heading = await screen.findByRole("heading", { name: "Port routes" });
+    const table = heading.parentElement!.querySelector("table")!;
+    const rows = within(table).getAllByRole("row");
+    expect(within(rows[0]).getAllByRole("columnheader")[0]).toHaveTextContent(/entry port/i);
+    expect(within(rows[1]).getAllByRole("cell")[0]).toHaveTextContent("30005");
+    expect(rows[1]).toHaveTextContent("srv-a");
+    expect(rows[1]).toHaveTextContent("udp");
+    expect(rows[1]).toHaveTextContent("10.0.1.2:7777");
+    expect(rows[1]).toHaveTextContent("pelican-sync");
+    expect(rows[2]).toHaveTextContent("udp and tcp");
+  });
+
+  it("warns about routes that wait for a free port", async () => {
+    api.listPluginRoutes.mockResolvedValue({
+      routes: [],
+      conflicts: [],
+      port_routes: [],
+      exhausted: [{ key: "srv-z", backend: "10.0.1.9:1", owner: "plugin:1", plugin: "pelican-sync" }],
+    });
+    render(<PluginsPage />);
+    expect(await screen.findByText(/no free entry port/i)).toHaveTextContent("srv-z");
+  });
+
+  it("shows no port routes section without port routes or on a controller that has no overlay", async () => {
+    api.listPluginRoutes.mockRejectedValue(new ApiError(404, "not found"));
+    render(<PluginsPage />);
+    await screen.findByText("pelican-sync");
+    expect(screen.queryByRole("heading", { name: "Port routes" })).not.toBeInTheDocument();
+  });
+
+  it("describes a port routes approval in words, ports and networks included", async () => {
+    api.listPlugins.mockResolvedValue([install({ approved: PORT_CAPS })]);
+    render(<PluginsPage />);
+    const row = (await screen.findByText("pelican-sync")).closest("tr")!;
+    expect(within(row).getByText(/entry ports 30000-30099 \(udp, tcp\)/i)).toBeInTheDocument();
+    expect(within(row).getByText(/10\.0\.0\.0\/16/)).toBeInTheDocument();
+    expect(within(row).queryByText(/also asks for/i)).not.toBeInTheDocument();
+  });
+
+  it("does not claim a port routes module cannot change routes", async () => {
+    api.uploadPluginModule.mockResolvedValue({
+      sha256: SHA,
+      size: 2048,
+      abi: "0.1",
+      capabilities: PORT_CAPS,
+    });
+    render(<PluginsPage />);
+    await userEvent.click(await screen.findByRole("button", { name: "Upload plugin" }));
+    const dlg = screen.getByRole("dialog");
+    await userEvent.upload(within(dlg).getByLabelText(/\.wasm file/), wasm());
+    await userEvent.click(within(dlg).getByRole("button", { name: "Inspect module" }));
+    const review = await screen.findByRole("dialog");
+    expect(review).toHaveTextContent(/entry ports 30000-30099/i);
+    expect(review).not.toHaveTextContent(/cannot make network requests/i);
   });
 });
 

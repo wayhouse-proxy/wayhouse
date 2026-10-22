@@ -713,8 +713,8 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                         WriteRequest::PluginSetEnabled { id, enabled } => {
                             self.apply_plugin(index, PluginOp::SetEnabled { id: &id, enabled })?
                         }
-                        WriteRequest::PluginDelete { id } => {
-                            self.apply_plugin(index, PluginOp::Delete { id: &id })?
+                        WriteRequest::PluginDelete { id, now } => {
+                            self.apply_plugin(index, PluginOp::Delete { id: &id, now })?
                         }
                         WriteRequest::PluginSetWebhook { id, token_hash } => self.apply_plugin(
                             index,
@@ -729,6 +729,8 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                             term,
                             puts,
                             routes,
+                            port_routes,
+                            now,
                         } => self.apply_plugin(
                             index,
                             PluginOp::State {
@@ -738,6 +740,8 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                                 entry_term,
                                 puts: &puts,
                                 routes: routes.as_deref(),
+                                port_routes: port_routes.as_deref(),
+                                now,
                             },
                         )?,
                         WriteRequest::PluginSecretSet {
@@ -2032,6 +2036,8 @@ mod tests {
                 .map(|(k, v)| ((*k).to_string(), v.to_vec()))
                 .collect(),
             routes: None,
+            port_routes: None,
+            now: 0,
         }
     }
 
@@ -2077,7 +2083,15 @@ mod tests {
         );
         assert!(!sm.plugins().get(ID_A).unwrap().unwrap().enabled);
         assert_eq!(
-            apply_one(&mut sm, 5, WriteRequest::PluginDelete { id: ID_A.into() }).await,
+            apply_one(
+                &mut sm,
+                5,
+                WriteRequest::PluginDelete {
+                    id: ID_A.into(),
+                    now: 0
+                }
+            )
+            .await,
             applied
         );
         assert!(sm.plugins().get(ID_A).unwrap().is_none());
@@ -2137,7 +2151,10 @@ mod tests {
             apply_one(
                 &mut sm,
                 8,
-                WriteRequest::PluginDelete { id: ID_NOPE.into() }
+                WriteRequest::PluginDelete {
+                    id: ID_NOPE.into(),
+                    now: 0
+                }
             )
             .await,
             rejected(PluginReject::NoSuchInstall)
@@ -2196,7 +2213,10 @@ mod tests {
                 id: ID_Y.into(),
                 enabled: false,
             },
-            WriteRequest::PluginDelete { id: ID_NOPE.into() },
+            WriteRequest::PluginDelete {
+                id: ID_NOPE.into(),
+                now: 0,
+            },
         ];
         for (i, req) in log.iter().enumerate() {
             let index = i as u64 + 1;

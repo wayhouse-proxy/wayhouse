@@ -235,7 +235,10 @@ pub fn merge_text(text: &str, routes: &[PluginRoute]) -> Result<Merged, ConfigEr
                         continue;
                     }
                     port_taken.insert(idx);
-                    m.insert(key("ports"), Value::Sequence(vec![Value::Number((*port).into())]));
+                    m.insert(
+                        key("ports"),
+                        Value::Sequence(vec![Value::Number((*port).into())]),
+                    );
                 }
                 _ => continue,
             }
@@ -402,7 +405,11 @@ listeners:
         .unwrap();
         let cfg = parse_str(&m.text).unwrap();
         assert_eq!(cfg.listeners[0].routes.len(), 1, "udp: operator route only");
-        assert_eq!(cfg.listeners[1].routes.len(), 1, "tcp port listener: the port route");
+        assert_eq!(
+            cfg.listeners[1].routes.len(),
+            1,
+            "tcp port listener: the port route"
+        );
         let mc = &cfg.listeners[2];
         assert_eq!(mc.routes.len(), 1);
         assert!(matches!(mc.routes[0].matcher, Matcher::Sni { .. }));
@@ -419,7 +426,10 @@ listeners:
                 .any(|r| matches!(&r.matcher, Matcher::DstPort(rs) if rs.iter().any(|x| x.contains(&port))))
         };
         assert!(matches(30003));
-        assert!(!matches(30007), "no route, the datagram is dropped as no_route");
+        assert!(
+            !matches(30007),
+            "no route, the datagram is dropped as no_route"
+        );
         assert!(!cfg.listeners[0]
             .routes
             .iter()
@@ -428,12 +438,9 @@ listeners:
 
     #[test]
     fn the_port_opt_in_is_checked() {
-        for bad in [
-            "plugin_routes: { type: port, sniffer: minecraft }",
-        ] {
-            let text = PORTS.replace("plugin_routes: { type: port }", bad);
-            assert!(parse_str(&text).is_err(), "{bad}");
-        }
+        let bad = "plugin_routes: { type: port, sniffer: minecraft }";
+        let text = PORTS.replace("plugin_routes: { type: port }", bad);
+        assert!(parse_str(&text).is_err(), "{bad}");
         // A tcp or udp listener can opt in; a listener of either protocol takes it.
         assert!(parse_str(PORTS).is_ok());
         // The port variant needs schema 2 like the others.

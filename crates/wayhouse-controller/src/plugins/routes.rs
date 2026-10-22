@@ -18,8 +18,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 
 use super::api::PluginsState;
+use super::ports::PortAssignment;
 use super::{InstallRecord, PluginStore, PluginStoreError};
-use wayhouse_plugin_host::RouteEntry;
+use wayhouse_plugin_host::{PortProtoSel, RouteEntry};
 
 /// One materialised route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,12 +44,40 @@ pub struct Conflict {
     pub held_by: String,
 }
 
+/// One materialised port route: the entry port the host assigned a plugin's key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverlayPortRoute {
+    pub key: String,
+    pub port: u16,
+    pub proto: PortProtoSel,
+    pub backend: String,
+    /// `plugin:<install id>`.
+    pub owner: String,
+    pub plugin: String,
+}
+
+/// A port route that got no entry port because the approved ports were all taken.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExhaustedPort {
+    pub key: String,
+    pub backend: String,
+    pub owner: String,
+    pub plugin: String,
+}
+
 /// What the controller publishes to proxies and shows operators.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Overlay {
     /// In match order: exact names before suffix patterns, longer suffixes first.
     pub routes: Vec<OverlayRoute>,
     pub conflicts: Vec<Conflict>,
+    /// Entry-port routes (`type: port` listeners), by port. A separate list so a proxy that
+    /// predates port routes keeps reading `routes` unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub port_routes: Vec<OverlayPortRoute>,
+    /// Port routes waiting for a free entry port.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exhausted: Vec<ExhaustedPort>,
 }
 
 /// More specific first: exact names, then `*.suffix` by descending suffix length.
@@ -98,19 +127,52 @@ pub fn materialise(mut installs: Vec<(InstallRecord, Vec<RouteEntry>)>) -> Overl
     out
 }
 
+/// Adds the entry-port routes of every enabled install to `out`.
+fn materialise_ports(installs: &[(InstallRecord, Vec<PortAssignment>)], out: &mut Overlay) {
+    for (rec, table) in installs {
+        if !rec.enabled {
+            continue;
+        }
+        let owner = format!("plugin:{}", rec.id);
+        for a in table {
+            match a.port {
+                Some(port) => out.port_routes.push(OverlayPortRoute {
+                    key: a.key.clone(),
+                    port,
+                    proto: a.proto,
+                    backend: a.backend.clone(),
+                    owner: owner.clone(),
+                    plugin: rec.name.clone(),
+                }),
+                None => out.exhausted.push(ExhaustedPort {
+                    key: a.key.clone(),
+                    backend: a.backend.clone(),
+                    owner: owner.clone(),
+                    plugin: rec.name.clone(),
+                }),
+            }
+        }
+    }
+    out.port_routes.sort_by_key(|p| p.port);
+}
+
 impl PluginStore {
     /// The overlay as this replica sees it now.
     pub fn overlay(&self) -> Result<Overlay, PluginStoreError> {
         let mut installs = Vec::new();
+        let mut ports = Vec::new();
         for rec in self.list()? {
             let routes = if rec.enabled {
                 self.routes(&rec.id)?
             } else {
                 Vec::new()
             };
+            ports.push((rec.clone(), self.port_routes(&rec.id)?));
             installs.push((rec, routes));
         }
-        Ok(materialise(installs))
+        let mut overlay = materialise(installs);
+        materialise_ports(&ports, &mut overlay);
+        Ok(overlay)
     }
 }
 
