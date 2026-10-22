@@ -36,15 +36,22 @@ stays out of the image. `caddy-dns/cloudflare` is Apache-2.0.
 
 ### Trademark
 
-Upstream's README states: "The name "Caddy" is trademarked", registered to Stack Holdings GmbH,
-and asks that others call it "Caddy" or, to clarify, "the Caddy web server". Apache-2.0 grants no
-trademark rights. The full policy page (caddyserver.com) could not be reached when this was
-written, so only the README wording is recorded here (the project website's repository footer
-carries the same registered-trademark notice). Re-check the policy page before 0.3.0.
+Checked on 2026-10-22. caddyserver.com publishes no separate trademark policy page; the
+statements that apply are in the upstream repository:
 
-Decisions that follow from the README wording alone:
+- The README says: "The name "Caddy" is trademarked. The name of the software is "Caddy", not
+  "Caddy Server" or "CaddyServer". Please call it "Caddy" or, if you wish to clarify, "the Caddy
+  web server". Caddy is a registered trademark of Stack Holdings GmbH."
+- Apache-2.0 section 6 grants no right to use trade names or product names, except for
+  reasonable and customary use in describing the origin of the work and reproducing the NOTICE.
 
+Our position:
+
+- We ship stock, unmodified Caddy, so calling it "Caddy" and saying where it came from is the
+  descriptive use that section 6 allows.
 - Our image is called `wayhouse-caddy`, our product name first. The docs say "Caddy" when they
   mean the upstream software, and describe our image as "Wayhouse's packaging of Caddy".
 - We do not brand our build as "Caddy", do not use Caddy's logo, and do not suggest that the
-  Caddy project endorses Wayhouse.
+  Caddy project or Stack Holdings GmbH endorses Wayhouse.
+- If we ever patch Caddy, the image must stop calling itself Caddy without a closer reading of
+  upstream's terms.
