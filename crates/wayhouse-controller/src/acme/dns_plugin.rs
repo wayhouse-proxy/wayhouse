@@ -25,8 +25,10 @@ pub trait TxtLookup: Send + Sync {
     async fn txt(&self, fqdn: &str) -> Vec<String>;
 }
 
-/// The host's own resolver (`/etc/resolv.conf`), with caching off so a negative answer from
-/// before the record existed is not served again.
+/// The host's own resolver (`/etc/resolv.conf`). Caching is off here, which only covers this
+/// process: a caching resolver upstream (Unbound, systemd-resolved) can still hold a negative
+/// answer for the zone's negative TTL, which is why [`PluginDnsSolver::wait_visible`] does
+/// not look up before the first poll interval.
 pub struct SystemTxt {
     resolver: hickory_resolver::TokioResolver,
 }

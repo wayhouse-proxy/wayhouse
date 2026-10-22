@@ -252,13 +252,19 @@ A site's `dns_plugin` is the id of a plugin install that is **enabled** and **ap
 `on_acme_dns` trigger** ([`plugins.md`](plugins.md#acme-dns-01-on_acme_dns)); anything else is
 refused with `400`, and so is any site while the controller runs without `--plugins`. For each
 name of an order the leader asks the plugin to set the TXT record, then looks the record up
-itself (the host's resolver, every 5 seconds starting 5 seconds after the plugin answered, up to
-the site's `propagation_timeout_secs`, default 120; the first lookup waits so a caching resolver
-cannot store "does not exist" from before the provider serves the record) before it tells the CA to validate, and always asks the plugin to remove it
+itself (the host's resolver, every 5 seconds, up to the site's `propagation_timeout_secs`,
+default 120) before it tells the CA to validate, and always asks the plugin to remove it
 afterwards, also when the order failed. A plugin that does not answer, traps, refuses or is
 disabled mid-order fails that order; the reason is the site's `last_error` and the usual
 backoff applies. If you disable the plugin or revoke the approval, orders fail with "not
 available" until you restore it.
+
+The first lookup comes 5 seconds after the plugin answered, so a caching resolver is not asked
+before the provider serves the record. If an order still fails with "not visible to the
+resolver", a caching resolver (Unbound, systemd-resolved) may be holding the answer "does not
+exist" for the zone's negative TTL, up to 30 minutes at Cloudflare, and retries within that time
+get the same answer. Flush that resolver's cache for the name, or point the controller host's
+`/etc/resolv.conf` at a resolver that does not cache.
 
 The plugin only ever sees the record name and value. ACME keys stay in the controller.
 
