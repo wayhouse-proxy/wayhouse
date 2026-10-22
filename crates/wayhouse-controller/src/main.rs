@@ -846,10 +846,10 @@ async fn main() -> anyhow::Result<()> {
             );
             tracing::info!(ca = %directory_url, "ACME enabled");
             let bundles = wayhouse_controller::acme::bundles::router(
-                wayhouse_controller::acme::bundles::BundleState {
-                    store: store.clone(),
-                    keyring: keyring.clone(),
-                },
+                wayhouse_controller::acme::bundles::BundleState::new(
+                    store.clone(),
+                    keyring.clone(),
+                ),
             );
             let challenges = wayhouse_controller::acme::challenge::router(
                 wayhouse_controller::acme::challenge::ChallengeState {

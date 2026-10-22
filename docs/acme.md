@@ -194,6 +194,9 @@ token, delete the gateway and register it again (a second `POST` of a taken name
 exist. **Any controller node serves bundles**, followers included, so a gateway can use the
 nearest replica; a node without the cluster secret key answers `503` instead of a key. Every
 served bundle writes one log line with the site, gateway and version, never the key.
+Both bundle routes count requests per source address (an IPv6 source by its /64), valid or
+not, and answer `429` once a source has used 20 requests and then asks faster than 5 per
+second. A gateway polling every minute never notices.
 
 The key travels in the bundle response in plaintext, so serve the controller over TLS (or
 reach it on loopback). `--acme` already refuses a plain-HTTP listener on a non-loopback
