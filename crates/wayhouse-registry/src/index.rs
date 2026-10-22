@@ -220,7 +220,8 @@ impl VersionEntry {
                 None => (
                     authority.rsplit_once(':').map_or(authority, |(h, _)| h),
                     authority.rsplit_once(':').map(|(_, p)| p),
-                    true,
+                    // An IPv6 literal needs brackets, so a bare authority holds at most one colon.
+                    authority.matches(':').count() <= 1,
                 ),
             };
             let port_ok = port.is_none_or(|p| p.parse::<u16>().is_ok());
@@ -413,6 +414,8 @@ mod tests {
             "https://[::1]x/a.wasm",
             "https://[::1/a.wasm",
             "https://[abc]/a.wasm",
+            "https://::1/a.wasm",
+            "https://a:b:443/a.wasm",
         ] {
             let mut v = example();
             first_version(&mut v)["url"] = url.into();

@@ -22,13 +22,34 @@ pub fn valid_site(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// The version recorded in `<dir>/<site>/meta.json`, if there is a readable one.
+/// What `<dir>/<site>/` holds: the version and expiry recorded in `meta.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Local {
+    pub version: u64,
+    pub not_after: u64,
+}
+
+/// The installed copy, if `meta.json` is readable and both PEM files are present and look like
+/// PEM. A missing or truncated file reads as "nothing installed", so the next pass rewrites it.
+pub fn local_state(dir: &Path, site: &str) -> Option<Local> {
+    let site_dir = dir.join(site);
+    let text = fs::read(site_dir.join(META_FILE)).ok()?;
+    let meta = serde_json::from_slice::<serde_json::Value>(&text).ok()?;
+    let has = |file: &str, marker: &str| {
+        fs::read_to_string(site_dir.join(file)).is_ok_and(|t| t.contains(marker))
+    };
+    if !has(CHAIN_FILE, "END CERTIFICATE") || !has(KEY_FILE, "END ") {
+        return None;
+    }
+    Some(Local {
+        version: meta.get("version")?.as_u64()?,
+        not_after: meta.get("not_after").and_then(|v| v.as_u64()).unwrap_or(0),
+    })
+}
+
+/// The version recorded in `<dir>/<site>/meta.json`, if the installed copy is intact.
 pub fn local_version(dir: &Path, site: &str) -> Option<u64> {
-    let text = fs::read(dir.join(site).join(META_FILE)).ok()?;
-    serde_json::from_slice::<serde_json::Value>(&text)
-        .ok()?
-        .get("version")?
-        .as_u64()
+    local_state(dir, site).map(|l| l.version)
 }
 
 fn invalid(msg: &str) -> io::Error {
