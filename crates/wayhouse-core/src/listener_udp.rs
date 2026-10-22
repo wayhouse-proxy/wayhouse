@@ -386,8 +386,11 @@ pub async fn run_udp_listener(
                             end += 1;
                         }
                         run_end = end;
-                        let run: Vec<&[u8]> = (i..end).map(|j| rbatch.at(j).0).collect();
-                        forward_run(&up, &run, &cfg.name, client, &s.health).await;
+                        let mut run = [&[][..]; RECV_BATCH];
+                        for (slot, j) in run.iter_mut().zip(i..end) {
+                            *slot = rbatch.at(j).0;
+                        }
+                        forward_run(&up, &run[..end - i], &cfg.name, client, &s.health).await;
                         continue;
                         }
                     }
@@ -693,10 +696,11 @@ impl RecvBatch {
         // `msg_controllen` between calls, so a reused set would truncate an
         // address / cmsg after the first differing datagram.
         let mut headers = MultiHeaders::<SockaddrStorage>::preallocate(bufs.len(), cmsg);
-        let mut iovs: Vec<[IoSliceMut<'_>; 1]> = bufs
-            .iter_mut()
-            .map(|b| [IoSliceMut::new(b.as_mut_slice())])
-            .collect();
+        let mut bufs_it = bufs.iter_mut();
+        let mut iovs: [[IoSliceMut<'_>; 1]; RECV_BATCH] = std::array::from_fn(|_| {
+            let buf = bufs_it.next().expect("RECV_BATCH buffers on Linux");
+            [IoSliceMut::new(buf.as_mut_slice())]
+        });
 
         let results = recvmmsg(
             sock.as_raw_fd(),
@@ -1274,8 +1278,9 @@ fn relay_batch(
     client: SocketAddr,
     src: Option<IpAddr>,
 ) -> Relay {
-    let msgs: Vec<&[u8]> = (0..n).map(|i| batch.at(i)).collect();
-    relay_run(&msgs, |rest| {
+    let msgs: [&[u8]; REPLY_BATCH_SIZE] =
+        std::array::from_fn(|i| if i < n { batch.at(i) } else { &[] });
+    relay_run(&msgs[..n], |rest| {
         out.try_io(Interest::WRITABLE, || {
             send_batch(out.as_raw_fd(), rest, Some(client), src)
         })
@@ -1349,11 +1354,16 @@ impl ReplyBatch {
 
         let Self { bufs, lens } = self;
         lens.clear();
-        let mut headers = MultiHeaders::<()>::preallocate(bufs.len(), None);
-        let mut iovs: Vec<[IoSliceMut<'_>; 1]> = bufs
-            .iter_mut()
-            .map(|b| [IoSliceMut::new(b.as_mut_slice())])
-            .collect();
+        let mut bufs_it = bufs.iter_mut();
+        // A fresh header set per call, like the ingress side (ADR 18): `recvmmsg`
+        // writes `msg_namelen` back even for `MultiHeaders<()>`, and a reused set
+        // then fails the next call with EFAULT (pinned by
+        // `reply_batch_recv_called_repeatedly_...`). Only the iovecs live on the stack.
+        let mut headers = MultiHeaders::<()>::preallocate(REPLY_BATCH_SIZE, None);
+        let mut iovs: [[IoSliceMut<'_>; 1]; REPLY_BATCH_SIZE] = std::array::from_fn(|_| {
+            let buf = bufs_it.next().expect("REPLY_BATCH_SIZE buffers on Linux");
+            [IoSliceMut::new(buf.as_mut_slice())]
+        });
         let results = recvmmsg(
             fd,
             &mut headers,
@@ -1416,6 +1426,52 @@ fn send_one(
     }
 }
 
+/// Datagrams one `sendmmsg` call carries; `send_batch` hands back the count taken,
+/// so callers with a longer slice simply loop.
+#[cfg(target_os = "linux")]
+const SEND_BATCH_MAX: usize = if REPLY_BATCH_SIZE > RECV_BATCH {
+    REPLY_BATCH_SIZE
+} else {
+    RECV_BATCH
+};
+
+/// Header sets for `sendmmsg`, one per control-message size. A send overwrites
+/// every address and cmsg it uses and never reads `msg_namelen` /
+/// `msg_controllen` back, so unlike a receive the sets are safe to reuse; the
+/// three sizes differ because `preallocate` fixes `msg_controllen`.
+#[cfg(target_os = "linux")]
+struct SendHeaders {
+    plain: nix::sys::socket::MultiHeaders<nix::sys::socket::SockaddrStorage>,
+    v4: nix::sys::socket::MultiHeaders<nix::sys::socket::SockaddrStorage>,
+    v6: nix::sys::socket::MultiHeaders<nix::sys::socket::SockaddrStorage>,
+}
+
+#[cfg(target_os = "linux")]
+impl SendHeaders {
+    fn new() -> Self {
+        use nix::sys::socket::MultiHeaders;
+        Self {
+            plain: MultiHeaders::preallocate(SEND_BATCH_MAX, None),
+            v4: MultiHeaders::preallocate(
+                SEND_BATCH_MAX,
+                Some(nix::cmsg_space!(nix::libc::in_pktinfo)),
+            ),
+            v6: MultiHeaders::preallocate(
+                SEND_BATCH_MAX,
+                Some(nix::cmsg_space!(nix::libc::in6_pktinfo)),
+            ),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    /// Never borrowed across an `.await`.
+    static SEND_HEADERS: RefCell<SendHeaders> = RefCell::new(SendHeaders::new());
+}
+
+/// At most [`SEND_BATCH_MAX`] datagrams per call; the returned count says how many
+/// went out. No heap allocation once the thread's headers exist.
 #[cfg(target_os = "linux")]
 fn sendmmsg_batch(
     fd: RawFd,
@@ -1423,40 +1479,39 @@ fn sendmmsg_batch(
     dest: Option<SocketAddr>,
     src: Option<IpAddr>,
 ) -> io::Result<usize> {
-    use nix::sys::socket::{sendmmsg, ControlMessage, MsgFlags, MultiHeaders, SockaddrStorage};
+    use nix::sys::socket::{sendmmsg, ControlMessage, MsgFlags, SockaddrStorage};
 
-    let iovs: Vec<[IoSlice<'_>; 1]> = msgs.iter().map(|m| [IoSlice::new(m)]).collect();
-    let addrs = vec![dest.map(SockaddrStorage::from); msgs.len()];
-    let pi4;
-    let pi6;
-    let (cmsgs, space) = match src {
-        None => (Vec::new(), None),
-        Some(IpAddr::V4(v4)) => {
-            pi4 = pktinfo_v4(v4);
-            (
-                vec![ControlMessage::Ipv4PacketInfo(&pi4)],
-                Some(nix::cmsg_space!(nix::libc::in_pktinfo)),
-            )
-        }
-        Some(IpAddr::V6(v6)) => {
-            pi6 = pktinfo_v6(v6);
-            (
-                vec![ControlMessage::Ipv6PacketInfo(&pi6)],
-                Some(nix::cmsg_space!(nix::libc::in6_pktinfo)),
-            )
-        }
+    let n = msgs.len().min(SEND_BATCH_MAX);
+    let iovs: [[IoSlice<'_>; 1]; SEND_BATCH_MAX] =
+        std::array::from_fn(|i| [IoSlice::new(msgs.get(i).copied().unwrap_or_default())]);
+    let addrs = [dest.map(SockaddrStorage::from); SEND_BATCH_MAX];
+    let pi4 = match src {
+        Some(IpAddr::V4(v4)) => Some(pktinfo_v4(v4)),
+        _ => None,
     };
-    let mut headers = MultiHeaders::<SockaddrStorage>::preallocate(msgs.len(), space);
-    let results = sendmmsg(
-        fd,
-        &mut headers,
-        iovs.iter(),
-        addrs,
-        cmsgs,
-        MsgFlags::empty(),
-    )
-    .map_err(io::Error::from)?;
-    Ok(results.count())
+    let pi6 = match src {
+        Some(IpAddr::V6(v6)) => Some(pktinfo_v6(v6)),
+        _ => None,
+    };
+    let c4 = pi4.as_ref().map(|p| [ControlMessage::Ipv4PacketInfo(p)]);
+    let c6 = pi6.as_ref().map(|p| [ControlMessage::Ipv6PacketInfo(p)]);
+    SEND_HEADERS.with_borrow_mut(|h| {
+        let (headers, cmsgs): (_, &[ControlMessage<'_>]) = match (&c4, &c6) {
+            (Some(c), _) => (&mut h.v4, c),
+            (_, Some(c)) => (&mut h.v6, c),
+            _ => (&mut h.plain, &[]),
+        };
+        let results = sendmmsg(
+            fd,
+            headers,
+            iovs[..n].iter(),
+            addrs,
+            cmsgs,
+            MsgFlags::empty(),
+        )
+        .map_err(io::Error::from)?;
+        Ok(results.count())
+    })
 }
 
 fn pktinfo_v4(v4: Ipv4Addr) -> nix::libc::in_pktinfo {
@@ -2185,9 +2240,10 @@ listeners:
         let msgs: Vec<&[u8]> = vec![&payload; REPLY_BATCH_SIZE];
 
         tx.connect(rx.local_addr().unwrap()).unwrap();
+        send_batch(tx.as_raw_fd(), &msgs, None, None).unwrap(); // warm the scratch
         let (sent, n) = allocs_in(|| send_batch(tx.as_raw_fd(), &msgs, None, None).unwrap());
         assert_eq!(sent, REPLY_BATCH_SIZE);
-        check_allocs("send_batch, connected socket", n, 4);
+        check_allocs("send_batch, connected socket", n, 0);
     }
 
     #[test]
@@ -2198,9 +2254,10 @@ listeners:
         let msgs: Vec<&[u8]> = vec![&payload; REPLY_BATCH_SIZE];
         let src = Some(IpAddr::V4(Ipv4Addr::LOCALHOST));
         let dest = Some(rx.local_addr().unwrap());
+        send_batch(tx.as_raw_fd(), &msgs, dest, src).unwrap(); // warm the scratch
         let (sent, n) = allocs_in(|| send_batch(tx.as_raw_fd(), &msgs, dest, src).unwrap());
         assert_eq!(sent, REPLY_BATCH_SIZE);
-        check_allocs("send_batch, destination + pktinfo", n, 7);
+        check_allocs("send_batch, destination + pktinfo", n, 0);
     }
 
     #[test]
@@ -2215,7 +2272,7 @@ listeners:
         let mut batch = ReplyBatch::new();
         let (got, n) = allocs_in(|| batch.recv(rx.as_raw_fd()).unwrap());
         assert_eq!(got, REPLY_BATCH_SIZE);
-        check_allocs("ReplyBatch::recv", n, 2);
+        check_allocs("ReplyBatch::recv", n, 1);
     }
 
     #[test]
@@ -2232,6 +2289,8 @@ listeners:
         out.set_nonblocking(true).unwrap();
         let out = UdpSocket::from_std(out).unwrap();
         rt.block_on(out.writable()).unwrap();
+        let client = rx.local_addr().unwrap();
+        relay_batch(&out, &batch, REPLY_BATCH_SIZE, client, None); // warm the scratch
         let (r, n) = allocs_in(|| {
             relay_batch(
                 &out,
@@ -2242,7 +2301,7 @@ listeners:
             )
         });
         assert_eq!(r.sent, REPLY_BATCH_SIZE);
-        check_allocs("relay_batch", n, 5);
+        check_allocs("relay_batch", n, 0);
         drop(tx);
     }
 
@@ -2262,7 +2321,7 @@ listeners:
         let mut batch = RecvBatch::new();
         let (got, n) = allocs_in(|| batch.recv_now(&sock, UdpMode::Plain, 0).unwrap());
         assert_eq!(got, RECV_BATCH);
-        check_allocs("RecvBatch::recv_now, plain", n, 3);
+        check_allocs("RecvBatch::recv_now, plain", n, 2);
     }
 
     /// Micro-benchmark of the reply path's batch calls (#167), to decide whether
@@ -2301,5 +2360,71 @@ listeners:
             "bench_batch_round_trip: {per} ns and {:.2} allocations per round of {REPLY_BATCH_SIZE} datagrams",
             allocs as f64 / f64::from(ROUNDS),
         );
+    }
+
+    // --- scratch reuse must not leak state from one call into the next ---
+
+    #[test]
+    fn reply_batch_recv_called_repeatedly_reports_each_datagram_exactly() {
+        let (tx, rx) = nonblocking_pair();
+        tx.connect(rx.local_addr().unwrap()).unwrap();
+        rx.connect(tx.local_addr().unwrap()).unwrap();
+        rx.set_nonblocking(true).unwrap();
+        let mut batch = ReplyBatch::new();
+        for round in 0..4usize {
+            let count = [REPLY_BATCH_SIZE, 3, 1, 9][round];
+            for i in 0..count {
+                tx.send(&vec![(round * 16 + i) as u8; (i * 7 + round) % 40 + 1])
+                    .unwrap();
+            }
+            assert_eq!(batch.recv(rx.as_raw_fd()).unwrap(), count, "round {round}");
+            for i in 0..count {
+                assert_eq!(
+                    batch.at(i),
+                    vec![(round * 16 + i) as u8; (i * 7 + round) % 40 + 1].as_slice(),
+                    "round {round} datagram {i}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn send_batch_alternating_addressing_modes_never_leaks_between_calls() {
+        // One wildcard socket, called with no pktinfo, v4 pktinfo and back: the
+        // reused header sets must each carry exactly their own control data.
+        let tx = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let dest = Some(rx.local_addr().unwrap());
+        let src2 = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let src3 = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 3));
+        let msgs: [&[u8]; 3] = [b"p", b"q", b"r"];
+        for src in [None, Some(src2), None, Some(src3), Some(src2), None] {
+            assert_eq!(send_batch(tx.as_raw_fd(), &msgs, dest, src).unwrap(), 3);
+            for (i, (payload, from)) in recv_all(&rx, 3).into_iter().enumerate() {
+                assert_eq!(payload, msgs[i]);
+                if let Some(src) = src {
+                    assert_eq!(from.ip(), src);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn send_batch_longer_than_the_scratch_sends_a_prefix_and_reports_the_count() {
+        let (tx, rx) = nonblocking_pair();
+        tx.connect(rx.local_addr().unwrap()).unwrap();
+        let payloads: Vec<[u8; 2]> = (0..40u8).map(|i| [i, i]).collect();
+        let msgs: Vec<&[u8]> = payloads.iter().map(<[u8; 2]>::as_slice).collect();
+        let mut off = 0;
+        while off < msgs.len() {
+            let k = send_batch(tx.as_raw_fd(), &msgs[off..], None, None).unwrap();
+            assert!((1..=REPLY_BATCH_SIZE).contains(&k), "took {k}");
+            off += k;
+        }
+        let got = recv_all(&rx, 40);
+        for (i, (payload, _)) in got.iter().enumerate() {
+            assert_eq!(payload, &payloads[i], "datagram {i}");
+        }
     }
 }
