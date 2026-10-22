@@ -26,7 +26,7 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 tempfile = { workspace = true }
 tokio-rustls = { workspace = true }
-nix = { workspace = true, features = ["sched"] }
+nix = { workspace = true, features = ["sched", "user"] }
 
 [lib]
 test = false

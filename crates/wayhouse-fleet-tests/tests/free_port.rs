@@ -59,3 +59,49 @@ fn ports_that_are_bound_stay_distinct() {
     let ports: HashSet<_> = held.iter().map(|(p, _)| *p).collect();
     assert_eq!(ports.len(), held.len());
 }
+
+fn age(path: &std::path::Path, secs: u64) {
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .and_then(|f| f.set_modified(old))
+        .expect("set mtime");
+}
+
+#[test]
+fn an_expired_claim_is_taken_by_exactly_one_caller() {
+    let dir = tempfile::tempdir().unwrap();
+    let ttl = std::time::Duration::from_secs(60);
+    for round in 0..20 {
+        let claim = dir.path().join(format!("claim{round}"));
+        std::fs::write(&claim, "").unwrap();
+        age(&claim, 120);
+        let wins: usize = (0..8)
+            .map(|_| {
+                let claim = claim.clone();
+                std::thread::spawn(move || wayhouse_fleet_tests::take_stale(&claim, ttl))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|t| usize::from(t.join().expect("worker")))
+            .sum();
+        assert_eq!(wins, 1, "round {round}");
+        assert!(!claim.exists());
+    }
+}
+
+#[test]
+fn a_fresh_claim_that_was_moved_aside_is_put_back() {
+    // The late loser of a race renames the winner's fresh claim; it must give it back.
+    let dir = tempfile::tempdir().unwrap();
+    let claim = dir.path().join("claim");
+    std::fs::write(&claim, "").unwrap();
+    assert!(!wayhouse_fleet_tests::take_stale(
+        &claim,
+        std::time::Duration::from_secs(60)
+    ));
+    assert!(claim.exists());
+    let names: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+    assert_eq!(names.len(), 1, "no .stale leftovers: {names:?}");
+}

@@ -35,10 +35,8 @@ pub fn local_state(dir: &Path, site: &str) -> Option<Local> {
     let site_dir = dir.join(site);
     let text = fs::read(site_dir.join(META_FILE)).ok()?;
     let meta = serde_json::from_slice::<serde_json::Value>(&text).ok()?;
-    let has = |file: &str, marker: &str| {
-        fs::read_to_string(site_dir.join(file)).is_ok_and(|t| t.contains(marker))
-    };
-    if !has(CHAIN_FILE, "END CERTIFICATE") || !has(KEY_FILE, "END ") {
+    let ends_with = |file: &str, marker: &str| pem_ends_with(&site_dir.join(file), marker);
+    if !ends_with(CHAIN_FILE, "END CERTIFICATE") || !ends_with(KEY_FILE, "END ") {
         return None;
     }
     Some(Local {
@@ -48,6 +46,22 @@ pub fn local_state(dir: &Path, site: &str) -> Option<Local> {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0),
     })
+}
+
+/// Whether the last bytes of the PEM file at `path` hold `marker`. Only the tail is read, so a
+/// key is not copied into memory on every pass; a truncated file has no closing line there.
+fn pem_ends_with(path: &Path, marker: &str) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 256;
+    let tail = (|| {
+        let mut file = File::open(path)?;
+        let len = file.metadata()?.len();
+        file.seek(SeekFrom::Start(len.saturating_sub(TAIL)))?;
+        let mut buf = Vec::with_capacity(TAIL as usize);
+        file.take(TAIL).read_to_end(&mut buf)?;
+        Ok::<_, io::Error>(buf)
+    })();
+    tail.is_ok_and(|b| String::from_utf8_lossy(&b).contains(marker))
 }
 
 /// The version recorded in `<dir>/<site>/meta.json`, if the installed copy is intact.
@@ -250,5 +264,30 @@ mod tests {
         assert!(install(dir.path(), "web", &no_chain).is_err());
         assert!(install(dir.path(), "web", &no_key).is_err());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn only_the_tail_of_a_pem_file_decides_whether_it_is_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        install(dir.path(), "web", &bundle(1)).unwrap();
+        let site = dir.path().join("web");
+        // A long chain with its closing line at the end is intact.
+        let long = format!(
+            "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+            "A".repeat(50_000)
+        );
+        fs::write(site.join(CHAIN_FILE), long).unwrap();
+        assert_eq!(local_version(dir.path(), "web"), Some(1));
+        // The closing line early in the file does not count once the end is cut off.
+        let cut = format!(
+            "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n{}",
+            "A".repeat(1_000)
+        );
+        fs::write(site.join(CHAIN_FILE), cut).unwrap();
+        assert_eq!(local_version(dir.path(), "web"), None);
+        // A key cut off mid-body reads as not installed.
+        install(dir.path(), "web", &bundle(1)).unwrap();
+        fs::write(site.join(KEY_FILE), "-----BEGIN PRIVATE KEY-----\nkey").unwrap();
+        assert_eq!(local_version(dir.path(), "web"), None);
     }
 }

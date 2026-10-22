@@ -64,8 +64,8 @@ pub async fn http_get(url: impl reqwest::IntoUrl) -> reqwest::Result<reqwest::Re
 ///
 /// So ports come from below the kernel's ephemeral range, where outgoing
 /// connections never land, and each is claimed with an exclusive file in a
-/// per-user temp dir, which every test process of that user shares. A claim is never released; it
-/// expires after [`PORT_CLAIM_TTL`].
+/// per-user temp dir, which every test process of that user shares. A claim is never
+/// released; it expires after [`PORT_CLAIM_TTL`].
 pub fn free_port() -> Result<u16> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static CALLS: AtomicU64 = AtomicU64::new(0);
@@ -132,7 +132,7 @@ fn claim_port(path: &Path) -> bool {
                     .is_some_and(|age| age > PORT_CLAIM_TTL);
                 // Rename before removing: only one of two callers that see the same stale
                 // claim wins the rename, so the port cannot end up with both.
-                if !expired || !take_stale(path) {
+                if !expired || !take_stale(path, PORT_CLAIM_TTL) {
                     return false;
                 }
             }
@@ -148,22 +148,41 @@ pub fn port_claim_dir() -> PathBuf {
     std::env::temp_dir().join(format!("wayhouse-fleet-ports-{}", current_uid()))
 }
 
-/// Moves an expired claim aside and deletes it; `true` only for the caller whose rename won.
-fn take_stale(path: &Path) -> bool {
+/// Moves a claim older than `ttl` aside and deletes it; `true` only for the caller whose rename
+/// won. A late loser of a race may rename the winner's brand-new claim instead; its age gives
+/// that away, and the claim is put back. (A third caller that claims the path in that instant
+/// still shares the port with the winner; `free_port`'s bind check catches it once the
+/// winner's child has bound.)
+pub fn take_stale(path: &Path, ttl: Duration) -> bool {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static ASIDE: AtomicU64 = AtomicU64::new(0);
+
     let mut aside = path.as_os_str().to_owned();
-    aside.push(format!(".stale-{}", std::process::id()));
+    aside.push(format!(
+        ".stale-{}-{}",
+        std::process::id(),
+        ASIDE.fetch_add(1, Ordering::Relaxed)
+    ));
     let aside = PathBuf::from(aside);
     if std::fs::rename(path, &aside).is_err() {
         return false;
     }
+    let expired = std::fs::metadata(&aside)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age > ttl);
+    if !expired {
+        // `hard_link` fails if the path was claimed again meanwhile, which is fine.
+        let _ = std::fs::hard_link(&aside, path);
+    }
     let _ = std::fs::remove_file(&aside);
-    true
+    expired
 }
 
-/// The owner of this process, read from `/proc/self`; 0 where that is not available.
+/// The effective user id of this process.
 fn current_uid() -> u32 {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata("/proc/self").map_or(0, |m| m.uid())
+    nix::unistd::geteuid().as_raw()
 }
 
 fn workspace_root() -> PathBuf {
