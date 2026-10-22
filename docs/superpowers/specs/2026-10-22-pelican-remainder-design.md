@@ -18,7 +18,7 @@ What this means in practice, and where it stops:
 
 Nothing has run against a real panel; shapes come from Pelican's source. Plan:
 
-- Verify against a containerised Pelican panel (SQLite, one node, a few allocations, servers created through the Application API), not a production panel. This also gives a repeatable **contract test** instead of a one-off check. Whether Wings is needed for server records to exist is part of the work; if it is, the check falls back to a panel Wueschli provides.
+- Verify against a containerised Pelican panel (SQLite, one node, a few allocations, servers created through the Application API). **Decided by Wueschli (2026-10-22): a containerised panel is enough, since the API is the same as a real panel's.** This also gives a repeatable **contract test** instead of a one-off check. If server records cannot exist without Wings, the check falls back to a panel Wueschli provides.
 - Questions to settle: the lowest API-key permission level that can read servers and allocations; that `allocation` and `relationships.allocations` appear as read from `ServerData.php`/`AllocationData.php`/`Envelope.php`; what non-null `status` values exist and whether skipping all of them is right (plugins#8); which allocation is the public one when a server has several; whether node `fqdn`/ip semantics allow `node_addresses` to come from `GET /api/application/nodes` instead of config.
 - Output: fixtures checked into the plugin, README claims changed from "unverified" to verified or corrected.
 
@@ -50,5 +50,4 @@ The plugin must be rebuilt per deployment because capability values (panel host,
 
 ## Open for Wueschli
 
-- Is a containerised panel enough as the "live" check, or should it also run once against a real panel?
-- Is hostname-only routing acceptable for the first release of the plugin, with UDP-without-hostname games explicitly out of scope?
+- Is hostname-only routing acceptable for the first release of the plugin, with UDP-without-hostname games explicitly out of scope? (The containerised-panel question is answered above.)
