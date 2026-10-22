@@ -692,7 +692,7 @@ impl TunnelLab {
 
     /// Start the controller again on the same port and data directory. A killed
     /// process is reaped before this runs, so the first attempts failing is not
-    /// a sled lock held by a still-living process (the OS drops that lock with
+    /// a database lock held by a still-living process (the OS drops that lock with
     /// the process); what else delays it was never pinned down. So retry, and
     /// keep every failed attempt's log in the final error.
     pub async fn start_controller(&mut self) -> Result<()> {
@@ -741,7 +741,7 @@ impl TunnelLab {
         let listen = controller_listen(self.opts.underlay, self.controller_port);
         let args = controller_args(self.opts.tunnel_network, args);
         let mut log = String::new();
-        // sled may still hold the previous process's lock for a moment; that
+        // The previous process's lock may linger for a moment; that
         // exit is not the refusal under test, so try again.
         for _ in 0..20 {
             let mut ctl = spawn_controller_with(&data, &listen, &args)?;

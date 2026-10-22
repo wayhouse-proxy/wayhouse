@@ -5,7 +5,7 @@
 //! ("The aggregator"). Slice plan: [`docs/08-roadmap.md`](../../../docs/08-roadmap.md)
 //! phase 10+11.
 //!
-//! **Stateless and ephemeral by design** — unlike the controller's `sled`
+//! **Stateless and ephemeral by design** — unlike the controller's `kv`
 //! store, [`ingest::IngestStore`] is a plain in-memory map, never persisted.
 //! That's not a shortcut for this PoC; it's the actual design: the
 //! aggregator carries no authority and forgets nothing important, because

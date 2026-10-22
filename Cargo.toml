@@ -79,7 +79,7 @@ semver = { version = "1", features = ["serde"] }
 # the minisign CLI. Used by wayhouse-registry.
 minisign-verify = "0.3"
 toml = "0.8"
-sled = "0.34"
+redb = "4"
 tempfile = "3"
 wayhouse-http = { path = "crates/wayhouse-http", default-features = false }
 # Native TLS servers (wayhouse-http's `server` feature) and the test TLS terminator in

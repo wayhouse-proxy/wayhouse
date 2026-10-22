@@ -7,11 +7,11 @@
 //! the `initialized` marker; it is recorded once and never changed. Until
 //! then a registry entry is rejected with `Rejection::NotInitialized`.
 //!
-//! Lives in a tree of the HA `sled` database (`cluster_state`), next to the
+//! Lives in a tree of the HA `kv` database (`cluster_state`), next to the
 //! state machine's own meta tree.
 
+use crate::kv::transaction::{ConflictableTransactionError, TransactionError};
 use serde::{Deserialize, Serialize};
-use sled::transaction::{ConflictableTransactionError, TransactionError};
 
 use crate::addresses::{Network, StorageFailure};
 
@@ -30,7 +30,7 @@ pub struct ClusterSnapshot {
 }
 
 pub struct ClusterState {
-    tree: sled::Tree,
+    tree: crate::kv::Tree,
 }
 
 fn failure<E: std::fmt::Debug>(e: E) -> StorageFailure {
@@ -45,7 +45,7 @@ fn decode_index(bytes: &[u8]) -> Result<u64, StorageFailure> {
 }
 
 impl ClusterState {
-    pub fn open(db: &sled::Db) -> Result<Self, sled::Error> {
+    pub fn open(db: &crate::kv::Db) -> Result<Self, crate::kv::Error> {
         Ok(ClusterState {
             tree: db.open_tree("cluster_state")?,
         })
@@ -135,7 +135,7 @@ mod tests {
 
     fn state() -> (ClusterState, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         (ClusterState::open(&db).unwrap(), dir)
     }
 

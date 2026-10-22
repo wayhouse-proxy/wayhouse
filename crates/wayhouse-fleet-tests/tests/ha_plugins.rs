@@ -465,7 +465,7 @@ async fn a_secret_and_a_webhook_go_through_a_follower_and_no_node_stores_the_sec
         "hooks must not be served on the admin port"
     );
 
-    // No node's files hold the secret or its base64. Sled flushes within a second; the install
+    // No node's files hold the secret or its base64. The store writes through at commit; the install
     // name must show up in the scanned files, so the scan is not vacuous.
     tokio::time::sleep(Duration::from_secs(3)).await;
     for (n, dir) in dirs.iter().enumerate() {

@@ -783,7 +783,7 @@ mod tests {
 
     fn fixture(workers: usize, queue: usize) -> (Arc<Runner>, PluginStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = PluginStore::open(&db).unwrap();
         let host = Arc::new(PluginHost::new(Limits::default()).unwrap());
         let pool =

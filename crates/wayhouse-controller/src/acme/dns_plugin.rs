@@ -264,7 +264,7 @@ mod tests {
 
     fn fixture(module: &[u8], enabled: bool) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = PluginStore::open(&db).unwrap();
         let host = Arc::new(PluginHost::new(Limits::default()).unwrap());
         let pool = Arc::new(CompilePool::new(host, 1, 4, Duration::from_secs(10)).unwrap());

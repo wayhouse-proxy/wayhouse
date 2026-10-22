@@ -4,7 +4,7 @@
 //! `examples/memstore` reference implementation, with one real change: that
 //! example keeps the log in a `BTreeMap` (lost on restart, fine for a demo);
 //! this one persists every entry, the vote, and the purge point to two
-//! `sled` trees so a replica's log survives a process restart, not just its
+//! `kv` trees so a replica's log survives a process restart, not just its
 //! applied state machine.
 
 use std::fmt::Debug;
@@ -22,19 +22,19 @@ fn encode_idx(idx: u64) -> [u8; 8] {
     idx.to_be_bytes()
 }
 
-/// `sled`-backed Raft log. `Clone` (cheap — a `sled::Tree` is an `Arc`
+/// `kv`-backed Raft log. `Clone` (cheap — a `crate::kv::Tree` is an `Arc`
 /// internally) rather than the reference implementation's
-/// `Arc<Mutex<BTreeMap<..>>>`: every method reads/writes `sled` directly, so
+/// `Arc<Mutex<BTreeMap<..>>>`: every method reads/writes `kv` directly, so
 /// there is no separate in-process cache to keep consistent with the
-/// on-disk state, and `sled` itself already serializes writes per tree.
+/// on-disk state, and the database already serializes writes.
 #[derive(Clone)]
 pub struct LogStore {
-    entries: sled::Tree,
-    meta: sled::Tree,
+    entries: crate::kv::Tree,
+    meta: crate::kv::Tree,
 }
 
 impl LogStore {
-    pub fn open(db: &sled::Db) -> Result<Self, sled::Error> {
+    pub fn open(db: &crate::kv::Db) -> Result<Self, crate::kv::Error> {
         Ok(LogStore {
             entries: db.open_tree("raft_log")?,
             meta: db.open_tree("raft_log_meta")?,
@@ -160,9 +160,9 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         // One atomic batch: removing the keys one at a time, lowest first, lets a
         // crash part-way keep the high entries and drop the low ones, a hole
         // below the stale tail that `get_log_state` would report as the log's end.
-        let mut batch = sled::Batch::default();
+        let mut batch = crate::kv::Batch::default();
         for k in keys {
-            batch.remove(&k);
+            batch.remove(k);
         }
         self.entries.apply_batch(batch).map_err(Self::io_err)?;
         self.entries.flush_async().await.map_err(Self::io_err)?;
@@ -203,7 +203,7 @@ mod tests {
 
     fn open() -> (LogStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         (LogStore::open(&db).unwrap(), dir)
     }
 
@@ -242,8 +242,8 @@ mod tests {
         assert_eq!(read.len(), 2);
 
         drop(store);
-        drop(reader); // both clones must go — sled holds one file lock per open Db
-        let db = crate::store::reopen_when_unlocked(|| sled::open(dir.path()));
+        drop(reader); // both clones must go — the file lock is held until the last handle drops
+        let db = crate::store::reopen_when_unlocked(|| crate::kv::Db::open(dir.path()));
         let mut reopened = LogStore::open(&db).unwrap();
         let state = reopened.get_log_state().await.unwrap();
         assert_eq!(state.last_log_id.unwrap().index, 2);

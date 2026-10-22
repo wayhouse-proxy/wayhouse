@@ -18,7 +18,7 @@
 //!
 //! Reuses [`crate::store::Store`] as-is — it's already a generic
 //! content-agnostic append-only revision log; an intent op is just a
-//! different kind of "bytes" living in its own `sled` database
+//! different kind of "bytes" living in its own `kv` database
 //! (`<data_dir>/intent`, alongside config's `<data_dir>/config`). [`api`]
 //! mirrors `crate::api`'s submit/subscribe shape closely (down to reusing
 //! the `slave` write gate), with one difference: `submit` here also does a

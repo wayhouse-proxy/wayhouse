@@ -350,7 +350,7 @@ async fn main() -> anyhow::Result<()> {
         "controller store opened"
     );
 
-    // A separate sled database in its own subdirectory — the intent log
+    // A separate database in its own subdirectory — the intent log
     // (phase 12 slice 3) is content-wise unrelated to config revisions, and
     // keeping it out of the existing `data_dir` root leaves every
     // already-deployed config store's on-disk layout untouched.
@@ -364,7 +364,7 @@ async fn main() -> anyhow::Result<()> {
         "intent store opened"
     );
 
-    // A third separate sled database (phase 14 slice 2) — the backend-peers
+    // A third separate database (phase 14 slice 2) — the backend-peers
     // registry is content-wise unrelated to both config and intent.
     let peers_dir = args.data_dir.join("peers");
     let peers_store = Arc::new(
@@ -375,7 +375,7 @@ async fn main() -> anyhow::Result<()> {
         peers_dir = %peers_dir.display(),
         "backend-peers store opened"
     );
-    // The address book (spec: Controller/State) — its own sled database like
+    // The address book (spec: Controller/State) — its own database like
     // every other registry, shared by both peer registries below.
     let addresses_dir = args.data_dir.join("tunnel-addresses");
     // Under HA the book carries no network of its own: the state machine
@@ -406,7 +406,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let mut peers_state = PeersState::new(peers_store, args.auth_token.clone(), book.clone());
 
-    // A fourth separate sled database (phase 14 slice 7) — the proxy-peers
+    // A fourth separate database (phase 14 slice 7) — the proxy-peers
     // registry, the mirror image of the backend-peers one above (see
     // `wayhouse_controller::proxy_peers`'s module doc for why it's a separate
     // resource rather than folded into `peers`).
@@ -463,7 +463,7 @@ async fn main() -> anyhow::Result<()> {
         let ha_token: Option<Arc<str>> = args.ha_token.clone().map(Arc::from);
 
         let ha_dir = args.data_dir.join("ha");
-        let db = sled::open(&ha_dir)
+        let db = wayhouse_controller::kv::Db::open(&ha_dir)
             .map_err(|e| anyhow::anyhow!("opening HA store at {ha_dir:?}: {e}"))?;
         let log_store = ha::log_store::LogStore::open(&db)
             .map_err(|e| anyhow::anyhow!("opening raft log at {ha_dir:?}: {e}"))?;

@@ -510,13 +510,13 @@ mod tests {
         dns: MemDns,
         now: Arc<AtomicU64>,
         keyring: KeyringHandle,
-        db: sled::Db,
+        db: crate::kv::Db,
         _dir: tempfile::TempDir,
     }
 
     async fn fixture_with(keyring: KeyringHandle) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = AcmeStore::open(&db).unwrap();
         let dns = MemDns::default();
         let now = Arc::new(AtomicU64::new(1_800_000_000));
@@ -715,7 +715,7 @@ mod tests {
         // The plaintext key is in no tree of the database, in any form.
         let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
         for name in f.db.tree_names() {
-            let tree = f.db.open_tree(name).unwrap();
+            let tree = f.db.open_tree(&name).unwrap();
             for kv in tree.iter() {
                 let (k, v) = kv.unwrap();
                 let text = String::from_utf8_lossy(&[k.as_ref(), v.as_ref()].concat()).into_owned();
@@ -727,7 +727,7 @@ mod tests {
         assert!(!account.account_url.is_empty());
     }
 
-    /// Fails if any file under `dir` (sled segments, Raft log, snapshots) holds one of the
+    /// Fails if any file under `dir` (database file, Raft log, snapshots) holds one of the
     /// byte strings; the scan must read something.
     fn assert_absent_on_disk(dir: &std::path::Path, needles: &[(&str, &[u8])]) {
         let mut dirs = vec![dir.to_path_buf()];

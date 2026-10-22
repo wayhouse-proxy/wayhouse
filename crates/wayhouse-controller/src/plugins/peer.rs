@@ -662,7 +662,7 @@ mod tests {
 
     fn store() -> (PluginStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         (PluginStore::open(&db).unwrap(), dir)
     }
 

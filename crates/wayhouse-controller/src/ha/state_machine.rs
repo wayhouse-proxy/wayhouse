@@ -3,8 +3,8 @@
 //! [`crate::api::AppState::apply_entry`] /
 //! [`crate::intent::api::IntentState::apply_entry`] — the same writes a
 //! direct (non-HA) call makes, plus the Raft log index recorded in the
-//! same `sled` transaction so a replayed entry is skipped (crash-idempotent
-//! apply) — see `crate::ha`'s module doc. `sled` (via those two
+//! same `kv` transaction so a replayed entry is skipped (crash-idempotent
+//! apply) — see `crate::ha`'s module doc. `kv` (via those two
 //! `Store`s) is the actual durable content; this module only adds the
 //! bookkeeping `openraft` needs on top: last-applied log id, membership,
 //! and snapshots.
@@ -28,13 +28,13 @@
 
 use std::sync::Arc;
 
+use crate::kv::transaction::{ConflictableTransactionError, TransactionError};
 use openraft::storage::{RaftStateMachine, Snapshot};
 use openraft::{
     Entry, EntryPayload, LogId, RaftSnapshotBuilder, SnapshotMeta, StorageError, StorageIOError,
     StoredMembership,
 };
 use serde::{Deserialize, Serialize};
-use sled::transaction::{ConflictableTransactionError, TransactionError};
 
 use super::apply_registry;
 use super::cluster_state::{ClusterSnapshot, ClusterState};
@@ -135,7 +135,7 @@ pub struct SnapshotCopy {
 /// `build_snapshot` reports it.
 pub struct SnapshotBuilder {
     copy: Result<SnapshotCopy, StorageError<NodeId>>,
-    snapshots: sled::Tree,
+    snapshots: crate::kv::Tree,
 }
 
 pub struct StateMachineStore {
@@ -152,9 +152,9 @@ pub struct StateMachineStore {
     acme: crate::acme::AcmeStore,
     /// `Some((node id, data dir))` to warn about unimported pre-HA data.
     pre_ha_notice: Option<(NodeId, std::path::PathBuf)>,
-    meta: sled::Tree,
+    meta: crate::kv::Tree,
     /// The last built or installed snapshot (`meta`, `data`).
-    snapshots: sled::Tree,
+    snapshots: crate::kv::Tree,
 }
 
 /// The audit line of a plugin secret change: install, slot, key id and actor, never the
@@ -169,11 +169,11 @@ fn audit(what: &str, install: &str, slot: &str, key_id: Option<&str>, actor: Opt
 
 impl StateMachineStore {
     pub fn open(
-        db: &sled::Db,
+        db: &crate::kv::Db,
         config: Arc<AppState>,
         intent: Arc<IntentState>,
         registries: Registries,
-    ) -> Result<Self, sled::Error> {
+    ) -> Result<Self, crate::kv::Error> {
         Ok(StateMachineStore {
             config,
             intent,
@@ -477,7 +477,7 @@ impl StateMachineStore {
 /// it; the stored snapshot must never go backwards behind the purge point.
 #[allow(clippy::result_large_err)] // `StorageError` is openraft's, see `read_meta`
 fn save_snapshot(
-    tree: &sled::Tree,
+    tree: &crate::kv::Tree,
     meta: &SnapshotMeta<NodeId, openraft::BasicNode>,
     data: &[u8],
 ) -> Result<(), StorageError<NodeId>> {
@@ -569,7 +569,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                     // Each step is skipped when its database already
                     // absorbed `index` — openraft re-delivers entries
                     // after a crash that lost `last_applied_log`, and the
-                    // `applied_index` lives in the same `sled` transaction
+                    // `applied_index` lives in the same `kv` transaction
                     // as the revision so a replay writes nothing. A skipped
                     // step has no new revision to report; nobody awaits the
                     // response of a replayed entry.
@@ -928,7 +928,7 @@ mod tests {
     /// temporary directory. The address book is opened **without** a
     /// network: HA claims must take theirs from the replicated cluster
     /// state, never from the book.
-    fn open_sm(db: &sled::Db) -> (StateMachineStore, tempfile::TempDir) {
+    fn open_sm(db: &crate::kv::Db) -> (StateMachineStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let store = |sub: &str| Arc::new(Store::open(&dir.path().join(sub)).unwrap());
         let config = Arc::new(AppState::new(
@@ -964,7 +964,7 @@ mod tests {
 
     fn test_sm() -> (Arc<StateMachineStore>, TestDirs) {
         let ha_dir = tempfile::tempdir().unwrap();
-        let db = sled::open(ha_dir.path()).unwrap();
+        let db = crate::kv::Db::open(ha_dir.path()).unwrap();
         let (sm, stores) = open_sm(&db);
         (
             Arc::new(sm),
@@ -1037,7 +1037,7 @@ mod tests {
         sm.apply(vec![blank_entry(5)]).await.unwrap();
         drop(sm);
 
-        // Re-`open` the exact same `sled` db path a process restart would —
+        // Re-`open` the exact same `kv` db path a process restart would —
         // the other `Store`s are reopened fresh too, but that's fine here:
         // this test is only checking the HA meta tree (`last_applied_log`),
         // not the stores' content.
@@ -1201,7 +1201,7 @@ mod tests {
     /// Reopens the state machine on `dirs`' HA db (config/intent stores
     /// fresh — only the HA trees matter to the callers).
     fn reopen_ha(dirs: &TestDirs) -> (Arc<StateMachineStore>, tempfile::TempDir) {
-        let db = crate::store::reopen_when_unlocked(|| sled::open(dirs.ha.path()));
+        let db = crate::store::reopen_when_unlocked(|| crate::kv::Db::open(dirs.ha.path()));
         let (sm, stores) = open_sm(&db);
         (Arc::new(sm), stores)
     }
@@ -1762,7 +1762,7 @@ mod tests {
         // A corrupt `applied_index` makes every book step fail to read it.
         sm.book
             .meta_tree()
-            .insert(b"applied_index", b"bad".to_vec())
+            .insert(b"applied_index", b"bad")
             .unwrap();
         let result = sm
             .apply(vec![normal_entry(

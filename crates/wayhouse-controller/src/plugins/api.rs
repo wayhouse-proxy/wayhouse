@@ -1083,7 +1083,7 @@ mod tests {
 
     fn state(token: Option<&str>) -> (PluginsState, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         let host = Arc::new(PluginHost::new(Limits::default()).unwrap());
         let pool = Arc::new(CompilePool::new(host, 2, 4, Duration::from_secs(30)).unwrap());
         let store = PluginStore::open(&db).unwrap();
@@ -1521,7 +1521,7 @@ mod tests {
     #[tokio::test]
     async fn a_full_compile_queue_answers_503() {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         let host = Arc::new(PluginHost::new(Limits::default()).unwrap());
         // A zero timeout times every compile out.
         let pool = Arc::new(CompilePool::new(host, 1, 1, Duration::ZERO).unwrap());
@@ -1914,7 +1914,7 @@ mod tests {
         // A snapshot built from the state machine holds ciphertext only.
         let snap = serde_json::to_string(&st.store.snapshot().unwrap()).unwrap();
         assert!(!snap.contains(SENTINEL));
-        // Neither the sled files nor the Raft log hold the value or its base64.
+        // Neither the database files nor the Raft log hold the value or its base64.
         let b64 = base64::engine::general_purpose::STANDARD.encode(SENTINEL);
         for file in walk(dir.path()) {
             let bytes = std::fs::read(&file).unwrap_or_default();
