@@ -11,7 +11,7 @@ Requested by Wueschli: adding, moving or deleting a Pelican server needs no per-
 What this means in practice, and where it stops:
 
 - The entry node must reach each node's allocation `ip:port` (private network, or a wayhouse tunnel). Pelican already needs those game ports open on the node, so the plugin adds no new rule, but "no firewall edits" holds only if the entry node is allowed to reach the nodes from the start. This is a documentation item, not code.
-- Routing is by hostname, so it only works for protocols that carry one: HTTP, TLS (SNI) and games with a sniffer (for example Minecraft Java). UDP games without a hostname (Source, Valheim, ...) cannot be routed this way. Routing those by entry-node port needs a different route key and collides when two nodes both use the same port. **Not designed here**; it needs its own decision if wanted.
+- Routing is by hostname, so it only works for protocols that carry one: HTTP, TLS (SNI) and games with a sniffer (for example Minecraft Java). UDP games without a hostname (Source, Valheim, ...) cannot be routed this way. Routing those by entry-node port needs a different route key and collides when two nodes both use the same port. **Decided by Wueschli (2026-10-22): hostname-only routing is fine for the first release.** Port-based routing for these games is tracked as a separate design issue.
 - Under HA the plugin runs on the leader only, so the entry node can be a wayhouse cluster.
 
 ## 1. Live-panel check (plugins#6, first item)
@@ -47,7 +47,3 @@ The plugin must be rebuilt per deployment because capability values (panel host,
 2. Webhook hint, after step 1 has confirmed event names and header behaviour.
 3. Operator guide (reachability, wildcard DNS, webhook setup), written alongside step 2.
 4. wayhouse#386 is independent and decided in core.
-
-## Open for Wueschli
-
-- Is hostname-only routing acceptable for the first release of the plugin, with UDP-without-hostname games explicitly out of scope? (The containerised-panel question is answered above.)
