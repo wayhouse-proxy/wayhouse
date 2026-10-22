@@ -72,8 +72,7 @@ pub fn free_port() -> Result<u16> {
 
     let (lo, hi) = port_window()?;
     let span = u32::from(hi - lo);
-    // Per user: a directory another user created in the shared temp dir would fail every claim.
-    let dir = std::env::temp_dir().join(format!("wayhouse-fleet-ports-{}", current_uid()));
+    let dir = port_claim_dir();
     std::fs::create_dir_all(&dir).context("creating the port claim dir")?;
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -141,6 +140,12 @@ fn claim_port(path: &Path) -> bool {
         }
     }
     false
+}
+
+/// Where claims live. Per user: a directory another user created in the shared temp dir would
+/// fail every claim.
+pub fn port_claim_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("wayhouse-fleet-ports-{}", current_uid()))
 }
 
 /// Moves an expired claim aside and deletes it; `true` only for the caller whose rename won.

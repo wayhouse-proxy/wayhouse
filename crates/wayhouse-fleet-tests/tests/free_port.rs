@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use wayhouse_fleet_tests::free_port;
 
 fn claim_dir() -> PathBuf {
-    std::env::temp_dir().join("wayhouse-fleet-ports")
+    wayhouse_fleet_tests::port_claim_dir()
 }
 
 #[test]
