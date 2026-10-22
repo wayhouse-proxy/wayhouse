@@ -102,6 +102,16 @@ mod tests {
     }
 
     #[test]
+    fn hosts_are_normalized_and_ports_range_checked() {
+        assert_eq!(ok("https://C1.Internal:65535").dials, ["c1.internal:65535"]);
+        assert_eq!(ok("http://10.0.0.5").dials, ["10.0.0.5:80"]);
+        assert_eq!(
+            ok("http://[2001:db8::1]:7000").dials,
+            ["[2001:db8::1]:7000"]
+        );
+    }
+
+    #[test]
     fn malformed_lists_are_refused() {
         for bad in [
             "",

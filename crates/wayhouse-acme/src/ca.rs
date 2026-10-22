@@ -162,19 +162,14 @@ impl AcmeCa {
         if kid.trim().is_empty() {
             return Err(IssueError::Account("the EAB key id is empty".into()));
         }
-        // Normalized in a zeroizing buffer: no plain copy of the key outlives this call.
-        let text: zeroize::Zeroizing<String> = zeroize::Zeroizing::new(
-            hmac_key
-                .trim()
-                .trim_end_matches('=')
-                .chars()
-                .map(|c| match c {
-                    '+' => '-',
-                    '/' => '_',
-                    c => c,
-                })
-                .collect(),
-        );
+        // Normalized in a zeroizing buffer sized up front, so no growth leaves a plain copy behind.
+        let trimmed = hmac_key.trim().trim_end_matches('=');
+        let mut text = zeroize::Zeroizing::new(String::with_capacity(trimmed.len()));
+        text.extend(trimmed.chars().map(|c| match c {
+            '+' => '-',
+            '/' => '_',
+            c => c,
+        }));
         let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(text.as_bytes())
             .map_err(|_| IssueError::Account("the EAB HMAC key is not base64".into()))?;

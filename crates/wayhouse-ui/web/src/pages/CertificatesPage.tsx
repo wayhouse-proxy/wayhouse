@@ -5,6 +5,8 @@ import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 
 const DAY = 86_400;
+/** Under this many days left, a certificate is "expires soon" and a failing renewal is urgent. */
+const SOON = 14 * DAY;
 
 function exact(unixSecs: number): string {
   return new Date(unixSecs * 1000).toISOString();
@@ -32,12 +34,12 @@ function status(site: AcmeSite): { tone: "good" | "warn" | "bad" | "neutral"; la
   if (cert?.held) return { tone: "bad", label: "key unreadable" };
   if (site.attempt?.last_error) {
     // A failing renewal is only a warning while the certificate has time left.
-    const urgent = !cert || cert.not_after - now < 14 * DAY;
+    const urgent = !cert || cert.not_after - now < SOON;
     return { tone: urgent ? "bad" : "warn", label: cert ? "renewal failing" : "failing" };
   }
   if (!cert) return { tone: "warn", label: "pending" };
   if (cert.untrusted) return { tone: "warn", label: "staging (untrusted)" };
-  if (cert.not_after - now < 14 * DAY) return { tone: "warn", label: "expires soon" };
+  if (cert.not_after - now < SOON) return { tone: "warn", label: "expires soon" };
   return { tone: "good", label: "valid" };
 }
 
