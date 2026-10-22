@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex};
 use sled::transaction::{ConflictableTransactionError, TransactionError};
 use sled::Transactional;
 
+use crate::plugins::validate_sealed;
+
 use super::types::{
     AcmeOp, AcmeSnapshot, Applied, Attempt, Gateway, HttpChallenge, Site, StoredAccount, StoredCert,
 };
@@ -364,6 +366,52 @@ impl AcmeStore {
                             }
                             Ok(Applied::Done)
                         }
+                        AcmeOp::Rewrap {
+                            account: new_account,
+                            certs: new_certs,
+                        } => {
+                            let mut skipped = Vec::new();
+                            if let Some(item) = new_account {
+                                let current: Option<StoredAccount> = match account
+                                    .get(ACCOUNT_KEY)?
+                                {
+                                    Some(v) => Some(
+                                        serde_json::from_slice(&v).map_err(|e| abort(e.into()))?,
+                                    ),
+                                    None => None,
+                                };
+                                match current {
+                                    Some(mut a)
+                                        if a.sealed.nonce == item.from_nonce
+                                            && validate_sealed(&item.sealed).is_ok() =>
+                                    {
+                                        a.sealed = item.sealed.clone();
+                                        account.insert(ACCOUNT_KEY, json(&a)?)?;
+                                    }
+                                    _ => skipped.push("account".to_string()),
+                                }
+                            }
+                            for item in new_certs {
+                                let key = cert_key(&item.site, item.version);
+                                let current: Option<StoredCert> = match certs.get(&key)? {
+                                    Some(v) => Some(
+                                        serde_json::from_slice(&v).map_err(|e| abort(e.into()))?,
+                                    ),
+                                    None => None,
+                                };
+                                match current {
+                                    Some(mut c)
+                                        if c.sealed_key.nonce == item.from_nonce
+                                            && validate_sealed(&item.sealed).is_ok() =>
+                                    {
+                                        c.sealed_key = item.sealed.clone();
+                                        certs.insert(key, json(&c)?)?;
+                                    }
+                                    _ => skipped.push(format!("{}@{}", item.site, item.version)),
+                                }
+                            }
+                            Ok(Applied::Rewrapped(skipped))
+                        }
                         AcmeOp::ChallengeSet(c) => {
                             if let Err(why) = c.validate() {
                                 return Ok(Applied::Invalid(why));
@@ -399,7 +447,7 @@ impl AcmeStore {
         ] {
             t.flush()?;
         }
-        if outcome == Applied::Done {
+        if matches!(outcome, Applied::Done | Applied::Rewrapped(_)) {
             self.changed.send_modify(|n| *n += 1);
         }
         Ok(outcome)
@@ -752,6 +800,51 @@ mod tests {
         assert_eq!(versions, vec![2, 3]);
         assert_eq!(s.cert("a").unwrap().unwrap().version, 3);
         assert!(s.attempt("a").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_rewrap_skips_a_secret_whose_ciphertext_changed_since_it_was_read() {
+        use super::super::types::{RewrapAccount, RewrapCert};
+        let (s, _d) = store();
+        s.apply_local(&AcmeOp::SiteSet(site("web", &["a.example.com"])))
+            .unwrap();
+        s.apply_local(&AcmeOp::AccountSet(StoredAccount {
+            directory_url: "https://ca/dir".into(),
+            account_url: "https://ca/acct".into(),
+            sealed: sealed(),
+        }))
+        .unwrap();
+        s.apply_local(&issued("web", 0, cert(1, &["a.example.com"])))
+            .unwrap();
+        let mut fresh = sealed();
+        fresh.key_id = "0123456789abcdef".into();
+        let stale = "not-the-stored-nonce".to_string();
+        let op = AcmeOp::Rewrap {
+            account: Some(RewrapAccount {
+                from_nonce: stale.clone(),
+                sealed: fresh.clone(),
+            }),
+            certs: vec![
+                RewrapCert {
+                    site: "web".into(),
+                    version: 1,
+                    from_nonce: stale,
+                    sealed: fresh.clone(),
+                },
+                RewrapCert {
+                    site: "gone".into(),
+                    version: 1,
+                    from_nonce: sealed().nonce,
+                    sealed: fresh,
+                },
+            ],
+        };
+        assert_eq!(
+            s.apply_local(&op).unwrap(),
+            Applied::Rewrapped(vec!["account".into(), "web@1".into(), "gone@1".into()])
+        );
+        assert_eq!(s.account().unwrap().unwrap().sealed, sealed());
+        assert_eq!(s.cert("web").unwrap().unwrap().sealed_key, sealed());
     }
 
     #[test]

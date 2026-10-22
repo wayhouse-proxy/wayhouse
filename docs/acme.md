@@ -291,5 +291,13 @@ Keys are sealed with XChaCha20-Poly1305 under the cluster keyring, bound to thei
 version, replicated only as ciphertext, and appear in plaintext only in the issuing leader's
 memory. Losing every copy of the keyring loses the sealed keys: certificates are then
 reissued (the CA does not care), so keep the key backup the secret-storage design asks for
-anyway. Rotation works as for plugin secrets
-([`superpowers/specs/2026-10-08-plugin-secret-storage-design.md`](superpowers/specs/2026-10-08-plugin-secret-storage-design.md)).
+anyway.
+
+**Rotating the key.** The steps are those of plugin secrets
+([`superpowers/specs/2026-10-08-plugin-secret-storage-design.md`](superpowers/specs/2026-10-08-plugin-secret-storage-design.md),
+[`plugins.md`](plugins.md)), but the rewrap is a separate call for the ACME keys: (1) append the new key to the
+keyring file on every controller, (2) `POST /admin/plugins/secrets/rewrap` for the plugin secrets (if plugins are on) **and**
+`POST /admin/acme/rewrap` for the account key and every certificate key, (3) remove the old key. The ACME call refuses until
+every member reports the active key, is idempotent, and answers `{"rewrapped", "skipped", "unreadable", "active_key_id"}`;
+`GET /acme/account` and `GET /acme/sites` show the `key_id` each secret is under. Removing the old key before step 2 stops
+issuance (the account cannot be opened) and makes the certificate keys under it unservable.
