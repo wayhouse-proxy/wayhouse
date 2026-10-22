@@ -2167,7 +2167,9 @@ listeners:
     /// The allocation ceilings below are the measured cost of the current code, one
     /// full batch (`REPLY_BATCH_SIZE` / `RECV_BATCH` datagrams) per call. They are a
     /// regression guard, not a target: a change that lowers a count should lower its
-    /// ceiling in the same commit. Run with `--nocapture` to see the numbers.
+    /// ceiling in the same commit. A dependency bump (`nix`, `tokio`, the allocator) can
+    /// move a count by one: re-baseline it after checking why, don't loosen blindly.
+    /// Run with `--nocapture` to see the numbers.
     fn check_allocs(what: &str, got: u64, ceiling: u64) {
         eprintln!("{what}: {got} allocations per call");
         assert!(
@@ -2282,7 +2284,11 @@ listeners:
             let sent = send_batch(tx.as_raw_fd(), &msgs, None, None).unwrap();
             let mut got = 0;
             while got < sent {
-                got += batch.recv(rx.as_raw_fd()).unwrap();
+                match batch.recv(rx.as_raw_fd()) {
+                    Ok(n) => got += n,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::hint::spin_loop(),
+                    Err(e) => panic!("recv failed: {e}"),
+                }
             }
         };
         for _ in 0..1_000 {
