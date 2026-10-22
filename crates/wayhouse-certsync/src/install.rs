@@ -43,7 +43,10 @@ pub fn local_state(dir: &Path, site: &str) -> Option<Local> {
     }
     Some(Local {
         version: meta.get("version")?.as_u64()?,
-        not_after: meta.get("not_after").and_then(|v| v.as_u64()).unwrap_or(0),
+        not_after: meta
+            .get("not_after")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
     })
 }
 
