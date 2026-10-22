@@ -3,7 +3,7 @@ kind: Deployment
 metadata: { name: wayhouse-controller, namespace: wayhouse }
 spec:
   replicas: 1                    # single standalone node; HA (Raft) is documented in docs/10
-  strategy: { type: Recreate }   # the sled store is single-writer
+  strategy: { type: Recreate }   # the controller store is single-writer
   selector: { matchLabels: { app: wayhouse-controller } }
   template:
     metadata: { labels: { app: wayhouse-controller } }

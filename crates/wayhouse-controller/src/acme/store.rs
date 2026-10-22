@@ -1,4 +1,4 @@
-//! ACME state in the controller's `sled` database. A standalone controller applies ops
+//! ACME state in the controller's `kv` database. A standalone controller applies ops
 //! through [`AcmeStore::apply_local`]; under HA the state machine is the only writer and uses
 //! [`AcmeStore::apply_at`], which is crash-idempotent per Raft index (the entry and the cursor
 //! commit in one transaction).
@@ -6,8 +6,8 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use sled::transaction::{ConflictableTransactionError, TransactionError};
-use sled::Transactional;
+use crate::kv::transaction::{ConflictableTransactionError, TransactionError};
+use crate::kv::Transactional;
 
 use crate::plugins::validate_sealed;
 
@@ -23,22 +23,22 @@ const KEEP_VERSIONS: usize = 2;
 #[derive(Debug, thiserror::Error)]
 pub enum AcmeStoreError {
     #[error("acme store: {0}")]
-    Sled(#[from] sled::Error),
+    Kv(#[from] crate::kv::Error),
     #[error("acme store record is corrupt: {0}")]
     Corrupt(#[from] serde_json::Error),
 }
 
 #[derive(Clone)]
 pub struct AcmeStore {
-    sites: sled::Tree,
-    account: sled::Tree,
+    sites: crate::kv::Tree,
+    account: crate::kv::Tree,
     /// `<site>\0<version, big-endian>` to a [`StoredCert`].
-    certs: sled::Tree,
-    attempts: sled::Tree,
-    gateways: sled::Tree,
+    certs: crate::kv::Tree,
+    attempts: crate::kv::Tree,
+    gateways: crate::kv::Tree,
     /// Token to [`HttpChallenge`].
-    challenges: sled::Tree,
-    meta: sled::Tree,
+    challenges: crate::kv::Tree,
+    meta: crate::kv::Tree,
     write: Arc<Mutex<()>>,
     changed: Arc<tokio::sync::watch::Sender<u64>>,
 }
@@ -56,7 +56,7 @@ fn cert_prefix(site: &str) -> Vec<u8> {
 }
 
 fn read<T: serde::de::DeserializeOwned>(
-    v: Option<sled::IVec>,
+    v: Option<crate::kv::IVec>,
 ) -> Result<Option<T>, AcmeStoreError> {
     v.map(|b| serde_json::from_slice(&b))
         .transpose()
@@ -64,7 +64,7 @@ fn read<T: serde::de::DeserializeOwned>(
 }
 
 impl AcmeStore {
-    pub fn open(db: &sled::Db) -> Result<Self, sled::Error> {
+    pub fn open(db: &crate::kv::Db) -> Result<Self, crate::kv::Error> {
         Ok(Self {
             sites: db.open_tree("acme_sites")?,
             account: db.open_tree("acme_account")?,
@@ -216,7 +216,7 @@ impl AcmeStore {
                 .collect(),
             _ => Vec::new(),
         };
-        let wipe_certs: Vec<sled::IVec> = match op {
+        let wipe_certs: Vec<crate::kv::IVec> = match op {
             AcmeOp::SiteDelete { name } => self
                 .certs
                 .scan_prefix(cert_prefix(name))
@@ -228,7 +228,7 @@ impl AcmeStore {
             AcmeOp::CertIssued { site, .. } => self.cert(site)?.map(|c| c.version),
             _ => None,
         };
-        let old_versions: Vec<sled::IVec> = match op {
+        let old_versions: Vec<crate::kv::IVec> = match op {
             AcmeOp::CertIssued { site, .. } => self
                 .certs
                 .scan_prefix(cert_prefix(site))
@@ -236,12 +236,12 @@ impl AcmeStore {
                 .collect::<Result<_, _>>()?,
             _ => Vec::new(),
         };
-        let expired: Vec<sled::IVec> = match op {
+        let expired: Vec<crate::kv::IVec> = match op {
             AcmeOp::ChallengesPrune { now } => self
                 .challenges()?
                 .into_iter()
                 .filter(|c| c.expires_at <= *now)
-                .map(|c| sled::IVec::from(c.token.as_bytes()))
+                .map(|c| crate::kv::IVec::from(c.token.as_bytes()))
                 .collect(),
             _ => Vec::new(),
         };
@@ -264,7 +264,7 @@ impl AcmeStore {
                     if covered.is_some_and(|c| c >= index) {
                         return Ok(Applied::Replayed);
                     }
-                    meta.insert(APPLIED_KEY, &index.to_be_bytes())?;
+                    meta.insert(APPLIED_KEY, index.to_be_bytes())?;
                     let json = |v: &dyn erased::Ser| {
                         v.to_json().map_err(|e| abort(AcmeStoreError::from(e)))
                     };
@@ -486,8 +486,9 @@ impl AcmeStore {
     /// Makes the store exactly `snap`, in one transaction.
     pub fn replace(&self, snap: &AcmeSnapshot) -> Result<(), AcmeStoreError> {
         let _guard = self.lock();
-        let keys =
-            |t: &sled::Tree| -> Result<Vec<sled::IVec>, sled::Error> { t.iter().keys().collect() };
+        let keys = |t: &crate::kv::Tree| -> Result<Vec<crate::kv::IVec>, crate::kv::Error> {
+            t.iter().keys().collect()
+        };
         let (old_sites, old_certs, old_attempts, old_gateways, old_challenges) = (
             keys(&self.sites)?,
             keys(&self.certs)?,
@@ -548,7 +549,7 @@ impl AcmeStore {
                         account.insert(ACCOUNT_KEY, serde_json::to_vec(a).map_err(err)?)?;
                     }
                     match snap.applied_index {
-                        Some(i) => meta.insert(APPLIED_KEY, &i.to_be_bytes())?,
+                        Some(i) => meta.insert(APPLIED_KEY, i.to_be_bytes())?,
                         None => meta.remove(APPLIED_KEY)?,
                     };
                     Ok::<_, ConflictableTransactionError<AcmeStoreError>>(())
@@ -593,7 +594,7 @@ mod tests {
 
     fn store() -> (AcmeStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         (AcmeStore::open(&db).unwrap(), dir)
     }
 

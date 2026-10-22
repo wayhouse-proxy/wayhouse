@@ -6,7 +6,7 @@
 //! One [`AddressBook`] is shared by the backend-peers and proxy-peers
 //! registries, because origins and proxies share a single tunnel network.
 //! Names are unique per [`Role`]; **addresses are unique globally**. Every
-//! claim or release is one short critical section plus one `sled`
+//! claim or release is one short critical section plus one `kv`
 //! transaction across both trees, so a crash can never leave `by_owner` and
 //! `by_address` disagreeing. A lock-based allocator is only correct with a
 //! single writer, which is why `--tunnel-network` is refused together with
@@ -20,8 +20,8 @@ use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
+use crate::kv::Transactional;
 use serde::{Deserialize, Serialize};
-use sled::transaction::Transactional;
 
 /// Which registry an owner registered in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -80,9 +80,8 @@ pub struct Network {
 }
 
 /// The most entries the book holds, for either family. Allocation scans the
-/// network linearly under the book's mutex, and the counts come from sled's
-/// O(n) `Tree::len()`, so the pool is capped as an entry count (an IPv4
-/// `/16`'s worth) rather than by address space.
+/// network linearly under the book's mutex, and the pool is capped as an
+/// entry count (an IPv4 `/16`'s worth) rather than by address space.
 pub const MAX_ENTRIES: u64 = 65_534;
 
 /// The shortest IPv4 `--tunnel-network` prefix accepted (65 534 hosts).
@@ -340,7 +339,7 @@ pub enum ClaimError {
     Storage(String),
 }
 
-/// The book's storage (sled or serialization) failed. Distinct from a
+/// The book's storage (the database or serialization) failed. Distinct from a
 /// [`Rejection`]: it says nothing about the claim and must not be recorded as
 /// its outcome.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -399,16 +398,16 @@ fn parse_owner_key(key: &[u8]) -> Option<(Role, String)> {
 
 pub struct AddressBook {
     network: Option<Network>,
-    by_owner: sled::Tree,
-    by_address: sled::Tree,
+    by_owner: crate::kv::Tree,
+    by_address: crate::kv::Tree,
     /// `applied_index` and `last_outcome`, written in the same transaction as
     /// an indexed step's other writes.
-    meta: sled::Tree,
+    meta: crate::kv::Tree,
     write: Mutex<()>,
     /// `--tunnel-readdress`: move owners outside the network on their next claim.
     readdress: bool,
     // Held so the database stays open for the trees' lifetime.
-    db: sled::Db,
+    db: crate::kv::Db,
 }
 
 const APPLIED_INDEX: &[u8] = b"applied_index";
@@ -463,8 +462,8 @@ fn decode_index(bytes: &[u8]) -> Result<u64, String> {
 impl AddressBook {
     /// Opens (creating if missing) the book under `dir`. `network` of `None`
     /// is pin-only mode: uniqueness is enforced but nothing is allocated.
-    pub fn open(dir: &Path, network: Option<Network>) -> Result<Self, sled::Error> {
-        let db = sled::open(dir)?;
+    pub fn open(dir: &Path, network: Option<Network>) -> Result<Self, crate::kv::Error> {
+        let db = crate::kv::Db::open(dir)?;
         let by_owner = db.open_tree("by_owner")?;
         let by_address = db.open_tree("by_address")?;
         let meta = db.open_tree("meta")?;
@@ -807,11 +806,11 @@ impl AddressBook {
     /// Replaces the whole book by `snapshot` in one transaction across its
     /// three trees — a Raft snapshot install.
     pub fn replace(&self, snapshot: &BookSnapshot) -> Result<(), StorageFailure> {
-        use sled::transaction::{ConflictableTransactionError, TransactionError};
+        use crate::kv::transaction::{ConflictableTransactionError, TransactionError};
         let _guard = self.write.lock().unwrap_or_else(PoisonError::into_inner);
-        // `sled` transactions cannot iterate: collect the stale keys first
+        // transaction views cannot iterate: collect the stale keys first
         // (the guard keeps every other writer out meanwhile).
-        let keys = |tree: &sled::Tree| {
+        let keys = |tree: &crate::kv::Tree| {
             tree.iter()
                 .keys()
                 .collect::<Result<Vec<_>, _>>()
@@ -869,7 +868,7 @@ impl AddressBook {
     /// The `meta` tree, for tests that corrupt it to provoke a storage
     /// failure.
     #[cfg(test)]
-    pub(crate) fn meta_tree(&self) -> &sled::Tree {
+    pub(crate) fn meta_tree(&self) -> &crate::kv::Tree {
         &self.meta
     }
 
@@ -891,7 +890,7 @@ impl AddressBook {
         ops: &[Op],
         meta: Option<(u64, Option<&[u8]>)>,
     ) -> Result<Committed, StorageFailure> {
-        use sled::transaction::{ConflictableTransactionError, TransactionError};
+        use crate::kv::transaction::{ConflictableTransactionError, TransactionError};
         // Nothing to write (a non-indexed no-op): no transaction, no flush.
         if ops.is_empty() && meta.is_none() {
             return Ok(Committed::Done);
@@ -953,8 +952,10 @@ impl AddressBook {
         Ok(out)
     }
 
-    pub fn allocated(&self) -> usize {
-        self.by_owner.len()
+    pub fn allocated(&self) -> Result<usize, StorageFailure> {
+        self.by_owner
+            .len()
+            .map_err(|e| StorageFailure(e.to_string()))
     }
 
     fn read_owner(&self, okey: &[u8]) -> Result<Option<Assignment>, StorageFailure> {
@@ -1026,7 +1027,7 @@ impl AddressBook {
         }
         Err(Rejection::Exhausted {
             network: net,
-            allocated: self.by_owner.len(),
+            allocated: self.by_owner.len().map_err(storage)?,
             capacity: net.capacity(),
         }
         .into())
@@ -1036,7 +1037,7 @@ impl AddressBook {
     /// ([`MAX_ENTRIES`] in pin-only mode), pins included.
     fn check_room(&self, network: Option<Network>) -> Result<(), ClaimError> {
         let capacity = network.map_or(MAX_ENTRIES, |n| n.capacity());
-        let allocated = self.by_owner.len();
+        let allocated = self.by_owner.len().map_err(storage)?;
         if allocated as u64 >= capacity {
             return Err(match network {
                 Some(network) => Rejection::Exhausted {
@@ -1196,8 +1197,8 @@ mod tests {
         (AddressBook::open(dir.path(), net).unwrap(), dir)
     }
 
-    // sled releases its file lock on a background thread after a drop, so a
-    // reopen right away can fail briefly (see HANDOVER "Known flakes").
+    // The lock is released when the last handle drops; retry anyway so a
+    // handle still winding down in a task cannot fail a reopen.
     fn reopen(dir: &Path, network: Option<&str>) -> AddressBook {
         let net = network.map(|n| Network::parse(n).unwrap());
         for _ in 0..50 {
@@ -1303,10 +1304,7 @@ mod tests {
         let (b, _d) = book(Some("10.60.0.0/24"));
         // A corrupt holder entry must fail closed, never hand the address out.
         b.by_address
-            .insert(
-                addr_key(ip("10.60.0.9")),
-                b"\xff\xfe-not-an-owner-key".to_vec(),
-            )
+            .insert(addr_key(ip("10.60.0.9")), b"\xff\xfe-not-an-owner-key")
             .unwrap();
         let err = b
             .claim(Role::Origin, "o1", Some(ip("10.60.0.9")), 1)
@@ -1449,7 +1447,7 @@ mod tests {
         got.sort();
         got.dedup();
         assert_eq!(got.len(), 64, "every owner must get a distinct address");
-        assert_eq!(b.allocated(), 64);
+        assert_eq!(b.allocated().unwrap(), 64);
     }
 
     #[test]
@@ -1616,7 +1614,7 @@ mod tests {
         // under "role/name", and the address's 4 raw octets as the reverse key.
         let dir = tempfile::tempdir().unwrap();
         {
-            let db = sled::open(dir.path()).unwrap();
+            let db = crate::kv::Db::open(dir.path()).unwrap();
             let owner = db.open_tree("by_owner").unwrap();
             let addr = db.open_tree("by_address").unwrap();
             owner
@@ -1900,7 +1898,7 @@ mod tests {
         );
         // The rejection wrote nothing else.
         assert_eq!(b.get(Role::Origin, "b").unwrap(), None);
-        assert_eq!(b.allocated(), 1);
+        assert_eq!(b.allocated().unwrap(), 1);
     }
 
     #[test]
@@ -2011,7 +2009,7 @@ mod tests {
         // An unknown owner advances the index and nothing else.
         assert_eq!(b.touch_at(Role::Proxy, "x", 5, 3).unwrap(), Some(false));
         assert_eq!(b.applied_index().unwrap(), Some(3));
-        assert_eq!(b.allocated(), 1);
+        assert_eq!(b.allocated().unwrap(), 1);
     }
 
     #[test]

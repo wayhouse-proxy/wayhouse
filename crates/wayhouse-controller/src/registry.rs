@@ -2,7 +2,7 @@
 //! [`crate::peers`]) and `/proxy-peers` (proxies, [`crate::proxy_peers`]).
 //! Each is **per-name latest-write-wins state** on top of
 //! [`crate::store::Store`]'s append-only log (what a subscriber catches up
-//! on) plus one sibling `sled` tree, `current`, in the same database (opened
+//! on) plus one sibling `kv` tree, `current`, in the same database (opened
 //! via `Store::db`), mapping `name -> latest revision number` so `GET` needn't
 //! scan the log.
 //!
@@ -185,9 +185,9 @@ fn wording(role: Role) -> Wording {
 pub struct RegistryState<R: Registration> {
     pub(crate) store: Arc<Store>,
     /// `name -> latest revision number` (big-endian `u64`), a sibling tree
-    /// in the same `sled` database `store` opened — see `Store::db`'s doc
+    /// in the same `kv` database `store` opened — see `Store::db`'s doc
     /// and `crate::api::AppState::stage`'s identical pattern.
-    current: sled::Tree,
+    current: crate::kv::Tree,
     pub(crate) updates: broadcast::Sender<u64>,
     /// Bearer token every request must present, or `None` to leave the API
     /// open — same posture as `crate::api::AppState`'s and

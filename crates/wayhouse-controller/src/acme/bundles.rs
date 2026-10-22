@@ -271,7 +271,7 @@ mod tests {
 
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = AcmeStore::open(&db).unwrap();
         let keyring = KeyringHandle::new(Keyring::parse(KEY).unwrap());
         let app = router(BundleState::new(store.clone(), keyring.clone()));

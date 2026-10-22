@@ -584,13 +584,13 @@ what order," which a stateless replica set cannot give.
   The Raft log's state machine applies an entry to **whichever** of the two
   `Store`s (config or intent) the entry names; each entry carries a
   `{log: "config" | "intent", bytes}` envelope.
-- **State machine = the existing `sled` `Store`, unchanged.** `openraft`'s
+- **State machine = the existing `redb` `Store`, unchanged.** `openraft`'s
   storage trait needs a state machine and a log store; the state machine is
   today's `Store::put`/`get`/`revisions_after` exactly as built (slice 1),
   fed by `openraft` applying a committed entry instead of a direct HTTP
   handler call. The Raft log itself (openraft's own append-only log of
   proposals, distinct from the config/intent revision logs it carries) lives
-  in a **third** `sled` tree, `<data_dir>/raft`, on every replica. That log
+  in a **third** `redb` tree, `<data_dir>/raft`, on every replica. That log
   is purged per `openraft`'s snapshot policy (a snapshot every 5 000 entries,
   the last 1 000 entries kept); a follower or learner behind the purge point
   is caught up by snapshot, which replaces its config and intent stores
@@ -607,7 +607,7 @@ what order," which a stateless replica set cannot give.
   already accepts a subscriber seeing a slightly stale replica during a
   partition; a follower a few commits behind its leader is the *same*
   acceptable staleness, not a new risk. **Never a risk of serving state
-  *out of order*** — `sled`'s local apply only ever appends, so a follower's
+  *out of order*** — `redb`'s local apply only ever appends, so a follower's
   view is always a strict prefix of the leader's, never a divergent one.
 - **Non-leader write handling: transparent HTTP forward, not a redirect.** A
   replica that receives a write it isn't the leader for forwards the request
@@ -649,7 +649,7 @@ what order," which a stateless replica set cannot give.
   process-local variable. This is the one genuinely new piece of state HA
   introduces beyond "replicate what already exists."
   As built: the cursor is a `relay_cursor` tree beside each log, written in the
-  same `sled` transaction as the relayed revision and replaced by a snapshot
+  same `redb` transaction as the relayed revision and replaced by a snapshot
   install; the leader proposes `RelayConfig`/`RelayIntent` entries carrying the
   parent revision; the state machine skips an entry whose parent revision is
   not above the cursor (a deposed leader's late proposal), so no replica applies
@@ -712,7 +712,7 @@ correctly scopes it as an explicit later slice, opted into per tier via
 > `POST /config?stage=canary&group=<name>`, `GET /config?group=<name>`,
 > `GET /config/subscribe?since=<rev>&group=<name>`, `POST
 > /config/promote/{revision}`, and the `{promoted, canary_groups}` `stage`
-> `sled` tree. See `docs/06` and ADR 22. **Not yet wired on the `wayhouse` side:**
+> `redb` tree. See `docs/06` and ADR 22. **Not yet wired on the `wayhouse` side:**
 > a real `wayhouse --controller` instance has no way to enroll itself in a group
 > yet — there is no `settings.controller.canary_group` config field (the
 > design sketch below), and `controller_client` does not pass `&group=`. The
@@ -753,7 +753,7 @@ rollout metadata alongside its bytes:
 { "promoted": bool, "canary_groups": ["groupA", "groupB"] }
 ```
 
-stored in a new small `sled` tree (`stage`, keyed by revision number,
+stored in a new small `redb` tree (`stage`, keyed by revision number,
 alongside `revisions`/`meta`) rather than folded into the revision bytes
 themselves — `Store::put`'s existing content-agnostic contract (never
 inspects what it's storing) stays exactly as it is; the API layer writes an
@@ -787,7 +787,7 @@ index, matching this codebase's general bias against building for a scale
 problem that doesn't exist yet: this runs at human-paced write rates against
 a log sized in the hundreds to low thousands of entries for any deployment
 this design targets, not a hot path and not `wayhouse-core`. Revisit with an
-index (e.g. a `sled` tree keyed by group, pointing at its latest visible
+index (e.g. a `redb` tree keyed by group, pointing at its latest visible
 revision) if a real fleet's revision count ever makes the scan measurable.
 
 An instance with **no `canary_group` set** behaves exactly as it does today:
@@ -820,7 +820,7 @@ surfaces; not designed here.
 > **Status:** built (phase 12 slice 8) — `wayhouse-ui --users-file` (argon2 hashes,
 > `viewer`/`operator`/`admin`), `--ui-password` kept as legacy single-secret
 > mode, `X-Actor` on every proxied write, and the controller's per-revision
-> `actors` `sled` tree (`GET /config/revisions` gained an `actor` field). See
+> `actors` `redb` tree (`GET /config/revisions` gained an `actor` field). See
 > `docs/06` and ADR 23. The heading keeps "(design)" because other docs cite
 > it by that name.
 
@@ -920,7 +920,7 @@ it. Closing this gap needs one addition at each hop:
   `Option<String>`, defaulting to `"unknown"` for a request that didn't
   carry one — e.g. a direct `curl` against the controller's own token,
   which stays valid break-glass access and simply produces a less specific
-  audit entry) and store it in a new `actors` `sled` tree, keyed by
+  audit entry) and store it in a new `actors` `redb` tree, keyed by
   revision number, alongside `stage` — same pattern, another small
   parallel tree rather than widening `Store`'s core content-agnostic
   contract.
@@ -929,7 +929,7 @@ it. Closing this gap needs one addition at each hop:
   actor, verb, timestamp)` — in-memory only, matching its existing
   "carries no durable state" design; a durable fleet-wide *audit log*
   (as opposed to "the last actor value attached to a controller revision,
-  which is already durable via `sled`") is not designed here — the
+  which is already durable via `redb`") is not designed here — the
   controller's revision history already gives a durable, complete audit
   trail for every fact that has lasting effect (config, intent); the
   aggregator's own verb log is a convenience for "who just did this," not a
@@ -1022,7 +1022,7 @@ this is what is built.
 | Component HTTP/JSON, SSE and raft routes (controller `/proxy-peers`, `/peers`, `/config/subscribe`, `/intent*`, `/tunnel/addresses`, `/raft/*`; aggregator `POST /ingest`; proxy admin API, leniently) | `X-Wayhouse-Protocol: <major>.<minor>` (`wayhouse_http::protocol`) | clients send it on every request (`wayhouse_http::builder()`); a server answers `426` to another major or an unparsable value, with `wayhouse protocol <peer> is not compatible with this node (<ours>): upgrade the older side`, and echoes its own version on every response. A request with **no** header is refused too (a caller that predates versioning, per #192); the aggregator's fan-out reaches the proxy admin API through the same check, but those routes are also called by hand, so there a missing header is accepted and only another major is refused (`route_group="proxy"`; the fan-out result shows the `426` text). Checked on connect: an open SSE stream is never torn down mid-stream. |
 | Gossip (UDP) | a magic byte then a version byte after the timestamp, inside the HMAC | a datagram with a valid MAC and another version is dropped before decoding and counted (`wayhouse_gossip_version_rejected_total`) |
 | Config document | `schema_version` | see [05](05-configuration.md) "Schema version" |
-| Controller store | `meta/format` in each sled database | a higher value is refused at open, naming the path |
+| Controller store | `meta/format` in each controller database | a higher value is refused at open, naming the path |
 
 The controller's `/config*` operator routes (except `/config/subscribe`), the UI, `/healthz`, `/metrics` and the aggregator's `/fleet/*` routes are for
 operators and the UI and are never gated.

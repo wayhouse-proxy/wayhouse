@@ -1,7 +1,7 @@
 //! Plugin installs and module blobs (Wave 5; design:
 //! `docs/superpowers/specs/2026-10-07-plugin-system-design.md`).
 //!
-//! A standalone controller keeps two sibling `sled` trees next to `revisions`:
+//! A standalone controller keeps two sibling `kv` trees next to `revisions`:
 //! `plugin_installs` (install id to [`InstallRecord`], JSON) and `plugin_blobs` (module
 //! sha256 to the module bytes). A blob is content-addressed and shared by every install of
 //! the same module; it is removed with the last install that references it. A standalone
@@ -18,9 +18,9 @@ pub mod routes;
 pub mod runner;
 pub mod secrets;
 
+use crate::kv::transaction::{ConflictableTransactionError, TransactionError};
+use crate::kv::Transactional;
 use serde::{Deserialize, Serialize};
-use sled::transaction::{ConflictableTransactionError, TransactionError};
-use sled::Transactional;
 use std::collections::BTreeMap;
 
 use secrets::Sealed;
@@ -79,7 +79,7 @@ pub struct WebhookAuth {
 #[derive(Debug, thiserror::Error)]
 pub enum PluginStoreError {
     #[error("plugin store: {0}")]
-    Sled(#[from] sled::Error),
+    Kv(#[from] crate::kv::Error),
     #[error("plugin store record is corrupt: {0}")]
     Corrupt(#[from] serde_json::Error),
     #[error("the module for this install is no longer stored")]
@@ -378,8 +378,8 @@ fn check_routes(record: &InstallRecord, set: &[RouteEntry]) -> Result<(), String
     }
 }
 
-impl From<sled::Error> for CommitError {
-    fn from(e: sled::Error) -> Self {
+impl From<crate::kv::Error> for CommitError {
+    fn from(e: crate::kv::Error) -> Self {
         Self::Store(e.into())
     }
 }
@@ -415,15 +415,15 @@ const APPLIED_KEY: &[u8] = b"applied";
 
 #[derive(Clone)]
 pub struct PluginStore {
-    installs: sled::Tree,
-    blobs: sled::Tree,
+    installs: crate::kv::Tree,
+    blobs: crate::kv::Tree,
     /// Plugin state: all installs share one tree so a commit is one atomic batch.
-    state: sled::Tree,
+    state: crate::kv::Tree,
     /// `applied`: the highest Raft index applied (big-endian `u64`), written in the same
     /// transaction as the entry it covers.
-    meta: sled::Tree,
+    meta: crate::kv::Tree,
     /// `<install id>\0<slot>` to a [`StoredSecret`] (JSON): ciphertext only.
-    secrets: sled::Tree,
+    secrets: crate::kv::Tree,
     /// Serialises create, set_enabled and delete, so a blob cannot be
     /// garbage-collected between an install's blob check and its write.
     write: std::sync::Arc<std::sync::Mutex<()>>,
@@ -433,7 +433,7 @@ pub struct PluginStore {
 
 impl PluginStore {
     /// Open the trees in the controller's database.
-    pub fn open(db: &sled::Db) -> Result<Self, sled::Error> {
+    pub fn open(db: &crate::kv::Db) -> Result<Self, crate::kv::Error> {
         Ok(Self {
             installs: db.open_tree("plugin_installs")?,
             blobs: db.open_tree("plugin_blobs")?,
@@ -659,7 +659,7 @@ impl PluginStore {
             return Err(CommitError::Stale);
         }
         let next = expected_rev + 1;
-        let mut batch = sled::Batch::default();
+        let mut batch = crate::kv::Batch::default();
         for (k, v) in puts {
             batch.insert(state_key(id, k), v.as_slice());
         }
@@ -669,7 +669,7 @@ impl PluginStore {
                 serde_json::to_vec(set).map_err(PluginStoreError::from)?,
             );
         }
-        batch.insert(rev_key(id), &next.to_le_bytes());
+        batch.insert(rev_key(id), next.to_le_bytes());
         self.state.apply_batch(batch)?;
         self.state.flush()?;
         self.bump();
@@ -697,7 +697,7 @@ impl PluginStore {
         let _guard = self.lock();
         // Keys to wipe with a deleted install: the transaction cannot scan, and the lock
         // keeps the set from changing under it.
-        let (wipe, wipe_secrets): (Vec<sled::IVec>, Vec<sled::IVec>) = match op {
+        let (wipe, wipe_secrets): (Vec<crate::kv::IVec>, Vec<crate::kv::IVec>) = match op {
             PluginOp::Delete { id } => (
                 self.state
                     .scan_prefix(state_prefix(id))
@@ -720,7 +720,7 @@ impl PluginStore {
                 if covered.is_some_and(|c| c >= index) {
                     return Ok((Applied::Replayed, None));
                 }
-                meta.insert(APPLIED_KEY, &index.to_be_bytes())?;
+                meta.insert(APPLIED_KEY, index.to_be_bytes())?;
                 let read =
                     |id: &str| -> Result<Option<InstallRecord>, ConflictableTransactionError<_>> {
                         match inst.get(id.as_bytes())? {
@@ -819,7 +819,7 @@ impl PluginStore {
                             let bytes = serde_json::to_vec(set).map_err(|e| abort(e.into()))?;
                             st.insert(routes_key(id), bytes)?;
                         }
-                        st.insert(rev_key(id), &next.to_le_bytes())?;
+                        st.insert(rev_key(id), next.to_le_bytes())?;
                         done(Applied::Done(Some(next)))
                     }
                     PluginOp::SecretSet {
@@ -930,10 +930,11 @@ impl PluginStore {
     /// transaction: a crash leaves the old content or the new, never a mix.
     pub fn replace(&self, snap: &PluginSnapshot) -> Result<(), PluginStoreError> {
         let _guard = self.lock();
-        let old_installs: Vec<sled::IVec> =
+        let old_installs: Vec<crate::kv::IVec> =
             self.installs.iter().keys().collect::<Result<_, _>>()?;
-        let old_state: Vec<sled::IVec> = self.state.iter().keys().collect::<Result<_, _>>()?;
-        let old_secrets: Vec<sled::IVec> = self.secrets.iter().keys().collect::<Result<_, _>>()?;
+        let old_state: Vec<crate::kv::IVec> = self.state.iter().keys().collect::<Result<_, _>>()?;
+        let old_secrets: Vec<crate::kv::IVec> =
+            self.secrets.iter().keys().collect::<Result<_, _>>()?;
         let mut new_secrets = Vec::new();
         for sec in &snap.secrets {
             new_secrets.push((
@@ -976,7 +977,7 @@ impl PluginStore {
                     st.insert(k.as_slice(), v.as_slice())?;
                 }
                 match snap.applied_index {
-                    Some(i) => meta.insert(APPLIED_KEY, &i.to_be_bytes())?,
+                    Some(i) => meta.insert(APPLIED_KEY, i.to_be_bytes())?,
                     None => meta.remove(APPLIED_KEY)?,
                 };
                 Ok::<_, ConflictableTransactionError<PluginStoreError>>(())
@@ -1133,13 +1134,13 @@ impl PluginStore {
             return Ok(false);
         };
         self.installs.remove(id.as_bytes())?;
-        let mut wipe = sled::Batch::default();
+        let mut wipe = crate::kv::Batch::default();
         for item in self.state.scan_prefix(state_prefix(id)) {
             wipe.remove(item?.0);
         }
         self.state.apply_batch(wipe)?;
         self.state.flush()?;
-        let mut wipe_secrets = sled::Batch::default();
+        let mut wipe_secrets = crate::kv::Batch::default();
         for item in self.secrets.scan_prefix(state_prefix(id)) {
             wipe_secrets.remove(item?.0);
         }
@@ -1161,7 +1162,7 @@ mod tests {
 
     fn store() -> (PluginStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         (PluginStore::open(&db).unwrap(), dir)
     }
 

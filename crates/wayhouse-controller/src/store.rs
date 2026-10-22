@@ -1,11 +1,11 @@
-//! Tier-1 revision store: an embedded `sled` KV, single node (ADR 20,
-//! `docs/09-technology-choices.md`). `sled` gives crash-consistent writes and
+//! Tier-1 revision store: an embedded `kv` KV, single node (ADR 20,
+//! `docs/09-technology-choices.md`). `kv` gives crash-consistent writes and
 //! atomic transactions without standing up a separate service — appropriate
 //! for this release's single `standalone` controller (`docs/10` "Fleet
 //! topology"). Swapping the backing store for a distributed one later is a
 //! change behind this same API, not a rewrite of its callers.
 //!
-//! Two `sled` trees: `revisions` maps a big-endian `u64` revision number to
+//! Two `kv` trees: `revisions` maps a big-endian `u64` revision number to
 //! the raw config bytes accepted at that revision (whatever `wayhouse_config`
 //! would parse, byte-for-byte — this crate never interprets them); `meta`
 //! holds the `current` pointer at the latest revision number and, for a
@@ -16,7 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
-use sled::Transactional;
+use crate::kv::Transactional;
 use thiserror::Error;
 
 /// The exact bytes submitted for one revision (a YAML document today; the
@@ -26,7 +26,7 @@ pub type RevisionBytes = Vec<u8>;
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("store I/O error: {0}")]
-    Sled(#[from] sled::Error),
+    Kv(#[from] crate::kv::Error),
     #[error("revision counter exhausted u64")]
     CounterOverflow,
     #[error("revision counter moved during a Raft apply (concurrent writer)")]
@@ -66,12 +66,12 @@ pub enum Applied {
 /// stage or actor trees) that joins a [`Store::put_applied_with`]
 /// transaction. `value: None` removes the key.
 pub struct SiblingWrite<'a> {
-    pub tree: &'a sled::Tree,
+    pub tree: &'a crate::kv::Tree,
     pub key: Vec<u8>,
     pub value: Option<Vec<u8>>,
 }
 
-type TxError = sled::transaction::ConflictableTransactionError<TxAbort>;
+type TxError = crate::kv::transaction::ConflictableTransactionError<TxAbort>;
 
 /// Why a transaction body aborted itself (as opposed to a storage failure).
 enum TxAbort {
@@ -81,15 +81,15 @@ enum TxAbort {
 }
 
 pub struct Store {
-    db: sled::Db,
-    revisions: sled::Tree,
-    meta: sled::Tree,
+    db: crate::kv::Db,
+    revisions: crate::kv::Tree,
+    meta: crate::kv::Tree,
 }
 
 impl Store {
     /// Opens (or creates) the store at `path`.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        let db = sled::open(path)?;
+        let db = crate::kv::Db::open(path)?;
         let revisions = db.open_tree("revisions")?;
         let meta = db.open_tree("meta")?;
         check_format(path, &meta)?;
@@ -100,12 +100,12 @@ impl Store {
         })
     }
 
-    /// The underlying `sled` database — lets a caller (`crate::api::Stage`,
+    /// The underlying `kv` database — lets a caller (`crate::api::Stage`,
     /// phase 12 slice 7) open its own sibling tree in the exact same
-    /// database rather than tracking a second `sled::open` path. `Store`
+    /// database rather than tracking a second `Db::open` path. `Store`
     /// itself stays content-agnostic; this is only ever used to add trees
     /// *alongside* `revisions`/`meta`, never to touch them directly.
-    pub fn db(&self) -> &sled::Db {
+    pub fn db(&self) -> &crate::kv::Db {
         &self.db
     }
 
@@ -132,7 +132,7 @@ impl Store {
     }
 
     /// Every revision strictly after `since`, oldest first — the catch-up
-    /// range a subscriber replays before switching to the live tail. `sled`
+    /// range a subscriber replays before switching to the live tail. `kv`
     /// keys sort by byte order, and `encode_rev` is big-endian, so a plain
     /// range scan is already revision order.
     pub fn revisions_after(&self, since: u64) -> Result<Vec<(u64, RevisionBytes)>, StoreError> {
@@ -181,9 +181,9 @@ impl Store {
         if dropped.is_empty() {
             return Ok(0);
         }
-        let mut batch = sled::Batch::default();
+        let mut batch = crate::kv::Batch::default();
         for revision in &dropped {
-            batch.remove(&encode_rev(*revision));
+            batch.remove(encode_rev(*revision));
         }
         self.revisions.apply_batch(batch)?;
         self.db.flush()?;
@@ -191,7 +191,7 @@ impl Store {
     }
 
     /// Accepts a new revision: assigns the next monotonic number, persists
-    /// the bytes and moves the `current` pointer in one `sled` transaction
+    /// the bytes and moves the `current` pointer in one `kv` transaction
     /// (across both trees), then flushes — a crash can lose the very last
     /// write, it can never leave a revision stored without becoming current
     /// or vice versa. Returns the assigned revision number.
@@ -311,11 +311,11 @@ impl Store {
                 if expected.map_or(1, |r| r.wrapping_add(1)) != *next {
                     return Err(TxError::Abort(TxAbort::RevisionRaced));
                 }
-                revisions.insert(&encode_rev(*next), bytes.as_slice())?;
-                meta.insert(CURRENT_KEY, &encode_rev(*next))?;
+                revisions.insert(encode_rev(*next), bytes.as_slice())?;
+                meta.insert(CURRENT_KEY, encode_rev(*next))?;
             }
             if let Some(index) = index {
-                meta.insert(APPLIED_INDEX_KEY, &encode_rev(index))?;
+                meta.insert(APPLIED_INDEX_KEY, encode_rev(index))?;
             }
             for (w, slot) in siblings.iter().zip(&slots) {
                 match &w.value {
@@ -326,8 +326,8 @@ impl Store {
             Ok(true)
         });
         let written = outcome.map_err(|e| match e {
-            sled::transaction::TransactionError::Storage(e) => StoreError::Sled(e),
-            sled::transaction::TransactionError::Abort(TxAbort::RevisionRaced) => {
+            crate::kv::transaction::TransactionError::Storage(e) => StoreError::Kv(e),
+            crate::kv::transaction::TransactionError::Abort(TxAbort::RevisionRaced) => {
                 StoreError::ConcurrentWrite
             }
         })?;
@@ -356,7 +356,7 @@ impl Store {
     /// siblings, every tree must come from this store's own [`Store::db`]:
     /// trees are matched to the transaction by name only.
     ///
-    /// `sled` transactions cannot iterate, so the keys to remove are read
+    /// `kv` transactions cannot iterate, so the keys to remove are read
     /// just before the transaction; the caller must be the only writer
     /// (the Raft state-machine worker, which serializes install with
     /// apply).
@@ -364,7 +364,7 @@ impl Store {
         &self,
         revisions: &[(u64, RevisionBytes)],
         applied_index: Option<u64>,
-        clear: &[&'a sled::Tree],
+        clear: &[&'a crate::kv::Tree],
         siblings: Vec<SiblingWrite<'a>>,
     ) -> Result<(), StoreError> {
         let stale = self
@@ -393,14 +393,14 @@ impl Store {
                     revs.remove(key)?;
                 }
                 for (revision, bytes) in revisions {
-                    revs.insert(&encode_rev(*revision), bytes.as_slice())?;
+                    revs.insert(encode_rev(*revision), bytes.as_slice())?;
                 }
                 match current {
-                    Some(r) => meta.insert(CURRENT_KEY, &encode_rev(r))?,
+                    Some(r) => meta.insert(CURRENT_KEY, encode_rev(r))?,
                     None => meta.remove(CURRENT_KEY)?,
                 };
                 match applied_index {
-                    Some(i) => meta.insert(APPLIED_INDEX_KEY, &encode_rev(i))?,
+                    Some(i) => meta.insert(APPLIED_INDEX_KEY, encode_rev(i))?,
                     None => meta.remove(APPLIED_INDEX_KEY)?,
                 };
                 for (w, slot) in writes.iter().zip(&slots) {
@@ -412,8 +412,8 @@ impl Store {
                 Ok::<_, TxError>(())
             })
             .map_err(|e| match e {
-                sled::transaction::TransactionError::Storage(e) => StoreError::Sled(e),
-                sled::transaction::TransactionError::Abort(TxAbort::RevisionRaced) => {
+                crate::kv::transaction::TransactionError::Storage(e) => StoreError::Kv(e),
+                crate::kv::transaction::TransactionError::Abort(TxAbort::RevisionRaced) => {
                     StoreError::ConcurrentWrite
                 }
             })?;
@@ -427,8 +427,8 @@ impl Store {
     fn transaction_trees<'t>(
         &'t self,
         writes: &[SiblingWrite<'t>],
-    ) -> (Vec<&'t sled::Tree>, Vec<usize>) {
-        let mut trees: Vec<&sled::Tree> = vec![&self.revisions, &self.meta];
+    ) -> (Vec<&'t crate::kv::Tree>, Vec<usize>) {
+        let mut trees: Vec<&crate::kv::Tree> = vec![&self.revisions, &self.meta];
         let mut slots = Vec::with_capacity(writes.len());
         for w in writes {
             let slot = match trees.iter().position(|t| t.name() == w.tree.name()) {
@@ -445,19 +445,19 @@ impl Store {
 }
 
 /// Where a `slave` tier's upward relay stands: the highest parent revision
-/// this log has absorbed. A sibling `sled` tree of the log it belongs to, so
+/// this log has absorbed. A sibling `kv` tree of the log it belongs to, so
 /// it joins the transaction that lands each relayed revision (and is
 /// replaced with the log by a Raft snapshot install). Under HA the cursor is
 /// therefore replicated state: a newly elected leader resumes the relay
 /// where the group left off, and a stale proposal (`parent_revision` not
 /// above the cursor) is recognisably a duplicate.
 #[derive(Clone)]
-pub struct RelayCursor(sled::Tree);
+pub struct RelayCursor(crate::kv::Tree);
 
 const RELAY_CURSOR_KEY: &[u8] = b"parent";
 
 impl RelayCursor {
-    pub fn open(db: &sled::Db) -> Result<Self, sled::Error> {
+    pub fn open(db: &crate::kv::Db) -> Result<Self, crate::kv::Error> {
         Ok(RelayCursor(db.open_tree("relay_cursor")?))
     }
 
@@ -476,17 +476,17 @@ impl RelayCursor {
     }
 
     /// The tree itself, for [`Store::replace_all_with`]'s `clear` list.
-    pub fn tree(&self) -> &sled::Tree {
+    pub fn tree(&self) -> &crate::kv::Tree {
         &self.0
     }
 }
 
 /// Writes the format marker into a store that has none; refuses a higher or
 /// malformed one.
-fn check_format(path: &Path, meta: &sled::Tree) -> Result<(), StoreError> {
+fn check_format(path: &Path, meta: &crate::kv::Tree) -> Result<(), StoreError> {
     match meta.get(FORMAT_KEY)? {
         None => {
-            meta.insert(FORMAT_KEY, &STORE_FORMAT.to_be_bytes())?;
+            meta.insert(FORMAT_KEY, STORE_FORMAT.to_be_bytes())?;
         }
         Some(v) => {
             let bytes: [u8; 4] = v
@@ -518,19 +518,16 @@ fn decode_rev(bytes: &[u8]) -> u64 {
     u64::from_be_bytes(buf)
 }
 
-/// Runs `open` until it stops failing on `sled`'s exclusive file lock.
+/// Runs `open` until it stops failing on the database's exclusive file lock.
 ///
-/// Dropping the last `sled::Db` handle does not release the lock
-/// synchronously: the locked `File` sits behind an `Arc` that `sled` 0.34's
-/// own threadpool jobs (async log writes, segment truncation) and
-/// epoch-deferred buffer drops also hold, so it is closed whenever the last
-/// of those finishes. Opening a path again right after dropping it in the
-/// same process (a test fixture, or the pre-HA import, which inspects a
-/// registry, renames it and reads it again) can lose that race with
-/// `WouldBlock` ("could not acquire lock"). Only that error is retried, and
-/// only for a bounded time; any other outcome, `Ok` or `Err`, is returned, as
-/// is the lock error itself once the time is up (a second process really
-/// holding the lock).
+/// The lock is released when the last handle to the database drops, so
+/// opening a path again right after dropping one handle is fine. The retry
+/// covers another handle (a clone held by a task that is still winding down,
+/// say) outliving the caller's own for a moment: the open fails with "could
+/// not acquire lock" until it lets go. Only that error is retried, and only
+/// for a bounded time; any other outcome, `Ok` or `Err`, is returned, as is
+/// the lock error itself once the time is up (a second process really holding
+/// the lock).
 pub(crate) fn retry_when_unlocked<T, E: std::fmt::Display>(
     mut open: impl FnMut() -> Result<T, E>,
 ) -> Result<T, E> {
@@ -596,7 +593,7 @@ mod tests {
             let store = Store::open(dir.path()).unwrap();
             store
                 .meta
-                .insert(FORMAT_KEY, &(STORE_FORMAT + 1).to_be_bytes())
+                .insert(FORMAT_KEY, (STORE_FORMAT + 1).to_be_bytes())
                 .unwrap();
             store.db.flush().unwrap();
         }
@@ -641,7 +638,7 @@ mod tests {
     #[test]
     fn reopen_retries_a_lock_error_wrapped_in_context() {
         // `anyhow` context hides the cause from plain `Display`; the helper
-        // must still recognise sled's lock error underneath it.
+        // must still recognise the lock error underneath it.
         let mut calls = 0;
         let v = reopen_when_unlocked(|| {
             calls += 1;
@@ -926,7 +923,7 @@ mod tests {
         let side = store.db().open_tree("side").unwrap();
         for i in 1..=3 {
             store.put_applied(vec![i as u8], i).unwrap();
-            side.insert(i.to_be_bytes(), b"old".to_vec()).unwrap();
+            side.insert(i.to_be_bytes(), b"old").unwrap();
         }
 
         let revisions = vec![(5, b"five".to_vec()), (6, b"six".to_vec())];

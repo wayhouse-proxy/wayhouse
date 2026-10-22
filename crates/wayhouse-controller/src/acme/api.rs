@@ -555,7 +555,7 @@ mod tests {
 
     fn app(token: Option<&str>) -> (Router, AcmeStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = AcmeStore::open(&db).unwrap();
         let plugins = crate::plugins::PluginStore::open(&db).unwrap();
         plugins.put_blob(&"0".repeat(64), b"module").unwrap();
@@ -825,7 +825,7 @@ mod tests {
     #[tokio::test]
     async fn with_plugins_off_no_site_can_be_stored() {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         let state = AcmeState {
             store: AcmeStore::open(&db).unwrap(),
             auth_token: None,
@@ -975,7 +975,7 @@ mod tests {
     async fn rotation_rewraps_the_account_and_certificate_keys_under_the_new_key() {
         use crate::plugins::secrets::{Keyring, KeyringHandle};
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = AcmeStore::open(&db).unwrap();
         let ring_a = Keyring::parse(KEY_A).unwrap();
         let old_id = ring_a.active_id().unwrap().to_string();

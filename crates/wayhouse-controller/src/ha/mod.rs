@@ -1,7 +1,7 @@
 //! Intra-tier controller HA (phase 12 slice 6, `docs/10` "Intra-tier HA
 //! (design)", ADR 21 in `docs/09`) — embedded `openraft`, **one Raft group
 //! per controller tier replicating both the config and intent logs
-//! together**. `sled` (`crate::store::Store`) is unchanged as the state
+//! together**. `kv` (`crate::store::Store`) is unchanged as the state
 //! machine; `openraft` only adds a replicated log and leader election on
 //! top of it.
 //!
@@ -13,13 +13,13 @@
 //! newly elected leader resumes where the group left off. See [`crate::relay`].
 //!
 //! Module layout, mirroring `openraft`'s own `raft-kv-memstore` example
-//! (adapted: `sled`-backed instead of in-memory, `axum` instead of
+//! (adapted: `kv`-backed instead of in-memory, `axum` instead of
 //! `actix-web`, and the state machine applies straight into the existing
 //! [`crate::api::AppState`] / [`crate::intent::api::IntentState`] rather
 //! than a bespoke KV):
 //!
 //! - [`log_store`] — `RaftLogStorage` + `RaftLogReader`, backed by two
-//!   `sled` trees (`log`, `meta`) so the Raft log itself survives a
+//!   `kv` trees (`log`, `meta`) so the Raft log itself survives a
 //!   restart, not just the state machine it replicates; `openraft` purges
 //!   it up to each snapshot (keeping the last 1000 entries).
 //! - [`state_machine`] — `RaftStateMachine` + `RaftSnapshotBuilder`, wraps

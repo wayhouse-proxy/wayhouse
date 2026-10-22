@@ -70,7 +70,7 @@ mod tests {
     use crate::acme::{AcmeOp, Applied, HttpChallenge};
 
     fn app() -> (Router, AcmeStore, Arc<AtomicU64>) {
-        let db = sled::Config::new().temporary(true).open().unwrap();
+        let db = crate::kv::Db::temporary().unwrap();
         let store = AcmeStore::open(&db).unwrap();
         let now = Arc::new(AtomicU64::new(1_000));
         let clock = now.clone();
@@ -195,7 +195,7 @@ mod tests {
             .collect();
         assert_eq!(tokens, ["new"]);
         let snap = store.snapshot().unwrap();
-        let db = sled::Config::new().temporary(true).open().unwrap();
+        let db = crate::kv::Db::temporary().unwrap();
         let other = AcmeStore::open(&db).unwrap();
         other.replace(&snap).unwrap();
         assert_eq!(other.challenges().unwrap(), store.challenges().unwrap());
