@@ -147,7 +147,9 @@ ships [`deploy/caddy/base.json`](../deploy/caddy/base.json) (`unix//run/caddy/ad
 `deploy/compose/`. **Kubernetes:** label the gateway nodes and apply
 [`deploy/k8s/60-web-gateway.yaml`](../deploy/k8s/60-web-gateway.yaml).
 
-The `wayhouse-caddy` image is stock Caddy, pinned by version and digest in
+The `wayhouse-caddy` image is stock Caddy 2.11.7 source (no modules, no patches), compiled in the
+Dockerfile with a patched Go toolchain and `golang.org/x/net` because the official image lags the Go
+security releases; the version and the base digests are pinned in
 [`deploy/Dockerfile`](../deploy/Dockerfile) (one place; bumps are manual, the Trivy job scans it like the
 other images). It runs as uid 65532 on high ports with a read-only root filesystem and no
 capabilities (the base image's `cap_net_bind_service` file capability is removed, which would
