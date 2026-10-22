@@ -290,6 +290,7 @@ pub fn merge_text(text: &str, routes: &[PluginRoute]) -> Result<Merged, ConfigEr
 }
 
 #[cfg(test)]
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
     use crate::{parse_str, Action, Matcher};

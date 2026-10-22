@@ -202,6 +202,8 @@ opens the range in the firewall once and states the same range in the listener `
 plugin approval; players connect to the node's name at the entry port, which the Plugins page lists
 first.
 
+**Disabled installs.** A disabled install keeps its entry ports until it is deleted, so the range does not free up by disabling a plugin.
+
 **HA and upgrades.** Port routes need every member on a build that reports plugin support level 4
 (`/raft/whoami`); until then the leader refuses to commit a port route set and the tick reports why.
 A module that declares `port_routes` fails to link on a host that predates the imports and is

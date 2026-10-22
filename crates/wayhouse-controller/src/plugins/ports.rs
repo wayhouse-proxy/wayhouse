@@ -93,6 +93,9 @@ fn in_ranges(ranges: &[RangeInclusive<u16>], port: u16) -> bool {
 ///
 /// `declared` is expected sorted by key (the host sorts a set it returns), which makes the
 /// result independent of how the plugin ordered it.
+///
+/// `now` is the proposer's clock, carried in the log entry so replicas agree. A leader whose
+/// clock runs far ahead can end a quarantine early; that trade-off is accepted.
 pub fn allocate(
     ledger: &mut PortLedger,
     install: &str,
@@ -181,6 +184,7 @@ pub fn allocate(
 }
 
 #[cfg(test)]
+#[allow(clippy::single_range_in_vec_init)]
 mod tests {
     use super::*;
 
