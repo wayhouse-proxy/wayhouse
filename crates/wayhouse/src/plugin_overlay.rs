@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use serde::Deserialize;
-use wayhouse_config::plugin_routes::{merge_text, PluginRoute};
+use wayhouse_config::plugin_routes::{merge_text, PluginRoute, PortProto};
 use wayhouse_core::RuntimeHandle;
 
 const RECONNECT_MIN: Duration = Duration::from_secs(1);
@@ -37,8 +37,30 @@ struct Doc {
 
 #[derive(Deserialize)]
 struct Entry {
-    host: String,
+    /// A hostname route (`sni`/`sniffer` listeners).
+    #[serde(default)]
+    host: Option<String>,
+    /// A port route (`type: port` listeners), with `proto` `udp`, `tcp` or `both`.
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    proto: Option<String>,
     backend: String,
+}
+
+impl Entry {
+    /// An entry this build does not understand is left out, never fatal: a newer
+    /// controller may add kinds.
+    fn route(self) -> Option<PluginRoute> {
+        match (self.host, self.port) {
+            (Some(host), None) => Some(PluginRoute::host(host, self.backend)),
+            (None, Some(port)) => {
+                let proto = PortProto::parse(self.proto.as_deref()?)?;
+                Some(PluginRoute::port(port, proto, self.backend))
+            }
+            _ => None,
+        }
+    }
 }
 
 fn lock() -> std::sync::MutexGuard<'static, Vec<PluginRoute>> {
@@ -72,15 +94,7 @@ fn parse_event(event: &str) -> Option<Vec<PluginRoute>> {
         .find_map(|l| l.strip_prefix("data:"))?
         .trim_start();
     let doc: Doc = serde_json::from_str(data).ok()?;
-    Some(
-        doc.routes
-            .into_iter()
-            .map(|e| PluginRoute {
-                host: e.host,
-                backend: e.backend,
-            })
-            .collect(),
-    )
+    Some(doc.routes.into_iter().filter_map(Entry::route).collect())
 }
 
 /// Replaces the overlay; returns whether it changed.
@@ -166,9 +180,24 @@ mod tests {
             r#"data: {"routes":[{"host":"a.example.com","backend":"10.0.0.1:1","owner":"plugin:1","plugin":"p"}],"conflicts":[]}"#,
         )
         .unwrap();
-        assert_eq!(r[0].host, "a.example.com");
+        assert_eq!(r[0], PluginRoute::host("a.example.com", "10.0.0.1:1"));
         assert!(parse_event(": keep-alive").is_none());
         assert!(parse_event("data: nope").is_none());
+    }
+
+    #[test]
+    fn a_port_entry_yields_a_port_route_and_an_unknown_kind_is_left_out() {
+        let r = parse_event(
+            r#"data: {"routes":[{"port":30003,"proto":"udp","backend":"10.0.0.1:7777","key":"k"},{"port":30004,"proto":"both","backend":"10.0.0.2:1"},{"port":30005,"proto":"sctp","backend":"10.0.0.3:1"},{"backend":"10.0.0.4:1"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            r,
+            vec![
+                PluginRoute::port(30003, PortProto::Udp, "10.0.0.1:7777"),
+                PluginRoute::port(30004, PortProto::Both, "10.0.0.2:1"),
+            ]
+        );
     }
 
     #[test]
@@ -183,16 +212,10 @@ mod tests {
     #[test]
     fn the_merge_applies_the_overlay_and_a_change_is_noticed() {
         let text = "schema_version: 2\npools:\n  - name: p\n    targets: [\"10.9.0.1:1\"]\nlisteners:\n  - name: l\n    bind: \"0.0.0.0:1\"\n    protocol: tcp\n    pool: p\n    plugin_routes: { type: sni }\n";
-        assert!(set(vec![PluginRoute {
-            host: "a.example.com".into(),
-            backend: "10.0.1.1:1".into(),
-        }]));
+        assert!(set(vec![PluginRoute::host("a.example.com", "10.0.1.1:1")]));
         let merged = merge(text);
         assert!(merged.contains("a.example.com"));
-        assert!(!set(vec![PluginRoute {
-            host: "a.example.com".into(),
-            backend: "10.0.1.1:1".into(),
-        }]));
+        assert!(!set(vec![PluginRoute::host("a.example.com", "10.0.1.1:1")]));
         assert!(set(vec![]));
         assert_eq!(merge(text), text);
     }
