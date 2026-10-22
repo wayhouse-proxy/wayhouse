@@ -43,8 +43,10 @@ or approve pull requests"; a `RELEASE_PLEASE_TOKEN` secret works instead of the 
    job stays green).
 
 The first release PR carried `"release-as": "0.1.0"` in `release-please-config.json`; it was
-removed once `0.1.0` was out, so later versions follow the commit types (`feat` bumps the
-minor, `fix` the patch while the major is 0).
+removed once `0.1.0` was out, so later versions follow the commit types. The config has
+`bump-patch-for-minor-pre-major`, so under 0.x both `feat` and `fix` bump the patch and only a
+breaking change (`!`) bumps the minor. To get a minor bump for compatible additions, set
+`release-as` for that one release (as for 0.3.0) and remove it once the tag is pushed.
 
 **Pre-release** (`0.N.P-rc.K`): release-please does not make these. Set the version in
 `Cargo.toml` and `Cargo.lock` by hand in a normal PR (`cargo update --workspace`), merge it,

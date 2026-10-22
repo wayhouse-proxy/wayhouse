@@ -4,6 +4,7 @@
   "packages": {
     ".": {
       "release-type": "simple",
+      "release-as": "0.3.0",
       "package-name": "wayhouse",
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
