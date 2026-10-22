@@ -102,7 +102,7 @@ errs << "k8s web gateway: web-sync must point at the socket Caddy serves" unless
 # The Caddy image: pinned by version AND digest, no file capability left, base config shipped.
 caddy_stage = df[/AS wayhouse-caddy\n.*?(?=\nFROM |\z)/m]
 errs << "wayhouse-caddy must be pinned by `FROM caddy:<version>@sha256:...`" unless df =~ /^FROM caddy:\d+\.\d+\.\d+@sha256:[0-9a-f]{64} AS wayhouse-caddy$/
-errs << "wayhouse-caddy must drop the base image file capability (cp + mv)" unless caddy_stage.include?("cp /usr/bin/caddy /tmp/caddy && mv /tmp/caddy /usr/bin/caddy")
+errs << "wayhouse-caddy must replace /usr/bin/caddy with the patched build (COPY --from=caddy-build, which also drops the base image file capability)" unless caddy_stage.include?("COPY --from=caddy-build --chmod=0755 /out/caddy /usr/bin/caddy")
 errs << "wayhouse-caddy must run as 65532" unless caddy_stage.include?("USER 65532:65532")
 errs << "wayhouse image must carry wayhouse-web-sync" unless wayhouse_stage.include?("/out/wayhouse-web-sync /usr/local/bin/wayhouse-web-sync")
 errs << "wayhouse image must carry wayhouse-certsync" unless wayhouse_stage.include?("/out/wayhouse-certsync /usr/local/bin/wayhouse-certsync")

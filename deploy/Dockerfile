@@ -111,18 +111,35 @@ COPY --from=bins --chown=65532:65532 /out/data /data
 ENTRYPOINT ["/usr/local/bin/wayhouse-agent"]
 CMD ["--data-dir", "/data"]
 
-# Caddy for the web front door (docs/web-proxy.md), published as `wayhouse-caddy`. Stock
-# Caddy, pinned by version and digest: the spike (#355) used built-in modules only. When a
-# DNS-01 module is needed, make this stage `FROM caddy:<ver>-builder`, run
-# `xcaddy build v<ver> --with <module>` and copy the binary over /usr/bin/caddy, then re-pin.
-# Bump: resolve the tag's index digest (`docker manifest inspect caddy:<ver>`), change both
-# here; deploy/check-caddy-image.sh then checks the image reports that version.
-FROM caddy:2.11.7@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af AS wayhouse-caddy
+# Caddy for the web front door (docs/web-proxy.md), published as `wayhouse-caddy`. The spike
+# (#355) used built-in modules only, so this is stock Caddy; we only rebuild it ourselves
+# because the official image's Go toolchain lags the Go security releases (the 2.11.7 image
+# is built with Go 1.26.8; Trivy flags crypto/x509, crypto/tls and net/http, fixed in Go
+# 1.26.9 and 1.26.10, and golang.org/x/net/http2). The build stage below compiles the pinned
+# Caddy with a patched Go and golang.org/x/net and the final stage swaps that binary in.
+# Bump: change CADDY_VERSION and XCADDY_VERSION / GOLANG_X_NET_VERSION (Dependabot does not track
+# these ARGs), the golang tag/digest (`docker manifest inspect golang:<ver>-alpine`)
+# and the `FROM caddy:<ver>@sha256:…` line (index digest of `docker manifest inspect caddy:<ver>`);
+# deploy/check-caddy-image.sh then checks the image reports that version. Drop the build stage
+# once the official caddy image ships a Go with the fixes. For a DNS-01 module add
+# `--with <module>` to the xcaddy line and re-pin.
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba AS caddy-build
+ARG TARGETOS
+ARG TARGETARCH
+ARG CADDY_VERSION=2.11.7
+ARG XCADDY_VERSION=0.4.7
+ARG GOLANG_X_NET_VERSION=0.61.0
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local
+RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@v${XCADDY_VERSION}
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH xcaddy build v${CADDY_VERSION} \
+      --replace golang.org/x/net=golang.org/x/net@v${GOLANG_X_NET_VERSION} \
+      --output /out/caddy
+FROM caddy:2.11.7@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b0e2960525 AS wayhouse-caddy
 # The base image grants /usr/bin/caddy cap_net_bind_service as a file capability. We listen
 # on high ports and run unprivileged, and a file capability makes exec fail once a
-# deployment drops all capabilities (a common k8s hardening). `cp` does not copy file
-# capabilities, so replacing the file with a copy removes it.
-RUN cp /usr/bin/caddy /tmp/caddy && mv /tmp/caddy /usr/bin/caddy && chmod 0755 /usr/bin/caddy
+# deployment drops all capabilities (a common k8s hardening). COPY --from replaces the file
+# with our build, which carries no file capability.
+COPY --from=caddy-build --chmod=0755 /out/caddy /usr/bin/caddy
 COPY deploy/caddy/base.json /etc/caddy/base.json
 # Caddy is Apache-2.0: ship the text and the attribution.
 COPY LICENSE-APACHE deploy/caddy/NOTICE /licenses/

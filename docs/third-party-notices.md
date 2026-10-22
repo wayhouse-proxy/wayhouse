@@ -6,16 +6,17 @@ redistributed as a binary.
 
 ## Caddy (`wayhouse-caddy` image)
 
-| Item         | Value                                                                                               |
-| ------------ | --------------------------------------------------------------------------------------------------- |
-| Software     | [Caddy](https://github.com/caddyserver/caddy) 2.11.7, stock build, unmodified                       |
-| License      | Apache-2.0                                                                                          |
-| Pinned in    | `deploy/Dockerfile` (version and digest), checked by `deploy/check-caddy-image.sh`                  |
-| In the image | `/licenses/LICENSE-APACHE` and `/licenses/NOTICE` ([`deploy/caddy/NOTICE`](../deploy/caddy/NOTICE)) |
+| Item         | Value                                                                                                      |
+| ------------ | ---------------------------------------------------------------------------------------------------------- |
+| Software     | [Caddy](https://github.com/caddyserver/caddy) 2.11.7, unmodified source, built with a patched Go toolchain |
+| License      | Apache-2.0                                                                                                 |
+| Pinned in    | `deploy/Dockerfile` (version and digest), checked by `deploy/check-caddy-image.sh`                         |
+| In the image | `/licenses/LICENSE-APACHE` and `/licenses/NOTICE` ([`deploy/caddy/NOTICE`](../deploy/caddy/NOTICE))        |
 
 Apache-2.0 allows redistribution. What we do to meet its terms: ship the license text, keep the
-attribution in the NOTICE, and state changes. We change no Caddy source; the binary is copied
-from the upstream image only to drop its file capability. Caddy's own Go dependencies (BSD, MIT
+attribution in the NOTICE, and state changes. We change no Caddy source: the image builds the upstream tag with `xcaddy`, a patched Go toolchain
+and a newer `golang.org/x/net` (security fixes the upstream image does not have yet), and
+replaces the upstream image's binary with it. Caddy's own Go dependencies (BSD, MIT
 and similar) are compiled in and are covered by the upstream project's license files; the image
 does not list them one by one. Upstream's module list is `caddy list-modules --versions`.
 
