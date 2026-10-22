@@ -38,9 +38,10 @@ or approve pull requests"; a `RELEASE_PLEASE_TOKEN` secret works instead of the 
 3. Tag that commit `v0.N.P` and push the tag. The tag stays manual (release-please runs with
    `skip-github-release`) so `release.yml` triggers and its `verify` job runs in order.
 4. Watch `release.yml`. If `publish` fails half-way, re-run it; the pushes are idempotent.
-5. **Do not forget:** on the merged release PR, change the label `autorelease: pending` to
-   `autorelease: tagged`. Without it release-please silently stops opening release PRs (the
-   job stays green).
+5. Nothing to do for the `autorelease: pending` label on the merged release PR: the next run
+   of the Release PR workflow after the tag exists flips it to `autorelease: tagged` itself.
+   Until the tag is pushed the label stays, and release-please opens no further release PR
+   (it logs "untagged, merged release PRs outstanding"; the job stays green).
 
 The first release PR carried `"release-as": "0.1.0"` in `release-please-config.json`; it was
 removed once `0.1.0` was out, so later versions follow the commit types (`feat` bumps the

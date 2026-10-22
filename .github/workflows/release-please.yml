@@ -30,6 +30,26 @@ jobs:
       pull-requests: write   # open and update the release PR
       actions: write         # dispatch ci.yml
     steps:
+      # skip-github-release means release-please never flips the label on a merged release
+      # PR, and it aborts ("untagged, merged release PRs outstanding") while one is still
+      # `autorelease: pending`. Flip it here once the maintainer's tag exists.
+      - name: Mark tagged release PRs
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh pr list --state merged --label "autorelease: pending" --json number,title \
+            --jq '.[] | "\(.number) \(.title)"' |
+          while read -r number title; do
+            version="$(sed -nE 's/^chore\(.*\): release ([0-9][^ ]*).*/\1/p' <<<"$title")"
+            [ -n "$version" ] || continue
+            if gh api "repos/$GH_REPO/git/ref/tags/v$version" --silent 2>/dev/null; then
+              gh pr edit "$number" --remove-label "autorelease: pending" --add-label "autorelease: tagged"
+              echo "PR #$number: tag v$version exists, marked tagged"
+            else
+              echo "PR #$number: tag v$version not pushed yet, leaving pending"
+            fi
+          done
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
         id: rp
         with:
