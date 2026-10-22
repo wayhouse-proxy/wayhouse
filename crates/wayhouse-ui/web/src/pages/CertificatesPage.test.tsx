@@ -37,6 +37,7 @@ function cert(over: Record<string, unknown> = {}) {
     issued_at: NOW - 30 * DAY,
     serial: "01",
     names: ["a.example.com"],
+    key_id: "k1",
     held: null,
     untrusted: false,
     ...over,
@@ -64,6 +65,12 @@ beforeEach(() => {
         challenge: "http-01",
         certificate: cert({ not_after: NOW + 5 * DAY }),
         attempt: { failures: 2, next_attempt_at: NOW + 3600, last_error: "CA said no" },
+      }),
+      site({
+        name: "late",
+        names: ["late.example.com"],
+        certificate: cert({ not_after: NOW + 30 * DAY }),
+        attempt: { failures: 1, next_attempt_at: NOW + 3600, last_error: "CA said no" },
       }),
       site({ name: "new", names: ["new.example.com"] }),
       site({ name: "gone", certificate: cert({ not_after: NOW - DAY }) }),
@@ -97,6 +104,13 @@ describe("CertificatesPage", () => {
     expect(within(row("gone")).getByText("expired")).toBeInTheDocument();
     expect(within(row("stage")).getByText("staging (untrusted)")).toBeInTheDocument();
     expect(within(row("off")).getByText("disabled")).toBeInTheDocument();
+  });
+
+  it("makes a failing renewal urgent only when the certificate is close to expiry", async () => {
+    render(<CertificatesPage />);
+    await screen.findByText("https://ca.test/acct/1");
+    expect(within(row("late")).getByText("renewal failing")).toHaveClass("text-warn");
+    expect(within(row("shop")).getByText("renewal failing")).toHaveClass("text-bad");
   });
 
   it("shows the last error and when the next attempt is", async () => {

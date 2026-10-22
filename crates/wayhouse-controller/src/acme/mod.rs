@@ -110,7 +110,7 @@ pub fn check_listener(plain_remote: bool, allow_insecure: bool) -> Result<(), St
 }
 
 /// The EAB HMAC key in `path`. On unix the file must not be readable by group or others.
-pub fn read_eab_key(path: &std::path::Path) -> Result<String, String> {
+pub fn read_eab_key(path: &std::path::Path) -> Result<zeroize::Zeroizing<String>, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -125,16 +125,18 @@ pub fn read_eab_key(path: &std::path::Path) -> Result<String, String> {
             ));
         }
     }
-    let key = std::fs::read_to_string(path)
-        .map_err(|e| format!("--acme-eab-hmac-key-file {}: {e}", path.display()))?;
-    let key = key.trim();
+    let text = zeroize::Zeroizing::new(
+        std::fs::read_to_string(path)
+            .map_err(|e| format!("--acme-eab-hmac-key-file {}: {e}", path.display()))?,
+    );
+    let key = text.trim();
     if key.is_empty() {
         return Err(format!(
             "--acme-eab-hmac-key-file {} is empty",
             path.display()
         ));
     }
-    Ok(key.to_string())
+    Ok(zeroize::Zeroizing::new(key.to_string()))
 }
 
 /// Startup checks for `--acme`. Returns the CA directory URL.
@@ -207,7 +209,7 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(read_eab_key(&path).unwrap_err().contains("chmod 600"));
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(read_eab_key(&path).unwrap(), "c2VjcmV0");
+        assert_eq!(read_eab_key(&path).unwrap().as_str(), "c2VjcmV0");
         std::fs::write(&path, " \n").unwrap();
         assert!(read_eab_key(&path).unwrap_err().contains("empty"));
         assert!(read_eab_key(&dir.path().join("missing")).is_err());

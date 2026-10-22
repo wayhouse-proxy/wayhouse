@@ -815,7 +815,7 @@ async fn main() -> anyhow::Result<()> {
                 ca = ca
                     .external_account(kid, &hmac)
                     .map_err(|e| anyhow::anyhow!("--acme-eab-kid: {e}"))?;
-                tracing::info!(kid = %kid, "ACME accounts are created with an external account binding");
+                tracing::info!(kid = %kid, "an ACME account, if one has to be created, will use an external account binding");
             }
             // Without plugins there is no DNS provider to call: an order fails with a visible
             // "not available" error, and a site cannot name a plugin (the API says so).
@@ -889,4 +889,30 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Args;
+
+    fn parse(extra: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(
+            ["wayhouse-controller"]
+                .into_iter()
+                .chain(extra.iter().copied()),
+        )
+    }
+
+    #[test]
+    fn the_eab_flags_come_as_a_pair_and_need_acme() {
+        let acme = ["--acme", "--acme-ca", "letsencrypt"];
+        let pair = ["--acme-eab-kid", "kid1", "--acme-eab-hmac-key-file", "/k"];
+        let with = |extra: &[&str]| parse(&[&acme[..], extra].concat());
+        assert!(with(&pair).is_ok());
+        assert!(parse(&pair).is_err(), "--acme is required");
+        assert!(with(&pair[..2]).is_err(), "the key file is required");
+        assert!(with(&pair[2..]).is_err(), "the key id is required");
+    }
 }

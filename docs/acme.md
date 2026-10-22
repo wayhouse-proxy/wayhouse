@@ -114,7 +114,8 @@ How the answer reaches the CA:
 
 3. `GET /.well-known/acme-challenge/{token}` on the controller needs no token: the body is
    what the CA is meant to read, the token is chosen by the CA per order, and anything unknown
-   or expired is a plain `404`. The answer is withdrawn when the order ends. If the leader
+   or expired is a plain `404`. The answer is keyed by the token alone; the `Host` header that
+   `wayhouse-web-sync` forwards (the site's name) is ignored. The answer is withdrawn when the order ends. If the leader
    dies mid-order, the next pass drops what is left once it has expired (the order time plus
    the site's `propagation_timeout_secs`).
 

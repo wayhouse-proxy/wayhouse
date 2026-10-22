@@ -37,7 +37,7 @@ pub struct Entry {
 pub struct Bundle {
     pub version: u64,
     pub chain_pem: String,
-    pub key_pem: String,
+    pub key_pem: zeroize::Zeroizing<String>,
     pub not_after: u64,
     #[serde(default)]
     pub serial: String,

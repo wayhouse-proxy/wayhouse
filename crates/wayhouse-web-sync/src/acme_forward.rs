@@ -50,13 +50,15 @@ impl AcmeForward {
             if rest.is_empty() || rest.contains(['/', '?', '#', '@']) {
                 return Err(bad("must be http(s)://host[:port] only"));
             }
-            let dial = if has_port(rest) {
-                rest.to_string()
-            } else if tls {
-                format!("{rest}:443")
-            } else {
-                format!("{rest}:80")
+            // The URL parser rejects an empty host, a port above 65535 and malformed IPv6
+            // literals (`http://:7000`, `c1:99999`, `http://[::1`, an unbracketed `::1`).
+            let url =
+                reqwest::Url::parse(&format!("{}://{rest}", if tls { "https" } else { "http" }))
+                    .map_err(|_| bad("not a valid host[:port]"))?;
+            let (Some(host), Some(port)) = (url.host_str(), url.port_or_known_default()) else {
+                return Err(bad("not a valid host[:port]"));
             };
+            let dial = format!("{host}:{port}");
             if !dials.contains(&dial) {
                 dials.push(dial);
             }
@@ -81,18 +83,6 @@ impl AcmeForward {
     }
 }
 
-/// Whether `host` already ends in `:port` (a bracketed IPv6 literal without a port does not).
-fn has_port(host: &str) -> bool {
-    match host.rsplit_once(':') {
-        Some((head, port)) => {
-            !port.is_empty()
-                && port.bytes().all(|b| b.is_ascii_digit())
-                && (!head.contains(':') || head.ends_with(']'))
-        }
-        None => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +102,16 @@ mod tests {
     }
 
     #[test]
+    fn hosts_are_normalized_and_ports_range_checked() {
+        assert_eq!(ok("https://C1.Internal:65535").dials, ["c1.internal:65535"]);
+        assert_eq!(ok("http://10.0.0.5").dials, ["10.0.0.5:80"]);
+        assert_eq!(
+            ok("http://[2001:db8::1]:7000").dials,
+            ["[2001:db8::1]:7000"]
+        );
+    }
+
+    #[test]
     fn malformed_lists_are_refused() {
         for bad in [
             "",
@@ -123,6 +123,11 @@ mod tests {
             "https://u:p@c1",
             "https://c1?x=1",
             "https://c1,http://c2",
+            "http://:7000",
+            "https://c1:99999",
+            "http://[::1",
+            "http://::1",
+            "https://a b",
         ] {
             assert!(AcmeForward::parse(bad, None).is_err(), "{bad:?}");
         }

@@ -124,6 +124,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_answer_is_keyed_by_token_and_ignores_the_host_header() {
+        // web-sync forwards the client's `Host` (the site's name) to the controller.
+        let (app, store, _) = app();
+        publish(&store, "tok", 2_000);
+        for host in ["panel.example.com", "controller.internal:7000", ""] {
+            let mut req = Request::get("/.well-known/acme-challenge/tok");
+            if !host.is_empty() {
+                req = req.header(header::HOST, host);
+            }
+            let rsp = app
+                .clone()
+                .oneshot(req.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(rsp.status(), StatusCode::OK, "Host {host:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn an_unknown_or_withdrawn_token_is_a_404_with_no_body() {
         let (app, store, _) = app();
         assert_eq!(get(&app, "nope").await.0, StatusCode::NOT_FOUND);

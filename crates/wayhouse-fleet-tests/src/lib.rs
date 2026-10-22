@@ -153,6 +153,7 @@ pub fn port_claim_dir() -> PathBuf {
 /// that away, and the claim is put back. (A third caller that claims the path in that instant
 /// still shares the port with the winner; `free_port`'s bind check catches it once the
 /// winner's child has bound.)
+#[doc(hidden)]
 pub fn take_stale(path: &Path, ttl: Duration) -> bool {
     use std::sync::atomic::{AtomicU64, Ordering};
     static ASIDE: AtomicU64 = AtomicU64::new(0);

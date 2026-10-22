@@ -228,6 +228,8 @@ export interface AcmeSite {
     issued_at: number;
     serial: string;
     names: string[];
+    /** Id of the cluster secret key the private key is sealed with. */
+    key_id: string;
     /** Why this controller cannot unseal the key, or `null` when it can. */
     held: string | null;
     /** Issued by a staging CA: browsers will not trust it. */
@@ -245,4 +247,6 @@ export interface AcmeGateway {
 export interface AcmeAccount {
   directory_url: string;
   account_url: string | null;
+  /** Id of the cluster secret key the account credentials are sealed with. */
+  key_id?: string;
 }
