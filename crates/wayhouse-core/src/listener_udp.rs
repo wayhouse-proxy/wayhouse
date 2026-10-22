@@ -1275,11 +1275,21 @@ fn relay_batch(
     src: Option<IpAddr>,
 ) -> Relay {
     let msgs: Vec<&[u8]> = (0..n).map(|i| batch.at(i)).collect();
+    relay_run(&msgs, |rest| {
+        out.try_io(Interest::WRITABLE, || {
+            send_batch(out.as_raw_fd(), rest, Some(client), src)
+        })
+    })
+}
+
+/// The send loop of [`relay_batch`], with the send call injected so tests can
+/// script partial counts and `WouldBlock`. `send` gets the unsent tail and
+/// returns how many it took.
+fn relay_run(msgs: &[&[u8]], mut send: impl FnMut(&[&[u8]]) -> io::Result<usize>) -> Relay {
+    let n = msgs.len();
     let mut sent = 0;
     while sent < n {
-        match out.try_io(Interest::WRITABLE, || {
-            send_batch(out.as_raw_fd(), &msgs[sent..], Some(client), src)
-        }) {
+        match send(&msgs[sent..]) {
             Ok(k) => sent += k,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 let tail = msgs[sent..].iter().map(|m| m.to_vec()).collect();
@@ -1900,5 +1910,396 @@ listeners:
         }
         let err = batch.recv(rx.as_raw_fd()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+    }
+
+    // --- relay_run: the send loop behind relay_batch, with a fake send layer ---
+
+    /// Fake `sendmmsg`: each call takes the next scripted outcome and records how
+    /// many datagrams it was offered.
+    type Offered = std::rc::Rc<RefCell<Vec<usize>>>;
+
+    fn scripted(
+        script: Vec<io::Result<usize>>,
+    ) -> (impl FnMut(&[&[u8]]) -> io::Result<usize>, Offered) {
+        let offered = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let log = offered.clone();
+        let mut script = script.into_iter();
+        let send = move |msgs: &[&[u8]]| {
+            log.borrow_mut().push(msgs.len());
+            script.next().expect("send called more often than scripted")
+        };
+        (send, offered)
+    }
+
+    const MSGS: [&[u8]; 5] = [b"m0", b"m1", b"m2", b"m3", b"m4"];
+
+    #[test]
+    fn relay_run_sends_the_whole_batch_in_one_call_when_the_socket_takes_it() {
+        let (send, offered) = scripted(vec![Ok(5)]);
+        let r = relay_run(&MSGS, send);
+        assert_eq!(r.sent, 5);
+        assert!(matches!(r.rest, Rest::Done));
+        assert_eq!(*offered.borrow(), [5]);
+    }
+
+    #[test]
+    fn relay_run_resends_the_remainder_after_a_partial_count() {
+        let (send, offered) = scripted(vec![Ok(2), Ok(1), Ok(2)]);
+        let r = relay_run(&MSGS, send);
+        assert_eq!(r.sent, 5);
+        assert!(matches!(r.rest, Rest::Done));
+        assert_eq!(
+            *offered.borrow(),
+            [5, 3, 2],
+            "each call offers only the unsent tail"
+        );
+    }
+
+    #[test]
+    fn relay_run_hands_back_exactly_the_unsent_tail_on_would_block() {
+        let (send, _) = scripted(vec![Ok(2), Err(io::Error::from(io::ErrorKind::WouldBlock))]);
+        let r = relay_run(&MSGS, send);
+        assert_eq!(r.sent, 2);
+        match r.rest {
+            Rest::Blocked(tail) => {
+                assert_eq!(tail, [b"m2".to_vec(), b"m3".to_vec(), b"m4".to_vec()])
+            }
+            _ => panic!("expected Blocked"),
+        }
+    }
+
+    #[test]
+    fn relay_run_blocked_on_the_first_call_keeps_the_whole_batch() {
+        let (send, _) = scripted(vec![Err(io::Error::from(io::ErrorKind::WouldBlock))]);
+        let r = relay_run(&MSGS, send);
+        assert_eq!(r.sent, 0);
+        assert!(matches!(r.rest, Rest::Blocked(t) if t.len() == 5));
+    }
+
+    #[test]
+    fn relay_run_reports_a_hard_error_with_the_count_already_sent() {
+        let (send, _) = scripted(vec![
+            Ok(3),
+            Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+        ]);
+        let r = relay_run(&MSGS, send);
+        assert_eq!(r.sent, 3);
+        assert!(matches!(r.rest, Rest::Failed(e) if e.kind() == io::ErrorKind::PermissionDenied));
+    }
+
+    // --- real sockets: AF_UNIX datagram pairs block when the peer's queue is full,
+    // unlike loopback UDP, so they reach WouldBlock and partial counts for real ---
+
+    fn unix_dgram_pair() -> (std::net::UdpSocket, std::net::UdpSocket) {
+        use nix::sys::socket::{socketpair, AddressFamily, SockFlag, SockType};
+        let (a, b) = socketpair(
+            AddressFamily::Unix,
+            SockType::Datagram,
+            None,
+            SockFlag::SOCK_NONBLOCK,
+        )
+        .unwrap();
+        (a.into(), b.into())
+    }
+
+    const FILLER: &[u8] = b"fillfill";
+
+    /// Send equal-sized datagrams until the socket reports `WouldBlock`.
+    fn fill_until_blocked(tx: &std::net::UdpSocket) -> usize {
+        let mut n = 0;
+        loop {
+            match send_one(tx.as_raw_fd(), FILLER, None, None) {
+                Ok(_) => n += 1,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return n,
+                Err(e) => panic!("unexpected send error: {e}"),
+            }
+        }
+    }
+
+    fn drain(rx: &std::net::UdpSocket) -> Vec<Vec<u8>> {
+        use nix::sys::socket::{recv, MsgFlags};
+        let mut out = Vec::new();
+        let mut buf = [0u8; 64];
+        while let Ok(n) = recv(rx.as_raw_fd(), &mut buf, MsgFlags::MSG_DONTWAIT) {
+            out.push(buf[..n].to_vec());
+        }
+        out
+    }
+
+    #[test]
+    fn send_batch_reports_would_block_when_the_socket_takes_nothing() {
+        let (tx, rx) = unix_dgram_pair();
+        let queued = fill_until_blocked(&tx);
+        assert!(queued > 0);
+        let msgs: [&[u8]; 3] = [b"aaaaaaaa", b"bbbbbbbb", b"cccccccc"];
+        let err = send_batch(tx.as_raw_fd(), &msgs, None, None).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(drain(&rx).len(), queued, "a blocked batch sent nothing");
+    }
+
+    #[test]
+    fn send_batch_returns_a_partial_count_when_the_socket_fills_mid_batch() {
+        let (tx, rx) = unix_dgram_pair();
+        let queued = fill_until_blocked(&tx);
+        // Free exactly one slot.
+        let mut one = [0u8; 64];
+        nix::sys::socket::recv(
+            rx.as_raw_fd(),
+            &mut one,
+            nix::sys::socket::MsgFlags::MSG_DONTWAIT,
+        )
+        .unwrap();
+        let msgs: [&[u8]; 4] = [b"aaaaaaaa", b"bbbbbbbb", b"cccccccc", b"dddddddd"];
+        let sent = send_batch(tx.as_raw_fd(), &msgs, None, None).unwrap();
+        assert_eq!(sent, 1, "one free slot takes one datagram of the four");
+        let got = drain(&rx);
+        assert_eq!(got.len(), queued, "queue refilled to its limit");
+        assert_eq!(got.last().unwrap(), b"aaaaaaaa");
+    }
+
+    #[tokio::test]
+    async fn forward_run_waits_out_a_full_socket_and_loses_nothing() {
+        let (a, b) = unix_dgram_pair();
+        let queued = fill_until_blocked(&a);
+        let up = Arc::new(UdpSocket::from_std(a).unwrap());
+        let msgs: Vec<Vec<u8>> = (b'0'..b'4').map(|c| vec![c; FILLER.len()]).collect();
+        let mut task = tokio::spawn({
+            let (up, msgs) = (up.clone(), msgs.clone());
+            async move {
+                let run: Vec<&[u8]> = msgs.iter().map(Vec::as_slice).collect();
+                forward_run(&up, &run, "t", addr("127.0.0.1:9"), &None).await;
+            }
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut task)
+                .await
+                .is_err(),
+            "forward_run must wait while the socket is full"
+        );
+        let mut got = drain(&b);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("forward_run finishes once the peer drains")
+            .unwrap();
+        got.extend(drain(&b));
+        let mut want = vec![FILLER.to_vec(); queued];
+        want.extend(msgs);
+        assert_eq!(got, want, "every datagram arrives, in order, exactly once");
+    }
+
+    #[tokio::test]
+    async fn relay_batch_sends_a_received_batch_to_the_client_in_order() {
+        let (tx, rx) = nonblocking_pair();
+        tx.connect(rx.local_addr().unwrap()).unwrap();
+        rx.connect(tx.local_addr().unwrap()).unwrap();
+        rx.set_nonblocking(true).unwrap();
+        for i in 0..6u8 {
+            tx.send(&vec![i; usize::from(i) + 1]).unwrap();
+        }
+        let mut batch = ReplyBatch::new();
+        let n = batch.recv(rx.as_raw_fd()).unwrap();
+        let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let out = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        out.writable().await.unwrap();
+        let r = relay_batch(&out, &batch, n, client.local_addr().unwrap(), None);
+        assert_eq!(r.sent, 6);
+        assert!(matches!(r.rest, Rest::Done));
+        let got = recv_all(&client, 6);
+        for (i, (payload, from)) in got.iter().enumerate() {
+            assert_eq!(payload, &vec![i as u8; i + 1]);
+            assert_eq!(*from, out.local_addr().unwrap());
+        }
+    }
+
+    // --- allocation harness (#167): counts heap allocations on the batch paths ---
+
+    /// Counts allocations per thread, so concurrent tests do not see each other.
+    struct CountingAlloc;
+
+    thread_local! {
+        static ALLOCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    fn bump() {
+        let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
+    }
+
+    // SAFETY: forwards every call unchanged to the system allocator.
+    unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
+        unsafe fn alloc(&self, l: std::alloc::Layout) -> *mut u8 {
+            bump();
+            std::alloc::System.alloc(l)
+        }
+        unsafe fn alloc_zeroed(&self, l: std::alloc::Layout) -> *mut u8 {
+            bump();
+            std::alloc::System.alloc_zeroed(l)
+        }
+        unsafe fn realloc(&self, p: *mut u8, l: std::alloc::Layout, n: usize) -> *mut u8 {
+            bump();
+            std::alloc::System.realloc(p, l, n)
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: std::alloc::Layout) {
+            std::alloc::System.dealloc(p, l);
+        }
+    }
+
+    #[global_allocator]
+    static COUNTING: CountingAlloc = CountingAlloc;
+
+    /// Heap allocations `f` made on this thread.
+    fn allocs_in<R>(f: impl FnOnce() -> R) -> (R, u64) {
+        let before = ALLOCS.with(std::cell::Cell::get);
+        let r = f();
+        (r, ALLOCS.with(std::cell::Cell::get) - before)
+    }
+
+    #[test]
+    fn the_allocation_counter_sees_allocations() {
+        let (_, none) = allocs_in(|| 1 + 1);
+        assert_eq!(none, 0);
+        let (_, one) = allocs_in(|| std::hint::black_box(Vec::<u8>::with_capacity(8)));
+        assert_eq!(one, 1);
+    }
+
+    /// The allocation ceilings below are the measured cost of the current code, one
+    /// full batch (`REPLY_BATCH_SIZE` / `RECV_BATCH` datagrams) per call. They are a
+    /// regression guard, not a target: a change that lowers a count should lower its
+    /// ceiling in the same commit. A dependency bump (`nix`, `tokio`, the allocator) can
+    /// move a count by one: re-baseline it after checking why, don't loosen blindly.
+    /// Run with `--nocapture` to see the numbers.
+    fn check_allocs(what: &str, got: u64, ceiling: u64) {
+        eprintln!("{what}: {got} allocations per call");
+        assert!(
+            got <= ceiling,
+            "{what}: {got} allocations, ceiling {ceiling} (see the comment above check_allocs)"
+        );
+    }
+
+    #[test]
+    fn send_batch_allocations_per_call() {
+        let (tx, rx) = nonblocking_pair();
+        let payload = [7u8; 32];
+        let msgs: Vec<&[u8]> = vec![&payload; REPLY_BATCH_SIZE];
+
+        tx.connect(rx.local_addr().unwrap()).unwrap();
+        let (sent, n) = allocs_in(|| send_batch(tx.as_raw_fd(), &msgs, None, None).unwrap());
+        assert_eq!(sent, REPLY_BATCH_SIZE);
+        check_allocs("send_batch, connected socket", n, 4);
+    }
+
+    #[test]
+    fn send_batch_with_pktinfo_allocations_per_call() {
+        let tx = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+        let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let payload = [7u8; 32];
+        let msgs: Vec<&[u8]> = vec![&payload; REPLY_BATCH_SIZE];
+        let src = Some(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let dest = Some(rx.local_addr().unwrap());
+        let (sent, n) = allocs_in(|| send_batch(tx.as_raw_fd(), &msgs, dest, src).unwrap());
+        assert_eq!(sent, REPLY_BATCH_SIZE);
+        check_allocs("send_batch, destination + pktinfo", n, 7);
+    }
+
+    #[test]
+    fn reply_batch_recv_allocations_per_call() {
+        let (tx, rx) = nonblocking_pair();
+        tx.connect(rx.local_addr().unwrap()).unwrap();
+        rx.connect(tx.local_addr().unwrap()).unwrap();
+        rx.set_nonblocking(true).unwrap();
+        for _ in 0..REPLY_BATCH_SIZE {
+            tx.send(&[1u8; 32]).unwrap();
+        }
+        let mut batch = ReplyBatch::new();
+        let (got, n) = allocs_in(|| batch.recv(rx.as_raw_fd()).unwrap());
+        assert_eq!(got, REPLY_BATCH_SIZE);
+        check_allocs("ReplyBatch::recv", n, 2);
+    }
+
+    #[test]
+    fn relay_batch_allocations_per_call() {
+        let (tx, rx) = nonblocking_pair();
+        let mut batch = ReplyBatch::new();
+        batch.lens.extend([32; REPLY_BATCH_SIZE]);
+        let out = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _g = rt.enter();
+        out.set_nonblocking(true).unwrap();
+        let out = UdpSocket::from_std(out).unwrap();
+        rt.block_on(out.writable()).unwrap();
+        let (r, n) = allocs_in(|| {
+            relay_batch(
+                &out,
+                &batch,
+                REPLY_BATCH_SIZE,
+                rx.local_addr().unwrap(),
+                None,
+            )
+        });
+        assert_eq!(r.sent, REPLY_BATCH_SIZE);
+        check_allocs("relay_batch", n, 5);
+        drop(tx);
+    }
+
+    #[test]
+    fn recv_batch_ingress_allocations_per_call() {
+        let (tx, rx) = nonblocking_pair();
+        rx.set_nonblocking(true).unwrap();
+        for _ in 0..RECV_BATCH {
+            tx.send_to(&[1u8; 32], rx.local_addr().unwrap()).unwrap();
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _g = rt.enter();
+        let sock = UdpSocket::from_std(rx).unwrap();
+        let mut batch = RecvBatch::new();
+        let (got, n) = allocs_in(|| batch.recv_now(&sock, UdpMode::Plain, 0).unwrap());
+        assert_eq!(got, RECV_BATCH);
+        check_allocs("RecvBatch::recv_now, plain", n, 3);
+    }
+
+    /// Micro-benchmark of the reply path's batch calls (#167), to decide whether
+    /// removing the per-call allocations is worth it:
+    /// `make bench-udp-batch` (release build, prints ns and allocations per
+    /// 16-datagram send + receive round).
+    #[test]
+    #[ignore = "benchmark; run via `make bench-udp-batch`"]
+    fn bench_batch_round_trip() {
+        const ROUNDS: u32 = 200_000;
+        let (tx, rx) = nonblocking_pair();
+        tx.connect(rx.local_addr().unwrap()).unwrap();
+        rx.connect(tx.local_addr().unwrap()).unwrap();
+        rx.set_nonblocking(true).unwrap();
+        let payload = [7u8; 64];
+        let msgs: Vec<&[u8]> = vec![&payload; REPLY_BATCH_SIZE];
+        let mut batch = ReplyBatch::new();
+        let mut round = || {
+            let sent = send_batch(tx.as_raw_fd(), &msgs, None, None).unwrap();
+            let mut got = 0;
+            while got < sent {
+                match batch.recv(rx.as_raw_fd()) {
+                    Ok(n) => got += n,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::hint::spin_loop(),
+                    Err(e) => panic!("recv failed: {e}"),
+                }
+            }
+        };
+        for _ in 0..1_000 {
+            round();
+        }
+        let start = std::time::Instant::now();
+        let (_, allocs) = allocs_in(|| (0..ROUNDS).for_each(|_| round()));
+        let per = start.elapsed().as_nanos() / u128::from(ROUNDS);
+        eprintln!(
+            "bench_batch_round_trip: {per} ns and {:.2} allocations per round of {REPLY_BATCH_SIZE} datagrams",
+            allocs as f64 / f64::from(ROUNDS),
+        );
     }
 }
