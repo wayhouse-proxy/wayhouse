@@ -50,6 +50,7 @@ pub fn local_state(dir: &Path, site: &str) -> Option<Local> {
 
 /// Whether the last bytes of the PEM file at `path` hold `marker`. Only the tail is read, so a
 /// key is not copied into memory on every pass; a truncated file has no closing line there.
+/// A read error, or trailing data past the last 256 bytes, counts as "not intact".
 fn pem_ends_with(path: &Path, marker: &str) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     const TAIL: u64 = 256;
@@ -161,7 +162,8 @@ mod tests {
             ),
             key_pem: format!(
                 "-----BEGIN PRIVATE KEY-----\nkey{version}\n-----END PRIVATE KEY-----\n"
-            ),
+            )
+            .into(),
             not_after: 2_000_000_000,
             serial: "0a".into(),
             untrusted: false,
@@ -260,7 +262,7 @@ mod tests {
         let mut no_chain = bundle(1);
         no_chain.chain_pem = "hello".into();
         let mut no_key = bundle(1);
-        no_key.key_pem = "hello".into();
+        no_key.key_pem = "hello".to_string().into();
         assert!(install(dir.path(), "web", &no_chain).is_err());
         assert!(install(dir.path(), "web", &no_key).is_err());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);

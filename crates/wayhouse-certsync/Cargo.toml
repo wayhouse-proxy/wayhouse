@@ -21,6 +21,7 @@ workspace = true
 # touch the data path. It talks to the controller over HTTP only, so there is no
 # wayhouse-core or wayhouse-controller dependency, and wayhouse-http is the client half.
 [dependencies]
+zeroize = { version = "1", features = ["serde"] }
 wayhouse-http.workspace = true
 tokio = { workspace = true, features = ["process"] }
 clap = { workspace = true, features = ["env"] }

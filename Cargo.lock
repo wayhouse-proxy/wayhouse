@@ -4823,6 +4823,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wayhouse-http",
+ "zeroize",
 ]
 
 [[package]]

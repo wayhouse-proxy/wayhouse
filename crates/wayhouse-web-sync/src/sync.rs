@@ -45,10 +45,10 @@ pub enum Outcome {
 }
 
 pub struct Syncer<S, L> {
-    acme: Option<AcmeForward>,
     source: S,
     loader: L,
     admin: AdminAddr,
+    acme: Option<AcmeForward>,
     /// What Caddy has, as far as we know.
     loaded: Option<Value>,
     /// The last section we rendered from, to empty it if `web:` is later removed.
@@ -60,10 +60,10 @@ pub struct Syncer<S, L> {
 impl<S: Source, L: Loader> Syncer<S, L> {
     pub fn new(source: S, loader: L, admin: AdminAddr) -> Self {
         Self {
-            acme: None,
             source,
             loader,
             admin,
+            acme: None,
             loaded: None,
             last_web: None,
             rejected: None,
