@@ -136,6 +136,20 @@ enum Presented {
     Http { token: String },
 }
 
+/// The time one order may take: every name is solved one after another and may wait up to
+/// `propagation`, so the allowance grows with the name count; the margin covers the CA round trips.
+/// At most [`MAX_ORDER`], so a stalled CA or plugin cannot hold an order for days.
+fn order_limit(propagation: Duration, names: usize, margin: Duration) -> Duration {
+    let names = u32::try_from(names.max(1)).unwrap_or(u32::MAX);
+    propagation
+        .saturating_mul(names)
+        .saturating_add(margin)
+        .min(MAX_ORDER)
+}
+
+/// The longest one order may take, whatever the name count and propagation wait.
+const MAX_ORDER: Duration = Duration::from_secs(2 * 3600);
+
 impl AcmeCa {
     /// `directory_url` must be https (the fake CA in tests uses [`AcmeCa::with_http`]).
     pub fn new(directory_url: &str, accept_tos: bool) -> Self {
@@ -346,7 +360,7 @@ impl AcmeCa {
             .take();
         let (account, creds) = self.open(existing).await?;
         let mut presented: Vec<Presented> = Vec::new();
-        let limit = propagation + self.order_margin;
+        let limit = order_limit(propagation, names.len(), self.order_margin);
         let result = match tokio::time::timeout(
             limit,
             self.run_order(&account, names, solver, now, propagation, &mut presented),
@@ -500,4 +514,21 @@ pub fn leaf_info(chain_pem: &str) -> Result<(u64, String), IssueError> {
     let not_after = u64::try_from(cert.validity().not_after.timestamp())
         .map_err(|_| IssueError::Cert("notAfter before 1970".into()))?;
     Ok((not_after, cert.raw_serial_as_string().replace(':', "")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_order_limit_grows_with_the_number_of_names() {
+        let (wait, margin) = (Duration::from_secs(120), Duration::from_secs(300));
+        assert_eq!(order_limit(wait, 1, margin), Duration::from_secs(420));
+        assert_eq!(order_limit(wait, 0, margin), Duration::from_secs(420));
+        assert_eq!(order_limit(wait, 10, margin), Duration::from_secs(1500));
+        assert_eq!(
+            order_limit(Duration::from_secs(3600), 100, margin),
+            MAX_ORDER
+        );
+    }
 }

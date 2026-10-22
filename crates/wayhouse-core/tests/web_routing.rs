@@ -67,8 +67,16 @@ struct Seen {
 /// Parses an optional PROXY v2 header (TCP over IPv4) off `s`, then reads `want`
 /// payload bytes.
 async fn read_seen(s: &mut TcpStream, want: usize) -> Seen {
-    let mut first = [0u8; 12];
-    s.read_exact(&mut first).await.unwrap_or_default();
+    // A probe may send fewer than 12 bytes (or none): keep what arrived as payload.
+    let mut first = Vec::with_capacity(12);
+    while first.len() < 12 {
+        let mut b = [0u8; 12];
+        let n = s.read(&mut b[..12 - first.len()]).await.unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        first.extend_from_slice(&b[..n]);
+    }
     let mut rest = Vec::new();
     let mut proxy_v2 = None;
     if first == V2_SIGNATURE {

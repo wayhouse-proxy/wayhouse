@@ -58,6 +58,7 @@ listeners.
 - `upstreams`: non-empty; each is exactly one of `addr` (a socket address) or `pool` (a defined pool);
   `via` and `port` apply only to `pool`; `port` only with `via: wayhouse`.
 - A pool used by a `via: wayhouse` upstream must not set `proxy_protocol` (the next hop is HTTP).
+- An upstream pool may not be `web.pool` itself (Caddy would forward requests to itself).
 - `listen` may be non-loopback (a gateway node's Caddy cannot bind loopback only). `trusted_proxy` is a list
   of IPs/CIDRs (spike #355: a remote `web` pool needs the other node's /32 in Caddy's `proxy_protocol`
   `allow`). A non-loopback `listen` with an empty `trusted_proxy` warns.
@@ -82,8 +83,11 @@ allocation.
 
 ### Warnings (`--check`, startup, reload)
 
-- No TCP listener routes to `web.pool`.
-- `web.pool` has no backend that matches `web.listen` (informational; a pure gateway client can ignore it).
+- No TCP listener routes to `web.pool`. Only `pool` routes count: a route through a resolver or one added
+  by `plugin_routes` can reach the pool unseen, so the warning is advisory and can be a false positive.
+- `trusted_proxy` contains a `/0` block (any peer could forge the client address).
+- Deferred: `web.pool` has no backend that matches `web.listen` (informational; a pure gateway client can
+  ignore it). Not implemented.
 
 ## Client IP
 

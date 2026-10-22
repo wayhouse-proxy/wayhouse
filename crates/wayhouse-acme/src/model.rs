@@ -1,5 +1,6 @@
 //! The certificate model and site-name validation.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -52,18 +53,27 @@ pub enum NameError {
     Invalid(String),
     #[error("duplicate name {0:?}")]
     Duplicate(String),
+    #[error("too many names ({0}, at most {MAX_NAMES})")]
+    TooMany(usize),
 }
+
+/// The most names one certificate may carry (the Let's Encrypt limit).
+pub const MAX_NAMES: usize = 100;
 
 /// A site's names: lowercase DNS hostnames, optionally `*.zone` (wildcard first label only).
 pub fn validate_names(names: &[String]) -> Result<(), NameError> {
     if names.is_empty() {
         return Err(NameError::Empty);
     }
-    for (i, n) in names.iter().enumerate() {
+    if names.len() > MAX_NAMES {
+        return Err(NameError::TooMany(names.len()));
+    }
+    let mut seen = HashSet::with_capacity(names.len());
+    for n in names {
         if !valid_name(n) {
             return Err(NameError::Invalid(n.clone()));
         }
-        if names[..i].contains(n) {
+        if !seen.insert(n.as_str()) {
             return Err(NameError::Duplicate(n.clone()));
         }
     }
@@ -125,6 +135,17 @@ mod tests {
         assert_eq!(
             v(&["a.com", "a.com"]),
             Err(NameError::Duplicate("a.com".into()))
+        );
+    }
+
+    #[test]
+    fn caps_the_number_of_names() {
+        let many =
+            |n: usize| -> Vec<String> { (0..n).map(|i| format!("h{i}.example.com")).collect() };
+        assert_eq!(validate_names(&many(MAX_NAMES)), Ok(()));
+        assert_eq!(
+            validate_names(&many(MAX_NAMES + 1)),
+            Err(NameError::TooMany(MAX_NAMES + 1))
         );
     }
 

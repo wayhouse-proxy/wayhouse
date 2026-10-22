@@ -275,11 +275,15 @@ fn check_web_host(h: &str) -> Result<(), String> {
     let bad =
         || format!("host {h:?} is not a hostname (use `name.example.com` or `*.example.com`)");
     let labels: Vec<&str> = name.split('.').collect();
-    let ok = labels.iter().all(|l| {
-        !l.is_empty()
-            && l.bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
-    });
+    let ok = name.len() <= 253
+        && labels.iter().all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+        });
     if !ok
         || name.parse::<IpAddr>().is_ok()
         || labels.iter().all(|l| l.bytes().all(|b| b.is_ascii_digit()))

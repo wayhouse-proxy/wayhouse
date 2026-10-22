@@ -3,6 +3,7 @@
 //! [`AcmeStore::apply_at`], which is crash-idempotent per Raft index (the entry and the cursor
 //! commit in one transaction).
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use sled::transaction::{ConflictableTransactionError, TransactionError};
@@ -283,11 +284,13 @@ impl AcmeStore {
                             if let Err(why) = site.validate() {
                                 return Ok(Applied::Invalid(why));
                             }
-                            for other in &other_sites {
-                                if let Some(n) = site.names.iter().find(|n| other.names.contains(n))
-                                {
-                                    return Ok(Applied::NameTaken(n.clone()));
-                                }
+                            let taken: HashSet<&str> = other_sites
+                                .iter()
+                                .flat_map(|o| o.names.iter().map(String::as_str))
+                                .collect();
+                            if let Some(n) = site.names.iter().find(|n| taken.contains(n.as_str()))
+                            {
+                                return Ok(Applied::NameTaken(n.clone()));
                             }
                             sites.insert(site.name.as_bytes(), json(site)?)?;
                             Ok(Applied::Done)

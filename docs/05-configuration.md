@@ -237,7 +237,7 @@
 > ```
 >
 > Rules: `pool` must exist and set `proxy_protocol: v2` (Caddy's PROXY listener rejects plain
-> connections). Hosts are plain hostnames or `*.suffix` (labels of `a-z0-9_-`; no port, no IP literal, no leading-dot form), lowercased, and unique across sites; each
+> connections). Hosts are plain hostnames or `*.suffix` (labels of `a-z0-9_-`, 1 to 63 characters, no leading or trailing `-`, 253 in all; no port, no IP literal, no leading-dot form), lowercased, and unique across sites; each
 > site needs a host and an upstream. An upstream is exactly one of `addr` / `pool`; `via`
 > (`direct` | `wayhouse`) and `port` apply only to a pool, and `port` only with
 > `via: wayhouse`, inside `internal_ports`, one port per pool and one pool per port, and not one of `listen`'s ports; a pool used `via: wayhouse`

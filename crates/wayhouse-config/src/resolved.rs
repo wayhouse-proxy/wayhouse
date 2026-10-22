@@ -277,6 +277,13 @@ impl Config {
                         .to_string(),
                 );
             }
+            if web.trusted_proxy.iter().any(|c| c.prefix_len() == 0) {
+                out.push(
+                    "web.trusted_proxy contains a /0 block: any peer could then forge the \
+                     client address through a PROXY header; list only the gateway nodes"
+                        .to_string(),
+                );
+            }
         }
         for l in self
             .listeners

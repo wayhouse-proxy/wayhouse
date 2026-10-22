@@ -34,6 +34,11 @@ impl Cidr {
         Ok(Self { base, prefix })
     }
 
+    /// The prefix length; 0 matches every address of the family.
+    pub fn prefix_len(&self) -> u8 {
+        self.prefix
+    }
+
     /// Does `ip` fall within this block? An IPv4-mapped IPv6 address
     /// (`::ffff:a.b.c.d`) is matched as the IPv4 address it carries.
     pub fn contains(&self, ip: IpAddr) -> bool {

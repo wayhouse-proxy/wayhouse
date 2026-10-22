@@ -11,7 +11,7 @@ use tracing_subscriber::EnvFilter;
 use wayhouse_web_sync::acme_forward::AcmeForward;
 use wayhouse_web_sync::admin_addr::AdminAddr;
 use wayhouse_web_sync::caddy::CaddyClient;
-use wayhouse_web_sync::source::HttpSource;
+use wayhouse_web_sync::source::{self, HttpSource};
 use wayhouse_web_sync::sync::{Outcome, Syncer};
 
 #[derive(Parser, Debug)]
@@ -67,6 +67,10 @@ struct Args {
     #[arg(long, requires = "acme_challenge_upstream", value_name = "FILE")]
     acme_challenge_ca_file: Option<String>,
 
+    /// Allow the admin token to go over plain http to a non-loopback `--wayhouse-admin`.
+    #[arg(long)]
+    allow_insecure_secrets: bool,
+
     /// PEM file of extra CA certificates to trust when `--wayhouse-admin` is https.
     #[arg(long)]
     ca_file: Option<PathBuf>,
@@ -109,6 +113,12 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    source::check_transport(
+        &args.wayhouse_admin,
+        args.wayhouse_token.is_some(),
+        args.allow_insecure_secrets,
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
     let timeout = Duration::from_secs(args.timeout_sec);
     let source = HttpSource::new(&args.wayhouse_admin, args.wayhouse_token, timeout)?;
     let caddy = CaddyClient::new(admin.clone(), timeout);
