@@ -212,6 +212,23 @@ impl HttpChallenge {
     }
 }
 
+/// One sealed ACME secret to re-encrypt in a rewrap: applied only if the stored one still has
+/// the nonce (`from_nonce`) the new ciphertext was derived from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewrapAccount {
+    pub from_nonce: String,
+    pub sealed: Sealed,
+}
+
+/// The same for the key of one certificate version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewrapCert {
+    pub site: String,
+    pub version: u64,
+    pub from_nonce: String,
+    pub sealed: Sealed,
+}
+
 /// A replicated ACME write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AcmeOp {
@@ -238,6 +255,13 @@ pub enum AcmeOp {
     GatewayDelete {
         name: String,
     },
+    /// Re-encrypts the account and certificate keys under the active secret key (key
+    /// rotation). An item whose ciphertext changed since it was read is skipped, never
+    /// overwritten.
+    Rewrap {
+        account: Option<RewrapAccount>,
+        certs: Vec<RewrapCert>,
+    },
     /// Publishes (or replaces) an HTTP-01 answer.
     ChallengeSet(HttpChallenge),
     ChallengeDelete {
@@ -259,6 +283,8 @@ pub enum Applied {
     Exists,
     /// Another site already covers this name.
     NameTaken(String),
+    /// A rewrap was applied; `account` / `site@version` of each item it skipped.
+    Rewrapped(Vec<String>),
     NoSuchSite,
     NoSuchGateway,
     /// The entry was not appended in the term it was proposed in.

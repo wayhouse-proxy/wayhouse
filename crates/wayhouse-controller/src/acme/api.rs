@@ -11,11 +11,13 @@ use axum::routing::{get, put};
 use axum::{middleware, Json, Router};
 use serde::Deserialize;
 
-use super::types::{cert_slot, AcmeOp, Applied, SEAL_SCOPE};
+use super::types::{
+    cert_slot, AcmeOp, Applied, RewrapAccount, RewrapCert, ACCOUNT_SLOT, SEAL_SCOPE,
+};
 use super::AcmeStore;
-use crate::ha::client::{propose_write_as, ForwardHeaders};
+use crate::ha::client::{forward_to_current_leader, propose_write_as, ForwardHeaders};
 use crate::ha::{HaHandle, WriteRequest, WriteResponse};
-use crate::plugins::secrets::KeyringHandle;
+use crate::plugins::secrets::{KeyringHandle, Sealed};
 
 #[derive(Clone)]
 pub struct AcmeState {
@@ -71,6 +73,7 @@ pub fn router(state: AcmeState) -> Router {
             put(put_site).get(get_site).delete(delete_site),
         )
         .route("/acme/account", get(account))
+        .route("/admin/acme/rewrap", axum::routing::post(rewrap))
         .route("/acme/gateways", get(list_gateways).post(create_gateway))
         .route(
             "/acme/gateways/{name}",
@@ -358,6 +361,127 @@ async fn delete_site(
         |_| StatusCode::NO_CONTENT.into_response(),
     )
     .await
+}
+
+/// Re-encrypts the account key and every certificate key under the active secret key (step 2
+/// of a rotation, next to `/admin/plugins/secrets/rewrap`). Runs on the leader; refuses
+/// while a member lacks the active key.
+async fn rewrap(State(st): State<AcmeState>, headers: HeaderMap) -> Response {
+    const PATH: &str = "/admin/acme/rewrap";
+    let forward = ForwardHeaders::from_headers(&headers);
+    if let Some(ha) = &st.ha {
+        if !ha.is_leader() {
+            if forward.forwarded {
+                return err(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "the leader changed while the request was forwarded; retry shortly",
+                );
+            }
+            return forward_to_current_leader(ha, Method::POST, PATH, Bytes::new(), &forward).await;
+        }
+    }
+    let ring = st.keyring.current();
+    let Some(active) = ring.active_id().map(str::to_string) else {
+        return err(
+            StatusCode::CONFLICT,
+            "no secret key configured on this controller",
+        );
+    };
+    if let Some(ha) = &st.ha {
+        if let Err(why) = crate::plugins::peer::check_active_key(ha, &active).await {
+            return err(
+                StatusCode::CONFLICT,
+                format!("every node needs the active key {active} first: {why}"),
+            );
+        }
+        if let Err(why) = super::check_support(ha).await {
+            return err(StatusCode::CONFLICT, why);
+        }
+    }
+    let (mut account, mut certs, mut unreadable) = (None, Vec::new(), Vec::new());
+    let reseal = |slot: &str, sealed: &Sealed| -> Option<Sealed> {
+        let value = ring.open(SEAL_SCOPE, slot, sealed).ok()?;
+        ring.seal(SEAL_SCOPE, slot, value.expose()).ok()
+    };
+    match st.store.account() {
+        Ok(Some(a)) if a.sealed.key_id != active => match reseal(ACCOUNT_SLOT, &a.sealed) {
+            Some(sealed) => {
+                account = Some(RewrapAccount {
+                    from_nonce: a.sealed.nonce,
+                    sealed,
+                });
+            }
+            None => unreadable.push("account".to_string()),
+        },
+        Ok(_) => {}
+        Err(e) => return internal(e),
+    }
+    let sites = match st.store.sites() {
+        Ok(s) => s,
+        Err(e) => return internal(e),
+    };
+    for site in sites {
+        let stored = match st.store.certs(&site.name) {
+            Ok(c) => c,
+            Err(e) => return internal(e),
+        };
+        for c in stored.into_iter().filter(|c| c.sealed_key.key_id != active) {
+            match reseal(&cert_slot(&site.name, c.version), &c.sealed_key) {
+                Some(sealed) => certs.push(RewrapCert {
+                    site: site.name.clone(),
+                    version: c.version,
+                    from_nonce: c.sealed_key.nonce,
+                    sealed,
+                }),
+                None => unreadable.push(format!("{}@{}", site.name, c.version)),
+            }
+        }
+    }
+    let total = usize::from(account.is_some()) + certs.len();
+    let done = |skipped: Vec<String>| {
+        Json(serde_json::json!({
+            "rewrapped": total - skipped.len(),
+            "skipped": skipped,
+            "unreadable": unreadable,
+            "active_key_id": active,
+        }))
+        .into_response()
+    };
+    if total == 0 {
+        return done(Vec::new());
+    }
+    let op = AcmeOp::Rewrap { account, certs };
+    let Some(ha) = &st.ha else {
+        return match st.store.apply_local(&op) {
+            Ok(Applied::Rewrapped(skipped)) => done(skipped),
+            Ok(other) => err(
+                StatusCode::CONFLICT,
+                format!("the write was refused: {other:?}"),
+            ),
+            Err(e) => internal(e),
+        };
+    };
+    let response = propose_write_as(
+        ha,
+        WriteRequest::Acme(op),
+        Method::POST,
+        PATH,
+        String::new(),
+        &forward,
+        |resp| match resp {
+            WriteResponse::AcmeResult(Applied::Rewrapped(skipped)) => done(skipped),
+            WriteResponse::AcmeResult(other) => err(
+                StatusCode::CONFLICT,
+                format!("the write was refused: {other:?}"),
+            ),
+            other => internal(format!("unexpected answer {other:?}")),
+        },
+    )
+    .await;
+    if response.status().is_success() {
+        crate::plugins::peer::request_purge(ha);
+    }
+    response
 }
 
 /// Applies `op` locally, or under HA proposes it (forwarding to the leader when this
@@ -810,6 +934,102 @@ mod tests {
                 .0,
             StatusCode::OK
         );
+    }
+
+    const KEY_A: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    const KEY_B: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+
+    #[tokio::test]
+    async fn rotation_rewraps_the_account_and_certificate_keys_under_the_new_key() {
+        use crate::plugins::secrets::{Keyring, KeyringHandle};
+        let dir = tempfile::tempdir().unwrap();
+        let db = sled::open(dir.path()).unwrap();
+        let store = AcmeStore::open(&db).unwrap();
+        let ring_a = Keyring::parse(KEY_A).unwrap();
+        let old_id = ring_a.active_id().unwrap().to_string();
+        let keyring = KeyringHandle::new(Keyring::parse(KEY_A).unwrap());
+        let state = |keyring: &KeyringHandle| AcmeState {
+            store: store.clone(),
+            auth_token: None,
+            ha: None,
+            keyring: keyring.clone(),
+            directory_url: "https://ca.example/dir".into(),
+            plugins: None,
+        };
+        let app = router(state(&keyring));
+        call(
+            &app,
+            "PUT",
+            "/acme/sites/web",
+            r#"{"names":["a.example.com"],"challenge":"http-01"}"#,
+            None,
+        )
+        .await;
+        let ring = keyring.current();
+        let sealed_key = ring
+            .seal(SEAL_SCOPE, &cert_slot("web", 1), b"cert-key")
+            .unwrap();
+        let sealed_acct = ring
+            .seal(SEAL_SCOPE, crate::acme::types::ACCOUNT_SLOT, b"acct-key")
+            .unwrap();
+        store
+            .apply_local(&AcmeOp::AccountSet(StoredAccount {
+                directory_url: "https://ca.example/dir".into(),
+                account_url: "https://ca.example/acct/1".into(),
+                sealed: sealed_acct,
+            }))
+            .unwrap();
+        store
+            .apply_local(&AcmeOp::CertIssued {
+                site: "web".into(),
+                tagged_term: 0,
+                cert: StoredCert {
+                    version: 1,
+                    chain_pem: "-----BEGIN CERTIFICATE-----".into(),
+                    sealed_key,
+                    not_after: 2_000_000_000,
+                    issued_at: 1,
+                    serial: "0a".into(),
+                    names: vec!["a.example.com".into()],
+                    untrusted: false,
+                },
+            })
+            .unwrap();
+        // Step 1: add the new key (it becomes active), keep the old one.
+        let both = KeyringHandle::new(Keyring::parse(&format!("{KEY_A}\n{KEY_B}")).unwrap());
+        let app = router(state(&both));
+        // Step 2: rewrap.
+        let (status, r) = call(&app, "POST", "/admin/acme/rewrap", "", None).await;
+        assert_eq!(status, StatusCode::OK, "{r}");
+        assert_eq!(r["rewrapped"], 2, "{r}");
+        let new_id = both.current().active_id().unwrap().to_string();
+        assert_ne!(old_id, new_id);
+        assert_eq!(store.account().unwrap().unwrap().sealed.key_id, new_id);
+        assert_eq!(
+            store.cert("web").unwrap().unwrap().sealed_key.key_id,
+            new_id
+        );
+        // Step 3: the old key is retired; both secrets still open.
+        let only_new = Keyring::parse(KEY_B).unwrap();
+        let acct = store.account().unwrap().unwrap();
+        let cert = store.cert("web").unwrap().unwrap();
+        assert_eq!(
+            only_new
+                .open(SEAL_SCOPE, crate::acme::types::ACCOUNT_SLOT, &acct.sealed)
+                .unwrap()
+                .expose(),
+            b"acct-key"
+        );
+        assert_eq!(
+            only_new
+                .open(SEAL_SCOPE, &cert_slot("web", 1), &cert.sealed_key)
+                .unwrap()
+                .expose(),
+            b"cert-key"
+        );
+        // Rewrapping again is a no-op.
+        let (_, r) = call(&app, "POST", "/admin/acme/rewrap", "", None).await;
+        assert_eq!(r["rewrapped"], 0, "{r}");
     }
 
     #[tokio::test]

@@ -80,7 +80,7 @@ Caddy v1 consumers point their `tls` at the layout (operator-supplied-paths alre
 - The controller leader holds every fleet private key in memory during issuance and the DNS credentials only inside the plugin host (expanded host-side). Compromise of a controller node is compromise of the keyring and so of all sealed keys, as already stated in the secret-storage threat model. Bundles scoped per gateway limit what a compromised *gateway* gets.
 - The key hits plaintext in three places only: leader memory in `zeroize` buffers while generating and sealing, the gateway's files (0600), and the TLS response to an authenticated gateway.
 - `Debug`/`Display` of keys and tokens print `<redacted>`; a raw-bytes scan test (as the secret-storage gate requires) proves a sentinel key never appears in the log, snapshot, sled directory or any list/status response.
-- Rotation: the cluster-key rewrap endpoint from the secret-storage design is extended to the ACME ciphertexts (same `RewrapItem` mechanism, scoped by `install = "acme"`).
+- Rotation: `POST /admin/acme/rewrap` re-encrypts the account and certificate keys (one `AcmeOp::Rewrap` entry; items carry the nonce they were derived from and are skipped if it changed, like `RewrapItem`), as step 2 of the secret-storage rotation next to `/admin/plugins/secrets/rewrap`.
 - The fleet channel to the CA uses the system roots through `reqwest`/`rustls`, like the rest of the controller; the CA directory URL must be `https` except for `127.0.0.1` in tests.
 
 ## Testing
