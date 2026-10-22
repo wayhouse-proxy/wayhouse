@@ -11,14 +11,14 @@ Requested by Wueschli: adding, moving or deleting a Pelican server needs no per-
 What this means in practice, and where it stops:
 
 - The entry node must reach each node's allocation `ip:port` (private network, or a wayhouse tunnel). Pelican already needs those game ports open on the node, so the plugin adds no new rule, but "no firewall edits" holds only if the entry node is allowed to reach the nodes from the start. This is a documentation item, not code.
-- Routing is by hostname, so it only works for protocols that carry one: HTTP, TLS (SNI) and games with a sniffer (for example Minecraft Java). UDP games without a hostname (Source, Valheim, ...) cannot be routed this way. Routing those by entry-node port needs a different route key and collides when two nodes both use the same port. **Not designed here**; it needs its own decision if wanted.
+- Routing is by hostname, so it only works for protocols that carry one: HTTP, TLS (SNI) and games with a sniffer (for example Minecraft Java). UDP games without a hostname (Source, Valheim, ...) cannot be routed this way. Routing those by entry-node port needs a different route key and collides when two nodes both use the same port. **Decided by Wueschli (2026-10-22): hostname-only routing is fine for the first release.** Port-based routing for these games is tracked as a separate design issue.
 - Under HA the plugin runs on the leader only, so the entry node can be a wayhouse cluster.
 
 ## 1. Live-panel check (plugins#6, first item)
 
 Nothing has run against a real panel; shapes come from Pelican's source. Plan:
 
-- Verify against a containerised Pelican panel (SQLite, one node, a few allocations, servers created through the Application API), not a production panel. This also gives a repeatable **contract test** instead of a one-off check. Whether Wings is needed for server records to exist is part of the work; if it is, the check falls back to a panel Wueschli provides.
+- Verify against a containerised Pelican panel (SQLite, one node, a few allocations, servers created through the Application API). **Decided by Wueschli (2026-10-22): a containerised panel is enough, since the API is the same as a real panel's.** This also gives a repeatable **contract test** instead of a one-off check. If server records cannot exist without Wings, the check falls back to a panel Wueschli provides.
 - Questions to settle: the lowest API-key permission level that can read servers and allocations; that `allocation` and `relationships.allocations` appear as read from `ServerData.php`/`AllocationData.php`/`Envelope.php`; what non-null `status` values exist and whether skipping all of them is right (plugins#8); which allocation is the public one when a server has several; whether node `fqdn`/ip semantics allow `node_addresses` to come from `GET /api/application/nodes` instead of config.
 - Output: fixtures checked into the plugin, README claims changed from "unverified" to verified or corrected.
 
@@ -47,8 +47,3 @@ The plugin must be rebuilt per deployment because capability values (panel host,
 2. Webhook hint, after step 1 has confirmed event names and header behaviour.
 3. Operator guide (reachability, wildcard DNS, webhook setup), written alongside step 2.
 4. wayhouse#386 is independent and decided in core.
-
-## Open for Wueschli
-
-- Is a containerised panel enough as the "live" check, or should it also run once against a real panel?
-- Is hostname-only routing acceptable for the first release of the plugin, with UDP-without-hostname games explicitly out of scope?
