@@ -264,7 +264,13 @@ before the provider serves the record. If an order still fails with "not visible
 resolver", a caching resolver (Unbound, systemd-resolved) may be holding the answer "does not
 exist" for the zone's negative TTL, up to 30 minutes at Cloudflare, and retries within that time
 get the same answer. Flush that resolver's cache for the name, or point the controller host's
-`/etc/resolv.conf` at a resolver that does not cache.
+`/etc/resolv.conf` at a resolver that does not cache. Using a site name nobody has queried
+yet also works, because there is nothing negative to cache for it.
+
+Known limitation: the 5 second delay makes this unlikely but does not remove it. A provider
+that needs longer than that to serve the record can still prime the cache of a caching
+resolver. Checking the zone's authoritative nameservers instead is tracked in
+[#408](https://github.com/wayhouse-proxy/wayhouse/issues/408), scheduled after 0.3.0.
 
 The plugin only ever sees the record name and value. ACME keys stay in the controller.
 

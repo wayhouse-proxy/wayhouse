@@ -39,7 +39,8 @@ stays out of the image. `caddy-dns/cloudflare` is Apache-2.0.
 Upstream's README states: "The name "Caddy" is trademarked", registered to Stack Holdings GmbH,
 and asks that others call it "Caddy" or, to clarify, "the Caddy web server". Apache-2.0 grants no
 trademark rights. The full policy page (caddyserver.com) could not be reached when this was
-written, so only the README wording is recorded here; re-check the policy page before 0.3.0.
+written, so only the README wording is recorded here (the project website's repository footer
+carries the same registered-trademark notice). Re-check the policy page before 0.3.0.
 
 Decisions that follow from the README wording alone:
 
