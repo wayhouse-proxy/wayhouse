@@ -240,6 +240,12 @@ reload after the sync (`--reload-cmd`), or retry on a mismatch.
   loopback controller, or with `--allow-insecure-secrets`.
 - There is no push channel yet: changes arrive within one interval.
 
+The synced files can also feed wayhouse's own native TLS (the controller, aggregator and UI
+`--tls-cert`/`--tls-key`, and `settings.admin.tls`): point them at
+`<dir>/<site>/fullchain.pem` and `<dir>/<site>/privkey.pem`. Those servers re-read the PEM
+files every 30 s when their mtime changes, so a renewal needs no `--reload-cmd` for them (see
+[12 Deployment](12-deployment.md), "Native TLS"). Run the sync as a user that can read the key.
+
 ## The DNS plugin
 
 A site's `dns_plugin` is the id of a plugin install that is **enabled** and **approved for the
