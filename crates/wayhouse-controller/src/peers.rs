@@ -17,7 +17,7 @@
 //! matters for "what does this origin currently look like". [`api::PeersState`]
 //! reuses [`crate::store::Store`] as-is for the append-only log a subscriber
 //! catches up on (exactly like `crate::intent`'s reuse of `Store`), plus one
-//! sibling `sled` tree (`current`, opened via `Store::db` — the same pattern
+//! sibling `kv` tree (`current`, opened via `Store::db` — the same pattern
 //! `crate::api::AppState::stage` already established) mapping `name -> latest
 //! revision number`, so `GET /peers`/`GET /peers/{name}` don't need a full
 //! log scan to answer "what's current".

@@ -36,7 +36,7 @@
 //! flips an existing revision's visibility in place rather than minting a
 //! new one, since promoting isn't new content. [`Stage`] (a small
 //! `{promoted, canary_groups}` record per revision, in its own `stage` tree
-//! in the same `sled` database `Store::db` opened, never folded into the
+//! in the same `kv` database `Store::db` opened, never folded into the
 //! revision bytes) is the whole mechanism; "current for group G" is the
 //! highest revision that's `promoted` or has `G` in `canary_groups`, found
 //! by scanning backward from the top of the log — `Store` itself gains
@@ -67,7 +67,7 @@ use crate::store::{Applied, RelayCursor, RevisionBytes, SiblingWrite, Store, Sto
 const UPDATES_CAPACITY: usize = 64;
 
 /// A revision's rollout visibility (phase 12 slice 7). Stored per revision
-/// in `AppState::stage`, a `sled` tree sibling to `Store`'s own — never
+/// in `AppState::stage`, a `kv` tree sibling to `Store`'s own — never
 /// folded into the revision bytes `Store` holds, so `Store` stays exactly
 /// as content-agnostic as it was before this slice.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -127,7 +127,7 @@ pub struct AppState {
     pub store: Arc<Store>,
     /// Per-revision [`Stage`], keyed the same way `Store`'s own trees are —
     /// see the module doc.
-    pub stage: sled::Tree,
+    pub stage: crate::kv::Tree,
     /// Notifies every live subscriber of a newly accepted revision number;
     /// the subscriber re-fetches the bytes from `store` itself (the channel
     /// only ever carries a `u64`, never the config text).
@@ -142,8 +142,8 @@ pub struct AppState {
     pub role: RoleHandle,
     /// Per-revision submitter, phase 12 slice 8's audit trail — the
     /// `X-Actor` header `wayhouse-ui` sets on a proxied write, if any. Another
-    /// sibling `sled` tree, same pattern as `stage`.
-    pub actors: sled::Tree,
+    /// sibling `kv` tree, same pattern as `stage`.
+    pub actors: crate::kv::Tree,
     /// `Some` when `--ha-peers` is set (phase 12 slice 6): `submit()`
     /// proposes via Raft instead of writing `store` directly. `None` (the
     /// default, `replicas: 1`) is today's behaviour, byte-for-byte.
@@ -169,7 +169,7 @@ impl AppState {
         role: RoleHandle,
     ) -> Result<Self, StoreError> {
         let (updates, _rx) = broadcast::channel(UPDATES_CAPACITY);
-        // A sibling tree in the exact same `sled` database `store` opened —
+        // A sibling tree in the exact same `kv` database `store` opened —
         // see `Store::db`'s doc.
         let store_db = store.db().clone();
         let stage = store_db.open_tree("stage")?;
@@ -273,7 +273,7 @@ impl AppState {
     }
 
     /// The Raft-apply form of [`Self::apply_revision_with_stage_and_actor`]:
-    /// revision, `applied_index`, stage and actor all land in one `sled`
+    /// revision, `applied_index`, stage and actor all land in one `kv`
     /// transaction, and a step whose `index` this database has already
     /// absorbed (a replay after a crash lost `last_applied_log`) writes
     /// nothing. `Ok(None)` = already applied.
@@ -1047,7 +1047,7 @@ async fn subscribe(
 /// trivially visible and this is byte-for-byte the pre-slice-7 behavior.
 async fn subscribe_worker(
     store: Arc<Store>,
-    stage: sled::Tree,
+    stage: crate::kv::Tree,
     group: Option<String>,
     max_schema: u32,
     mut updates: broadcast::Receiver<u64>,
@@ -1121,7 +1121,7 @@ async fn subscribe_worker(
 /// receiver dropped (stop the worker).
 async fn catch_up(
     store: &Store,
-    stage: &sled::Tree,
+    stage: &crate::kv::Tree,
     group: Option<&str>,
     max_schema: u32,
     last_sent: &mut u64,
@@ -1171,13 +1171,13 @@ async fn catch_up(
 /// holds a bare `stage` tree (cloned out of `AppState` once, at subscribe
 /// time) rather than a whole `AppState`, so its tests don't need to spin up
 /// everything else `AppState` carries just to check visibility.
-fn is_visible(stage: &sled::Tree, revision: u64, group: Option<&str>) -> bool {
+fn is_visible(stage: &crate::kv::Tree, revision: u64, group: Option<&str>) -> bool {
     read_stage(stage, revision).visible_to(group)
 }
 
 /// Reads `revision`'s [`Stage`], failing closed ([`Stage::hidden`], logged)
 /// when the entry is missing, unreadable or undecodable.
-fn read_stage(stage: &sled::Tree, revision: u64) -> Stage {
+fn read_stage(stage: &crate::kv::Tree, revision: u64) -> Stage {
     match stage.get(encode_rev(revision)) {
         Ok(Some(v)) => serde_json::from_slice(&v).unwrap_or_else(|e| {
             tracing::error!(revision, error = %e, "undecodable stage entry; hiding the revision");
@@ -1305,7 +1305,7 @@ listeners:
     }
 
     /// The `stage` tree in `store`'s own database, as `AppState::new` opens it.
-    fn test_stage_tree(store: &Store) -> sled::Tree {
+    fn test_stage_tree(store: &Store) -> crate::kv::Tree {
         store.db().open_tree("stage").unwrap()
     }
 
@@ -2097,9 +2097,7 @@ listeners:
         let store = Store::open(dir.path()).unwrap();
         let stage_tree = store.db().open_tree("stage").unwrap();
         let rev = store.put(b"one".to_vec()).unwrap();
-        stage_tree
-            .insert(encode_rev(rev), b"not json".to_vec())
-            .unwrap();
+        stage_tree.insert(encode_rev(rev), b"not json").unwrap();
         assert!(!is_visible(&stage_tree, rev, None));
     }
 

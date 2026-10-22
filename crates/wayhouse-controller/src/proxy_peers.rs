@@ -18,7 +18,7 @@
 //!
 //! Shape: identical to [`crate::peers`] — per-name latest-write-wins state
 //! on top of [`crate::store::Store`]'s append-only log + a sibling `current`
-//! tree, in its own `sled` database. Both registries run on the shared core
+//! tree, in its own `kv` database. Both registries run on the shared core
 //! in [`crate::registry`]; this module supplies only the registration type
 //! (a [`Registration`] with no backends) and `api` the route prefix.
 //!

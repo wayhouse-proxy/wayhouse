@@ -351,7 +351,7 @@ per-instance proxy surface stays on each `wayhouse`.
 
 ### `wayhouse-controller` — structural config distribution
 
-One `--auth-token`-gated (optional) surface, backed by an embedded `sled`
+One `--auth-token`-gated (optional) surface, backed by an embedded `redb`
 store that never forgets a revision (ADR 20):
 
 - `POST /config` — submit a raw YAML config (the same document a `wayhouse
@@ -396,7 +396,7 @@ last-known-good with the same reconnect-with-backoff behavior `wayhouse`'s own
 
 **Operator intent log (phase 12 slice 3)**: alongside `/config*`, every
 `wayhouse-controller` also serves `POST /intent` and `GET /intent/subscribe`, a
-second `sled`-backed revision log (its own `<data_dir>/intent` database)
+second `redb`-backed revision log (its own `<data_dir>/intent` database)
 covering the **pool-scoped** phase-5 admin verbs — backend add
 (`{"op":"backend_add","pool":...,"addr":...}`), backend remove
 (`backend_remove`), backend admin state (`backend_patch`, `state` one of

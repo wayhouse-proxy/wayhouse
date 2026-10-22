@@ -99,7 +99,7 @@ crates/
     proxy_register.rs       `--tunnel-*` (phase 14 slice 7, `docs/11`): registers this proxy's own pubkey + public endpoint with `wayhouse-controller`'s proxy-peers registry, so every origin's `wayhouse-agent` can peer with it without origin-side reconfiguration
     live_interface.rs       the running WireGuard interface; `readdress` deletes the old tunnel address and assigns a new controller-assigned one, keeping key, port and peers (`docs/11` "Address changes"), via `netlink_addr.rs` (the delete the library lacks). Mirrored in `wayhouse-agent`
   wayhouse-controller/            binary — Tier-1 config distribution (phases 10–14, docs/10 "The controller" + docs/11: `standalone`/`slave` roles, Raft HA, canary rollout, backend/proxy-peers registries)
-    store.rs                `Store` — embedded sled KV (ADR 20): revisions + current-pointer trees, catch-up range scan
+    store.rs                `Store` — embedded KV (ADR 20, redb since ADR 32; `kv.rs` is the sled-shaped wrapper): revisions + current-pointer trees, catch-up range scan
     relay.rs                the upward relays' shared part: `RelayError`, `propose` (a `RelayConfig`/`RelayIntent` Raft entry), `wait_until_leader`; the relay cursor itself is `store::RelayCursor`, beside each log
     api.rs                  POST/GET /config, GET /config/subscribe (SSE), GET /config/revisions(+/{rev}(/diff)), POST /config/rollback/{rev}
     peers.rs                 backend-peers registry (phase 14 slice 2, `docs/11`): POST/GET /peers(+/{name}), GET /peers/subscribe (SSE) — origins register here, proxies subscribe

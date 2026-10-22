@@ -108,7 +108,7 @@ impl<K: std::hash::Hash + Eq + Clone> Limiter<K> {
 }
 
 /// An IPv6 source counts by its /64.
-fn source_key(ip: IpAddr) -> IpAddr {
+pub(crate) fn source_key(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) => {
             let mut o = v6.octets();

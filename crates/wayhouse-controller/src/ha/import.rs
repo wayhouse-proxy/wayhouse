@@ -84,7 +84,7 @@ fn aside(dir: &Path) -> PathBuf {
 }
 
 /// Opens a registry store the import already inspected or renamed in this
-/// process, waiting out sled's lock release (see
+/// process, waiting out a lock release (see
 /// [`crate::store::retry_when_unlocked`]).
 fn open_store(dir: &Path) -> anyhow::Result<Store> {
     crate::store::retry_when_unlocked(|| {
@@ -161,7 +161,7 @@ fn count_registry(dir: &Path) -> anyhow::Result<usize> {
         return Ok(0);
     }
     let store = open_store(dir)?;
-    Ok(store.db().open_tree("current")?.len())
+    Ok(store.db().open_tree("current")?.len()?)
 }
 
 fn count_book(dir: &Path) -> anyhow::Result<usize> {
@@ -433,9 +433,9 @@ mod tests {
 
     #[test]
     fn set_aside_waits_for_a_lock_that_is_about_to_be_released() {
-        // The state production hits when sled's background threads still hold
-        // a just-dropped store's lock: the open fails with `WouldBlock` until
-        // they let go.
+        // The state production hits when another handle to a just-dropped
+        // store is still winding down: the open fails with "could not
+        // acquire lock" until it lets go.
         let dir = pre_ha_dir();
         let held = reopen_when_unlocked(|| Store::open(&dir.path().join("peers")));
         let release = std::thread::spawn(move || {
@@ -496,7 +496,8 @@ mod tests {
         Target {
             peers: RegistryState::new(store("peers"), None, book.clone()),
             proxies: RegistryState::new(store("proxies"), None, book.clone()),
-            cluster: ClusterState::open(&sled::open(dir.path().join("ha")).unwrap()).unwrap(),
+            cluster: ClusterState::open(&crate::kv::Db::open(dir.path().join("ha")).unwrap())
+                .unwrap(),
             book,
             _dir: dir,
         }

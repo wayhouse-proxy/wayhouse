@@ -135,7 +135,7 @@ details are in `git log`.
 
 ### Distributed control plane — phases 10–13 (fully built)
 
-- **`wayhouse-controller`** — Tier-1 config + operator-intent distribution. `sled`-backed
+- **`wayhouse-controller`** — Tier-1 config + operator-intent distribution. `redb`-backed
   revision logs, `GET /config/subscribe` (SSE) catch-up-then-tail,
   revisions / diff / rollback, optional `--auth-token` bearer gate. Fleet hierarchy
   (`standalone` / `slave` relay `--role`), post-install adoption
@@ -189,7 +189,7 @@ built; verified live in 4 Docker containers (`--cap-add=NET_ADMIN
   on a fixed interval, and subscribes to the proxy-peers registry to reconcile every
   proxy onto its interface.
 - **`wayhouse-controller`** — two registries alongside the config/intent logs, each its
-  own `sled` db: `peers` (backend-peers — origins register, proxies subscribe) and
+  own `redb` db: `peers` (backend-peers — origins register, proxies subscribe) and
   `proxy_peers` (the mirror — proxies register, agents subscribe). `POST` / `GET` /
   `GET …/subscribe` on each; validated (pubkey base64-decodes to 32 bytes, backends
   parse as `SocketAddr`) before the store.
@@ -231,11 +231,11 @@ built; verified live in 4 Docker containers (`--cap-add=NET_ADMIN
   and `acl_deny_drops_the_connection_before_routing` slept 150 ms then `connect().unwrap()`,
   which loses to listener startup under parallel load; they now retry the connect
   until the listener is up. `wayhouse-controller`'s `seeded_entries_are_readable_and_persist_across_a_reopen`
-  reopened `sled` immediately after dropping it (the file lock is released on a
-  background thread); it now retries the open. **The other ~30 `sleep(150ms)` +
+  reopened the store immediately after dropping it (with `sled` the file lock was released on a
+  background thread; `redb` releases it when the last handle drops); it now retries the open. **The other ~30 `sleep(150ms)` +
   connect tests in `crates/wayhouse-core/tests/tcp_forward.rs` have the same shape** —
   if one flakes, reuse `connect_when_listening` there rather than lengthening the sleep.
-- **sled lock flake (fixed 2026-10-04)**: `ha::import::tests::set_aside_moves_only_unmarked_non_empty_dirs`
+- **sled lock flake (fixed 2026-10-04; the cause went away with `sled`, 2026-10-22, #375, the retry stays as a guard)**: `ha::import::tests::set_aside_moves_only_unmarked_non_empty_dirs`
   failed now and then with `WouldBlock` ("could not acquire lock"). Same cause as above, and
   it was a **production** race too, not only a test one: `set_aside_pre_ha` opens and drops
   a registry store to inspect it, renames the directory, then reopens it to count it, and
@@ -479,7 +479,7 @@ rebuild reads `Discovery::get`).
 | `crates/wayhouse/src/reload.rs` | `SIGHUP` + `notify` file watch + `reload_requested()` → debounce → `apply` (validate, `build_with_overlay`, store, reconcile listeners / sources / resolvers, rescan sniffers). |
 | `crates/wayhouse/src/procinfo.rs` | `wayhouse_fd_open` / `wayhouse_fd_limit` — a small detached `/proc/self/fd` sampling task. |
 | `crates/wayhouse/proto/resolver.proto` + `build.rs` | gRPC resolver contract + `tonic_build` codegen (needs `protoc`). |
-| `crates/wayhouse-controller/src/addresses.rs` + `addresses/api.rs` | Tunnel address authority: `Network`, `AddressBook` (claim / release / entries over two sled trees, one mutex, flush after each transaction), `expand_backends`, `resolve_flags`; `GET /tunnel/addresses`, `claim_error_response` (409 / 422 / 503 mapping), the daily stale warning. Shared by both peer registries. |
+| `crates/wayhouse-controller/src/addresses.rs` + `addresses/api.rs` | Tunnel address authority: `Network`, `AddressBook` (claim / release / entries over two `kv` trees, one mutex, flush after each transaction), `expand_backends`, `resolve_flags`; `GET /tunnel/addresses`, `claim_error_response` (409 / 422 / 503 mapping), the daily stale warning. Shared by both peer registries. |
 | `crates/wayhouse-controller/src/lease.rs` | `--tunnel-lease-ttl` expiry: `sweep` (list the book, `RegistryState::expire` each owner unseen past the cutoff, re-checked where the write lands), `lease_loop` (leader-only, 1 h startup grace), `check_ttl` (min 2 h). Under HA the write is `WriteRequest::Expire`. |
 | `crates/wayhouse-controller/src/{peers,proxy_peers}.rs` + `{peers,proxy_peers}/api.rs` | The two mirrored registries (origins register in `peers`, proxies in `proxy_peers`): `POST` claims an address atomically with the registration (under a per-registry write lock), `DELETE` releases it and logs a tombstone, SSE `subscribe` replays registrations and tombstones. |
 | `crates/wayhouse-agent/src/{register,address_store,proxy_subscribe,interface,keypair,main}.rs` | Origin agent: register first (bounded `http_client()`), `resolve_startup` picks controller answer vs saved `<data_dir>/tunnel-address`, `/32` proxy peers, `plan()`/`Action` for events and tombstones. |

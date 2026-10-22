@@ -6,7 +6,11 @@
 //! bundles, followers included, from its replicated store. The private key leaves the
 //! controller only in the body of a successful bundle response, and is never logged.
 
-use axum::extract::{Path, State};
+use std::net::IpAddr;
+use std::sync::Arc;
+use std::time::Instant;
+
+use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -18,12 +22,39 @@ use sha2::{Digest, Sha256};
 
 use super::types::{cert_slot, Gateway, SEAL_SCOPE};
 use super::AcmeStore;
+use crate::plugins::hooks::{source_key, Limiter};
 use crate::plugins::secrets::KeyringHandle;
+
+/// Requests per second and burst one source address may make, valid or not. A gateway polls
+/// about once a minute, so this only bites a client that is hammering the route.
+const SOURCE_RATE: (f64, f64) = (5.0, 20.0);
 
 #[derive(Clone)]
 pub struct BundleState {
     pub store: AcmeStore,
     pub keyring: KeyringHandle,
+    source: Arc<Limiter<IpAddr>>,
+}
+
+impl BundleState {
+    pub fn new(store: AcmeStore, keyring: KeyringHandle) -> Self {
+        Self {
+            store,
+            keyring,
+            source: Arc::new(Limiter::new(SOURCE_RATE)),
+        }
+    }
+
+    /// Takes one request from `peer`'s budget; the 429 to send when it is spent.
+    fn throttle(&self, peer: IpAddr) -> Result<(), Box<Response>> {
+        if self.source.allow(&source_key(peer), Instant::now()) {
+            return Ok(());
+        }
+        Err(Box::new(err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many requests from this address",
+        )))
+    }
 }
 
 /// A new gateway token: 256 random bits, URL-safe.
@@ -90,7 +121,14 @@ fn authenticate(st: &BundleState, headers: &HeaderMap) -> Result<Gateway, Box<Re
     found.ok_or_else(denied)
 }
 
-async fn list(State(st): State<BundleState>, headers: HeaderMap) -> Response {
+async fn list(
+    State(st): State<BundleState>,
+    peer: ConnectInfo<wayhouse_http::tls::PeerAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(r) = st.throttle(peer.0 .0.ip()) {
+        return *r;
+    }
     let gw = match authenticate(&st, &headers) {
         Ok(g) => g,
         Err(r) => return *r,
@@ -129,9 +167,13 @@ fn matches_etag(headers: &HeaderMap, version: u64) -> bool {
 
 async fn fetch(
     State(st): State<BundleState>,
+    peer: ConnectInfo<wayhouse_http::tls::PeerAddr>,
     headers: HeaderMap,
     Path(site): Path<String>,
 ) -> Response {
+    if let Err(r) = st.throttle(peer.0 .0.ip()) {
+        return *r;
+    }
     let gw = match authenticate(&st, &headers) {
         Ok(g) => g,
         Err(r) => return *r,
@@ -196,6 +238,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use axum::body::Body;
+    use axum::extract::ConnectInfo;
     use axum::http::Request;
     use tower::ServiceExt;
 
@@ -228,13 +271,10 @@ mod tests {
 
     fn fixture() -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let db = sled::open(dir.path()).unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = AcmeStore::open(&db).unwrap();
         let keyring = KeyringHandle::new(Keyring::parse(KEY).unwrap());
-        let app = router(BundleState {
-            store: store.clone(),
-            keyring: keyring.clone(),
-        });
+        let app = router(BundleState::new(store.clone(), keyring.clone()));
         Fixture {
             app,
             store,
@@ -303,6 +343,16 @@ mod tests {
             token: Option<&str>,
             extra: &[(&str, &str)],
         ) -> (StatusCode, HeaderMap, String) {
+            self.get_from("192.0.2.1", uri, token, extra).await
+        }
+
+        async fn get_from(
+            &self,
+            source: &str,
+            uri: &str,
+            token: Option<&str>,
+            extra: &[(&str, &str)],
+        ) -> (StatusCode, HeaderMap, String) {
             let mut req = Request::builder().uri(uri);
             if let Some(t) = token {
                 req = req.header("authorization", format!("Bearer {t}"));
@@ -310,12 +360,11 @@ mod tests {
             for (k, v) in extra {
                 req = req.header(*k, *v);
             }
-            let resp = self
-                .app
-                .clone()
-                .oneshot(req.body(Body::empty()).unwrap())
-                .await
-                .unwrap();
+            let mut req = req.body(Body::empty()).unwrap();
+            let peer = std::net::SocketAddr::new(source.parse().unwrap(), 40_000);
+            req.extensions_mut()
+                .insert(ConnectInfo(wayhouse_http::tls::PeerAddr(peer)));
+            let resp = self.app.clone().oneshot(req).await.unwrap();
             let (status, headers) = (resp.status(), resp.headers().clone());
             let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
                 .await
@@ -400,6 +449,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_source_over_its_rate_is_refused_before_the_token_is_looked_at() {
+        let f = fixture();
+        f.site("web", "web.example.com", &["edge"]);
+        f.cert("web", 1);
+        let token = f.gateway("edge");
+        // Bad tokens use the budget up; the 401s turn into 429s.
+        let mut refused = None;
+        for i in 0..200 {
+            let (st, _, _) = f
+                .get_from("198.51.100.7", "/acme/bundles", Some("gwt_bad"), &[])
+                .await;
+            if st == StatusCode::TOO_MANY_REQUESTS {
+                refused = Some(i);
+                break;
+            }
+            assert_eq!(st, StatusCode::UNAUTHORIZED);
+        }
+        assert!(refused.is_some(), "no 429 within 200 requests");
+        // The valid token from that source is refused as well, on both routes.
+        for uri in ["/acme/bundles", "/acme/bundles/web"] {
+            let (st, _, body) = f.get_from("198.51.100.7", uri, Some(&token), &[]).await;
+            assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{uri}");
+            assert!(!body.contains("TOPSECRET"));
+        }
+        // Another source has its own budget.
+        assert_eq!(
+            f.get_from("198.51.100.8", "/acme/bundles/web", Some(&token), &[])
+                .await
+                .0,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
     async fn if_none_match_gives_304_until_a_new_version_is_issued() {
         let f = fixture();
         f.site("web", "web.example.com", &["edge"]);
@@ -446,22 +529,22 @@ mod tests {
         f.cert("web", 1);
         let token = f.gateway("edge");
         // The same store, behind a node that holds a different cluster key.
-        let other = router(BundleState {
-            store: f.store.clone(),
-            keyring: KeyringHandle::new(
+        let other = router(BundleState::new(
+            f.store.clone(),
+            KeyringHandle::new(
                 Keyring::parse("AQECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=").unwrap(),
             ),
-        });
-        let resp = other
-            .oneshot(
-                Request::builder()
-                    .uri("/acme/bundles/web")
-                    .header("authorization", format!("Bearer {token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
+        ));
+        let mut req = Request::builder()
+            .uri("/acme/bundles/web")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
             .unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(wayhouse_http::tls::PeerAddr(
+                "192.0.2.1:40000".parse().unwrap(),
+            )));
+        let resp = other.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 

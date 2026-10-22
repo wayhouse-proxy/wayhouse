@@ -65,7 +65,7 @@ pub(crate) async fn single_node_full(
     let book = Arc::new(AddressBook::open(&dir.path().join("addresses"), None).unwrap());
     let peers = PeersState::new(store("peers"), None, book.clone());
     let proxy_peers = ProxyPeersState::new(store("proxy-peers"), None, book.clone());
-    let db = sled::open(dir.path().join("ha")).unwrap();
+    let db = crate::kv::Db::open(dir.path().join("ha")).unwrap();
     let sm = Arc::new(
         StateMachineStore::open(
             &db,

@@ -381,7 +381,7 @@ async fn an_edge_restart_keeps_its_address() -> Result<()> {
 /// the controller returns it re-registers with the same address.
 ///
 /// The `last_seen` baseline is read only after the controller is back: the
-/// old `wayhouse` re-registers every second until the controller dies and sled
+/// old `wayhouse` re-registers every second until the controller dies and the store
 /// persists that, so a baseline taken before the stop could already be beaten
 /// by a stale value. Once the controller returns the old `wayhouse` is dead, so
 /// only the restarted one can push `last_seen` past the baseline.

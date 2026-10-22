@@ -91,7 +91,7 @@ before the guest or the status sees them.
 (16 to 4096 bytes), clear it with `DELETE` and list the slots with `GET /plugins/{id}/secrets`
 (set or not, the key id, `ok` or `held: ...`; never a value). Only approved slots are accepted.
 A value is encrypted on the controller that received it with XChaCha20-Poly1305 under a cluster
-keyring, bound to install, slot and key id, and only the ciphertext goes into the sled database,
+keyring, bound to install, slot and key id, and only the ciphertext goes into the controller database,
 the Raft log and snapshots. A follower seals the value itself and sends the ciphertext entry to
 the leader (`POST /raft/plugin-secret`); it never forwards the plaintext request. Deleting an
 install deletes its secrets. Changes are audit-logged (install, slot, key id, actor; never the
@@ -355,7 +355,7 @@ behind the same admin bearer token as `/config`; `X-Actor` is recorded as `creat
 An install has a random id (route ownership will be `plugin:<id>`), a name (`a-z`, `0-9`, `-`, up
 to 64 characters), the approved capability set bound to the module sha256, and a non-secret
 `config` (up to 64 KiB) that will be handed to `init`. Installs and blobs live in the
-controller's `sled` database; a standalone controller keeps them there, an HA tier keeps them in
+controller's `redb` database; a standalone controller keeps them there, an HA tier keeps them in
 the Raft state machine's database, replicated (the blobs travel out of band, see "High availability").
 
 ## Ticks (standalone controller)
