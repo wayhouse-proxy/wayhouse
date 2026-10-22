@@ -59,7 +59,9 @@ wayhouse-controller --plugins --secret-key-file /etc/wayhouse/secret.keys \
 - Certificates from `letsencrypt-staging`, any CA whose host contains `staging` or has a label
   starting with `test` (such as `test-api.pki.goog`), or whose path says `staging`, and a
   loopback test CA are stored with `"untrusted": true` (shown in the site's status). They are
-  for rehearsal only and must never be served to real clients.
+  for rehearsal only and must never be served to real clients. A private CA whose host has a
+  label starting with `test` (such as `testca.corp`) is stored as untrusted too, and there is no
+  override.
 
 Under HA every replica needs the same keyring. A replica without it holds issuance and says
 so; if it becomes leader nothing is issued until the key is there.
@@ -257,7 +259,7 @@ name of an order the leader asks the plugin to set the TXT record, then looks th
 itself (the host's resolver, every 5 seconds, up to the site's `propagation_timeout_secs`,
 default 120) before it tells the CA to validate, and always asks the plugin to remove it
 afterwards, also when the order failed. The whole order may take `propagation_timeout_secs` per
-name plus five minutes. A plugin that does not answer, traps, refuses or is
+name plus five minutes, and never more than two hours. A plugin that does not answer, traps, refuses or is
 disabled mid-order fails that order; the reason is the site's `last_error` and the usual
 backoff applies. If you disable the plugin or revoke the approval, orders fail with "not
 available" until you restore it.

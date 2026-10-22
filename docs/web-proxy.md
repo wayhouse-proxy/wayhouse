@@ -134,16 +134,16 @@ trusts. The route is part of the rendered document, so it exists only while `way
 
 Command line of `wayhouse-web-sync` (`--help` has the rest):
 
-| Flag                                            | Default                 | Meaning                                                               |
-| ----------------------------------------------- | ----------------------- | --------------------------------------------------------------------- |
-| `--wayhouse-admin`                              | `http://127.0.0.1:9900` | The local `wayhouse` admin API (`settings.admin.listen`, https works) |
-| `--wayhouse-token` / env `WAYHOUSE_ADMIN_TOKEN` | none                    | Bearer token if `settings.admin.auth_token` is set                    |
+| Flag                                            | Default                 | Meaning                                                                                          |
+| ----------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------ |
+| `--wayhouse-admin`                              | `http://127.0.0.1:9900` | The local `wayhouse` admin API (`settings.admin.listen`, https works)                            |
+| `--wayhouse-token` / env `WAYHOUSE_ADMIN_TOKEN` | none                    | Bearer token if `settings.admin.auth_token` is set                                               |
 | `--allow-insecure-secrets`                      | off                     | Let the admin token go over plain http to a non-loopback `--wayhouse-admin` (refused by default) |
-| `--caddy-admin`                                 | `/run/caddy/admin.sock` | Caddy admin: unix socket or loopback `ip:port`                        |
-| `--interval-sec`                                | 5                       | How often it reads Wayhouse (pool changes, renewed certificates)      |
-| `--acme-challenge-upstream`                     | none                    | Controller URLs that answer ACME HTTP-01 (see below)                  |
-| `--acme-challenge-ca-file`                      | none                    | CA (path on the Caddy side) for an https `--acme-challenge-upstream`  |
-| `--metrics-listen`                              | `127.0.0.1:9904`        | `GET /metrics`; a non-loopback address needs `--metrics-token`        |
+| `--caddy-admin`                                 | `/run/caddy/admin.sock` | Caddy admin: unix socket or loopback `ip:port`                                                   |
+| `--interval-sec`                                | 5                       | How often it reads Wayhouse (pool changes, renewed certificates)                                 |
+| `--acme-challenge-upstream`                     | none                    | Controller URLs that answer ACME HTTP-01 (see below)                                             |
+| `--acme-challenge-ca-file`                      | none                    | CA (path on the Caddy side) for an https `--acme-challenge-upstream`                             |
+| `--metrics-listen`                              | `127.0.0.1:9904`        | `GET /metrics`; a non-loopback address needs `--metrics-token`                                   |
 
 Caddy has to start with a base configuration whose `admin.listen` is the same address: the image
 ships [`deploy/caddy/base.json`](../deploy/caddy/base.json) (`unix//run/caddy/admin.sock`).

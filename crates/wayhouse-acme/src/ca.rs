@@ -138,10 +138,17 @@ enum Presented {
 
 /// The time one order may take: every name is solved one after another and may wait up to
 /// `propagation`, so the allowance grows with the name count; the margin covers the CA round trips.
+/// At most [`MAX_ORDER`], so a stalled CA or plugin cannot hold an order for days.
 fn order_limit(propagation: Duration, names: usize, margin: Duration) -> Duration {
     let names = u32::try_from(names.max(1)).unwrap_or(u32::MAX);
-    propagation.saturating_mul(names).saturating_add(margin)
+    propagation
+        .saturating_mul(names)
+        .saturating_add(margin)
+        .min(MAX_ORDER)
 }
+
+/// The longest one order may take, whatever the name count and propagation wait.
+const MAX_ORDER: Duration = Duration::from_secs(2 * 3600);
 
 impl AcmeCa {
     /// `directory_url` must be https (the fake CA in tests uses [`AcmeCa::with_http`]).
@@ -519,5 +526,9 @@ mod tests {
         assert_eq!(order_limit(wait, 1, margin), Duration::from_secs(420));
         assert_eq!(order_limit(wait, 0, margin), Duration::from_secs(420));
         assert_eq!(order_limit(wait, 10, margin), Duration::from_secs(1500));
+        assert_eq!(
+            order_limit(Duration::from_secs(3600), 100, margin),
+            MAX_ORDER
+        );
     }
 }
