@@ -259,6 +259,13 @@ disabled mid-order fails that order; the reason is the site's `last_error` and t
 backoff applies. If you disable the plugin or revoke the approval, orders fail with "not
 available" until you restore it.
 
+The first lookup comes 5 seconds after the plugin answered, so a caching resolver is not asked
+before the provider serves the record. If an order still fails with "not visible to the
+resolver", a caching resolver (Unbound, systemd-resolved) may be holding the answer "does not
+exist" for the zone's negative TTL, up to 30 minutes at Cloudflare, and retries within that time
+get the same answer. Flush that resolver's cache for the name, or point the controller host's
+`/etc/resolv.conf` at a resolver that does not cache.
+
 The plugin only ever sees the record name and value. ACME keys stay in the controller.
 
 ### Cloudflare
