@@ -57,6 +57,18 @@ fn internal(e: impl std::fmt::Display) -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, "acme store failure")
 }
 
+/// The token in an `Authorization: Bearer <token>` value; the scheme is case-insensitive.
+fn bearer_token(value: &str) -> Option<&str> {
+    let (scheme, token) = value.split_once(' ')?;
+    scheme.eq_ignore_ascii_case("bearer").then_some(token)
+}
+
+/// True for a string shaped like a token from [`new_token`], so a malformed one is refused
+/// without reading the gateway table.
+fn well_formed(token: &str) -> bool {
+    token.len() == 4 + 43 && token.starts_with("gwt_")
+}
+
 /// The gateway the bearer token belongs to. Every stored hash is compared, so the time taken
 /// does not depend on which gateway (if any) matched.
 fn authenticate(st: &BundleState, headers: &HeaderMap) -> Result<Gateway, Box<Response>> {
@@ -64,7 +76,8 @@ fn authenticate(st: &BundleState, headers: &HeaderMap) -> Result<Gateway, Box<Re
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(bearer_token)
+        .filter(|t| well_formed(t))
         .ok_or_else(denied)?;
     let presented = hash_token(token);
     let gateways = st.store.gateways().map_err(|e| Box::new(internal(e)))?;
@@ -188,6 +201,18 @@ mod tests {
 
     use super::*;
     use crate::acme::{AcmeOp, Applied, Site, StoredCert};
+
+    #[test]
+    fn the_bearer_scheme_is_case_insensitive_and_tokens_are_checked_for_shape() {
+        assert_eq!(bearer_token("Bearer abc"), Some("abc"));
+        assert_eq!(bearer_token("bearer abc"), Some("abc"));
+        assert_eq!(bearer_token("BEARER abc"), Some("abc"));
+        assert_eq!(bearer_token("Basic abc"), None);
+        assert_eq!(bearer_token("Bearer"), None);
+        assert!(well_formed(&new_token()));
+        assert!(!well_formed("gwt_short"));
+        assert!(!well_formed(&"x".repeat(47)));
+    }
     use crate::plugins::secrets::Keyring;
 
     const KEY: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";

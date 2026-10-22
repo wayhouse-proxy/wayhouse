@@ -937,6 +937,13 @@ pub(crate) fn validate(
         });
     }
 
+    // The `web:` section appends the loopback listeners of its `via: wayhouse` pools, which
+    // the pool checks below must see (a pool may serve UDP games and a web origin).
+    let web = raw
+        .web
+        .map(|w| crate::web::validate_web(w, &pools, &mut listeners, admin_listen))
+        .transpose()?;
+
     // The default `tcp_connect` probe can never succeed against a UDP-only
     // backend, so a pool used only by UDP listeners must pick its check.
     for p in &pools {
@@ -1092,11 +1099,6 @@ pub(crate) fn validate(
         "shutdown_grace_sec",
         raw.settings.shutdown_grace_sec,
     )?;
-
-    let web = raw
-        .web
-        .map(|w| crate::web::validate_web(w, &pools, &mut listeners, admin_listen))
-        .transpose()?;
 
     Ok(Config {
         schema_version,

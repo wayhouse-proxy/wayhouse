@@ -63,7 +63,9 @@ pub fn resolve_ca(value: &str) -> Result<String, String> {
     };
     let url = url::Url::parse(value).map_err(|_| bad())?;
     match url.scheme() {
-        "https" if url.has_host() && url.username().is_empty() => Ok(url.into()),
+        "https" if url.has_host() && url.username().is_empty() && url.password().is_none() => {
+            Ok(url.into())
+        }
         _ => Err(bad()),
     }
 }
@@ -78,17 +80,17 @@ fn is_loopback_host(url: &url::Url) -> bool {
     }
 }
 
-/// True when certificates from this CA directory are not publicly trusted: a staging CA (a
-/// host or path that says so) or a loopback test CA. Their certificates are stored marked
+/// True when certificates from this CA directory are not publicly trusted: a staging or test
+/// CA (a host label or path that says so) or a loopback test CA. Their certificates are stored marked
 /// `untrusted` and must never be served to real clients.
 pub fn untrusted_ca(directory_url: &str) -> bool {
     let Ok(url) = url::Url::parse(directory_url) else {
         return true;
     };
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     is_loopback_host(&url)
-        || url
-            .host_str()
-            .is_some_and(|h| h.to_ascii_lowercase().contains("staging"))
+        || host.contains("staging")
+        || host.split('.').any(|label| label.starts_with("test"))
         || url.path().to_ascii_lowercase().contains("staging")
 }
 
@@ -172,6 +174,7 @@ mod tests {
         );
         assert!(resolve_ca("http://127.0.0.1:14000/dir").is_err());
         assert!(resolve_ca("https://user:pw@ca.example/dir").is_err());
+        assert!(resolve_ca("https://:pw@ca.example/dir").is_err());
         assert!(resolve_ca("http://ca.example/dir").is_err());
         assert!(resolve_ca("http://localhost.example.net/dir").is_err());
         assert!(resolve_ca("http://127.0.0.1.example.net/dir").is_err());
@@ -223,9 +226,12 @@ mod tests {
     fn staging_and_local_cas_issue_untrusted_certificates() {
         assert!(untrusted_ca(&resolve_ca("letsencrypt-staging").unwrap()));
         assert!(untrusted_ca("https://acme.staging.example/dir"));
+        assert!(untrusted_ca("https://test-api.pki.goog/directory"));
+        assert!(untrusted_ca("https://api.test4.buypass.no/acme/directory"));
         assert!(untrusted_ca("http://127.0.0.1:14000/dir"));
         assert!(!untrusted_ca(&resolve_ca("letsencrypt").unwrap()));
         assert!(!untrusted_ca("https://ca.example/dir"));
+        assert!(!untrusted_ca("https://acme.latest.example/dir"));
     }
 
     #[test]

@@ -345,6 +345,46 @@ fn warns_on_a_routable_listen_without_trusted_proxy() {
 }
 
 #[test]
+fn warns_on_a_trusted_proxy_that_covers_everything() {
+    for cidr in ["0.0.0.0/0", "::/0"] {
+        let w = parse(&format!("  trusted_proxy: [\"{cidr}\"]\n{}", site(OK_UP)))
+            .unwrap()
+            .warnings();
+        assert!(w.iter().any(|m| m.contains("/0 block")), "{cidr}: {w:?}");
+    }
+    let w = parse(&format!(
+        "  trusted_proxy: [\"10.0.0.0/8\"]\n{}",
+        site(OK_UP)
+    ))
+    .unwrap()
+    .warnings();
+    assert!(w.iter().all(|m| !m.contains("/0 block")), "{w:?}");
+}
+
+/// The commented `web:` block of `config.example.yaml`, uncommented, must parse.
+#[test]
+fn the_example_web_block_parses() {
+    let example = include_str!("../../../../config.example.yaml");
+    let block: String = example
+        .lines()
+        .skip_while(|l| *l != "# web:")
+        .take_while(|l| l.starts_with('#'))
+        .map(|l| format!("{}\n", l.strip_prefix("# ").unwrap_or(&l[1..])))
+        .collect();
+    assert!(block.starts_with("web:"), "the example has no web: block");
+    let doc = format!(
+        "schema_version: 3\n\
+         pools:\n\
+         \x20 - {{ name: web, targets: [\"127.0.0.1:8443\"], proxy_protocol: v2 }}\n\
+         \x20 - {{ name: panel, targets: [\"10.0.0.5:8080\"] }}\n\
+         \x20 - {{ name: wings1, targets: [\"10.0.0.6:8443\"] }}\n\
+         {LISTENERS}{block}"
+    );
+    let cfg = parse_str(&doc).unwrap_or_else(|e| panic!("{e}\n{doc}"));
+    assert_eq!(cfg.web.unwrap().sites.len(), 1);
+}
+
+#[test]
 fn an_upstream_may_not_be_the_web_pool_itself() {
     for ups in [
         "        - pool: web\n",
@@ -627,6 +667,20 @@ fn a_full_range_is_a_clear_error() {
 }
 
 #[test]
+fn a_pool_used_by_a_udp_listener_and_via_wayhouse_is_valid() {
+    // The generated TCP listener must exist before the "only UDP listeners use this pool"
+    // check, or a game pool that also serves a web origin is rejected.
+    let base = doc_with("schema_version: 3\n", &via(&["wings1"]));
+    let doc = base.replacen(
+        "listeners:\n",
+        "listeners:\n  - name: game\n    bind: \"0.0.0.0:7000\"\n    protocol: udp\n    pool: wings1\n",
+        1,
+    );
+    let cfg = parse_str(&doc).unwrap_or_else(|e| panic!("{e}"));
+    assert!(cfg.listeners.iter().any(|l| l.name == "web-up-wings1"));
+}
+
+#[test]
 fn a_game_listener_sharing_the_pool_is_untouched() {
     let base = doc_with("schema_version: 3\n", &via(&["wings1"]));
     let with_game = base.replacen(
@@ -653,6 +707,10 @@ fn hosts_must_be_hostnames() {
         "a..b",
         "*.",
         "1234",
+        "-a.example.com",
+        "a-.example.com",
+        &format!("{}.example.com", "a".repeat(64)),
+        &format!("{}.example.com", vec!["a".repeat(60); 5].join(".")),
     ] {
         let m = err(&format!(
             "  sites:\n    - hosts: [{bad:?}]\n      upstreams:\n{OK_UP}"

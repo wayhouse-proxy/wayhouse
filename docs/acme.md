@@ -56,7 +56,8 @@ wayhouse-controller --plugins --secret-key-file /etc/wayhouse/secret.keys \
   `--acme` (the admin token and site changes would cross the network in clear text): serve TLS
   (`--tls-cert/--tls-key`), listen on loopback behind a TLS terminator, or pass
   `--allow-insecure-secrets`.
-- Certificates from `letsencrypt-staging`, any CA whose host or path says `staging`, and a
+- Certificates from `letsencrypt-staging`, any CA whose host contains `staging` or has a label
+  starting with `test` (such as `test-api.pki.goog`), or whose path says `staging`, and a
   loopback test CA are stored with `"untrusted": true` (shown in the site's status). They are
   for rehearsal only and must never be served to real clients.
 
@@ -75,7 +76,8 @@ All routes need the admin bearer token like the rest of the controller API.
 | `DELETE /acme/sites/{name}` | Remove the site, its certificates and its retry state.                                                                |
 | `GET /acme/account`         | The account URL, for pinning `CAA accounturi=` at your DNS provider. No key.                                          |
 
-Rules: names are lowercase hostnames, optionally `*.zone`; a name belongs to one site
+Rules: names are lowercase hostnames, optionally `*.zone`, at most 100 per site (the CA limit);
+a name belongs to one site
 (`409` otherwise); **a wildcard needs at least one gateway** (`422`), because a wildcard key
 should live only on a few hardened nodes. No route returns a private key, a certificate
 chain or ciphertext.
@@ -176,6 +178,12 @@ its own **token**; a token reads only the sites that list that gateway's name in
 | `GET /acme/bundles`            | gateway token | The sites this gateway may read that have a certificate: `{site, version, not_after}`. |
 | `GET /acme/bundles/{site}`     | gateway token | `{version, chain_pem, key_pem, not_after, serial, untrusted}`.                         |
 
+A site's `gateways` list is not checked against the registered gateways. A name that is not
+registered (yet) fetches nothing, and a site with an empty list is issued and renewed but no
+gateway can read it. Deleting a gateway leaves its name in the sites that list it: whoever
+registers that name later can read those sites, so remove the name from the sites too unless
+you mean to re-register the same gateway.
+
 The controller stores only the SHA-256 of a token and replicates only that. To rotate a
 token, delete the gateway and register it again (a second `POST` of a taken name is `409`).
 `GET /acme/bundles/{site}` answers `ETag: "<version>"` and `304` to a matching
@@ -248,7 +256,8 @@ refused with `400`, and so is any site while the controller runs without `--plug
 name of an order the leader asks the plugin to set the TXT record, then looks the record up
 itself (the host's resolver, every 5 seconds, up to the site's `propagation_timeout_secs`,
 default 120) before it tells the CA to validate, and always asks the plugin to remove it
-afterwards, also when the order failed. A plugin that does not answer, traps, refuses or is
+afterwards, also when the order failed. The whole order may take `propagation_timeout_secs` per
+name plus five minutes. A plugin that does not answer, traps, refuses or is
 disabled mid-order fails that order; the reason is the site's `last_error` and the usual
 backoff applies. If you disable the plugin or revoke the approval, orders fail with "not
 available" until you restore it.

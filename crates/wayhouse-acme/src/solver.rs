@@ -115,7 +115,7 @@ impl<S: DnsSolver> DnsSolver for DelegatedSolver<S> {
             .await
             .map_err(|e| {
                 SolverError(format!(
-                    "{e}; is `{fqdn}` a CNAME to `{}`?",
+                    "{e}; if the record was set, check that `{fqdn}` is a CNAME to `{}`",
                     self.delegated(fqdn)
                 ))
             })

@@ -115,6 +115,19 @@ impl Site {
             if !wayhouse_acme::valid_zone(zone) {
                 return Err("challenge_zone must be a hostname such as acme.other.net".into());
             }
+            // `_acme-challenge.<host>.<zone>` is the name the plugin is asked to write.
+            let longest = self
+                .names
+                .iter()
+                .map(|n| n.strip_prefix("*.").unwrap_or(n).len())
+                .max()
+                .unwrap_or(0);
+            if "_acme-challenge.".len() + longest + 1 + zone.len() > 253 {
+                return Err(
+                    "challenge_zone makes a delegated challenge name longer than 253 characters"
+                        .into(),
+                );
+            }
         }
         if !(10..=3600).contains(&self.propagation_timeout_secs) {
             return Err("propagation_timeout_secs must be 10 to 3600".into());

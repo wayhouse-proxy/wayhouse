@@ -17,6 +17,31 @@ pub trait Source {
     fn pools(&self) -> impl std::future::Future<Output = Result<PoolBackends, SourceError>>;
 }
 
+/// Refuses a plain-http, non-loopback `base` when a bearer token would travel to it.
+pub fn check_transport(base: &str, has_token: bool, allow_insecure: bool) -> Result<(), String> {
+    let url = reqwest::Url::parse(base).map_err(|e| format!("--wayhouse-admin {base}: {e}"))?;
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if !has_token || allow_insecure || is_loopback(&url) => Ok(()),
+        "http" => Err(format!(
+            "--wayhouse-admin {base} is plain http to a non-loopback host, which would send the \
+             admin token in clear text: use https, or pass --allow-insecure-secrets on a network \
+             you fully trust"
+        )),
+        other => Err(format!(
+            "--wayhouse-admin {base}: unsupported scheme {other}"
+        )),
+    }
+}
+
+fn is_loopback(url: &reqwest::Url) -> bool {
+    let host = url.host_str().unwrap_or("").trim_matches(['[', ']']);
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 pub struct HttpSource {
     base: String,
     token: Option<String>,
@@ -71,5 +96,31 @@ impl Source for HttpSource {
             .await
             .map_err(|e| SourceError(format!("GET /pools: {e}")))?;
         pools::parse(&body).map_err(|e| SourceError(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_token_never_goes_over_plain_http_to_a_remote_host() {
+        for ok in [
+            "http://127.0.0.1:9900",
+            "http://localhost:9900",
+            "http://[::1]:9900",
+            "https://wayhouse.example:9900",
+        ] {
+            assert!(check_transport(ok, true, false).is_ok(), "{ok}");
+        }
+        let err = check_transport("http://10.0.0.5:9900", true, false).unwrap_err();
+        assert!(err.contains("--allow-insecure-secrets"), "{err}");
+        assert!(check_transport("http://10.0.0.5:9900", true, true).is_ok());
+        assert!(
+            check_transport("http://10.0.0.5:9900", false, false).is_ok(),
+            "no token, nothing to leak"
+        );
+        assert!(check_transport("ftp://x", false, false).is_err());
+        assert!(check_transport("not a url", false, false).is_err());
     }
 }

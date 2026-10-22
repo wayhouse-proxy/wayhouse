@@ -128,18 +128,24 @@ impl Controller {
         Err(FetchError::Unreachable(reasons.join("; ")))
     }
 
-    async fn body(resp: reqwest::Response) -> Result<Vec<u8>, FetchError> {
+    /// The body, read in chunks so a response without a `Content-Length` cannot grow past the cap.
+    async fn body(mut resp: reqwest::Response) -> Result<Vec<u8>, FetchError> {
+        let too_large = || FetchError::Bad("the response is too large".into());
         if resp.content_length().is_some_and(|l| l > MAX_BODY) {
-            return Err(FetchError::Bad("the response is too large".into()));
+            return Err(too_large());
         }
-        let bytes = resp
-            .bytes()
+        let mut out = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
             .await
-            .map_err(|e| FetchError::Bad(format!("reading the response: {e}")))?;
-        if bytes.len() as u64 > MAX_BODY {
-            return Err(FetchError::Bad("the response is too large".into()));
+            .map_err(|e| FetchError::Bad(format!("reading the response: {e}")))?
+        {
+            if (out.len() + chunk.len()) as u64 > MAX_BODY {
+                return Err(too_large());
+            }
+            out.extend_from_slice(&chunk);
         }
-        Ok(bytes.to_vec())
+        Ok(out)
     }
 
     /// The sites this token may read and have a certificate.
@@ -178,5 +184,43 @@ impl Controller {
                 s.as_u16()
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+
+    /// A controller that answers with `chunks` chunks of 64 KiB and no `Content-Length`.
+    async fn streaming(chunks: usize) -> Url {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}", l.local_addr().unwrap())).unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = l.accept().await.unwrap();
+            let mut req = [0u8; 1024];
+            let _ = sock.read(&mut req).await;
+            let head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+            sock.write_all(head.as_bytes()).await.unwrap();
+            for _ in 0..chunks {
+                let mut chunk = format!("{:x}\r\n", 64 * 1024).into_bytes();
+                chunk.extend(std::iter::repeat_n(b'x', 64 * 1024));
+                chunk.extend_from_slice(b"\r\n");
+                if sock.write_all(&chunk).await.is_err() {
+                    return; // the client gave up, as it should
+                }
+            }
+            let _ = sock.write_all(b"0\r\n\r\n").await;
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_chunked_body_past_the_cap_is_refused_while_reading() {
+        let url = streaming(17).await; // 17 * 64 KiB > 1 MiB, and no Content-Length
+        let c = Controller::new(vec![url], "t".into(), Duration::from_secs(5)).unwrap();
+        let err = c.fetch("web", None).await.unwrap_err();
+        assert!(err.to_string().contains("too large"), "{err}");
     }
 }

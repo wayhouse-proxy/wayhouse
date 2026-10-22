@@ -576,6 +576,38 @@ mod tests {
         assert!(one["challenge_zone"].is_null());
     }
 
+    #[tokio::test]
+    async fn a_site_is_limited_in_names_and_in_delegated_challenge_name_length() {
+        let (app, _s, _d) = app(None);
+        let names = |n: usize| {
+            (0..n)
+                .map(|i| format!("\"h{i}.example.com\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let body = |n: usize| {
+            format!(
+                r#"{{"names":[{}],"dns_plugin":"0123456789abcdef"}}"#,
+                names(n)
+            )
+        };
+        let (st, _) = call(&app, "PUT", "/acme/sites/web", &body(100), None).await;
+        assert_eq!(st, StatusCode::OK);
+        let (st, e) = call(&app, "PUT", "/acme/sites/web", &body(101), None).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{e}");
+        assert!(e["error"].as_str().unwrap().contains("too many"), "{e}");
+
+        // `_acme-challenge.` + 207-character host + `.` + 54-character zone is over 253.
+        let dns = |labels: usize| format!("{}.com", vec!["a".repeat(50); labels].join("."));
+        let (host, zone) = (dns(4), dns(1));
+        let b = format!(
+            r#"{{"names":["{host}"],"dns_plugin":"0123456789abcdef","challenge_zone":"{zone}"}}"#
+        );
+        let (st, e) = call(&app, "PUT", "/acme/sites/long", &b, None).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{e}");
+        assert!(e["error"].as_str().unwrap().contains("253"), "{e}");
+    }
+
     const SITE: &str =
         r#"{"names":["panel.example.com"],"gateways":["gw1"],"dns_plugin":"0123456789abcdef"}"#;
 
