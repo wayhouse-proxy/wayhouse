@@ -13,7 +13,10 @@
 //!   durability point.
 //! - There is one writer at a time per database. A transaction closure runs
 //!   exactly once, never retried, and a write made by another thread waits
-//!   for it. Do not write to the same database from inside a closure.
+//!   for it. Do not write to the same database from inside a closure: redb does not
+//!   report it, the write just waits for the transaction it is inside, forever.
+//! - An [`Iter`] holds a read transaction, so redb cannot reclaim pages written after
+//!   it started. Keep scans short and never hold one across an `.await`.
 //! - A database is a directory holding one `db.redb` file. A directory left by
 //!   `sled` (a build before 0.3.0) is refused with [`Error::LegacySled`]:
 //!   the formats are unrelated and there is no migration.

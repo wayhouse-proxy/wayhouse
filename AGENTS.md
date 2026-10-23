@@ -317,6 +317,9 @@ client from `crates/wayhouse/proto/resolver.proto`.
   reads are lock-free. `rise`/`fall` thresholds live on the `Backend`.
 - **Reload carries backend health across the swap by address.** New backends start
   optimistically healthy; the checker corrects within one interval.
+- **The controller store (redb, `kv.rs`) has one writer.** Never write to a database from
+  inside a `transaction` closure (it deadlocks without an error), and never hold an `Iter`
+  across an `.await` (it pins a read transaction and stops page reclamation).
 - **No cross-instance shared state** (v1). Proxy instances are independent; HA is an
   anycast/L4-LB concern in front.
 

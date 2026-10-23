@@ -196,7 +196,10 @@ nearest replica; a node without the cluster secret key answers `503` instead of 
 served bundle writes one log line with the site, gateway and version, never the key.
 Both bundle routes count requests per source address (an IPv6 source by its /64), valid or
 not, and answer `429` once a source has used 20 requests and then asks faster than 5 per
-second. A gateway polling every minute never notices.
+second. A gateway polling every minute never notices. A controller behind a reverse proxy or
+NAT sees one source address, so every gateway behind it shares one budget; at about one poll a
+minute each that still leaves room for many gateways. The `429` carries `Retry-After: 1`, and
+certsync tries the next controller when one answers `429`, since each has its own limiter.
 
 The key travels in the bundle response in plaintext, so serve the controller over TLS (or
 reach it on loopback). `--acme` already refuses a plain-HTTP listener on a non-loopback

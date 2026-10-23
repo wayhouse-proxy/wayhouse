@@ -1505,7 +1505,7 @@ fn sendmmsg_batch(
             fd,
             headers,
             iovs[..n].iter(),
-            addrs,
+            &addrs[..n],
             cmsgs,
             MsgFlags::empty(),
         )
@@ -2408,6 +2408,54 @@ listeners:
                 }
             }
         }
+    }
+
+    #[test]
+    fn send_batch_with_a_v6_source_sets_the_pktinfo_and_does_not_leak_into_v4_calls() {
+        let Ok(rx) = std::net::UdpSocket::bind("[::1]:0") else {
+            return; // no IPv6 loopback in this environment
+        };
+        let tx = std::net::UdpSocket::bind("[::]:0").unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let dest = Some(rx.local_addr().unwrap());
+        let src = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+        let msgs: [&[u8]; 2] = [b"p", b"q"];
+        // v6 pktinfo, then no cmsg, then v6 again: each call carries only its own header set.
+        for src in [Some(src), None, Some(src)] {
+            assert_eq!(send_batch(tx.as_raw_fd(), &msgs, dest, src).unwrap(), 2);
+            for (i, (payload, from)) in recv_all(&rx, 2).into_iter().enumerate() {
+                assert_eq!(payload, msgs[i]);
+                assert_eq!(from.ip(), src.unwrap_or(from.ip()));
+            }
+        }
+    }
+
+    #[test]
+    fn send_batch_without_a_destination_after_one_with_a_destination_uses_the_connected_peer() {
+        let (tx, rx) = nonblocking_pair();
+        tx.connect(rx.local_addr().unwrap()).unwrap();
+        let other = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        other
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let msgs: [&[u8]; 2] = [b"a", b"b"];
+        // The thread's header set last carried an explicit destination; the next call has none
+        // and must go to the connected peer, not to the stale address.
+        let to_other = Some(other.local_addr().unwrap());
+        assert_eq!(
+            send_batch(tx.as_raw_fd(), &msgs, to_other, None).unwrap(),
+            2
+        );
+        assert_eq!(recv_all(&other, 2).len(), 2);
+        assert_eq!(send_batch(tx.as_raw_fd(), &msgs, None, None).unwrap(), 2);
+        let got = recv_all(&rx, 2);
+        assert_eq!(got[0].0, b"a");
+        assert_eq!(got[1].0, b"b");
+        let mut buf = [0u8; 8];
+        assert!(
+            other.recv(&mut buf).is_err(),
+            "nothing more for the stale destination"
+        );
     }
 
     #[test]
