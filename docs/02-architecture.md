@@ -6,10 +6,12 @@ One proxy instance in context. Traffic enters on the left and leaves on the righ
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="img/architecture-detailed-dark.svg">
-  <img alt="Detailed Wayhouse architecture: the proxy data path (listener, filters, optional sniffers, router, optional resolver, pool, pump, tunnel client to agent) and its in-process control components, plus the controller with plugin host, aggregator, UI and the sniffers and plugins registries." src="img/architecture-detailed.svg">
+  <img alt="Detailed Wayhouse architecture: the proxy data path (listener, filters, optional sniffers, router, optional resolver, pool, pump, tunnel client to agent) and its in-process control components, plus the controller with plugin host, aggregator, UI and the sniffers and plugins registries, and the optional web gateway (Caddy, wayhouse-web-sync, wayhouse-certsync) that publishes HTTP(S) sites behind a `web` pool." src="img/architecture-detailed.svg">
 </picture>
 
 Blue boxes are the data path (ingress left, egress right); amber boxes are everything off it. Dotted lines are control, config or state flows.
+
+The grey **web gateway** box is optional and sits beside the proxy, not inside it: the Router (or a listener's `pool:`) sends ports 80 and 443 to a `web` pool whose backend is Caddy, and the Pump connects to it and writes the PROXY protocol v2 header that keeps the client address, `wayhouse-web-sync` renders the `web:` section into Caddy's configuration, Caddy reaches the site upstreams either directly (`via: direct`, a configured address or a pool's backends) or back through the proxy (`via: wayhouse`: a loopback listener `web-up-<pool>` that is routed to the pool like any listener, which is how origins behind `wayhouse-agent` are reached across regions), and `wayhouse-certsync` keeps ACME certificate files current from the controller. See [Web proxy](web-proxy.md) and [Certificates](acme.md).
 
 The immutable snapshot is not tied to one component: it carries the listener definitions with their filters and routes, the pools with their backends and health, and the resolver and discovery settings, so the diagram points it at each of them.
 

@@ -27,7 +27,10 @@ this page is the operator's view of what is built. Releases and tags are in
   than the lowest `max_config_schema` any live proxy registration reported. Upgrade
   every proxy **before** you use a config field the new version introduced.
 - **Store**: a controller refuses to open a store written by a newer build and migrates
-  an older one once, on open.
+  an older one once, on open. The one exception is the 0.3.0 engine change from `sled` to
+  `redb`: the format marker did not move, a 0.3.0 controller refuses a `sled` directory
+  outright and nothing is migrated (see
+  [Migrating from 0.2.0 to 0.3.0](migrating-0.2-to-0.3.md)).
 
 What is and is not checked: the header check enforces protocol **majors only**. The
 N / N-1 product window itself is a rule kept by review (see the `AGENTS.md` row for wire
@@ -48,6 +51,17 @@ its row. Use `unreleased` for the product column until the release is tagged.
 | unreleased | 1.2      | 3             | 1            | 0.1         |
 | 0.2.0      | 1.1      | 2             | 1            | 0.1         |
 | 0.1.0      | 1.0      | 1             | 1            | 0.1         |
+
+## Upgrading from 0.2.0 to 0.3.0
+
+0.3.0 replaces the controller's embedded database (`sled` to `redb`) **without a
+migration**: a 0.3.0 controller refuses a 0.2.0 data directory, so the directory is moved
+aside and the config, plugin installs and secrets are restored by hand. Everything else is
+additive and opt-in (the `web:` config and Caddy, controller-issued ACME certificates,
+plugin port routes). The step-by-step guide, with what is lost and how to get it back, is
+[Migrating from 0.2.0 to 0.3.0](migrating-0.2-to-0.3.md). Version numbers in short:
+protocol 1.2, config schema 3 (`web:` needs every proxy on 0.3.0 first), plugin ABI still
+0.1, plugin support level 4 under HA.
 
 ## Upgrading from 0.1.0 to 0.2.0
 
@@ -177,6 +191,9 @@ not a tested procedure.
 ## Rollback
 
 Roll back in the reverse order. A downgrade is safe inside the window for the protocol.
+The 0.3.0 controller database is a different engine: go back to 0.2.0 only through the
+`sled` data directory you kept when you upgraded
+([guide](migrating-0.2-to-0.3.md#rollback)).
 A controller store that a newer build has migrated cannot be opened by an older build
 (`FormatTooNew`): restore the store from a backup taken before the upgrade, or keep the
 upgraded controller. Config documents that use a field of the newer schema are rejected

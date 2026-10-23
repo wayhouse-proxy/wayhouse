@@ -9,7 +9,9 @@
 > - The configuration format, CLI flags, admin/fleet HTTP APIs and on-disk formats
 >   **can change in any minor release, with no compatibility guarantee**. Each release's
 >   upgrade steps are in [docs/upgrading.md](docs/upgrading.md), but the rolling-upgrade
->   paths there are only partly tested.
+>   paths there are only partly tested. Coming from 0.2.0? Read the
+>   [0.2.0 to 0.3.0 migration guide](docs/migrating-0.2-to-0.3.md) first: the controller's
+>   database changed and is not migrated.
 > - Everything below is covered by automated tests, but **none of it has run in
 >   production**. Parts of the deployment story (the Docker images on a developer
 >   machine, the Kubernetes manifests on a real cluster) have only been exercised in CI.
@@ -52,7 +54,7 @@ examples) or from an external routing service you control.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/architecture-overview-dark.svg">
-  <img alt="Wayhouse architecture overview: players reach the proxy (listener, optional sniffers, router, pool, pump) which forwards to game servers; the controller with its plugin host, the aggregator, the UI and the sniffers and plugins registries sit off the data path." src="docs/img/architecture-overview.svg">
+  <img alt="Wayhouse architecture overview: players reach the proxy (listener, optional sniffers, router, pool, pump) which forwards to game servers; the controller with its plugin host, the aggregator, the UI and the sniffers and plugins registries sit off the data path; an optional web gateway (Caddy with wayhouse-web-sync and wayhouse-certsync) publishes HTTP(S) sites behind a `web` pool." src="docs/img/architecture-overview.svg">
 </picture>
 
 The proxy is the only player-facing ingress and routing component (behind a tunnel, the origin-side `wayhouse-agent` carries the traffic the last hop). The controller, aggregator and UI are optional and stay off the data path; see [docs/02-architecture.md](docs/02-architecture.md) for the detailed diagram.
