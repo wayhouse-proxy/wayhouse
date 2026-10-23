@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.3.0](https://github.com/wayhouse-proxy/wayhouse/compare/v0.2.0...v0.3.0) (2026-10-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **controller:** replace sled with redb ([#428](https://github.com/wayhouse-proxy/wayhouse/issues/428))
+
+### Features
+
+* **acme:** cargo feature to build the controller without ACME issuance ([#393](https://github.com/wayhouse-proxy/wayhouse/issues/393)) ([7f464a2](https://github.com/wayhouse-proxy/wayhouse/commit/7f464a2d90d612c2ce2e6b14fa6fb26b5dcb4621))
+* **acme:** controller-managed ACME certificates, slice 1 (sites, sealed store, issuance loop) ([#389](https://github.com/wayhouse-proxy/wayhouse/issues/389)) ([c23a8a4](https://github.com/wayhouse-proxy/wayhouse/commit/c23a8a43b1df58ca24cbb51230d42cf5c38cfd3a))
+* **acme:** external account binding and CNAME-delegated challenge zones ([#397](https://github.com/wayhouse-proxy/wayhouse/issues/397)) ([fb35d7c](https://github.com/wayhouse-proxy/wayhouse/commit/fb35d7cb350fe759d407c6ac82adee1eef68b757))
+* **acme:** gateway tokens, bundle endpoints and wayhouse-certsync ([#395](https://github.com/wayhouse-proxy/wayhouse/issues/395)) ([51e95b6](https://github.com/wayhouse-proxy/wayhouse/commit/51e95b672eb89464e9d44db297e2504c356d339b))
+* **acme:** HTTP-01 challenges answered from replicated entries ([#398](https://github.com/wayhouse-proxy/wayhouse/issues/398)) ([b81cd96](https://github.com/wayhouse-proxy/wayhouse/commit/b81cd963433c1ef22b0d34355af1b07a25dc1381))
+* **acme:** on_acme_dns plugin trigger and DNS-01 solver ([#391](https://github.com/wayhouse-proxy/wayhouse/issues/391)) ([1434b8a](https://github.com/wayhouse-proxy/wayhouse/commit/1434b8af21f56c1e5b6018cbf9d27b8721fb22e5))
+* **config:** web section with sites, upstreams and validation ([#371](https://github.com/wayhouse-proxy/wayhouse/issues/371)) ([fb4210d](https://github.com/wayhouse-proxy/wayhouse/commit/fb4210d3109b144c558aaf3f452144c8c79af354))
+* **plugin:** port-based routing for plugins ([#432](https://github.com/wayhouse-proxy/wayhouse/issues/432)) ([8982e76](https://github.com/wayhouse-proxy/wayhouse/commit/8982e761ecd24a142cec927e84466836226f1828))
+* **ui:** certificates page for ACME sites and gateways ([#400](https://github.com/wayhouse-proxy/wayhouse/issues/400)) ([49007ac](https://github.com/wayhouse-proxy/wayhouse/commit/49007ac8b8d459d2187dc753dbe3efcb1db9de5b))
+* **web:** forward ACME HTTP-01 challenges to the controller ([#399](https://github.com/wayhouse-proxy/wayhouse/issues/399)) ([de03c5f](https://github.com/wayhouse-proxy/wayhouse/commit/de03c5ff27369348945b97c7ad4d37006c3be44c))
+* **web:** licence notices, module licence check and web nits ([#387](https://github.com/wayhouse-proxy/wayhouse/issues/387)) ([ae6358e](https://github.com/wayhouse-proxy/wayhouse/commit/ae6358eb11f671501349179df0261f6176161b81))
+* **web:** loopback listeners for via-wayhouse upstreams, GET /web and end-to-end tests ([#380](https://github.com/wayhouse-proxy/wayhouse/issues/380)) ([b0cb198](https://github.com/wayhouse-proxy/wayhouse/commit/b0cb1985e50c08aad627f770786d87e436230f31))
+* **web:** wayhouse-web-sync and wayhouse-caddy image ([#384](https://github.com/wayhouse-proxy/wayhouse/issues/384)) ([827d91f](https://github.com/wayhouse-proxy/wayhouse/commit/827d91f09715b0c10b919c1fab8621c48fa50a6d))
+
+
+### Bug Fixes
+
+* **acme:** rewrap account and certificate keys on key rotation ([#413](https://github.com/wayhouse-proxy/wayhouse/issues/413)) ([9649d91](https://github.com/wayhouse-proxy/wayhouse/commit/9649d918ba55f8e14997a41dd2d8236d8995c045))
+* **acme:** wait one poll interval before the first TXT lookup (mitigation) ([#407](https://github.com/wayhouse-proxy/wayhouse/issues/407)) ([bfdd6c6](https://github.com/wayhouse-proxy/wayhouse/commit/bfdd6c62ba314ba980a51f4d943d3ae630c4511d))
+* certsync downgrade, repair and startup reload; registry IPv6 authority; fleet port claims ([#405](https://github.com/wayhouse-proxy/wayhouse/issues/405)) ([46b1b90](https://github.com/wayhouse-proxy/wayhouse/commit/46b1b9013cd9846c25a960bf0f79b96e74aead8d))
+* close the stale-claim race, bound the PEM check, document certsync with native TLS ([#406](https://github.com/wayhouse-proxy/wayhouse/issues/406)) ([7c3895a](https://github.com/wayhouse-proxy/wayhouse/commit/7c3895a49c978612c8546eb1bf4db537fa212c20))
+* **core:** rate limit the ACME bundle routes per source address ([#427](https://github.com/wayhouse-proxy/wayhouse/issues/427)) ([f8df3b6](https://github.com/wayhouse-proxy/wayhouse/commit/f8df3b63c3d19c16e031b3fef0b8f147e40a062b))
+* **core:** review nits before 0.3.0 (rate limit, redb, port routes, UDP send path) ([#436](https://github.com/wayhouse-proxy/wayhouse/issues/436)) ([a9253c5](https://github.com/wayhouse-proxy/wayhouse/commit/a9253c595ae078ef641e47be5a9d801d6a822b98))
+* **deps:** patch rustls and wasmtime advisories, document accepted unmaintained warnings ([#376](https://github.com/wayhouse-proxy/wayhouse/issues/376)) ([fe64ece](https://github.com/wayhouse-proxy/wayhouse/commit/fe64ecea5c1e88fae5c13f9c87e78b36fb4ad556))
+* low-severity hardening from the 2026-10-22 review and web config nits ([#415](https://github.com/wayhouse-proxy/wayhouse/issues/415)) ([4284280](https://github.com/wayhouse-proxy/wayhouse/commit/42842801b05b3ce1d25a6c956d1eae26c5ed76f0))
+* review follow-ups for ACME EAB, certsync, web-sync and the Certificates page ([#416](https://github.com/wayhouse-proxy/wayhouse/issues/416)) ([d1b2a0a](https://github.com/wayhouse-proxy/wayhouse/commit/d1b2a0a5c6eadb39d6dec47901901a85fd4c9448))
+* **security:** build wayhouse-caddy with patched Go and x/net; bump vite ([#412](https://github.com/wayhouse-proxy/wayhouse/issues/412)) ([b917184](https://github.com/wayhouse-proxy/wayhouse/commit/b91718417d9dd0e967f614c8ca65ae7e06aa5a9a))
+
+
+### Performance Improvements
+
+* **core:** drop per-call heap allocations on the UDP send path ([#434](https://github.com/wayhouse-proxy/wayhouse/issues/434)) ([0051dd2](https://github.com/wayhouse-proxy/wayhouse/commit/0051dd2c7f2e73df899b2144d1b0e4f0ab9b26b0))
+
+
+### Code Refactoring
+
+* **controller:** replace sled with redb ([#428](https://github.com/wayhouse-proxy/wayhouse/issues/428)) ([a50d0d5](https://github.com/wayhouse-proxy/wayhouse/commit/a50d0d51ceb0169bdd5d00c8e843bcc6f7ca691a))
+
 ## [0.2.0](https://github.com/wayhouse-proxy/wayhouse/compare/v0.1.0...v0.2.0) (2026-10-15)
 
 
