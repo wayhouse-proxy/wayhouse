@@ -80,14 +80,14 @@
 <text x="88" y="789" font-size="12" text-anchor="start" fill="#d1d5db">player traffic</text>
 <polyline points="190,785 230,785" fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
 <text x="238" y="789" font-size="12" text-anchor="start" fill="#d1d5db">config, health, state, install, lookups</text>
-<rect x="440" y="778" width="14" height="14" rx="3" fill="#1e3a5f" stroke="#60a5fa"/>
-<text x="460" y="789" font-size="12" text-anchor="start" fill="#d1d5db">data path</text>
-<rect x="530" y="778" width="14" height="14" rx="3" fill="#4a3410" stroke="#fbbf24"/>
-<text x="550" y="789" font-size="12" text-anchor="start" fill="#d1d5db">control / off the data path</text>
-<rect x="700" y="778" width="14" height="14" rx="3" fill="#3b2a66" stroke="#a78bfa"/>
-<text x="720" y="789" font-size="12" text-anchor="start" fill="#d1d5db">registry repos</text>
+<rect x="480" y="778" width="14" height="14" rx="3" fill="#1e3a5f" stroke="#60a5fa"/>
+<text x="500" y="789" font-size="12" text-anchor="start" fill="#d1d5db">data path</text>
+<rect x="570" y="778" width="14" height="14" rx="3" fill="#4a3410" stroke="#fbbf24"/>
+<text x="590" y="789" font-size="12" text-anchor="start" fill="#d1d5db">control / off the data path</text>
+<rect x="740" y="778" width="14" height="14" rx="3" fill="#3b2a66" stroke="#a78bfa"/>
+<text x="760" y="789" font-size="12" text-anchor="start" fill="#d1d5db">registry repos</text>
 <rect x="280" y="640" width="910" height="130" rx="12" fill="#9ca3af" fill-opacity="0.07" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="294" y="662" font-size="14" font-weight="700" fill="#d1d5db">web gateway (optional)</text>
+<text x="1176" y="662" text-anchor="end" font-size="14" font-weight="700" fill="#d1d5db">web gateway (optional)</text>
 <rect x="300" y="690" width="150" height="64" rx="8" fill="#4a3410" stroke="#fbbf24" stroke-width="1.5"/>
 <text x="375.0" y="715.5" text-anchor="middle" font-size="13" font-weight="700" fill="#f3f4f6">wayhouse-certsync</text>
 <text x="375.0" y="731.5" text-anchor="middle" font-size="11" font-weight="400" fill="#f3f4f6">ACME bundles → files</text>
@@ -101,11 +101,11 @@
 <text x="1085.0" y="715.5" text-anchor="middle" font-size="13" font-weight="700" fill="#f3f4f6">Web sites</text>
 <text x="1085.0" y="731.5" text-anchor="middle" font-size="11" font-weight="400" fill="#f3f4f6">HTTP(S) origins</text>
 <polyline points="880,224 880,690" fill="none" stroke="#d1d5db" stroke-width="1.6" marker-end="url(#a)"/>
-<rect x="801.8" y="419" width="156.4" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="880" y="430" text-anchor="middle" font-size="11" fill="#d1d5db">web :80/:443 · PROXY v2</text>
+<rect x="811.4" y="419" width="137.2" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="880" y="430" text-anchor="middle" font-size="11" fill="#d1d5db">web pool · PROXY v2</text>
 <polyline points="650,722 805,722" fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
-<rect x="689.6" y="705" width="74.8" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="727" y="716" text-anchor="middle" font-size="11" fill="#d1d5db">load config</text>
+<rect x="685.6" y="705" width="82.8" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="727" y="716" text-anchor="middle" font-size="11" fill="#d1d5db">load config</text>
 <polyline points="450,722 500,722" fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
 <polyline points="375,690 375,610" fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
-<rect x="334.2" y="619" width="81.6" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="375" y="630" text-anchor="middle" font-size="11" fill="#d1d5db">ACME bundles</text>
+<rect x="330.2" y="621" width="89.6" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="375" y="632" text-anchor="middle" font-size="11" fill="#d1d5db">ACME bundles</text>
 <polyline points="955,722 1010,722" fill="none" stroke="#d1d5db" stroke-width="1.6" marker-end="url(#a)"/>
 </svg>

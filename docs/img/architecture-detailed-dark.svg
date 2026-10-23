@@ -88,7 +88,7 @@
 <polyline points="383,400 383,376 885,376 885,224" fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
 <polyline points="541,400 541,376" fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="5 4"/>
 <polyline points="699,400 699,376" fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="5 4"/>
-<text x="900" y="368" font-size="11" text-anchor="start" fill="#d1d5db">health and backend lists → pool</text>
+<text x="880" y="390" font-size="11" text-anchor="end" fill="#d1d5db">health, backends → pool</text>
 <rect x="140" y="540" width="420" height="170" rx="12" fill="#fbbf24" fill-opacity="0.07" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6 4"/>
 <text x="154" y="562" font-size="14" font-weight="700" fill="#fbbf24">wayhouse-controller (optional)</text>
 <rect x="160" y="590" width="180" height="70" rx="8" fill="#4a3410" stroke="#fbbf24" stroke-width="1.5"/>
@@ -129,14 +129,14 @@
 <text x="88" y="874" font-size="12" text-anchor="start" fill="#d1d5db">player traffic</text>
 <polyline points="190,870 230,870" fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
 <text x="238" y="874" font-size="12" text-anchor="start" fill="#d1d5db">config, health, state, install, lookups</text>
-<rect x="440" y="863" width="14" height="14" rx="3" fill="#1e3a5f" stroke="#60a5fa"/>
-<text x="460" y="874" font-size="12" text-anchor="start" fill="#d1d5db">data path</text>
-<rect x="530" y="863" width="14" height="14" rx="3" fill="#4a3410" stroke="#fbbf24"/>
-<text x="550" y="874" font-size="12" text-anchor="start" fill="#d1d5db">control / off the data path</text>
-<rect x="700" y="863" width="14" height="14" rx="3" fill="#3b2a66" stroke="#a78bfa"/>
-<text x="720" y="874" font-size="12" text-anchor="start" fill="#d1d5db">registry repos</text>
+<rect x="480" y="863" width="14" height="14" rx="3" fill="#1e3a5f" stroke="#60a5fa"/>
+<text x="500" y="874" font-size="12" text-anchor="start" fill="#d1d5db">data path</text>
+<rect x="570" y="863" width="14" height="14" rx="3" fill="#4a3410" stroke="#fbbf24"/>
+<text x="590" y="874" font-size="12" text-anchor="start" fill="#d1d5db">control / off the data path</text>
+<rect x="740" y="863" width="14" height="14" rx="3" fill="#3b2a66" stroke="#a78bfa"/>
+<text x="760" y="874" font-size="12" text-anchor="start" fill="#d1d5db">registry repos</text>
 <rect x="1000" y="540" width="390" height="250" rx="12" fill="#9ca3af" fill-opacity="0.07" stroke="#9ca3af" stroke-width="1.5" stroke-dasharray="6 4"/>
-<text x="1014" y="562" font-size="14" font-weight="700" fill="#d1d5db">web gateway (optional)</text>
+<text x="1376" y="562" text-anchor="end" font-size="14" font-weight="700" fill="#d1d5db">web gateway (optional)</text>
 <rect x="1015" y="590" width="160" height="70" rx="8" fill="#1e3a5f" stroke="#60a5fa" stroke-width="1.5"/>
 <text x="1095.0" y="618.5" text-anchor="middle" font-size="13" font-weight="700" fill="#f3f4f6">Caddy</text>
 <text x="1095.0" y="634.5" text-anchor="middle" font-size="11" font-weight="400" fill="#f3f4f6">HTTP(S) sites · PROXY v2</text>
@@ -145,7 +145,7 @@
 <text x="1295.0" y="634.5" text-anchor="middle" font-size="11" font-weight="400" fill="#f3f4f6">HTTP(S) origins</text>
 <rect x="1095" y="400" width="150" height="64" rx="8" fill="#1e3a5f" stroke="#60a5fa" stroke-width="1.5"/>
 <text x="1170.0" y="425.5" text-anchor="middle" font-size="13" font-weight="700" fill="#f3f4f6">Loopback listeners</text>
-<text x="1170.0" y="441.5" text-anchor="middle" font-size="11" font-weight="400" fill="#f3f4f6">web-up-&lt;pool&gt; → router</text>
+<text x="1170.0" y="441.5" text-anchor="middle" font-size="11" font-weight="400" fill="#f3f4f6">web-up-&lt;pool&gt;</text>
 <rect x="1015" y="700" width="160" height="70" rx="8" fill="#4a3410" stroke="#fbbf24" stroke-width="1.5"/>
 <text x="1095.0" y="728.5" text-anchor="middle" font-size="13" font-weight="700" fill="#f3f4f6">wayhouse-web-sync</text>
 <text x="1095.0" y="744.5" text-anchor="middle" font-size="11" font-weight="400" fill="#f3f4f6">web: → Caddy JSON</text>
@@ -153,16 +153,17 @@
 <text x="1295.0" y="728.5" text-anchor="middle" font-size="13" font-weight="700" fill="#f3f4f6">wayhouse-certsync</text>
 <text x="1295.0" y="744.5" text-anchor="middle" font-size="11" font-weight="400" fill="#f3f4f6">ACME bundles → files</text>
 <polyline points="1072,224 1072,590" fill="none" stroke="#d1d5db" stroke-width="1.6" marker-end="url(#a)"/>
-<rect x="993.8" y="329" width="156.4" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="1072" y="340" text-anchor="middle" font-size="11" fill="#d1d5db">web :80/:443 · PROXY v2</text>
+<rect x="932.8" y="279" width="137.2" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="1066" y="290" text-anchor="end" font-size="11" fill="#d1d5db">web pool · PROXY v2</text>
 <polyline points="1175,625 1215,625" fill="none" stroke="#d1d5db" stroke-width="1.6" marker-end="url(#a)"/>
 <polyline points="1145,590 1145,464" fill="none" stroke="#d1d5db" stroke-width="1.6" marker-end="url(#a)"/>
-<rect x="1100.8" y="519" width="88.4" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="1145" y="530" text-anchor="middle" font-size="11" fill="#d1d5db">via: wayhouse</text>
+<rect x="1096.8" y="516" width="96.4" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="1145" y="527" text-anchor="middle" font-size="11" fill="#d1d5db">via: wayhouse</text>
 <polyline points="1130,400 1130,385 910,385 910,224" fill="none" stroke="#d1d5db" stroke-width="1.6" marker-end="url(#a)"/>
+<rect x="912.0" y="319" width="103.2" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="916" y="330" text-anchor="start" font-size="11" fill="#d1d5db">routed to pool</text>
 <polyline points="1095,700 1095,660" fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
-<rect x="1057.6" y="673" width="74.8" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="1095" y="684" text-anchor="middle" font-size="11" fill="#d1d5db">load config</text>
+<rect x="1053.6" y="673" width="82.8" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="1095" y="684" text-anchor="middle" font-size="11" fill="#d1d5db">load config</text>
 <polyline points="1215,735 1175,735" fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
 <polyline points="1015,745 965,745 965,440 922,440" fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
-<rect x="910.6" y="499" width="108.8" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="965" y="510" text-anchor="middle" font-size="11" fill="#d1d5db">GET /web, /pools</text>
+<rect x="906.6" y="516" width="116.8" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="965" y="527" text-anchor="middle" font-size="11" fill="#d1d5db">GET /web, /pools</text>
 <polyline points="1295,770 1295,845 250,845 250,710" fill="none" stroke="#d1d5db" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a)"/>
-<rect x="604.8" y="838" width="190.4" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="700" y="849" text-anchor="middle" font-size="11" fill="#d1d5db">ACME bundles (gateway token)</text>
+<rect x="600.8" y="838" width="198.4" height="15" rx="3" fill="#0d1117" fill-opacity="0.9"/><text x="700" y="849" text-anchor="middle" font-size="11" fill="#d1d5db">ACME bundles (gateway token)</text>
 </svg>
