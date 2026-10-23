@@ -14,6 +14,7 @@ pub mod events;
 pub mod hooks;
 pub mod net;
 pub mod peer;
+pub mod ports;
 pub mod routes;
 pub mod runner;
 pub mod secrets;
@@ -23,10 +24,18 @@ use crate::kv::Transactional;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+use ports::{allocate, PortAssignment, PortLedger};
 use secrets::Sealed;
 use wayhouse_plugin_host::{
-    Capabilities, RouteEntry, StateSnapshot, MAX_KEY_BYTES, MAX_MODULE_BYTES, MAX_STATE_BYTES,
+    Capabilities, PortRouteEntry, RouteEntry, StateSnapshot, MAX_KEY_BYTES, MAX_MODULE_BYTES,
+    MAX_STATE_BYTES,
 };
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
 
 /// Largest `config` an install may carry, serialized.
 pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
@@ -225,6 +234,9 @@ pub struct StateSnap {
     /// The route set the plugin last committed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<RouteEntry>,
+    /// The port routes the plugin last committed, with their entry ports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub port_routes: Vec<PortAssignment>,
 }
 
 /// A stored secret: ciphertext only.
@@ -289,6 +301,9 @@ pub struct PluginSnapshot {
     /// Secrets, as ciphertext.
     #[serde(default)]
     pub secrets: Vec<SecretSnap>,
+    /// Entry ports in use or in quarantine, across installs.
+    #[serde(default, skip_serializing_if = "PortLedger::is_empty")]
+    pub port_ledger: PortLedger,
 }
 
 /// A replicated plugin write, applied by [`PluginStore::apply_at`].
@@ -301,6 +316,8 @@ pub enum PluginOp<'a> {
     },
     Delete {
         id: &'a str,
+        /// Unix seconds the delete was proposed at: when its ports start their quarantine.
+        now: u64,
     },
     /// Enable (a token hash) or turn off (`None`) the install's webhook.
     SetWebhook {
@@ -317,6 +334,10 @@ pub enum PluginOp<'a> {
         puts: &'a BTreeMap<String, Vec<u8>>,
         /// The plugin's whole route set, when the call declared one.
         routes: Option<&'a [RouteEntry]>,
+        /// The plugin's whole port route set, when the call declared one.
+        port_routes: Option<&'a [PortRouteEntry]>,
+        /// Unix seconds the proposer read the clock at: the allocation's only time source.
+        now: u64,
     },
     SecretSet {
         id: &'a str,
@@ -398,6 +419,56 @@ fn state_key(id: &str, key: &str) -> Vec<u8> {
     k
 }
 
+/// Checks a port route set against the capability an install was approved for.
+fn check_port_routes(record: &InstallRecord, set: &[PortRouteEntry]) -> Result<(), String> {
+    match &record.approved.port_routes {
+        Some(cap) => cap.check_set(set),
+        None => Err("the install was not approved for port routes".into()),
+    }
+}
+
+/// The ports the host may assign an install: what it was approved for.
+fn approved_ranges(record: &InstallRecord) -> Vec<std::ops::RangeInclusive<u16>> {
+    record
+        .approved
+        .port_routes
+        .as_ref()
+        .map(|c| c.ranges())
+        .unwrap_or_default()
+}
+
+fn ports_key(id: &str) -> Vec<u8> {
+    let mut k = state_prefix(id);
+    k.extend_from_slice(b"ports");
+    k
+}
+
+/// The ledger lives under a key no install id can start with (ids are not empty).
+fn ledger_key() -> Vec<u8> {
+    b"\0ports-ledger".to_vec()
+}
+
+fn read_ledger(
+    st: &crate::kv::TransactionalTree<'_>,
+) -> Result<PortLedger, ConflictableTransactionError<PluginStoreError>> {
+    match st.get(ledger_key())? {
+        Some(v) => {
+            serde_json::from_slice(&v).map_err(|e| ConflictableTransactionError::Abort(e.into()))
+        }
+        None => Ok(PortLedger::default()),
+    }
+}
+
+fn write_ledger(
+    st: &crate::kv::TransactionalTree<'_>,
+    ledger: &PortLedger,
+) -> Result<(), ConflictableTransactionError<PluginStoreError>> {
+    let bytes =
+        serde_json::to_vec(ledger).map_err(|e| ConflictableTransactionError::Abort(e.into()))?;
+    st.insert(ledger_key(), bytes)?;
+    Ok(())
+}
+
 fn routes_key(id: &str) -> Vec<u8> {
     let mut k = state_prefix(id);
     k.extend_from_slice(b"routes");
@@ -459,6 +530,35 @@ impl PluginStore {
         match self.state.get(routes_key(id))? {
             Some(v) => Ok(serde_json::from_slice(&v)?),
             None => Ok(Vec::new()),
+        }
+    }
+
+    /// The port routes an install last committed, with the entry ports they got.
+    pub fn port_routes(&self, id: &str) -> Result<Vec<PortAssignment>, PluginStoreError> {
+        match self.state.get(ports_key(id))? {
+            Some(v) => Ok(serde_json::from_slice(&v)?),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Whether the ports `id` was approved for have a port that is not owned (a quarantined
+    /// one counts: it is reusable once the range is otherwise full).
+    pub fn port_range_has_room(&self, id: &str) -> Result<bool, PluginStoreError> {
+        let Some(record) = self.get(id)? else {
+            return Ok(false);
+        };
+        let ledger = self.port_ledger()?;
+        Ok(approved_ranges(&record)
+            .iter()
+            .flat_map(Clone::clone)
+            .any(|p| !ledger.owners.contains_key(&p)))
+    }
+
+    /// Every entry port in use or in quarantine.
+    pub fn port_ledger(&self) -> Result<PortLedger, PluginStoreError> {
+        match self.state.get(ledger_key())? {
+            Some(v) => Ok(serde_json::from_slice(&v)?),
+            None => Ok(PortLedger::default()),
         }
     }
 
@@ -644,6 +744,20 @@ impl PluginStore {
         puts: &BTreeMap<String, Vec<u8>>,
         routes: Option<&[RouteEntry]>,
     ) -> Result<u64, CommitError> {
+        self.commit_state_full(id, expected_rev, puts, routes, None, 0)
+    }
+
+    /// [`Self::commit_state_routes`] with the plugin's port route set too: the entry ports
+    /// are allocated in the same batch, `now` being the clock quarantine counts from.
+    pub fn commit_state_full(
+        &self,
+        id: &str,
+        expected_rev: u64,
+        puts: &BTreeMap<String, Vec<u8>>,
+        routes: Option<&[RouteEntry]>,
+        port_routes: Option<&[PortRouteEntry]>,
+        now: u64,
+    ) -> Result<u64, CommitError> {
         let _guard = self.lock();
         let Some(record) = self.get(id)? else {
             return Err(CommitError::NoSuchInstall);
@@ -654,6 +768,9 @@ impl PluginStore {
         }
         if let Some(set) = routes {
             check_routes(&record, set).map_err(CommitError::Invalid)?;
+        }
+        if let Some(set) = port_routes {
+            check_port_routes(&record, set).map_err(CommitError::Invalid)?;
         }
         if self.read_rev(id)? != expected_rev {
             return Err(CommitError::Stale);
@@ -667,6 +784,20 @@ impl PluginStore {
             batch.insert(
                 routes_key(id),
                 serde_json::to_vec(set).map_err(PluginStoreError::from)?,
+            );
+        }
+        if let Some(set) = port_routes {
+            let mut sorted = set.to_vec();
+            sorted.sort();
+            let mut ledger = self.port_ledger()?;
+            let table = allocate(&mut ledger, id, &approved_ranges(&record), &sorted, now);
+            batch.insert(
+                ports_key(id),
+                serde_json::to_vec(&table).map_err(PluginStoreError::from)?,
+            );
+            batch.insert(
+                ledger_key(),
+                serde_json::to_vec(&ledger).map_err(PluginStoreError::from)?,
             );
         }
         batch.insert(rev_key(id), next.to_le_bytes());
@@ -698,7 +829,7 @@ impl PluginStore {
         // Keys to wipe with a deleted install: the transaction cannot scan, and the lock
         // keeps the set from changing under it.
         let (wipe, wipe_secrets): (Vec<crate::kv::IVec>, Vec<crate::kv::IVec>) = match op {
-            PluginOp::Delete { id } => (
+            PluginOp::Delete { id, .. } => (
                 self.state
                     .scan_prefix(state_prefix(id))
                     .keys()
@@ -766,10 +897,13 @@ impl PluginStore {
                         inst.insert(id.as_bytes(), bytes)?;
                         done(Applied::Done(None))
                     }
-                    PluginOp::Delete { id } => {
+                    PluginOp::Delete { id, now } => {
                         let Some(record) = read(id)? else {
                             return done(Applied::NoSuchInstall);
                         };
+                        let mut ledger = read_ledger(st)?;
+                        ledger.release_install(id, now);
+                        write_ledger(st, &ledger)?;
                         inst.remove(id.as_bytes())?;
                         for key in &wipe {
                             st.remove(key.clone())?;
@@ -786,6 +920,8 @@ impl PluginStore {
                         entry_term,
                         puts,
                         routes,
+                        port_routes,
+                        now,
                     } => {
                         if tagged_term != entry_term {
                             return done(Applied::WrongTerm);
@@ -804,6 +940,11 @@ impl PluginStore {
                                 return done(Applied::Invalid(why));
                             }
                         }
+                        if let Some(set) = port_routes {
+                            if let Err(why) = check_port_routes(&record, set) {
+                                return done(Applied::Invalid(why));
+                            }
+                        }
                         let current = st
                             .get(rev_key(id))?
                             .and_then(|v| <[u8; 8]>::try_from(v.as_ref()).ok())
@@ -818,6 +959,16 @@ impl PluginStore {
                         if let Some(set) = routes {
                             let bytes = serde_json::to_vec(set).map_err(|e| abort(e.into()))?;
                             st.insert(routes_key(id), bytes)?;
+                        }
+                        if let Some(set) = port_routes {
+                            let mut sorted = set.to_vec();
+                            sorted.sort();
+                            let mut ledger = read_ledger(st)?;
+                            let table =
+                                allocate(&mut ledger, id, &approved_ranges(&record), &sorted, now);
+                            let bytes = serde_json::to_vec(&table).map_err(|e| abort(e.into()))?;
+                            st.insert(ports_key(id), bytes)?;
+                            write_ledger(st, &ledger)?;
                         }
                         st.insert(rev_key(id), next.to_le_bytes())?;
                         done(Applied::Done(Some(next)))
@@ -909,12 +1060,14 @@ impl PluginStore {
         for r in &installs {
             let (rev, entries) = self.state(&r.id)?;
             let routes = self.routes(&r.id)?;
-            if rev > 0 || !entries.is_empty() || !routes.is_empty() {
+            let port_routes = self.port_routes(&r.id)?;
+            if rev > 0 || !entries.is_empty() || !routes.is_empty() || !port_routes.is_empty() {
                 state.push(StateSnap {
                     id: r.id.clone(),
                     rev,
                     entries,
                     routes,
+                    port_routes,
                 });
             }
         }
@@ -923,6 +1076,7 @@ impl PluginStore {
             state,
             applied_index: self.applied_index()?,
             secrets: self.all_secrets()?,
+            port_ledger: self.port_ledger()?,
         })
     }
 
@@ -955,6 +1109,12 @@ impl PluginStore {
             if !st.routes.is_empty() {
                 new_state.push((routes_key(&st.id), serde_json::to_vec(&st.routes)?));
             }
+            if !st.port_routes.is_empty() {
+                new_state.push((ports_key(&st.id), serde_json::to_vec(&st.port_routes)?));
+            }
+        }
+        if !snap.port_ledger.is_empty() {
+            new_state.push((ledger_key(), serde_json::to_vec(&snap.port_ledger)?));
         }
         (&self.installs, &self.state, &self.meta, &self.secrets)
             .transaction(|(inst, st, meta, sec)| {
@@ -1137,6 +1297,11 @@ impl PluginStore {
         let mut wipe = crate::kv::Batch::default();
         for item in self.state.scan_prefix(state_prefix(id)) {
             wipe.remove(item?.0);
+        }
+        let mut ledger = self.port_ledger()?;
+        if ledger.owners.values().any(|o| o.install == id) {
+            ledger.release_install(id, unix_now());
+            wipe.insert(ledger_key(), serde_json::to_vec(&ledger)?);
         }
         self.state.apply_batch(wipe)?;
         self.state.flush()?;
@@ -1436,6 +1601,8 @@ mod tests {
                 entry_term: 3,
                 puts: &puts(&[(k, v)]),
                 routes: None,
+                port_routes: None,
+                now: 0,
             },
         )
         .unwrap()
@@ -1504,6 +1671,8 @@ mod tests {
                     entry_term: 3,
                     puts: &puts(&[("n", b"9")]),
                     routes: None,
+                    port_routes: None,
+                    now: 0,
                 },
             )
             .unwrap();
@@ -1580,13 +1749,15 @@ mod tests {
         );
         assert!(!s.get(ID_A).unwrap().unwrap().enabled);
         assert_eq!(
-            s.apply_at(4, PluginOp::Delete { id: ID_A }).unwrap(),
+            s.apply_at(4, PluginOp::Delete { id: ID_A, now: 0 })
+                .unwrap(),
             Applied::Done(None)
         );
         assert!(s.get(ID_A).unwrap().is_none());
         assert_eq!(s.state(ID_A).unwrap().0, 0);
         assert_eq!(
-            s.apply_at(5, PluginOp::Delete { id: ID_A }).unwrap(),
+            s.apply_at(5, PluginOp::Delete { id: ID_A, now: 0 })
+                .unwrap(),
             Applied::NoSuchInstall
         );
         assert_eq!(
@@ -1697,10 +1868,12 @@ mod tests {
                 id: ID_A.into(),
                 rev: 1,
                 routes: vec![],
+                port_routes: vec![],
                 entries: puts(&[("n", &[0, 1, 2, 255])]),
             }],
             secrets: vec![],
             applied_index: Some(1),
+            port_ledger: PortLedger::default(),
         };
         let json = serde_json::to_string(&snap).unwrap();
         assert!(json.contains("AAEC/w=="), "{json}");
@@ -1896,6 +2069,8 @@ mod tests {
             entry_term: 1,
             puts: &puts,
             routes,
+            port_routes: None,
+            now: 0,
         };
         assert!(matches!(
             s.apply_at(2, op(Some(&bad))).unwrap(),
@@ -1908,5 +2083,134 @@ mod tests {
             Applied::Done(Some(1))
         );
         assert_eq!(s.routes(ID_A).unwrap(), good);
+    }
+
+    fn port_record(id: &str) -> InstallRecord {
+        let mut r = record(id, "sha1", 1);
+        r.approved = Capabilities::parse(
+            br#"{"log":true,"port_routes":{"ports":["30000-30009"],"proto":["udp"],"backends":["10.0.0.0/16"],"max_entries":3}}"#,
+        )
+        .unwrap();
+        r
+    }
+
+    fn port_route(key: &str, backend: &str, prefer: Option<u16>) -> PortRouteEntry {
+        PortRouteEntry {
+            key: key.into(),
+            backend: backend.into(),
+            proto: wayhouse_plugin_host::PortProtoSel::Udp,
+            prefer,
+        }
+    }
+
+    fn ports_of(s: &PluginStore, id: &str) -> Vec<(String, Option<u16>)> {
+        s.port_routes(id)
+            .unwrap()
+            .into_iter()
+            .map(|a| (a.key, a.port))
+            .collect()
+    }
+
+    #[test]
+    fn a_port_route_set_is_allocated_with_the_commit_and_checked_against_the_approval() {
+        let (s, _d) = store();
+        s.put_blob("sha1", b"abc").unwrap();
+        s.create(&port_record(ID_A)).unwrap();
+        let set = [
+            port_route("b", "10.0.1.2:1", Some(30004)),
+            port_route("a", "10.0.1.1:1", None),
+        ];
+        s.commit_state_full(ID_A, 0, &BTreeMap::new(), None, Some(&set), 10)
+            .unwrap();
+        assert_eq!(
+            ports_of(&s, ID_A),
+            vec![
+                ("a".to_string(), Some(30000)),
+                ("b".to_string(), Some(30004))
+            ]
+        );
+        // Outside the approval: a backend network, a port, a protocol, the count.
+        let mut tcp = port_route("c", "10.0.1.1:1", None);
+        tcp.proto = wayhouse_plugin_host::PortProtoSel::Tcp;
+        for bad in [
+            vec![port_route("c", "192.168.0.1:1", None)],
+            vec![port_route("c", "10.0.1.1:1", Some(31000))],
+            vec![tcp],
+            (0..4)
+                .map(|i| port_route(&format!("k{i}"), "10.0.1.1:1", None))
+                .collect(),
+        ] {
+            assert!(matches!(
+                s.commit_state_full(ID_A, 1, &BTreeMap::new(), None, Some(&bad), 11),
+                Err(CommitError::Invalid(_))
+            ));
+        }
+        // A backend change keeps the port; dropping a key quarantines its port.
+        let moved = [port_route("a", "10.0.9.9:1", None)];
+        s.commit_state_full(ID_A, 1, &BTreeMap::new(), None, Some(&moved), 20)
+            .unwrap();
+        assert_eq!(ports_of(&s, ID_A), vec![("a".to_string(), Some(30000))]);
+        assert_eq!(s.port_ledger().unwrap().quarantine[&30004].since, 20);
+    }
+
+    #[test]
+    fn ports_survive_a_snapshot_and_a_delete_quarantines_them() {
+        let (s, _d) = store();
+        s.put_blob("sha1", b"abc").unwrap();
+        s.create(&port_record(ID_A)).unwrap();
+        let set = [port_route("a", "10.0.1.1:1", Some(30003))];
+        s.commit_state_full(ID_A, 0, &BTreeMap::new(), None, Some(&set), 10)
+            .unwrap();
+        let snap = s.snapshot().unwrap();
+        let (t, _d2) = store();
+        t.replace(&snap).unwrap();
+        assert_eq!(ports_of(&t, ID_A), vec![("a".to_string(), Some(30003))]);
+        assert_eq!(t.port_ledger().unwrap(), s.port_ledger().unwrap());
+        // Replacing from an empty snapshot clears the ledger.
+        t.replace(&PluginSnapshot::default()).unwrap();
+        assert!(t.port_ledger().unwrap().is_empty());
+        s.delete(ID_A).unwrap();
+        let ledger = s.port_ledger().unwrap();
+        assert!(ledger.owners.is_empty());
+        assert!(ledger.quarantine.contains_key(&30003));
+    }
+
+    #[test]
+    fn a_replicated_port_commit_allocates_the_same_on_every_replica_and_a_replay_changes_nothing() {
+        let tables: Vec<_> = (0..2)
+            .map(|_| {
+                let (s, d) = store();
+                let mut rec = port_record(ID_A);
+                rec.sha256 = "a".repeat(64);
+                s.apply_at(1, PluginOp::Install(&rec)).unwrap();
+                let puts = BTreeMap::new();
+                let set = [
+                    port_route("x", "10.0.1.1:1", None),
+                    port_route("y", "10.0.1.2:1", Some(30002)),
+                ];
+                let op = PluginOp::State {
+                    id: ID_A,
+                    expected_rev: 0,
+                    tagged_term: 1,
+                    entry_term: 1,
+                    puts: &puts,
+                    routes: None,
+                    port_routes: Some(&set),
+                    now: 99,
+                };
+                assert_eq!(s.apply_at(2, op).unwrap(), Applied::Done(Some(1)));
+                assert_eq!(s.apply_at(2, op).unwrap(), Applied::Replayed);
+                let out = (s.port_routes(ID_A).unwrap(), s.port_ledger().unwrap());
+                drop(d);
+                out
+            })
+            .collect();
+        assert_eq!(tables[0], tables[1]);
+        let got: Vec<_> = tables[0]
+            .0
+            .iter()
+            .map(|a| (a.key.as_str(), a.port))
+            .collect();
+        assert_eq!(got, vec![("x", Some(30000)), ("y", Some(30002))]);
     }
 }

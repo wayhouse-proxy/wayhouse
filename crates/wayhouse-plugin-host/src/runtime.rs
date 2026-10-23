@@ -6,7 +6,7 @@
 //! controller tag the entry with the leader term and reject it when stale.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -94,6 +94,9 @@ pub struct Effects {
     /// The route set the call declared with `routes_set` (the last call wins), or `None`
     /// when it did not declare one. `Some(vec![])` means "no routes".
     pub routes: Option<Vec<crate::routes::RouteEntry>>,
+    /// The port route set the call declared with `port_routes_set` (the last call wins),
+    /// or `None` when it did not declare one. `Some(vec![])` means "no port routes".
+    pub port_routes: Option<Vec<crate::port_routes::PortRouteEntry>>,
     /// What the guest answered a webhook with (`webhook_respond`); `None` if it did not.
     pub webhook: Option<crate::webhook::WebhookResponse>,
     /// What the guest answered an `on_acme_dns` call with (`acme_dns_result`, the last call
@@ -128,6 +131,10 @@ struct CallState {
     used_state: bool,
     used_http: bool,
     routes: Option<Vec<crate::routes::RouteEntry>>,
+    port_routes: Option<Vec<crate::port_routes::PortRouteEntry>>,
+    /// The entry ports the host assigned this plugin, as `port_routes_get` reports them.
+    port_assignments: Arc<BTreeMap<String, u16>>,
+    port_doc: Vec<u8>,
     webhook: Option<crate::webhook::WebhookResponse>,
     acme_dns: Option<crate::acme_dns::AcmeDnsAnswer>,
     denied: Option<&'static str>,
@@ -210,6 +217,8 @@ impl PluginHost {
                         | "http_request"
                         | "http_read"
                         | "routes_set"
+                        | "port_routes_set"
+                        | "port_routes_get"
                         | "webhook_respond"
                         | "acme_dns_result"
                 );
@@ -269,6 +278,7 @@ impl PluginHost {
             info,
             limits: self.limits.clone(),
             http: None,
+            port_assignments: Mutex::default(),
             _alive: self.alive.clone(),
         };
         let mut store = plugin.store(Arc::default());
@@ -288,10 +298,27 @@ pub struct Plugin {
     info: ModuleInfo,
     limits: Limits,
     http: Option<Arc<HttpEngine>>,
+    /// What `port_routes_get` reports; the controller sets it before each call.
+    port_assignments: Mutex<Arc<BTreeMap<String, u16>>>,
     _alive: Arc<()>,
 }
 
 impl Plugin {
+    /// Sets the entry ports (`key -> port`) the next calls read back with `port_routes_get`.
+    pub fn set_port_assignments(&self, assigned: Arc<BTreeMap<String, u16>>) {
+        *self
+            .port_assignments
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = assigned;
+    }
+
+    fn port_assignments(&self) -> Arc<BTreeMap<String, u16>> {
+        self.port_assignments
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     pub fn info(&self) -> &ModuleInfo {
         &self.info
     }
@@ -414,6 +441,9 @@ impl Plugin {
             used_state: false,
             used_http: false,
             routes: None,
+            port_routes: None,
+            port_assignments: self.port_assignments(),
+            port_doc: Vec::new(),
             webhook: None,
             acme_dns: None,
             denied: None,
@@ -466,6 +496,7 @@ impl Plugin {
             used_state: st.used_state,
             used_http: st.used_http,
             routes: st.routes,
+            port_routes: st.port_routes,
             webhook: st.webhook,
             acme_dns,
         })
@@ -669,6 +700,72 @@ fn linker(engine: &Engine) -> Linker<CallState> {
             },
         )
         .expect("defining wayhouse.routes_set");
+    linker
+        .func_wrap(
+            "wayhouse",
+            "port_routes_set",
+            |mut caller: Caller<'_, CallState>, ptr: i32, len: i32| -> wasmtime::Result<i32> {
+                if caller.data().caps.port_routes.is_none() {
+                    return Err(deny(&mut caller, "port_routes"));
+                }
+                if usize::try_from(len).map_or(true, |l| l > MAX_ROUTES_DOC) {
+                    return Ok(-1);
+                }
+                let raw = read_guest(&mut caller, ptr, len)?;
+                let st = caller.data_mut();
+                let cap = st.caps.port_routes.clone().expect("checked above");
+                let parsed: Result<Vec<crate::port_routes::PortRouteEntry>, String> =
+                    serde_json::from_slice(&raw).map_err(|e| format!("not a port route list: {e}"));
+                match parsed.and_then(|set| cap.check_set(&set).map(|()| set)) {
+                    Ok(mut set) => {
+                        set.sort();
+                        st.port_routes = Some(set);
+                        Ok(0)
+                    }
+                    Err(why) => {
+                        if st.logs.len() < st.run.max_log_lines {
+                            st.logs.push(LogLine {
+                                level: LogLevel::Warn,
+                                msg: format!("port_routes_set refused: {why}"),
+                            });
+                        }
+                        Ok(-1)
+                    }
+                }
+            },
+        )
+        .expect("defining wayhouse.port_routes_set");
+    linker
+        .func_wrap(
+            "wayhouse",
+            "port_routes_get",
+            |mut caller: Caller<'_, CallState>,
+             out_ptr: i32,
+             out_cap: i32|
+             -> wasmtime::Result<i32> {
+                if caller.data().caps.port_routes.is_none() {
+                    return Err(deny(&mut caller, "port_routes"));
+                }
+                let st = caller.data_mut();
+                if st.port_assignments.is_empty() {
+                    return Ok(0);
+                }
+                if st.port_doc.is_empty() {
+                    st.port_doc = serde_json::to_vec(&*st.port_assignments)?;
+                }
+                let doc = std::mem::take(&mut st.port_doc);
+                let len = i32::try_from(doc.len())?;
+                if len > out_cap {
+                    // Keep it: the guest may retry with room.
+                    caller.data_mut().port_doc = doc;
+                    return Ok(-1);
+                }
+                let memory = caller_memory(&mut caller)?;
+                memory.write(&mut caller, out_ptr as u32 as usize, &doc)?;
+                Ok(len)
+            },
+        )
+        .expect("defining wayhouse.port_routes_get");
     linker
         .func_wrap(
             "wayhouse",

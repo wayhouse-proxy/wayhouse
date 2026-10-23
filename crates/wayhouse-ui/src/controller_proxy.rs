@@ -38,6 +38,7 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/config/revisions/{revision}/diff", get(diff_revision))
         .route("/api/tunnel/addresses", get(tunnel_addresses))
         .route("/api/plugins", get(list_plugins))
+        .route("/api/plugin-routes", get(plugin_routes))
         .route("/api/acme/sites", get(acme_sites))
         .route("/api/acme/gateways", get(acme_gateways))
         .route("/api/acme/account", get(acme_account))
@@ -82,6 +83,18 @@ async fn acme_gateways(State(state): State<AppState>) -> Response {
 
 async fn acme_account(State(state): State<AppState>) -> Response {
     proxy(&state, Method::GET, "/acme/account".to_string(), None, None).await
+}
+
+/// The route overlay plugins publish: hostname routes and the entry ports of port routes.
+async fn plugin_routes(State(state): State<AppState>) -> Response {
+    proxy(
+        &state,
+        Method::GET,
+        "/plugin-routes".to_string(),
+        None,
+        None,
+    )
+    .await
 }
 
 async fn list_plugins(State(state): State<AppState>) -> Response {
@@ -714,6 +727,28 @@ mod tests {
                 "DELETE /plugins/0123abcd"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn the_plugin_route_overlay_is_a_read_of_the_controller_overlay() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        let resp = app
+            .oneshot(
+                Request::get("/api/plugin-routes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let paths: Vec<_> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(m, p, _, _)| format!("{m} {p}"))
+            .collect();
+        assert_eq!(paths, ["GET /plugin-routes"]);
     }
 
     #[tokio::test]

@@ -45,6 +45,10 @@ pub struct Capabilities {
     /// May call `routes_set`: which hostnames it may claim and where they may point.
     #[serde(default)]
     pub routes: Option<crate::routes::RouteCap>,
+    /// May call `port_routes_set` / `port_routes_get`: which entry ports it may be given
+    /// and where they may point.
+    #[serde(default)]
+    pub port_routes: Option<Box<crate::port_routes::PortRouteCap>>,
 }
 
 /// Most hosts an `http` declaration may list.
@@ -218,6 +222,17 @@ impl Capabilities {
                 return over("routes (a hostname, network or count beyond the approval)");
             }
         }
+        if let Some(want) = &self.port_routes {
+            if !approved
+                .port_routes
+                .as_ref()
+                .is_some_and(|a| want.within(a))
+            {
+                return over(
+                    "port_routes (a port, protocol, network or count beyond the approval)",
+                );
+            }
+        }
         match (self.state, approved.state) {
             (None, _) => {}
             (Some(_), None) => return over("state"),
@@ -280,6 +295,9 @@ impl Capabilities {
         caps.validate_network()?;
         if let Some(routes) = &caps.routes {
             routes.validate().map_err(ModuleError::CapsInvalid)?;
+        }
+        if let Some(port_routes) = &caps.port_routes {
+            port_routes.validate().map_err(ModuleError::CapsInvalid)?;
         }
         Ok(caps)
     }

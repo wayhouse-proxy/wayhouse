@@ -49,6 +49,8 @@ declared. The only imports allowed are these, in the `wayhouse` namespace:
 | `state_put(kptr, klen, vptr, vlen) -> i32`       | `state`    | 0, or -1 when over `state.max_bytes`, the key is over 256 bytes or not UTF-8, or the per-call write limit is hit                 |
 
 | `routes_set(ptr, len) -> i32` | `routes` | declares the plugin's whole route set as a JSON array of `{"host", "backend"}`; 0, or -1 when refused (the reason is a `warn` line in the plugin's log) |
+| `port_routes_set(ptr, len) -> i32` | `port_routes` | declares the plugin's whole port route set as a JSON array of `{"key", "backend", "proto", "prefer"?}` (`proto` is `udp`, `tcp` or `both`); 0, or -1 when refused (the reason is a `warn` line in the plugin's log) |
+| `port_routes_get(out_ptr, out_cap) -> i32` | `port_routes` | copies out the entry ports the host assigned, as a JSON object `{"<key>": <port>}`; 0 when nothing is assigned yet, -1 when `out_cap` is too small |
 | `acme_dns_result(ok, ptr, len) -> i32` | `on_acme_dns` | answers an `on_acme_dns` call: `ok` 1 or 0 and a message of at most 512 bytes (UTF-8); 0, or -1 when `ok` is neither or the message is too long; the last call wins |
 | `http_request(ptr, len) -> i32` | `http` | sends the JSON request at `ptr`; returns the length of the response document, or -1 when the request is over the size limit |
 | `http_read(out_ptr, out_cap) -> i32` | `http` | copies the pending response document out; -1 (and keeps it) when `out_cap` is too small |
@@ -151,6 +153,61 @@ Rules:
 - A controller started without `--plugins` answers `501` (`404` on an older build) and proxies drop
   the plugin routes at once, keeping their own config; a controller that is only unreachable leaves
   the last overlay in place. A proxy without `--controller` ignores the overlay.
+
+## Port routes
+
+Games on UDP have no hostname to route by. The `port_routes` capability lets a plugin route by
+**entry port** instead (design: `docs/superpowers/specs/2026-10-22-port-based-plugin-routing-design.md`,
+#403). The operator opens one port range once; the plugin never picks a port.
+
+```json
+"port_routes": { "ports": ["30000-30999"], "proto": ["udp", "tcp"], "backends": ["10.0.0.0/16"], "max_entries": 256 }
+```
+
+`ports` are the entry ports the host may assign (`"30001"` or `"lo-hi"`), `proto` the transports,
+`backends` the networks a backend must be in and `max_entries` (1 to 1024) the size of one set. A
+module cannot ask for more of any of these than was approved.
+
+`port_routes_set` replaces the plugin's whole set. An entry is `{key, backend, proto, prefer?}`:
+
+- `key` is the stable identity of the thing being routed (a Pelican server's uuid), 1 to 128
+  characters of letters, digits and `-_.:`, unique within the set. The host keeps `key -> entry port`
+  for as long as the install exists. Changing `backend` (a server moved to another node) keeps the
+  port.
+- `prefer` is an optional hint (a Pelican server's allocation port): the host uses it when it is
+  inside the approval and free, otherwise it assigns the lowest free port of the approved ranges.
+- One entry port belongs to one `(install, key)` whatever the protocol, so `both` needs no second
+  port and two installs never collide. Keys are namespaced by install.
+
+The host checks the set against the approval (backend networks, ports of `prefer`, transports,
+duplicate keys, the entry cap). The allocation happens in the replicated apply step of the same
+Raft entry as the call's state writes (term and revision checked, the entry carries the clock), so
+every replica computes the same table and a stale leader cannot hand out a port. The plugin reads
+its assignments back with `port_routes_get`.
+
+**Quarantine.** A port released by a key that left the set, or by a deleted install, waits 24 hours
+before another key may take it, so a player with an old address does not land on a different server.
+The key that released it takes it back at any time. When the approved ports are otherwise full, the
+port that has waited longest is reused. Disabling an install keeps its ports reserved; its routes are
+withdrawn.
+
+**Exhaustion.** An entry that finds no free port stays unplaced and is listed under `exhausted` in
+`GET /plugin-routes` and on the Plugins page; it is retried when ports free up.
+
+**Materialisation.** `GET /plugin-routes` (and its stream) carries a separate `port_routes` list
+(`key`, `port`, `proto`, `backend`, `owner`, `plugin`) next to the hostname `routes`, so proxies that
+predate port routes keep working. A proxy with `--controller` appends each entry to the listeners that
+opted in with `plugin_routes: { type: port }` ([configuration](05-configuration.md)). The operator
+opens the range in the firewall once and states the same range in the listener `bind:` and in the
+plugin approval; players connect to the node's name at the entry port, which the Plugins page lists
+first.
+
+**Disabled installs.** A disabled install keeps its entry ports until it is deleted, so the range does not free up by disabling a plugin.
+
+**HA and upgrades.** Port routes need every member on a build that reports plugin support level 4
+(`/raft/whoami`); until then the leader refuses to commit a port route set and the tick reports why.
+A module that declares `port_routes` fails to link on a host that predates the imports and is
+refused at install; this is the additive-import behaviour, not an ABI bump.
 
 ## Webhooks
 
@@ -324,7 +381,7 @@ the `X-Actor` header the caller sent, not a verified identity (the admin token i
 
 ## The Plugins page (web UI)
 
-`wayhouse-ui` proxies the controller's `/plugins` API (`/api/plugins*`, needs `--controller-url`). Listing is viewer-level; upload, install, enable, disable and delete need the admin role. The page lists installs with their approved capabilities in plain words. "Upload plugin" sends the module (up to 8 MiB) to the controller, shows what it declares and installs it only after the operator ticks the approval box; the UI approves exactly the declared set, never an edited one. A controller that does not serve plugins (off, slave) shows its reason instead of a list. Not in the page yet: registry install, secrets, config editing.
+`wayhouse-ui` proxies the controller's `/plugins` API (`/api/plugins*`, needs `--controller-url`). Listing is viewer-level; upload, install, enable, disable and delete need the admin role. The page lists installs with their approved capabilities in plain words. "Upload plugin" sends the module (up to 8 MiB) to the controller, shows what it declares and installs it only after the operator ticks the approval box; the UI approves exactly the declared set, never an edited one. Below the installs, a "Port routes" table lists every entry port the plugins hold (entry port first, then key, protocol, backend and plugin), and a notice names the keys still waiting for a free port. A controller that does not serve plugins (off, slave) shows its reason instead of a list. Not in the page yet: registry install, secrets, config editing.
 
 ## High availability
 

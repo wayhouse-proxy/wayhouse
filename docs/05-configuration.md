@@ -284,6 +284,15 @@
 > `plugin-<hash of the address>`. Only meaningful with `--controller`; the field needs
 > `schema_version: 2`.
 >
+> **Plugin port routes:** `plugin_routes: { type: port }` on a listener, TCP or UDP, that binds a
+> port range (`bind: "0.0.0.0:30000-30999"`) gives plugins entry ports instead of hostnames: each
+> port route becomes a `port` route to a one-target pool, appended after the listener's own routes.
+> A route applies to a listener only when its protocol fits (`udp`, `tcp` or `both`) and its port
+> lies inside that listener's bind range; anything else is skipped and logged. A port in the range
+> with no route is dropped as `no_route`, so opening the range exposes nothing unclaimed. Declare one
+> listener per protocol over the same range. The listener needs no `pool` or `routes` of its own.
+> See [Port routes](plugins.md#port-routes).
+>
 > **UDP first-packet gate:** `first_packet_gate: true` on a UDP listener makes it
 > create a session only when the first datagram is positively recognised — a
 > `sniffer` hint that is not `reject`, or a `first_bytes` route on the listener

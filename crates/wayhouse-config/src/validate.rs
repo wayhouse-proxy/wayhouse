@@ -634,6 +634,9 @@ pub(crate) fn validate(
                 rs.push(Route { matcher, action });
             }
             rs
+        } else if l.pool.is_none() && l.plugin_routes.is_some() {
+            // Only plugins add routes: whatever they leave unclaimed is `no_route`.
+            Vec::new()
         } else {
             let pool = l.pool.clone().ok_or_else(|| {
                 Invalid(format!(
@@ -725,22 +728,25 @@ pub(crate) fn validate(
             }
         }
         if let Some(pr) = &l.plugin_routes {
-            if l.protocol != Protocol::Tcp {
-                return Err(Invalid(format!(
-                    "listener {}: `plugin_routes` applies only to tcp listeners",
-                    l.name
-                )));
-            }
-            match (pr.kind.as_str(), pr.sniffer.as_deref()) {
-                ("sni", None) => {}
-                ("sniffer", Some(n)) if !n.trim().is_empty() => {}
-                _ => {
+            let ok = match (pr.kind.as_str(), pr.sniffer.as_deref()) {
+                // Hostname routes read the announced name, which only TCP carries.
+                ("sni", None) | ("sniffer", Some(_)) if l.protocol != Protocol::Tcp => {
                     return Err(Invalid(format!(
-                        "listener {}: `plugin_routes` is `{{type: sni}}` or \
-                         `{{type: sniffer, sniffer: <name>}}`",
+                        "listener {}: `plugin_routes` of type sni or sniffer applies only to \
+                         tcp listeners (use `{{type: port}}` on a udp listener)",
                         l.name
                     )))
                 }
+                ("sni", None) | ("port", None) => true,
+                ("sniffer", Some(n)) => !n.trim().is_empty(),
+                _ => false,
+            };
+            if !ok {
+                return Err(Invalid(format!(
+                    "listener {}: `plugin_routes` is `{{type: sni}}`, \
+                     `{{type: sniffer, sniffer: <name>}}` or `{{type: port}}`",
+                    l.name
+                )));
             }
         }
         if l.first_packet_gate {

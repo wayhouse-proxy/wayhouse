@@ -3,11 +3,17 @@ import {
   ApiError,
   deletePlugin,
   installPlugin,
+  listPluginRoutes,
   listPlugins,
   setPluginEnabled,
   uploadPluginModule,
 } from "../api";
-import type { PluginCapabilities, PluginInstall, PluginModule } from "../types";
+import type {
+  PluginCapabilities,
+  PluginInstall,
+  PluginModule,
+  PluginRouteOverlay,
+} from "../types";
 import { Badge } from "../components/ui/Badge";
 import { Button, Input } from "../components/ui/Button";
 import { Dialog } from "../components/ui/Dialog";
@@ -35,6 +41,12 @@ export function describeCapabilities(caps: PluginCapabilities): string[] {
   if (caps.triggers.on_timer) out.push(`Runs every ${caps.tick_interval_secs} s`);
   if (caps.log) out.push("Writes log lines");
   if (caps.state) out.push(`Keeps up to ${bytes(caps.state.max_bytes)} of state`);
+  if (caps.port_routes) {
+    const pr = caps.port_routes;
+    out.push(
+      `Publishes up to ${pr.max_entries} port routes on entry ports ${pr.ports.join(", ")} (${pr.proto.join(", ")}) to backends in ${pr.backends.join(", ")}`,
+    );
+  }
   // The whole declared object is what gets approved, so anything this page cannot
   // describe must still be shown rather than approved unseen.
   for (const key of unknownCapabilityKeys(caps)) out.push(`Also asks for: ${key}`);
@@ -42,7 +54,7 @@ export function describeCapabilities(caps: PluginCapabilities): string[] {
   return out;
 }
 
-const KNOWN_KEYS = new Set(["triggers", "tick_interval_secs", "log", "state"]);
+const KNOWN_KEYS = new Set(["triggers", "tick_interval_secs", "log", "state", "port_routes"]);
 
 /** Top-level keys (and trigger names) of a declared set that this page has no wording for. */
 export function unknownCapabilityKeys(caps: PluginCapabilities): string[] {
@@ -71,6 +83,7 @@ function errorText(err: unknown): string {
 // approve, then enable, disable or delete. Registry install is a later slice.
 export function PluginsPage() {
   const [plugins, setPlugins] = useState<PluginInstall[] | null>(null);
+  const [overlay, setOverlay] = useState<PluginRouteOverlay | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -84,6 +97,12 @@ export function PluginsPage() {
     } catch (err) {
       setPlugins(null);
       setError(errorText(err));
+    }
+    // The overlay is extra: a controller without it (or without plugins) just shows no ports.
+    try {
+      setOverlay(await listPluginRoutes());
+    } catch {
+      setOverlay(null);
     }
   }
 
@@ -209,6 +228,8 @@ export function PluginsPage() {
         )}
       </div>
 
+      {overlay && <PortRoutes overlay={overlay} />}
+
       <p className="mt-4 text-sm text-ink-faint">
         A plugin can still misuse what you approve: it can read and act on whatever its capabilities
         reach. Approve only modules you trust.
@@ -224,6 +245,54 @@ export function PluginsPage() {
         }}
       />
     </div>
+  );
+}
+
+const PROTO_WORDS = { udp: "udp", tcp: "tcp", both: "udp and tcp" } as const;
+
+/** The entry ports plugins hold, port first: players connect to the wayhouse name at that port. */
+function PortRoutes({ overlay }: { overlay: PluginRouteOverlay }) {
+  const ports = overlay.port_routes ?? [];
+  const exhausted = overlay.exhausted ?? [];
+  if (ports.length === 0 && exhausted.length === 0) return null;
+  return (
+    <section className="mt-6">
+      <h2 className="mb-2 text-base font-semibold text-ink">Port routes</h2>
+      {exhausted.length > 0 && (
+        <p className="mb-2 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">
+          No free entry port for {exhausted.map((e) => e.key).join(", ")} ({exhausted[0].plugin}
+          {exhausted.length > 1 ? " and others" : ""}). Approve a wider port range or remove servers.
+        </p>
+      )}
+      {ports.length > 0 && (
+        <div className="rounded border border-line bg-surface">
+          <table className="w-full text-sm">
+            <thead className="text-ink-faint">
+              <tr className="text-left">
+                <th className="px-4 py-2 font-medium">entry port</th>
+                <th className="px-4 py-2 font-medium">key</th>
+                <th className="px-4 py-2 font-medium">protocol</th>
+                <th className="px-4 py-2 font-medium">backend</th>
+                <th className="px-4 py-2 font-medium">plugin</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...ports]
+                .sort((a, b) => a.port - b.port)
+                .map((r) => (
+                  <tr key={`${r.owner}/${r.key}`} className="border-t border-line">
+                    <td className="px-4 py-2 font-mono text-ink">{r.port}</td>
+                    <td className="px-4 py-2 font-mono text-xs text-ink-muted">{r.key}</td>
+                    <td className="px-4 py-2 text-ink-muted">{PROTO_WORDS[r.proto]}</td>
+                    <td className="px-4 py-2 font-mono text-xs text-ink-muted">{r.backend}</td>
+                    <td className="px-4 py-2 text-ink-muted">{r.plugin}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -354,7 +423,7 @@ function UploadDialog({
         <div>
           <p className="mb-1 text-sm font-medium text-ink">This plugin asks to:</p>
           <CapabilityList caps={module.capabilities} />
-          {unknownCapabilityKeys(module.capabilities).length === 0 && (
+          {unknownCapabilityKeys(module.capabilities).length === 0 && !module.capabilities.port_routes && (
             <p className="mt-2 text-sm text-ink-muted">
               It cannot make network requests, read secrets or change routes.
             </p>

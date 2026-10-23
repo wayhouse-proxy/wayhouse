@@ -11,6 +11,7 @@ import type {
   InstallResponse,
   PluginInstall,
   PluginModule,
+  PluginRouteOverlay,
   PluginCapabilities,
   RegistryList,
   RegistryRef,
@@ -219,6 +220,11 @@ export function checkUpdates(): Promise<UpdateCheck> {
 
 export function listPlugins(): Promise<PluginInstall[]> {
   return requestJson("/api/plugins");
+}
+
+/** The route overlay enabled plugins publish, with the entry ports of their port routes. */
+export function listPluginRoutes(): Promise<PluginRouteOverlay> {
+  return requestJson("/api/plugin-routes");
 }
 
 /** Stores the module on the controller and returns what it declares; nothing is installed yet. */

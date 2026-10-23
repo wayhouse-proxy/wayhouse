@@ -30,7 +30,7 @@ use wayhouse_plugin_host::{
 };
 
 use super::secrets::KeyringHandle;
-use super::{validate_puts, CommitError, InstallRecord, PluginStore};
+use super::{validate_puts, CommitError, InstallRecord, PluginStore, PluginStoreError};
 use crate::ha::{HaHandle, PluginReject, WriteRequest, WriteResponse};
 
 /// Log lines kept per install.
@@ -430,6 +430,17 @@ impl Runner {
             Ok(s) => s,
             Err(e) => return Outcome::Failed(e.to_string()),
         };
+        if rec.approved.port_routes.is_some() {
+            match self.store.port_routes(&rec.id) {
+                Ok(table) => plugin.set_port_assignments(Arc::new(
+                    table
+                        .iter()
+                        .filter_map(|a| a.port.map(|p| (a.key.clone(), p)))
+                        .collect(),
+                )),
+                Err(e) => return Outcome::Failed(e.to_string()),
+            }
+        }
         let pool = self.pool.clone();
         let result =
             tokio::task::spawn_blocking(move || pool.call(move || f(&plugin, &snapshot))).await;
@@ -521,27 +532,45 @@ impl Runner {
             }
             _ => None,
         };
-        if fx.state_puts.is_empty() && routes.is_none() {
+        // So is a port route set whose entries are all placed already (an unplaced entry is
+        // retried only while the ports have room again).
+        let port_routes = match &fx.port_routes {
+            Some(set) if self.port_set_changed(id, set).map_err(|e| e.to_string())? => {
+                Some(set.clone())
+            }
+            _ => None,
+        };
+        if fx.state_puts.is_empty() && routes.is_none() && port_routes.is_none() {
             return Ok(());
         }
         let stale = || "the state changed during the call; its writes were dropped".to_string();
         let (Some(ha), Some(term)) = (&self.ha, term) else {
-            return match self
-                .store
-                .commit_state_routes(id, rev, &fx.state_puts, routes.as_deref())
-            {
+            return match self.store.commit_state_full(
+                id,
+                rev,
+                &fx.state_puts,
+                routes.as_deref(),
+                port_routes.as_deref(),
+                unix_now(),
+            ) {
                 Ok(_) => Ok(()),
                 Err(CommitError::Stale) => Err(stale()),
                 Err(e) => Err(e.to_string()),
             };
         };
         validate_puts(&fx.state_puts)?;
+        if port_routes.is_some() {
+            // A replica that predates port routes would not decode the entry the same way.
+            super::peer::check_support(ha).await?;
+        }
         let entry = WriteRequest::PluginState {
             id: id.to_string(),
             expected_rev: rev,
             term,
             puts: fx.state_puts.clone(),
             routes,
+            port_routes,
+            now: unix_now(),
         };
         match ha.raft.client_write(entry).await {
             Ok(done) => match done.data {
@@ -558,6 +587,30 @@ impl Runner {
             },
             Err(e) => Err(format!("could not commit the state through raft: {e}")),
         }
+    }
+
+    /// Whether `set` needs a commit: it differs from the placed table, or an entry still
+    /// waits for a port and the approved ports have room again.
+    fn port_set_changed(
+        &self,
+        id: &str,
+        set: &[wayhouse_plugin_host::PortRouteEntry],
+    ) -> Result<bool, PluginStoreError> {
+        let table = self.store.port_routes(id)?;
+        let mut declared: Vec<_> = set.iter().map(|e| (&e.key, &e.backend, e.proto)).collect();
+        declared.sort();
+        let mut placed: Vec<_> = table
+            .iter()
+            .map(|a| (&a.key, &a.backend, a.proto))
+            .collect();
+        placed.sort();
+        if declared != placed {
+            return Ok(true);
+        }
+        if table.iter().all(|a| a.port.is_some()) {
+            return Ok(false);
+        }
+        self.store.port_range_has_room(id)
     }
 
     /// Runs a webhook or event call for `id` and commits its effects, so the answer a webhook
@@ -752,6 +805,8 @@ mod tests {
   (import "wayhouse" "state_get" (func $get (param i32 i32 i32 i32) (result i32)))
   (import "wayhouse" "state_put" (func $put (param i32 i32 i32 i32) (result i32)))
   (import "wayhouse" "routes_set" (func $rs (param i32 i32) (result i32)))
+  (import "wayhouse" "port_routes_set" (func $prs (param i32 i32) (result i32)))
+  (import "wayhouse" "port_routes_get" (func $prg (param i32 i32) (result i32)))
   (import "wayhouse" "webhook_respond" (func $respond (param i32 i32) (result i32)))
   (memory (export "memory") 1)
   (data (i32.const 0) "hello")
@@ -1441,6 +1496,71 @@ mod tests {
         store.set_enabled("a", false).unwrap();
         assert!(store.overlay().unwrap().routes.is_empty());
     }
+    const PORT_TIMER: &str = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"state":{"max_bytes":256},"port_routes":{"ports":["30000-30009"],"proto":["udp","tcp"],"backends":["10.0.0.0/16"],"max_entries":4}}"#;
+
+    /// Declares `doc` on every tick, then stores whatever `port_routes_get` reports under `n`.
+    fn port_guest(doc: &str) -> Vec<u8> {
+        let escaped = doc.replace('"', "\\\"");
+        guest(
+            PORT_TIMER,
+            &format!(
+                r#"(data (i32.const 300) "{escaped}")
+                   (func (export "init") (param i32 i32))
+                   (func (export "on_timer") (local $n i32)
+                     (drop (call $prs (i32.const 300) (i32.const {})))
+                     (local.set $n (call $prg (i32.const 8192) (i32.const 1024)))
+                     (if (i32.gt_s (local.get $n) (i32.const 0))
+                       (then (drop (call $put (i32.const 16) (i32.const 1)
+                                      (i32.const 8192) (local.get $n))))))"#,
+                doc.len()
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_plugin_that_declares_port_routes_gets_stable_entry_ports() {
+        let (r, store, _d) = fixture(1, 4);
+        let doc = r#"[{"key":"srv-a","backend":"10.0.1.2:7777","proto":"udp","prefer":30005},{"key":"srv-b","backend":"10.0.1.3:25565","proto":"both"}]"#;
+        install(&store, "a", &port_guest(doc));
+        let t0 = Instant::now();
+        r.run_due(t0).await;
+        r.run_due(secs(t0, 30)).await;
+        let table = store.port_routes("a").unwrap();
+        let got: Vec<_> = table.iter().map(|a| (a.key.as_str(), a.port)).collect();
+        assert_eq!(got, vec![("srv-a", Some(30005)), ("srv-b", Some(30000))]);
+        // The plugin reads its assignments back on the next call.
+        r.run_due(secs(t0, 60)).await;
+        let (_, state) = store.state("a").unwrap();
+        assert_eq!(
+            String::from_utf8(state["n"].clone()).unwrap(),
+            r#"{"srv-a":30005,"srv-b":30000}"#
+        );
+        // The overlay carries the ports, and an unchanged declaration commits nothing more.
+        let overlay = store.overlay().unwrap();
+        let ports: Vec<_> = overlay
+            .port_routes
+            .iter()
+            .map(|p| (p.port, p.backend.as_str(), p.owner.as_str()))
+            .collect();
+        assert_eq!(
+            ports,
+            vec![
+                (30000, "10.0.1.3:25565", "plugin:a"),
+                (30005, "10.0.1.2:7777", "plugin:a")
+            ]
+        );
+        assert!(overlay.exhausted.is_empty());
+        // Disabling the install withdraws the routes but keeps the ports reserved.
+        store.set_enabled("a", false).unwrap();
+        assert!(store.overlay().unwrap().port_routes.is_empty());
+        assert_eq!(store.port_ledger().unwrap().owners.len(), 2);
+        // Deleting releases them into quarantine.
+        store.delete("a").unwrap();
+        let ledger = store.port_ledger().unwrap();
+        assert!(ledger.owners.is_empty());
+        assert_eq!(ledger.quarantine.len(), 2);
+    }
+
     #[test]
     fn a_cached_plugin_is_reused_only_for_the_same_module_caps_and_config() {
         let rec = |approved: &str, config: serde_json::Value| InstallRecord {

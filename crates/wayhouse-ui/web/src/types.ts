@@ -190,6 +190,13 @@ export interface PluginCapabilities {
   tick_interval_secs: number;
   log: boolean;
   state: { max_bytes: number } | null;
+  /** Entry ports a plugin may be given for its servers (`port_routes`, docs/plugins.md). */
+  port_routes?: {
+    ports: string[];
+    proto: ("udp" | "tcp")[];
+    backends: string[];
+    max_entries: number;
+  } | null;
 }
 
 export interface PluginModule {
@@ -209,6 +216,31 @@ export interface PluginInstall {
   enabled: boolean;
   created_at: number;
   created_by: string | null;
+}
+
+/** One entry-port route of the plugin overlay (`GET /api/plugin-routes`). */
+export interface PluginPortRoute {
+  key: string;
+  port: number;
+  proto: "udp" | "tcp" | "both";
+  backend: string;
+  owner: string;
+  plugin: string;
+}
+
+/** A port route still waiting for a free entry port. */
+export interface PluginExhaustedPort {
+  key: string;
+  backend: string;
+  owner: string;
+  plugin: string;
+}
+
+export interface PluginRouteOverlay {
+  routes: unknown[];
+  conflicts: unknown[];
+  port_routes?: PluginPortRoute[];
+  exhausted?: PluginExhaustedPort[];
 }
 
 /** One ACME site (`GET /api/acme/sites`, proxied from the controller). */
