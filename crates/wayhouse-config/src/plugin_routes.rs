@@ -177,6 +177,8 @@ pub fn merge_text(text: &str, routes: &[PluginRoute]) -> Result<Merged, ConfigEr
     };
     // Port routes some listener took, by index into `usable`; the rest are reported.
     let mut port_taken: BTreeSet<usize> = BTreeSet::new();
+    // Protocols a port route was added for, to report a `both` entry served on one only.
+    let mut port_protos: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
     // Pool name -> whether a tcp listener uses it.
     let mut used_pools: BTreeMap<String, bool> = BTreeMap::new();
     for l in listeners {
@@ -235,6 +237,10 @@ pub fn merge_text(text: &str, routes: &[PluginRoute]) -> Result<Merged, ConfigEr
                         continue;
                     }
                     port_taken.insert(idx);
+                    port_protos
+                        .entry(idx)
+                        .or_default()
+                        .insert(listener_protocol.clone());
                     m.insert(
                         key("ports"),
                         Value::Sequence(vec![Value::Number((*port).into())]),
@@ -253,9 +259,19 @@ pub fn merge_text(text: &str, routes: &[PluginRoute]) -> Result<Merged, ConfigEr
         }
     }
     for (idx, (r, _)) in usable.iter().enumerate() {
-        if matches!(r.key, RouteKey::Port { .. }) && !port_taken.contains(&idx) {
+        let RouteKey::Port { proto, .. } = &r.key else {
+            continue;
+        };
+        if !port_taken.contains(&idx) {
             out.skipped.push(format!(
                 "{}: no port listener with plugin_routes covers that port and protocol",
+                r.describe()
+            ));
+        } else if *proto == PortProto::Both && port_protos[&idx].len() < 2 {
+            let served = port_protos[&idx].iter().next().map_or("", String::as_str);
+            let missing = if served == "tcp" { "udp" } else { "tcp" };
+            out.skipped.push(format!(
+                "{}: served on {served} only, no port listener with plugin_routes covers {missing}",
                 r.describe()
             ));
         }
@@ -388,6 +404,23 @@ listeners:
         assert!(m.skipped[0].contains("31000"), "{:?}", m.skipped);
         let cfg = parse_str(&m.text).unwrap();
         assert_eq!(cfg.pools.len(), 2, "lobby plus the one pool in use");
+    }
+
+    #[test]
+    fn a_both_route_served_on_one_protocol_only_is_reported() {
+        let udp_only = PORTS.split("  - name: games-tcp").next().unwrap();
+        let m = merge_text(
+            udp_only,
+            &[
+                pr(30004, PortProto::Both, "10.0.1.2:25565"),
+                pr(30005, PortProto::Udp, "10.0.1.3:7777"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(m.applied, 2, "both entries are served on udp");
+        assert_eq!(m.skipped.len(), 1, "{:?}", m.skipped);
+        assert!(m.skipped[0].contains("30004"), "{:?}", m.skipped);
+        assert!(m.skipped[0].contains("tcp"), "{:?}", m.skipped);
     }
 
     #[test]

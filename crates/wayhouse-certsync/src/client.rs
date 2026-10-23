@@ -88,7 +88,7 @@ impl Controller {
     }
 
     /// GETs `path` from the first controller that answers with something other than a network
-    /// error or a 5xx. A 401 or 403 stops the search: every controller holds the same gateways.
+    /// error, a 5xx or a 429 (each controller has its own limiter). A 401 or 403 stops the search: every controller holds the same gateways.
     async fn get(
         &self,
         path: &str,
@@ -111,11 +111,16 @@ impl Controller {
                     url.host_str().unwrap_or("?"),
                     wayhouse_http::error_chain(&e)
                 )),
-                Ok(r) if r.status().is_server_error() => reasons.push(format!(
-                    "{}: HTTP {}",
-                    url.host_str().unwrap_or("?"),
-                    r.status().as_u16()
-                )),
+                Ok(r)
+                    if r.status().is_server_error()
+                        || r.status() == StatusCode::TOO_MANY_REQUESTS =>
+                {
+                    reasons.push(format!(
+                        "{}: HTTP {}",
+                        url.host_str().unwrap_or("?"),
+                        r.status().as_u16()
+                    ))
+                }
                 Ok(r) if matches!(r.status(), StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) => {
                     return Err(FetchError::Unauthorized(r.status().as_u16()));
                 }
@@ -222,5 +227,34 @@ mod tests {
         let c = Controller::new(vec![url], "t".into(), Duration::from_secs(5)).unwrap();
         let err = c.fetch("web", None).await.unwrap_err();
         assert!(err.to_string().contains("too large"), "{err}");
+    }
+
+    /// A controller that answers one request with the raw `response`.
+    async fn canned(response: &'static str) -> Url {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = Url::parse(&format!("http://{}", l.local_addr().unwrap())).unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = l.accept().await.unwrap();
+            let mut req = [0u8; 1024];
+            let _ = sock.read(&mut req).await;
+            let _ = sock.write_all(response.as_bytes()).await;
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn a_429_from_one_controller_falls_through_to_the_next() {
+        let limited = canned("HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n").await;
+        let body = r#"{"sites":[]}"#;
+        let ok = canned(Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        ))
+        .await;
+        let c = Controller::new(vec![limited, ok], "t".into(), Duration::from_secs(5)).unwrap();
+        assert!(c.list().await.unwrap().is_empty());
     }
 }

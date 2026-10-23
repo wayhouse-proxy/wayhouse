@@ -43,8 +43,9 @@ use super::{valid_id, PluginStore};
 use crate::ha::peers::{is_plain_remote, peer_url};
 use crate::ha::HaHandle;
 
-/// Requests per second and burst one source address may make, valid or not.
-const SOURCE_RATE: (f64, f64) = (5.0, 20.0);
+/// Requests per second and burst one source address may make, valid or not. The ACME bundle
+/// routes use the same budget.
+pub(crate) const SOURCE_RATE: (f64, f64) = (5.0, 20.0);
 /// Requests per second and burst one install's webhook accepts.
 const INSTALL_RATE: (f64, f64) = (10.0, 20.0);
 /// Headers the guest is shown at most.

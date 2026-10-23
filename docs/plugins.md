@@ -425,8 +425,10 @@ is a content-addressed blob each replica keeps in its own store and moves over t
   Until it has the module a node runs nothing for that install; a leader that cannot find one
   logs a repeated warning, since it would otherwise silently run nothing.
 - Rolling upgrades: a new install is refused with `503` unless every member answers
-  `/raft/whoami` with the current `plugin_support` level (3; a build before module replication
-  leaves it out). A member started without `--plugins`, or as a slave, reports `0`, so every
+  `/raft/whoami` with the current `plugin_support` level (4; a build before module replication
+  leaves it out). The level is cluster-wide, not per feature: since port routes raised it from 3
+  to 4, every new install and every webhook change waits for all members to be on a build at
+  level 4, not only installs that declare `port_routes`. A member started without `--plugins`, or as a slave, reports `0`, so every
   replica needs `--plugins` before plugins are installed or their webhooks, secrets or key
   rotation change. A leader without `--plugins` would otherwise run no ticks and fail webhook
   forwards silently.

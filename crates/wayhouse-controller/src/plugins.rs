@@ -2154,6 +2154,44 @@ mod tests {
     }
 
     #[test]
+    fn a_replicated_port_commit_is_checked_against_the_range_approved_when_it_applies() {
+        let (s, _d) = store();
+        let mut rec = port_record(ID_A);
+        rec.sha256 = "a".repeat(64);
+        s.apply_at(1, PluginOp::Install(&rec)).unwrap();
+        // The proposer checked this set against 30000-30009; the install is then replaced by
+        // one approved for a narrower range before the entry applies.
+        assert_eq!(
+            s.apply_at(2, PluginOp::Delete { id: ID_A, now: 5 })
+                .unwrap(),
+            Applied::Done(None)
+        );
+        let mut narrow = rec.clone();
+        narrow.approved = Capabilities::parse(
+            br#"{"log":true,"port_routes":{"ports":["30000-30002"],"proto":["udp"],"backends":["10.0.0.0/16"],"max_entries":3}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            s.apply_at(3, PluginOp::Install(&narrow)).unwrap(),
+            Applied::Done(None)
+        );
+        let puts = BTreeMap::new();
+        let set = [port_route("a", "10.0.1.1:1", Some(30008))];
+        let op = PluginOp::State {
+            id: ID_A,
+            expected_rev: 0,
+            tagged_term: 1,
+            entry_term: 1,
+            puts: &puts,
+            routes: None,
+            port_routes: Some(&set),
+            now: 10,
+        };
+        assert!(matches!(s.apply_at(4, op).unwrap(), Applied::Invalid(_)));
+        assert!(s.port_routes(ID_A).unwrap().is_empty());
+    }
+
+    #[test]
     fn ports_survive_a_snapshot_and_a_delete_quarantines_them() {
         let (s, _d) = store();
         s.put_blob("sha1", b"abc").unwrap();

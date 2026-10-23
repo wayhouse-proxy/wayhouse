@@ -22,12 +22,8 @@ use sha2::{Digest, Sha256};
 
 use super::types::{cert_slot, Gateway, SEAL_SCOPE};
 use super::AcmeStore;
-use crate::plugins::hooks::{source_key, Limiter};
+use crate::plugins::hooks::{source_key, Limiter, SOURCE_RATE};
 use crate::plugins::secrets::KeyringHandle;
-
-/// Requests per second and burst one source address may make, valid or not. A gateway polls
-/// about once a minute, so this only bites a client that is hammering the route.
-const SOURCE_RATE: (f64, f64) = (5.0, 20.0);
 
 #[derive(Clone)]
 pub struct BundleState {
@@ -50,10 +46,13 @@ impl BundleState {
         if self.source.allow(&source_key(peer), Instant::now()) {
             return Ok(());
         }
-        Err(Box::new(err(
+        let mut resp = err(
             StatusCode::TOO_MANY_REQUESTS,
             "too many requests from this address",
-        )))
+        );
+        resp.headers_mut()
+            .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        Err(Box::new(resp))
     }
 }
 
@@ -469,8 +468,9 @@ mod tests {
         assert!(refused.is_some(), "no 429 within 200 requests");
         // The valid token from that source is refused as well, on both routes.
         for uri in ["/acme/bundles", "/acme/bundles/web"] {
-            let (st, _, body) = f.get_from("198.51.100.7", uri, Some(&token), &[]).await;
+            let (st, hdrs, body) = f.get_from("198.51.100.7", uri, Some(&token), &[]).await;
             assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{uri}");
+            assert_eq!(hdrs.get(header::RETRY_AFTER).unwrap(), "1", "{uri}");
             assert!(!body.contains("TOPSECRET"));
         }
         // Another source has its own budget.
