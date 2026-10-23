@@ -590,7 +590,7 @@ what order," which a stateless replica set cannot give.
   fed by `openraft` applying a committed entry instead of a direct HTTP
   handler call. The Raft log itself (openraft's own append-only log of
   proposals, distinct from the config/intent revision logs it carries) lives
-  in a **third** `redb` tree, `<data_dir>/raft`, on every replica. That log
+  in a **third** `redb` tree, `<data_dir>/ha`, on every replica. That log
   is purged per `openraft`'s snapshot policy (a snapshot every 5 000 entries,
   the last 1 000 entries kept); a follower or learner behind the purge point
   is caught up by snapshot, which replaces its config and intent stores
