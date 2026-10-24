@@ -6,7 +6,7 @@ in [`docs/09-technology-choices.md`](docs/09-technology-choices.md). Per-slice
 implementation history lives in `git log` and [`docs/08-roadmap.md`](docs/08-roadmap.md),
 not here.
 
-Last updated: 2026-10-07.
+Last updated: 2026-10-24.
 
 ## Current state
 
@@ -17,10 +17,10 @@ owner's call).
 
 ### Resume here
 
-**Releases:** `v0.1.0-rc.1` and `v0.1.0` are published to GHCR (six public images, amd64 + arm64;
-`release.yml` ran end to end, #177 checked: the per-arch digests equal the multi-arch index's).
-Tags stay manual (release-please runs with `skip-github-release`); the steps are in
-[`RELEASING.md`](RELEASING.md). Automating the tag is backlog #210.
+**Releases:** the workspace is at 0.3.0. Releases are published to GHCR (six public images,
+amd64 + arm64) by `release.yml` on a `vX.Y.Z` tag. Tags stay manual (release-please runs with
+`skip-github-release`); the steps are in [`RELEASING.md`](RELEASING.md). Automating the tag is
+backlog #210.
 
 **Sniffer registry (Wave 3, #183):** the `wayhouse-registry` crate (index, verify, `wayhouse-registry-gen`),
 the UI backend (`/api/registries/*`, `--registries-file`, `--no-default-registry`) and the Sniffers page
@@ -34,7 +34,7 @@ falls back to it when the current file fails validation, and the Sniffers page h
 updates", "Update to X", "roll back" and a `fallback active` badge; see [`docs/sniffers.md`](docs/sniffers.md)
 "Updates and rollback".
 
-**Plugin host (Wave 5, slice 1):** `wayhouse-plugin-abi` and `wayhouse-plugin-host` load a plugin, enforce its embedded
+**Plugin host:** `wayhouse-plugin-abi` and `wayhouse-plugin-host` load a plugin, enforce its embedded capabilities and limits, and run `init`, `on_timer` and `on_event`. The controller (`--plugins`, standalone or HA) stores installs and module blobs, seals secrets, serves `/plugins`, ticks plugins on the leader and materialises their route and port-route sets into the overlay proxies follow; the web UI has a Plugins page. Capabilities: `log`, `state`, `http` (with `${secret:NAME}` expansion), `routes`, `port_routes`, webhooks and ACME DNS. Design and per-capability detail: [`docs/plugins.md`](docs/plugins.md) and the plans under `docs/superpowers/plans/`. Not yet: `backends`, registry `kind = plugin`.
 capabilities and limits, and run `init` and `on_timer` with the `log` and `state` imports; see [`docs/plugins.md`](docs/plugins.md)
 and the [plan](docs/superpowers/plans/2026-10-08-plugin-host-foundation.md). Slice 2 added compile bounds, the bounded `CompilePool` (#265) and the `wayhouse-plugin-check` conformance binary (#266); see the [plan](docs/superpowers/plans/2026-10-08-plugin-compile-bounds-and-check.md). Slice 3: a standalone controller started with `--plugins` stores plugin installs and module blobs and serves `/plugins` (upload, approve, list, enable, delete); see the [plan](docs/superpowers/plans/2026-10-08-plugin-install-store-and-api.md). Slice 4: the standalone controller ticks enabled plugins (`on_timer`), keeps their state with a revision-checked commit and serves `/plugins/{id}/status`; the controller now compiles through the pool (closes #265); see the [plan](docs/superpowers/plans/2026-10-08-plugin-tick-runner.md). The web UI has a Plugins page (upload, approve, enable, disable, delete; [plan](docs/superpowers/plans/2026-10-08-plugins-ui-page.md)). Secret storage is reviewed in [`docs/superpowers/specs/2026-10-08-plugin-secret-storage-design.md`](docs/superpowers/specs/2026-10-08-plugin-secret-storage-design.md) (#235, design only; no secret-using plugin ships before it is built). Slice 5: the HA state machine applies replicated plugin entries and snapshots carry installs and state; see the [plan](docs/superpowers/plans/2026-10-08-plugin-replicated-state.md). Slice 6 (refs #220, closes #282): `/plugins` on HA controllers (writes through Raft, upload, install and status on the leader, a follower forwards) and the leader-only tick runner with a term-tagged commit; the plugin entries are idempotent per Raft index and a snapshot restores atomically; see the [plan](docs/superpowers/plans/2026-10-09-plugin-ha-api-and-leader-tick.md). Slice 7 (closes #285, #286, part of #284): module blobs replicate between HA nodes (the leader pushes to a quorum before it records an install, every node catches up by fetching from peers; `/raft/plugin-blob`), a new install is refused while a member reports an older build, an install that loses leadership answers 503 instead of forwarding again, and an orphan-blob sweep runs at startup; see [`docs/plugins.md`](docs/plugins.md) "Module bytes". Slice 8 (secret storage and `http`, #235): plugin secrets are sealed under a cluster keyring (`--plugin-secret-key-file`) and replicated as ciphertext, plugins whose secret a node cannot open are held, and the `http` capability calls approved hosts with host-side `${secret:NAME}` expansion and response scrubbing; see [`docs/plugins.md`](docs/plugins.md) "Secrets and the `http` capability". Slice 9a (closes #236): the `routes` capability (`routes_set`), route sets committed with the tick, the controller's overlay (`/plugin-routes`) and the `plugin_routes:` listener opt-in (config schema 2) that proxies merge after the operator's routes; see [`docs/plugins.md`](docs/plugins.md) "Routes". Slice 9b (part of #237): webhooks on a separate optional listener (`--plugin-webhook-listen`, per-install token stored hashed, source and install rate limits before the body, follower forwards to the leader over https peers only); see [`docs/plugins.md`](docs/plugins.md) "Webhooks". Slice 9c (closes #237): `on_event` delivery of `config_revision` and `plugin_changed` through the hook queue (`plugins/events.rs`, leader only); see "Events" in [`docs/plugins.md`](docs/plugins.md). Slice 10 (closes #419 to #422, design `docs/superpowers/specs/2026-10-22-port-based-plugin-routing-design.md`): the `port_routes` capability (`port_routes_set`, `port_routes_get`), host-allocated entry ports per `(install, key)` in the replicated apply step with a 24 h quarantine (`plugins/ports.rs`, plugin support level 4), the overlay's separate `port_routes` list, `plugin_routes: { type: port }` on port-range listeners and the Plugins page table; see [`docs/plugins.md`](docs/plugins.md) "Port routes". Not yet: `backends`, registry `kind = plugin`.
 
@@ -42,7 +42,7 @@ and the [plan](docs/superpowers/plans/2026-10-08-plugin-host-foundation.md). Sli
 
 **Web proxy (Caddy front door, #297):** the `web:` config (#360) is rendered by `wayhouse-web-sync` (#356) into Caddy's JSON and loaded over its admin API; the `wayhouse-caddy` image, compose and Kubernetes recipes and the `web-e2e` CI job (#357) ship with it; see [`docs/web-proxy.md`](docs/web-proxy.md). The `web:` section also appends a loopback listener `web-up-<pool>` per `via: wayhouse` pool (#368 to #370, [spec](docs/superpowers/specs/2026-10-15-web-routing-design.md)); `GET /web` serves the resolved section (protocol 1.2, with per-site `tls`, `upstream_tls` and `health_path`, config schema 3, unreleased). ACME is under way (#361 to #366): sites, issuance, the DNS plugin hook, the `acme` cargo feature and gateway distribution with `wayhouse-certsync` (#363) are in [`docs/acme.md`](docs/acme.md); #364 (HTTP-01, EAB, CNAME-delegated zones, the Certificates UI page and the `acme-dns-cloudflare` plugin in the plugins repo) is built. Not yet: Caddy's own ACME next to the sync, the real WireGuard path through Caddy (only the tunnel CI job covers WireGuard).
 
-**Controller ACME (refs #361-#363, spec `docs/superpowers/specs/2026-10-15-controller-acme-design.md`, plan `docs/superpowers/plans/2026-10-15-controller-acme.md`):** slice 1 is built behind `--acme` (`wayhouse-acme` crate with an in-process fake CA, `crates/wayhouse-controller/src/acme/`: sealed store with Raft entry and snapshot, leader-only issuance and renewal loop, `/acme/sites` API); see [`docs/acme.md`](docs/acme.md). The `on_acme_dns` plugin trigger and `PluginDnsSolver` are built (#362; `acme/dns_plugin.rs`, host `acme_dns_result` import, site `dns_plugin` checked at `PUT`). The `acme` cargo feature (default on) of `wayhouse-controller` and the `client` feature of `wayhouse-acme` leave issuance out of a build (`make test-minimal` checks it). Next: gateway distribution and `wayhouse-certsync` (#363). Nothing is released by this work.
+**Controller ACME (refs #361-#363, spec `docs/superpowers/specs/2026-10-15-controller-acme-design.md`, plan `docs/superpowers/plans/2026-10-15-controller-acme.md`):** slice 1 is built behind `--acme` (`wayhouse-acme` crate with an in-process fake CA, `crates/wayhouse-controller/src/acme/`: sealed store with Raft entry and snapshot, leader-only issuance and renewal loop, `/acme/sites` API); see [`docs/acme.md`](docs/acme.md). The `on_acme_dns` plugin trigger and `PluginDnsSolver` are built (#362; `acme/dns_plugin.rs`, host `acme_dns_result` import, site `dns_plugin` checked at `PUT`). The `acme` cargo feature (default on) of `wayhouse-controller` and the `client` feature of `wayhouse-acme` leave issuance out of a build (`make test-minimal` checks it). Gateway distribution with `wayhouse-certsync` (#363) is built; see [`docs/acme.md`](docs/acme.md).
 
 The repository is **public** since 2026-10-03 (history scanned, clean), so
 GitHub-hosted Actions minutes are free. The nightly CI run (`schedule` in `ci.yml`,
@@ -83,9 +83,6 @@ Watch-list:
   workflow at a version tag) on every run, so a bump to an unsigned digest fails there.
 - **cargo-auditable:** release binaries (CI `build-release` and the Dockerfile builder)
   are built with `cargo auditable build`, version 0.7.7 in both; bump together.
-- **Merge queue:** PRs land one at a time, each re-run on the latest `main`. If several
-  PRs are routinely in flight at once, GitHub's merge queue (needs an
-  `on: merge_group` trigger) would keep `main` green.
 
 Whether a red `tunnel`/`deploy` also *blocks merging* depends on GitHub
 branch-protection required checks, a repo setting outside this tree.
@@ -98,7 +95,7 @@ details are in `git log`.
 | Date | Feature | Where it is documented |
 |------|---------|------------------------|
 | 2026-10-04 | Live tunnel address change (agent and `wayhouse` re-address the interface without a restart) | `docs/11` "Address authority" ("Address changes") |
-| 2026-10-03 | CI change detection from `cargo metadata` (`.github/scripts/changes.py`) | [spec](docs/superpowers/specs/2026-10-03-ci-change-detection-design.md), AGENTS.md "CI" |
+| 2026-10-03 | CI change detection from `cargo metadata` (`.github/scripts/changes.py`) | [spec](docs/superpowers/specs/2026-10-03-ci-change-detection-design.md) |
 | 2026-10-03 | Edge restarts keep the tunnel up (`boot_id` on registrations) | `docs/11` "Edge restarts" |
 | 2026-10-03 | `wayhouse --aggregator-admin-url` (fan-out through NAT, port maps, TLS terminators) | `docs/12` |
 | 2026-10-03 | Tunnel addresses page in `wayhouse-ui` (read-only; Release button added 2026-10-04) | `docs/10` "The admin GUI" |
@@ -355,9 +352,11 @@ ones with a subtlety.)
 - **Startup-only config** (reload does *not* re-read): `workers`,
   `settings.limits`, `settings.geo_db`, `settings.sniffers` engine params
   (`call_timeout_ms` / `max_memory_bytes` — only the `dir` *contents* are live).
-- **Zero `unsafe`.** `socket2` 0.6 (`SockRef` for `IP_TRANSPARENT` v4/v6,
+- **No `unsafe` in the host crates.** `socket2` 0.6 (`SockRef` for `IP_TRANSPARENT` v4/v6,
   `IP_FREEBIND`), `nix` (`IP_PKTINFO` / `IP_ORIGDSTADDR` cmsgs, `recvmmsg`,
-  `splice`) — all safe wrappers.
+  `splice`) — all safe wrappers. The `unsafe` that exists is the guest-side glue in
+  `wayhouse-sniffer-abi` and `wayhouse-plugin-abi`, and a counting allocator in a
+  `wayhouse-core` test.
 - **UDP amplification guard**: the proxy never sends to a client without an
   established session; a dropped datagram (routing / ACL / rate / gate) gets no
   reply. Covered by `crates/wayhouse-core/tests/amplification.rs`.

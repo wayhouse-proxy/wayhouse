@@ -28,7 +28,7 @@ the guidance here, not in them.
 > [`wayhouse-proxy/sniffers`](https://github.com/wayhouse-proxy/sniffers) (this repository
 > keeps only the ABI crate, `crates/wayhouse-sniffer-abi/`, and pins their releases in `sniffers.lock`
 > for the e2e tests). *Plugins* are
-> integrations with other systems (e.g. the Pelican panel) and will live in
+> integrations with other systems (e.g. the Pelican panel) and live in
 > [`wayhouse-proxy/plugins`](https://github.com/wayhouse-proxy/plugins); design:
 > [plugin system](docs/superpowers/specs/2026-10-07-plugin-system-design.md) and
 > [automation hooks](docs/superpowers/specs/2026-10-07-plugin-automation-hooks-design.md).
@@ -187,7 +187,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
 | Deploy scan | `make deploy-scan` (after `deploy-images`; needs Docker + `trivy`): Trivy over the seven images (OS packages, embedded Rust crates, secrets) and `Cargo.lock` / the UI's `package-lock.json`, HIGH/CRITICAL with a fix; exits 1 on findings, reports in `target/trivy/`. In CI it is the separate, **informational** `trivy` job after `deploy` (non-blocking; scans `deploy`'s images from a `docker save` artifact; run summary + warnings + `trivy-reports` artifact; the official `aquasec/trivy` image pinned by digest, not `trivy-action`). Rust coverage is GHSA only — `cargo audit` (the `audit` CI job, `make audit`) covers RustSec. Accepted findings: `.trivyignore` |
 | Deploy smoke | `make deploy-smoke` (needs Docker; compose demo + `deploy/smoke.sh`; also the `deploy` CI job) |
 | Tunnel e2e (nextest) | `make tunnel-e2e-ci` (needs `cargo install cargo-nextest --locked`; writes `target/nextest/ci/junit.xml`; what the CI `tunnel` job runs) |
-| Audit | `make audit` (needs `cargo install cargo-audit --locked`): `cargo audit` over the root, sniffers and fuzz lockfiles; exits 1 on a vulnerability, JSON in `target/cargo-audit/`. In CI the **informational** `audit` job (every push/PR, plus nightly; run summary + warnings + `cargo-audit` artifact). Accepted advisories go in `.cargo/audit.toml` (none yet, so the file does not exist) |
+| Audit | `make audit` (needs `cargo install cargo-audit --locked`): `cargo audit` over the root, sniffers and fuzz lockfiles; exits 1 on a vulnerability, JSON in `target/cargo-audit/`. In CI the **informational** `audit` job (every push/PR, plus nightly; run summary + warnings + `cargo-audit` artifact). Accepted advisories go in `.cargo/audit.toml`, each with a reason and a way out |
 | Web proxy e2e | `CADDY_BIN=<caddy> cargo test -p wayhouse-fleet-tests --test web -- --ignored` (real Caddy; CI job `web-e2e` takes the Caddy out of the `wayhouse-caddy` image, in `ci-ok.needs`) |
 | Fuzz | `make fuzz` (needs `rustup toolchain install nightly` + `cargo install cargo-fuzz`; see `crates/wayhouse-config/fuzz/README.md`) |
 | Bench | `make bench` (latency / load harness vs. NFR N1/N2; see `crates/wayhouse-bench/README.md`) |
@@ -217,9 +217,11 @@ client from `crates/wayhouse/proto/resolver.proto`.
    where skipping this let a `cargo fmt --all --check` failure reach CI.
    The curated clippy lints live in the root `[workspace.lints.clippy]`; a new crate
    opts in with `[lints] workspace = true`.
-2. **No `unsafe`.** The codebase currently has zero. `socket2`/`nix` give safe
-   wrappers for the syscalls we need. If `unsafe` ever becomes genuinely necessary, it
-   needs a `// SAFETY:` comment *and* a note in `HANDOVER.md`.
+2. **Keep `unsafe` out of the host crates.** `socket2`/`nix` give safe wrappers for the
+   syscalls we need. The only `unsafe` today is the guest-side raw-pointer glue in
+   `wayhouse-sniffer-abi` and `wayhouse-plugin-abi` and a counting allocator in a
+   `wayhouse-core` test. New `unsafe` needs a `// SAFETY:` comment *and* a note in
+   `HANDOVER.md`.
 3. **The `Snapshot` is immutable after `Snapshot::build`.** Never mutate it in place.
    A config/backend change = build a new `Snapshot` and `ArcSwap::store` it. Only
    `reload.rs` writes the swap; everything else reads.
@@ -243,13 +245,13 @@ client from `crates/wayhouse/proto/resolver.proto`.
    (same for `read`/`write`) — never `.unwrap()` / `.expect("…poisoned")`. The
    guarded state here is plain data, so one panicked task must not cascade into
    every later caller.
-8. **Commit directly on `main` whenever it is useful** — a finished slice, a spec or
-   plan, a green docs sweep; no need to ask first and no feature branch (owner's
-   standing decision, 2026-10-01). Run `make check` first (rule 1). End commit
-   messages with a `Co-Authored-By:` trailer identifying the agent that made the
-   change, plus a session/trace trailer (e.g. `Agent-Session:`) when the tool
-   provides one. **Do not `git push` unless the user asks** — pushing is outward-facing
-   and is still the user's call.
+8. **Work on a branch, never directly on `main`.** `main` takes changes only through a
+   pull request and the merge queue (required check: `ci-ok`; see `CONTRIBUTING.md`).
+   Commit a finished slice, a spec or plan, or a green docs sweep whenever it is useful,
+   after `make check` (rule 1). End commit messages with a `Co-Authored-By:` trailer
+   identifying the agent that made the change, plus a session/trace trailer (e.g.
+   `Agent-Session:`) when the tool provides one. **Do not `git push` unless the user
+   asks** — pushing is outward-facing and is still the user's call.
 
 ### Soft rules — the intended way to work
 
@@ -266,19 +268,16 @@ client from `crates/wayhouse/proto/resolver.proto`.
   forwarding behaviour in `crates/wayhouse-core/tests/`. Integration tests may use
   `127.0.0.1:0` ephemeral sockets; no other network access.
 - **Pre-1.0: prefer clean breaks over compatibility shims.** When you change the
-  config schema, update *all four*: `wayhouse-config` types + `validate()`,
-  `config.example.yaml`, and `docs/05-configuration.md`.
-- **How sessions are run here (owner's expectations, 2026-10-02).** Larger work follows
-  the superpowers flow: brainstorm (one question at a time, designs approved section by
-  section) → a written spec in `docs/superpowers/specs/` → a written plan in
-  `docs/superpowers/plans/` → execution with strict TDD (show the RED run, then GREEN) and
-  verification before claiming done; big plans run subagent-driven (fresh implementer per
-  task + spec/quality review + a final whole-branch review). Specs and plans are committed;
-  `.superpowers/` is git-ignored scratch (ledgers, briefs, review packages). Reviewer
-  findings that are deferred go into a GitHub issue, never silently dropped.
+  config schema, touch everything in the "Config schema" and "Config field" rows of the
+  table below.
+- **Larger work.** Write the design down first: a spec in `docs/superpowers/specs/` and a
+  plan in `docs/superpowers/plans/`, both committed. Implement test-first (show the failing
+  run, then the passing one) and verify before claiming done. `.superpowers/` is git-ignored
+  scratch. Review findings that are deferred go into a GitHub issue, never silently dropped.
 - **CI runs are slow** (the repo is public, so hosted minutes are free, but a full run
   takes ~10 min warm and ~22 min cold). Batch pushes, remember that docs-only pushes
-  skip CI (`paths-ignore`), put `[skip ci]` in the tip commit message when a code push
+  skip CI (`paths-ignore`; a PR always starts the workflow and `ci-ok` still reports,
+  with the heavy jobs skipped), put `[skip ci]` in the tip commit message when a code push
   needs no run, and update `ROOTS` in `.github/scripts/changes.py` when adding a job.
   Never push without being asked (rule 8).
 - Keep comments at the density of the surrounding code. Module-level `//!` docs should
