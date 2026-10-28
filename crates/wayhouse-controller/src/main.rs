@@ -786,6 +786,8 @@ async fn main() -> anyhow::Result<()> {
         },
     );
     app = app.merge(if args.acme {
+        // Without the feature this block is the arm's whole body; `bail!` diverges, so it
+        // type-checks as the arm's value although the `cfg(feature)` block is gone.
         #[cfg(not(feature = "acme"))]
         {
             anyhow::bail!(

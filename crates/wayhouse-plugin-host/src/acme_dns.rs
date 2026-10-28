@@ -6,7 +6,7 @@
 
 use serde::Serialize;
 
-/// Longest answer message kept; longer ones are truncated.
+/// Longest answer message the host accepts; `acme_dns_result` rejects a longer one with `-1`.
 pub const MAX_MESSAGE_BYTES: usize = 512;
 
 /// What the plugin is asked to do with the record.
