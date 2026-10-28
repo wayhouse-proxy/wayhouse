@@ -287,7 +287,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
 
 | Change | Also update |
 |--------|-------------|
-| Config schema | `wayhouse-config` raw+resolved types, `validate()`, `config.example.yaml`, `docs/05` |
+| Config schema | `wayhouse-config` raw+resolved types, `validate()`, `config.example.yaml`, `docs/05`, and regenerate `crates/wayhouse-config/schema/config.schema.json` (`docs/05` "Editing through the controller API" has the command; a test fails when it is stale) |
 | New metric | `metrics_defs.rs`, `docs/06` |
 | Wire format of a component protocol (HTTP/JSON, SSE, raft RPC, gossip frame) | breaking change: bump `PROTOCOL_MAJOR` (additive: `PROTOCOL_MINOR`) in `wayhouse-http/src/protocol.rs`; a breaking *gossip frame* change bumps `GOSSIP_VERSION` in `wayhouse-core/src/gossip.rs` instead (not `PROTOCOL_MAJOR`: gossip is UDP and has no N / N-1 window); a new component-facing route goes behind `wayhouse_http::protocol::gate`; `docs/10` "Versioning"; add or update the newest row of the version table in `docs/upgrading.md` (checked by `.github/scripts/check_upgrading_doc.py`); the N / N-1 window is in `docs/superpowers/specs/2026-10-05-component-versioning-design.md` |
 | Config field (even optional) | bump `CONFIG_SCHEMA_VERSION` and add the dotted path to `FIELD_SINCE` in `wayhouse-config/src/version.rs` (`docs/05` "Schema version") |

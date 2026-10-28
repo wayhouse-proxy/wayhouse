@@ -31,6 +31,10 @@ pub enum StoreError {
     CounterOverflow,
     #[error("revision counter moved during a Raft apply (concurrent writer)")]
     ConcurrentWrite,
+    #[error(
+        "the config moved on: the latest revision is {current}, not the one this edit started from"
+    )]
+    StaleBase { current: u64 },
     #[error("a write without a Raft index was skipped as already applied")]
     UnexpectedSkip,
     #[error(
@@ -218,8 +222,27 @@ impl Store {
         bytes: RevisionBytes,
         siblings: &dyn Fn(u64) -> Vec<SiblingWrite<'a>>,
     ) -> Result<u64, StoreError> {
+        self.put_with_base(None, bytes, siblings)
+    }
+
+    /// [`Store::put_with`] that fails with [`StoreError::StaleBase`] unless the latest revision is
+    /// `base` (`0` = none yet). The check repeats on every retry, so a writer that races this one
+    /// between the check and the transaction makes it re-check against the new latest revision.
+    #[allow(clippy::needless_pass_by_value)] // owns what it writes; callers hand the buffers over
+    pub fn put_with_base<'a>(
+        &self,
+        base: Option<u64>,
+        bytes: RevisionBytes,
+        siblings: &dyn Fn(u64) -> Vec<SiblingWrite<'a>>,
+    ) -> Result<u64, StoreError> {
         loop {
             let next = self.next_revision()?;
+            if let Some(base) = base {
+                let current = next - 1;
+                if current != base {
+                    return Err(StoreError::StaleBase { current });
+                }
+            }
             match self.apply_at(None, Some((next, bytes.clone())), siblings(next)) {
                 Ok(_) => return Ok(next),
                 Err(StoreError::ConcurrentWrite) => continue,

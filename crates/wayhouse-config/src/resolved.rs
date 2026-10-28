@@ -17,6 +17,7 @@ use crate::web::WebConfig;
 
 /// Backend selection strategy within a pool.
 #[derive(Debug, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Balancer {
     #[default]
@@ -35,6 +36,7 @@ pub enum Balancer {
 
 /// Listener transport.
 #[derive(Debug, Deserialize, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Protocol {
     #[default]
@@ -44,6 +46,7 @@ pub enum Protocol {
 
 /// What a UDP session's client key hashes on for backend stickiness.
 #[derive(Debug, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum HashOn {
     #[default]
@@ -58,6 +61,7 @@ pub enum HashOn {
 ///
 /// [PROXY protocol]: https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
 #[derive(Debug, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyProtocol {
     #[default]
@@ -141,6 +145,7 @@ pub struct Route {
 
 /// What to do when an external resolver call fails or times out.
 #[derive(Debug, Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum OnError {
     /// Drop the connection / datagram.

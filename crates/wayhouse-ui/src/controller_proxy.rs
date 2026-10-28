@@ -10,6 +10,10 @@
 //! release —
 //! phase 10's "full management" GUI level, `docs/10`) are `Role::Admin`.
 //!
+//! `GET /api/config/schema` (viewer) and `POST /api/config/validate` (admin) front the controller's
+//! editor endpoints; `POST /api/config?base=<rev>` passes the base-revision guard (and its `409`)
+//! through untouched.
+//!
 //! The controller's `POST /config` body is raw YAML text, not JSON (it
 //! accepts a `String` extractor, content-type-agnostic) — forwarded
 //! byte-for-byte with no content-type forced on it, unlike
@@ -33,6 +37,7 @@ use crate::auth::Actor;
 pub fn viewer_router() -> Router<AppState> {
     Router::new()
         .route("/api/config", get(get_config))
+        .route("/api/config/schema", get(config_schema))
         .route("/api/config/revisions", get(list_revisions))
         .route("/api/config/revisions/{revision}", get(get_revision))
         .route("/api/config/revisions/{revision}/diff", get(diff_revision))
@@ -48,6 +53,7 @@ pub fn viewer_router() -> Router<AppState> {
 pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route("/api/config", post(submit_config))
+        .route("/api/config/validate", post(validate_config))
         .route("/api/config/rollback/{revision}", post(rollback))
         .route("/api/config/promote/{revision}", post(promote))
         .route("/api/tunnel/origins/{name}", delete(release_origin))
@@ -186,6 +192,29 @@ async fn plugin_action(
 
 async fn get_config(State(state): State<AppState>) -> Response {
     proxy(&state, Method::GET, "/config".to_string(), None, None).await
+}
+
+async fn config_schema(State(state): State<AppState>) -> Response {
+    proxy(
+        &state,
+        Method::GET,
+        "/config/schema".to_string(),
+        None,
+        None,
+    )
+    .await
+}
+
+/// Read-only on the controller, but admin-only here: it is the editor's save-time check.
+async fn validate_config(State(state): State<AppState>, body: Bytes) -> Response {
+    proxy(
+        &state,
+        Method::POST,
+        "/config/validate".to_string(),
+        Some(body),
+        None,
+    )
+    .await
 }
 
 async fn tunnel_addresses(State(state): State<AppState>) -> Response {
@@ -454,6 +483,84 @@ mod tests {
         let (body, auth) = captured.lock().unwrap().clone().unwrap();
         assert_eq!(body, b"pools:\n  - name: p\n    targets: []\n");
         assert_eq!(auth.as_deref(), Some("Bearer ctl-token"));
+    }
+
+    /// Serves `router` on a loopback port and returns an app proxying to it.
+    async fn app_for(router: Router) -> Router {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        app_with_controller(format!("http://{addr}"), None)
+    }
+
+    #[tokio::test]
+    async fn validate_forwards_the_raw_body() {
+        let app = app_for(Router::new().route(
+            "/config/validate",
+            post(|body: String| async move {
+                (StatusCode::UNPROCESSABLE_ENTITY, format!("got {body}"))
+            }),
+        ))
+        .await;
+        let resp = app
+            .oneshot(
+                Request::post("/api/config/validate")
+                    .body(Body::from("pools: 7"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(bytes, "got pools: 7".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn schema_is_proxied_with_its_version_header() {
+        let app = app_for(Router::new().route(
+            "/config/schema",
+            get(|| async { ([("x-config-schema-version", "3")], "{}") }),
+        ))
+        .await;
+        let resp = app
+            .oneshot(
+                Request::get("/api/config/schema")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("x-config-schema-version").unwrap(), "3");
+    }
+
+    #[tokio::test]
+    async fn submit_forwards_base_untouched_and_passes_a_409_through() {
+        let app = app_for(Router::new().route(
+            "/config",
+            post(|RawQuery(q): RawQuery| async move {
+                assert_eq!(q.as_deref(), Some("base=4&stage=canary&group=eu"));
+                (StatusCode::CONFLICT, r#"{"error":"moved","current":5}"#)
+            }),
+        ))
+        .await;
+        let resp = app
+            .oneshot(
+                Request::post("/api/config?base=4&stage=canary&group=eu")
+                    .body(Body::from("pools: []"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(bytes, r#"{"error":"moved","current":5}"#.as_bytes());
     }
 
     #[tokio::test]

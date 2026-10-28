@@ -241,8 +241,22 @@ impl AppState {
         stage: Stage,
         actor: Option<&str>,
     ) -> Result<u64, StoreError> {
+        self.apply_revision_if_current(None, bytes, stage, actor)
+    }
+
+    /// [`Self::apply_revision_with_stage_and_actor`] that only lands if the latest revision is
+    /// `base` (`0` = none yet), else [`StoreError::StaleBase`]. The compare and the write are one
+    /// store transaction, so two writers holding the same `base` cannot both win.
+    #[allow(clippy::needless_pass_by_value)] // the stage is built inline by every caller
+    pub fn apply_revision_if_current(
+        &self,
+        base: Option<u64>,
+        bytes: RevisionBytes,
+        stage: Stage,
+        actor: Option<&str>,
+    ) -> Result<u64, StoreError> {
         let stage_bytes = stage_bytes(&stage);
-        let revision = self.store.put_with(bytes, &|revision| {
+        let revision = self.store.put_with_base(base, bytes, &|revision| {
             self.stage_and_actor_writes(revision, &stage_bytes, actor)
         })?;
         let _ = self.updates.send(revision);
@@ -502,6 +516,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(component)
         .route("/config", post(submit_config).get(get_current_config))
+        .route("/config/validate", post(validate_config))
+        .route("/config/schema", get(config_schema))
         .route("/config/revisions", get(list_revisions))
         .route("/config/revisions/{revision}", get(get_revision))
         .route("/config/revisions/{revision}/diff", get(diff_revision))
@@ -533,6 +549,9 @@ struct SubmitParams {
     /// Required when `stage=canary`. One group per submission in this
     /// release — see [`Stage`]'s doc.
     group: Option<String>,
+    /// The revision the caller's edit started from (`0` = none yet). `409` if the latest
+    /// revision is another one, so a save cannot silently overwrite a newer edit.
+    base: Option<u64>,
 }
 
 /// Longest canary group name.
@@ -588,6 +607,7 @@ async fn submit_config(
         &format!("/config{query_suffix}"),
         actor,
         &forward,
+        params.base,
     )
     .await
 }
@@ -622,6 +642,7 @@ async fn submit(
     forward_path: &str,
     actor: Option<String>,
     forward: &crate::ha::client::ForwardHeaders,
+    base: Option<u64>,
 ) -> Response {
     // Held through the store commit so an adoption cannot claim the slave role
     // between the role check and the commit (`crate::adopt`).
@@ -630,24 +651,20 @@ async fn submit(
         return slave_rejects_write();
     }
 
-    let parsed = match wayhouse_config::parse_str(&text) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::warn!(error = %e, "rejected an invalid config submission");
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
-        }
-    };
-    if let Some(rejection) = schema_floor_rejection(state, &parsed) {
-        return rejection;
+    if let Err(rejection) = check_document(state, &text) {
+        return *rejection;
     }
 
     if let Some(ha) = &state.ha {
+        // Checked here, on the leader, before the proposal: the Raft log is unchanged, and a
+        // follower skips it because its copy may lag — the leader it forwards to checks instead.
+        // A write that lands between this check and the commit is not caught (no lock, only a
+        // guard against overwriting an edit the caller has not seen).
+        if let (Some(base), true) = (base, ha.is_leader()) {
+            if let Err(e) = check_base(&state.store, base) {
+                return store_error_response(e);
+            }
+        }
         return crate::ha::client::propose_write(
             ha,
             crate::ha::WriteRequest::Config {
@@ -663,12 +680,69 @@ async fn submit(
         .await;
     }
 
-    match state.apply_revision_with_stage_and_actor(text.into_bytes(), stage, actor.as_deref()) {
+    match state.apply_revision_if_current(base, text.into_bytes(), stage, actor.as_deref()) {
         Ok(revision) => {
             tracing::info!(revision, ?actor, "accepted a new config revision");
             (StatusCode::OK, Json(SubmitResponse { revision })).into_response()
         }
         Err(e) => store_error_response(e),
+    }
+}
+
+/// `Err(StaleBase)` unless the latest revision is `base` (`0` = none yet).
+fn check_base(store: &Store, base: u64) -> Result<(), StoreError> {
+    let current = store.current_revision()?.unwrap_or(0);
+    if current == base {
+        Ok(())
+    } else {
+        Err(StoreError::StaleBase { current })
+    }
+}
+
+/// Parses `text` and applies the schema-floor gate — everything a submission must pass before it
+/// is stored, shared by [`submit`] and [`validate_config`] so the two cannot disagree.
+fn check_document(state: &AppState, text: &str) -> Result<wayhouse_config::Config, Box<Response>> {
+    let parsed = wayhouse_config::parse_str(text).map_err(|e| {
+        tracing::warn!(error = %e, "rejected an invalid config submission");
+        Box::new(
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        )
+    })?;
+    match schema_floor_rejection(state, &parsed) {
+        Some(rejection) => Err(Box::new(rejection)),
+        None => Ok(parsed),
+    }
+}
+
+/// `GET /config/schema` — the JSON Schema of a config document (static, built into the binary).
+async fn config_schema() -> Response {
+    (
+        [
+            ("Content-Type", "application/json".to_string()),
+            (
+                "X-Config-Schema-Version",
+                wayhouse_config::version::CONFIG_SCHEMA_VERSION.to_string(),
+            ),
+        ],
+        wayhouse_config::CONFIG_JSON_SCHEMA,
+    )
+        .into_response()
+}
+
+/// `POST /config/validate` — body is a raw YAML config document. Runs the same checks as a
+/// submission and stores nothing, so it is read-only: no role gate, no Raft, fine on a slave or a
+/// follower.
+async fn validate_config(State(state): State<AppState>, body: String) -> Response {
+    match check_document(&state, &body) {
+        Ok(cfg) => Json(serde_json::json!({"ok": true, "schema_version": cfg.schema_version}))
+            .into_response(),
+        Err(rejection) => *rejection,
     }
 }
 
@@ -969,6 +1043,7 @@ async fn rollback(
                 "/config",
                 actor_header(&headers),
                 &crate::ha::client::ForwardHeaders::from_headers(&headers),
+                None,
             )
             .await;
             tracing::info!(from_revision = revision, "rolled back");
@@ -1196,6 +1271,13 @@ fn read_stage(stage: &crate::kv::Tree, revision: u64) -> Stage {
 
 #[allow(clippy::needless_pass_by_value)] // the stage is built inline by every caller
 fn store_error_response(e: StoreError) -> Response {
+    if let StoreError::StaleBase { current } = e {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": e.to_string(), "current": current})),
+        )
+            .into_response();
+    }
     tracing::error!(error = %e, "store error serving the config API");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -2151,6 +2233,221 @@ listeners:
             .oneshot(Request::post("/config").body(Body::from(body)).unwrap())
             .await
             .unwrap()
+    }
+
+    async fn validate_text(app: &Router, body: String) -> Response {
+        app.clone()
+            .oneshot(
+                Request::post("/config/validate")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn validate_accepts_a_good_document_without_a_revision() {
+        let (state, _dir) = test_state();
+        let store = state.store.clone();
+        let app = router(state);
+        let resp = validate_text(&app, format!("schema_version: 2\n{VALID_CONFIG}")).await;
+        let (status, body) = status_and_error(resp).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v, serde_json::json!({"ok": true, "schema_version": 2}));
+        assert_eq!(store.current_revision().unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn validate_reports_schema_version_1_when_none_is_declared() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        let (_, body) = status_and_error(validate_text(&app, VALID_CONFIG.into()).await).await;
+        assert!(body.contains(r#""schema_version":1"#), "{body}");
+    }
+
+    #[tokio::test]
+    async fn validate_rejects_a_bad_document_with_422() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        let (status, body) =
+            status_and_error(validate_text(&app, "not: [valid, yaml: at all".into()).await).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body.contains("error"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn validate_applies_the_schema_floor_like_submit() {
+        let (state, _dir) = test_state();
+        let app = router(state.with_schema_floor(Arc::new(|| Ok(Some(1)))));
+        let doc = format!("schema_version: 2\n{VALID_CONFIG}");
+        let validated = status_and_error(validate_text(&app, doc.clone()).await).await;
+        let submitted = status_and_error(submit_text(&app, doc).await).await;
+        assert_eq!(validated.0, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(validated, submitted, "validate must say what submit says");
+    }
+
+    #[tokio::test]
+    async fn validate_works_on_a_slave() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let app = router(AppState::new(store, None, RoleHandle::new(Role::Slave)));
+        let resp = validate_text(&app, VALID_CONFIG.into()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn validate_is_bearer_protected() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let state = AppState::new(
+            store,
+            Some("secret".into()),
+            RoleHandle::new(Role::Standalone),
+        );
+        let app = router(state);
+        let resp = validate_text(&app, VALID_CONFIG.into()).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    async fn submit_with_base(app: &Router, base: u64, body: &str) -> Response {
+        app.clone()
+            .oneshot(
+                Request::post(format!("/config?base={base}"))
+                    .body(Body::from(body.to_owned()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn current_text(app: &Router) -> String {
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        status_and_error(resp).await.1
+    }
+
+    #[tokio::test]
+    async fn submit_with_a_stale_base_is_409_and_keeps_the_other_edit() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        assert_eq!(
+            submit_text(&app, VALID_CONFIG.into()).await.status(),
+            StatusCode::OK
+        );
+        // Someone else (a file edit, curl, another tab) lands revision 2.
+        let other = format!("{VALID_CONFIG}\n# edited elsewhere\n");
+        assert_eq!(
+            submit_text(&app, other.clone()).await.status(),
+            StatusCode::OK
+        );
+
+        let (status, body) = status_and_error(submit_with_base(&app, 1, VALID_CONFIG).await).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["current"], 2);
+        assert!(v["error"].as_str().is_some_and(|e| !e.is_empty()), "{body}");
+        assert_eq!(
+            current_text(&app).await,
+            other,
+            "the other edit must survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_with_the_current_base_succeeds() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        submit_text(&app, VALID_CONFIG.into()).await;
+        let (status, body) = status_and_error(submit_with_base(&app, 1, VALID_CONFIG).await).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains(r#""revision":2"#), "{body}");
+    }
+
+    #[tokio::test]
+    async fn base_zero_means_no_revision_yet() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        assert_eq!(
+            submit_with_base(&app, 0, VALID_CONFIG).await.status(),
+            StatusCode::OK
+        );
+        let (status, body) = status_and_error(submit_with_base(&app, 0, VALID_CONFIG).await).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    }
+
+    #[tokio::test]
+    async fn submit_without_base_is_unchanged() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        for _ in 0..2 {
+            assert_eq!(
+                submit_text(&app, VALID_CONFIG.into()).await.status(),
+                StatusCode::OK
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn two_concurrent_submits_with_one_base_make_exactly_one_revision() {
+        let (state, _dir) = test_state();
+        let store = state.store.clone();
+        let app = router(state);
+        submit_text(&app, VALID_CONFIG.into()).await;
+        let (a, b) = tokio::join!(
+            tokio::spawn({
+                let app = app.clone();
+                async move { submit_with_base(&app, 1, VALID_CONFIG).await.status() }
+            }),
+            tokio::spawn({
+                let app = app.clone();
+                async move { submit_with_base(&app, 1, VALID_CONFIG).await.status() }
+            }),
+        );
+        let mut statuses = [a.unwrap(), b.unwrap()];
+        statuses.sort();
+        assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
+        assert_eq!(store.current_revision().unwrap(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn schema_endpoint_returns_the_checked_in_schema() {
+        let (state, _dir) = test_state();
+        let resp = router(state)
+            .oneshot(Request::get("/config/schema").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get("X-Config-Schema-Version").unwrap(),
+            &wayhouse_config::version::CONFIG_SCHEMA_VERSION.to_string()
+        );
+        assert_eq!(
+            resp.headers().get("Content-Type").unwrap(),
+            "application/json"
+        );
+        let (_, body) = status_and_error(resp).await;
+        assert_eq!(body, wayhouse_config::CONFIG_JSON_SCHEMA);
+    }
+
+    #[tokio::test]
+    async fn schema_endpoint_is_bearer_protected() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let state = AppState::new(
+            store,
+            Some("secret".into()),
+            RoleHandle::new(Role::Standalone),
+        );
+        let resp = router(state)
+            .oneshot(Request::get("/config/schema").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
