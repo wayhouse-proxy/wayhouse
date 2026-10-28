@@ -70,8 +70,18 @@ impl CompilePool {
 
     /// Compile `bytes` on a worker; see [`PluginHost::load`].
     pub fn load(&self, bytes: Vec<u8>, approved: Capabilities) -> Result<Plugin, PoolError> {
+        self.load_with_config(bytes, approved, serde_json::Value::Null)
+    }
+
+    /// Compile `bytes` for an install with `config`; see [`PluginHost::load_with_config`].
+    pub fn load_with_config(
+        &self,
+        bytes: Vec<u8>,
+        approved: Capabilities,
+        config: serde_json::Value,
+    ) -> Result<Plugin, PoolError> {
         let host = self.host.clone();
-        self.run(move || host.load(&bytes, &approved))?
+        self.run(move || host.load_with_config(&bytes, &approved, &config))?
             .map_err(PoolError::Module)
     }
 
@@ -128,7 +138,7 @@ mod tests {
     fn good_module() -> Vec<u8> {
         wat::parse_str(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{\"log\":true}")
   (memory (export "memory") 1)
   (func (export "alloc") (param i32) (result i32) (i32.const 0))

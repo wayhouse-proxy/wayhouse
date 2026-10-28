@@ -77,7 +77,7 @@ pub struct PortRouteEntry {
     pub prefer: Option<u16>,
 }
 
-fn parse_range(s: &str) -> Result<RangeInclusive<u16>, String> {
+pub(crate) fn parse_range(s: &str) -> Result<RangeInclusive<u16>, String> {
     let bad = || format!("port range {s:?} must be `port` or `lo-hi` with ports 1 to 65535");
     let (lo, hi) = match s.split_once('-') {
         Some((lo, hi)) => (lo.trim(), hi.trim()),

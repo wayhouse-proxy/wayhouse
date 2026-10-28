@@ -145,7 +145,10 @@ struct UploadResponse {
     sha256: String,
     size: usize,
     abi: String,
+    /// What the module asks for regardless of options; a module with placeholders asks for
+    /// more, which depends on the install's options (see `manifest`).
     capabilities: Capabilities,
+    manifest: Option<wayhouse_plugin_host::Manifest>,
 }
 
 async fn upload_module(
@@ -187,6 +190,7 @@ async fn upload_module(
             size: body.len(),
             abi: info.abi.to_string(),
             capabilities: info.caps,
+            manifest: info.manifest,
         }),
     )
         .into_response()
@@ -314,6 +318,21 @@ async fn install_inner(
         ));
     };
     let size = bytes.len();
+    // A module with a manifest has its options checked, and one with bound capabilities is
+    // approved as the concrete set the options resolve to, no more and no less.
+    let info = inspect(&bytes).map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    let effective = info
+        .effective_caps(&config)
+        .map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    if info.declared.has_placeholders() && approved != effective {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "approved must be exactly what the options resolve to: {}",
+                serde_json::to_string(&effective).expect("capabilities serialize")
+            ),
+        ));
+    }
     if let Some(ha) = &st.ha {
         // Before the compile: a refusal costs the operator nothing.
         super::peer::check_support(ha)
@@ -323,11 +342,13 @@ async fn install_inner(
     let for_peers = st.ha.is_some().then(|| Bytes::from(bytes.clone()));
     let module = for_peers.clone();
     let pool = st.pool.clone();
-    let approved_for_load = approved.clone();
-    tokio::task::spawn_blocking(move || pool.load(bytes, approved_for_load))
-        .await
-        .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "compile task failed"))?
-        .map_err(pool_error)?;
+    let (approved_for_load, config_for_load) = (approved.clone(), config.clone());
+    tokio::task::spawn_blocking(move || {
+        pool.load_with_config(bytes, approved_for_load, config_for_load)
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "compile task failed"))?
+    .map_err(pool_error)?;
     let record = InstallRecord {
         id: format!("{:016x}", rand::random::<u64>()),
         name: req.name,
@@ -1068,7 +1089,7 @@ mod tests {
         let caps = caps.replace('"', "\\\"");
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (memory (export "memory") 1)
@@ -1147,10 +1168,132 @@ mod tests {
         let m = module(CAPS);
         let (status, v) = call(&app, "POST", "/plugins/modules", m.clone(), None).await;
         assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(v["abi"], "0.1");
+        assert_eq!(v["abi"], "0.2");
         assert_eq!(v["size"], m.len());
         assert_eq!(v["capabilities"]["log"], true);
         assert_eq!(v["capabilities"]["tick_interval_secs"], 30);
+    }
+
+    fn bound_module() -> Vec<u8> {
+        let caps = r#"{"log":true,"http":{"hosts":[{"host":"${opt:panel}"}]}}"#;
+        let manifest = r#"{"name":"bound","options":{"type":"object","required":["panel"],"properties":{"panel":{"type":"string"},"label":{"type":"string"}}},"bindings":[{"option":"panel","kind":"hostname"}]}"#;
+        let esc = |s: &str| s.replace('"', "\\\"");
+        wat::parse_str(format!(
+            r#"(module
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-caps" "{}")
+  (@custom "wayhouse.plugin-manifest" "{}")
+  (import "wayhouse" "log" (func $log (param i32 i32 i32)))
+  (memory (export "memory") 1)
+  (func (export "alloc") (param i32) (result i32) (i32.const 0))
+  (func (export "init") (param i32 i32)))"#,
+            esc(caps),
+            esc(manifest)
+        ))
+        .unwrap()
+    }
+
+    fn bound_install(sha: &str, approved: &str, config: &str) -> Vec<u8> {
+        format!(r#"{{"name":"demo","sha256":"{sha}","approved":{approved},"config":{config}}}"#)
+            .into_bytes()
+    }
+
+    const PANEL_CAPS: &str = r#"{"log":true,"http":{"hosts":[{"host":"p.example"}]}}"#;
+
+    #[tokio::test]
+    async fn upload_shows_the_manifest_and_only_the_option_independent_caps() {
+        let (st, _d) = state(None);
+        let app = router(st);
+        let (status, v) = call(&app, "POST", "/plugins/modules", bound_module(), None).await;
+        assert_eq!(status, StatusCode::CREATED, "{v}");
+        assert_eq!(v["manifest"]["name"], "bound");
+        assert_eq!(v["manifest"]["bindings"][0]["option"], "panel");
+        assert_eq!(v["capabilities"]["log"], true);
+        assert!(
+            v["capabilities"]["http"].is_null(),
+            "bound sections are not shown as caps"
+        );
+    }
+
+    #[tokio::test]
+    async fn install_approves_the_resolved_set_only() {
+        let (st, _d) = state(None);
+        let app = router(st.clone());
+        let sha = upload(&app, &bound_module()).await;
+        let config = r#"{"panel":"p.example"}"#;
+        // The approved set must be exactly what the options resolve to.
+        for approved in [
+            r#"{"log":true,"http":{"hosts":[{"host":"p.example"},{"host":"other.example"}]}}"#,
+            r#"{"log":true,"http":{"hosts":[{"host":"p.example","allow_private":true}]}}"#,
+            r#"{"log":true,"http":{"hosts":[{"host":"p.example"}]},"state":{"max_bytes":10}}"#,
+            r#"{"log":true}"#,
+            r#"{"log":true,"http":{"hosts":[{"host":"other.example"}]}}"#,
+        ] {
+            let (status, v) = call(
+                &app,
+                "POST",
+                "/plugins",
+                bound_install(&sha, approved, config),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{approved}: {v}");
+            assert!(v["error"].as_str().unwrap().contains("p.example"), "{v}");
+        }
+        assert!(st.store.list().unwrap().is_empty());
+        let (status, v) = call(
+            &app,
+            "POST",
+            "/plugins",
+            bound_install(&sha, PANEL_CAPS, config),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{v}");
+    }
+
+    #[tokio::test]
+    async fn install_refuses_options_that_do_not_fit_or_resolve_badly() {
+        let (st, _d) = state(None);
+        let app = router(st.clone());
+        let sha = upload(&app, &bound_module()).await;
+        for config in [
+            r#"{}"#,
+            r#"{"panel":1}"#,
+            r#"{"panel":"*.example.com"}"#,
+            r#"{"panel":"https://p.example"}"#,
+            r#"[]"#,
+        ] {
+            let (status, v) = call(
+                &app,
+                "POST",
+                "/plugins",
+                bound_install(&sha, PANEL_CAPS, config),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{config}: {v}");
+        }
+        assert!(st.store.list().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_non_bound_option_is_free_to_differ_between_installs() {
+        let (st, _d) = state(None);
+        let app = router(st.clone());
+        let sha = upload(&app, &bound_module()).await;
+        for label in ["one", "two"] {
+            let config = format!(r#"{{"panel":"p.example","label":"{label}"}}"#);
+            let (status, v) = call(
+                &app,
+                "POST",
+                "/plugins",
+                bound_install(&sha, PANEL_CAPS, &config),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{v}");
+        }
     }
 
     #[tokio::test]
@@ -1240,7 +1383,7 @@ mod tests {
         let (len, resp) = (resp.len(), resp.replace('"', "\\\""));
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (import "wayhouse" "webhook_respond" (func $respond (param i32 i32) (result i32)))

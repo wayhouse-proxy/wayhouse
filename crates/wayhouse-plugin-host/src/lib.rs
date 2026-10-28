@@ -1,10 +1,12 @@
 //! Loads and runs wayhouse WASM plugins (Wave 5). See `docs/plugins.md`.
 
 pub mod acme_dns;
+pub mod bindings;
 pub mod bounds;
 pub mod caps;
 pub mod conformance;
 pub mod http;
+pub mod manifest;
 pub mod module;
 pub mod pool;
 pub mod port_routes;
@@ -14,12 +16,14 @@ pub mod secret;
 pub mod webhook;
 
 pub use acme_dns::{AcmeDnsAnswer, AcmeDnsOp, AcmeDnsRequest};
+pub use bindings::{parse_declared, resolve_caps, BindError, DeclaredCaps};
 pub use bounds::Bounds;
 pub use caps::{
     Capabilities, HttpCap, HttpHost, SecretSlot, StateCap, Triggers, MAX_STATE_BYTES,
     MAX_TICK_INTERVAL_SECS,
 };
 pub use http::{HttpEngine, Transport};
+pub use manifest::{BindingDecl, BindingKind, Manifest, OptionsSchema};
 pub use module::{inspect, AbiVersion, ModuleError, ModuleInfo, HOST_ABI, MAX_MODULE_BYTES};
 pub use pool::{CompilePool, PoolError};
 pub use port_routes::{PortProtoSel, PortRouteCap, PortRouteEntry, PortTransport};

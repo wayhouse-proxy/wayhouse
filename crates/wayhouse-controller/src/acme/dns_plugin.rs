@@ -219,7 +219,7 @@ mod tests {
         let caps = caps.replace('"', "\\\"");
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "acme_dns_result" (func $result (param i32 i32 i32) (result i32)))
   (memory (export "memory") 1)

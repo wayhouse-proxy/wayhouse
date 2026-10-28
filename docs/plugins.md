@@ -11,7 +11,7 @@ controller can store plugin installs behind an admin API and ticks the enabled o
 and ticks on the leader only, and the module bytes follow the installs to every replica (see
 "High availability"). Secrets, `http`, `routes`, webhooks and events are built; `backends` is not.
 
-## Module contract (ABI 0.1)
+## Module contract (ABI 0.2)
 
 Link `wayhouse-plugin-abi` (it stamps the `wayhouse.plugin-abi` section and exports
 `alloc`). The host accepts a module only when the section equals its own version (exact
@@ -57,6 +57,66 @@ declared. The only imports allowed are these, in the `wayhouse` namespace:
 
 A call that uses a capability it did not declare traps that call (`CallError::CapabilityDenied`)
 and leaves the host running.
+
+## Install options and capability bindings
+
+An official, prebuilt plugin cannot know the panel host or the node network of every operator.
+ABI 0.2 lets a module declare **options** the operator fills in at install, and bind some
+capability values to them (design:
+`docs/superpowers/specs/2026-10-28-plugin-manifest-and-bindings.md`).
+
+An optional custom section, `wayhouse.plugin-manifest` (JSON, up to 16 KiB), holds a `name`, an
+`options` schema and the `bindings`:
+
+```json
+{
+    "name": "pelican",
+    "options": {
+        "type": "object",
+        "required": ["panel_host"],
+        "properties": {
+            "panel_host": { "type": "string", "title": "Panel host" },
+            "node_cidr": { "type": "string", "default": "10.0.0.0/8" }
+        }
+    },
+    "bindings": [
+        { "option": "panel_host", "kind": "hostname" },
+        { "option": "node_cidr", "kind": "cidr" }
+    ]
+}
+```
+
+In the capability JSON a value that is exactly `"${opt:panel_host}"` is a placeholder. It is
+allowed only where the table says, and only for an option bound with that kind; text around a
+placeholder, a placeholder in a key or in any other field is refused when the module is read.
+
+| Kind                 | Where                                                                | The value must be                                            |
+| -------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `hostname`           | `http.hosts[].host`, `secrets[].hosts[]`                             | a lowercase DNS name or IP literal; never a wildcard         |
+| `route_host_pattern` | `routes.hosts[]`                                                     | an exact name or `*.suffix`                                  |
+| `cidr`               | `routes.backends[]`, `port_routes.backends[]`                        | `ip` or `ip/prefix`                                          |
+| `port_range`         | `port_routes.ports[]`                                                | `port` or `lo-hi`                                            |
+| `int`                | `http.hosts[].port`, `routes.max_entries`, `port_routes.max_entries` | a non-negative JSON integer (then the ordinary bounds apply) |
+
+`options` is a JSON Schema subset: `type`, `properties`, `required`, `enum`, `default`,
+`minimum`, `maximum`, `items`, `additionalProperties` (a boolean) and the display hints
+`title`, `description`, `group`, `order` and `x-wayhouse-secret`. Anything else (including
+`pattern` and `format`) is refused. The install `config` is the option values: option `NAME` is
+`config.NAME`, or the schema `default`. A config that does not fit answers `422` with the JSON
+path. `config` is still passed to `init` unchanged.
+
+The host substitutes the values and then parses the result with the same code as a literal
+declaration, so the **effective capabilities** are always something a literal declaration could
+have been. `allow_private`, triggers, `secrets[].name` and the other fields stay literal in the
+module: an option changes where a capability points, never what it is.
+
+The operator approves the effective set. For a module with placeholders `POST /plugins` requires
+`approved` to equal it exactly (`400` with the set otherwise), and the host compares the effective
+set with `approved` again every time the module is loaded, so editing a stored option can never
+widen what runs. The upload response carries the `manifest`; its `capabilities` list only what
+does not depend on options. `wayhouse-plugin-check <module.wasm> [config.json]` prints the
+effective set for a sample config. Editing a bound option of an existing install and the form in
+the UI are separate slices.
 
 ## Secrets and the `http` capability
 
@@ -303,8 +363,8 @@ bounded hook queue as webhooks, so a slow provider fails one issuance and never 
 
 ## Approval
 
-`PluginHost::load(bytes, approved)` takes the capabilities the operator approved for the
-module's sha256. A module whose own declaration asks for more (a new trigger, `log`,
+`PluginHost::load(bytes, approved)` (`load_with_config(bytes, approved, config)` for an install
+with options) takes the capabilities the operator approved for the module's sha256. A module whose own declaration asks for more (a new trigger, `log`,
 `state`, or a bigger state cap) fails with `CapsNotApproved`, so a module cannot grant
 itself anything. It then runs with its own declaration, which is never wider than the
 approved set.
@@ -333,7 +393,7 @@ A plugin's state holds at most 1024 keys (a `state_put` of a new key past that r
 
 ## Checking a built plugin
 
-`wayhouse-plugin-check <module.wasm>` (crate `wayhouse-plugin-host`) loads the module with
+`wayhouse-plugin-check <module.wasm> [config.json]` (crate `wayhouse-plugin-host`) loads the module with
 its own declaration as the approved set, calls `init` and, if declared, `on_timer` once,
 and prints what the host saw, including which capabilities were used. It exits 1 when the
 host would reject the module, a call fails, or the plugin used a capability it did not
@@ -347,7 +407,7 @@ behind the same admin bearer token as `/config`; `X-Actor` is recorded as `creat
 
 | Request                                                       | What it does                                                                                                                                                                                                                                         |
 | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /plugins/modules` (raw `.wasm` body, up to 8 MiB)       | Validates ABI and capability sections, keeps the bytes by sha256, returns `{sha256, size, abi, capabilities}` for the operator to read.                                                                                                              |
+| `POST /plugins/modules` (raw `.wasm` body, up to 8 MiB)       | Validates ABI and capability sections, keeps the bytes by sha256, returns `{sha256, size, abi, capabilities, manifest}` for the operator to read.                                                                                                    |
 | `POST /plugins` `{name, sha256, approved, config?, enabled?}` | Compiles the stored module through the bounded pool with `approved` as the operator-approved set; `422` when the module declares more than `approved` or fails a bound, `503` when the compiler is busy. Records the install and returns it (`201`). |
 | `GET /plugins`, `GET /plugins/{id}`                           | The install records.                                                                                                                                                                                                                                 |
 | `POST /plugins/{id}/enable`, `/disable`                       | Flip `enabled`; a disabled install is not ticked, and enabling it restarts its first-tick wait.                                                                                                                                                      |

@@ -15,7 +15,7 @@ fn guest(caps: &str) -> Vec<u8> {
     let rlen = RESPONSE.len();
     wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (import "wayhouse" "webhook_respond" (func $respond (param i32 i32) (result i32)))
@@ -95,7 +95,7 @@ fn an_undeclared_trigger_is_never_delivered() {
     let timer_only = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true}"#;
     let m = wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{}")
   (memory (export "memory") 1)
   (func (export "alloc") (param i32) (result i32) (i32.const 1024))

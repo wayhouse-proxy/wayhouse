@@ -2,7 +2,7 @@
 
 use wayhouse_plugin_host::{Limits, ModuleError, PluginHost};
 
-const ABI: &str = "\\00\\00\\01\\00";
+const ABI: &str = "\\00\\00\\02\\00";
 const CAPS: &str = r#"{\"log\":true}"#;
 
 fn module(body: &str) -> Vec<u8> {

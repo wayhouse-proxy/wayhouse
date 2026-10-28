@@ -197,7 +197,22 @@ impl PluginHost {
     /// itself capabilities. The plugin then runs with its declaration, which is never
     /// wider than `approved`.
     pub fn load(&self, bytes: &[u8], approved: &Capabilities) -> Result<Plugin, ModuleError> {
-        let info = inspect(bytes)?;
+        self.load_with_config(bytes, approved, &serde_json::Value::Null)
+    }
+
+    /// As [`load`](Self::load) for an install with `config`: a module with a manifest has
+    /// its options checked and its capability placeholders filled in from `config`. The
+    /// resulting effective set must be within `approved`, every time the module is loaded,
+    /// so editing a stored option can never grant more than the operator approved. A bound
+    /// module loaded without its options fails here.
+    pub fn load_with_config(
+        &self,
+        bytes: &[u8],
+        approved: &Capabilities,
+        config: &serde_json::Value,
+    ) -> Result<Plugin, ModuleError> {
+        let mut info = inspect(bytes)?;
+        info.caps = info.effective_caps(config)?;
         info.caps.check_within(approved)?;
         // The scan must not admit a table the runtime cap would then refuse at instantiation.
         let mut bounds = self.limits.bounds.clone();

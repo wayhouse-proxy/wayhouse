@@ -594,6 +594,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_member_without_manifest_support_blocks_installs() {
+        // Level 4 is the port-routes build, which cannot read an ABI 0.2 module.
+        let old = check_support_answers(&[(2, Ok(who(4)))]).unwrap_err();
+        assert!(old.contains("node 2") && old.contains("upgrade"), "{old}");
+        assert_eq!(PLUGIN_SUPPORT, 5);
+    }
+
     fn unreachable() -> WhoamiError {
         WhoamiError::Unreachable("connection refused".into())
     }
@@ -649,7 +657,7 @@ mod tests {
     fn module(tag: &str) -> Vec<u8> {
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{{\"log\":true}}")
   (@custom "tag" "{tag}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))

@@ -470,9 +470,11 @@ impl Runner {
             })?;
         let pool = self.pool.clone();
         let approved = rec.approved.clone();
-        let loaded = tokio::task::spawn_blocking(move || pool.load(bytes, approved))
-            .await
-            .map_err(|e| Fail::other(e.to_string()))?;
+        let config = rec.config.clone();
+        let loaded =
+            tokio::task::spawn_blocking(move || pool.load_with_config(bytes, approved, config))
+                .await
+                .map_err(|e| Fail::other(e.to_string()))?;
         let mut plugin = loaded.map_err(|e| match e {
             PoolError::Busy => Fail::Busy,
             e => Fail::other(e.to_string()),
@@ -791,7 +793,7 @@ mod tests {
 
     use wayhouse_plugin_host::{inspect, Limits, PluginHost};
 
-    const ABI: &str = "\\00\\00\\01\\00";
+    const ABI: &str = "\\00\\00\\02\\00";
     const TIMER: &str = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"state":{"max_bytes":64}}"#;
     const NO_TIMER: &str = r#"{"log":true}"#;
 
@@ -1582,5 +1584,89 @@ mod tests {
             "caps revoked"
         );
         assert!(base != LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({"a": 1}))));
+    }
+
+    /// Logs "hello" at each tick; its `log` capability is fixed, its routes are bound.
+    fn bound_counter() -> Vec<u8> {
+        let caps = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"routes":{"hosts":["${opt:pat}"],"backends":["10.0.0.0/16"],"max_entries":4}}"#;
+        let manifest = r#"{"name":"bound","options":{"type":"object","required":["pat"],"properties":{"pat":{"type":"string"}}},"bindings":[{"option":"pat","kind":"route_host_pattern"}]}"#;
+        let esc = |s: &str| s.replace('"', "\\\"");
+        wat::parse_str(format!(
+            r#"(module
+  (@custom "wayhouse.plugin-abi" "{ABI}")
+  (@custom "wayhouse.plugin-caps" "{}")
+  (@custom "wayhouse.plugin-manifest" "{}")
+  (import "wayhouse" "log" (func $log (param i32 i32 i32)))
+  (memory (export "memory") 1)
+  (data (i32.const 0) "hello")
+  (func (export "alloc") (param i32) (result i32) (i32.const 1024))
+  (func (export "init") (param i32 i32))
+  (func (export "on_timer") (call $log (i32.const 2) (i32.const 0) (i32.const 5))))"#,
+            esc(caps),
+            esc(manifest)
+        ))
+        .unwrap()
+    }
+
+    fn bound_install(store: &PluginStore, id: &str, module: &[u8], approved_pat: &str, pat: &str) {
+        let sha = format!("sha-{id}");
+        store.put_blob(&sha, module).unwrap();
+        store
+            .create(&InstallRecord {
+                id: id.into(),
+                name: "demo".into(),
+                sha256: sha,
+                size: module.len(),
+                approved: inspect(module)
+                    .unwrap()
+                    .effective_caps(&serde_json::json!({"pat": approved_pat}))
+                    .unwrap(),
+                config: serde_json::json!({"pat": pat}),
+                enabled: true,
+                created_at: 1,
+                created_by: None,
+                webhook: None,
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_bound_install_runs_with_its_config_inside_the_approval() {
+        let (r, store, _d) = fixture(1, 4);
+        bound_install(
+            &store,
+            "a",
+            &bound_counter(),
+            "*.mc.example.com",
+            "*.mc.example.com",
+        );
+        let t0 = Instant::now();
+        r.run_due(t0).await;
+        r.run_due(secs(t0, 30)).await;
+        let st = r.status("a").unwrap();
+        assert_eq!((st.last_ok, st.ticks), (Some(true), 1), "{st:?}");
+    }
+
+    #[tokio::test]
+    async fn a_stored_config_wider_than_the_approval_does_not_run() {
+        let (r, store, _d) = fixture(1, 4);
+        bound_install(
+            &store,
+            "a",
+            &bound_counter(),
+            "a.mc.example.com",
+            "*.mc.example.com",
+        );
+        let t0 = Instant::now();
+        r.run_due(t0).await;
+        r.run_due(secs(t0, 30)).await;
+        let st = r.status("a").unwrap();
+        assert_eq!(st.last_ok, Some(false), "{st:?}");
+        assert!(
+            st.last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("not approved")),
+            "{st:?}"
+        );
     }
 }

@@ -5,12 +5,15 @@
 //! limits. Anything the host would refuse, and any capability the plugin used without
 //! declaring, is a problem. Used by `wayhouse-plugin-check` and plugin repo CI.
 
+use crate::caps::Capabilities;
 use crate::module::{inspect, ModuleInfo};
 use crate::runtime::{CallError, Effects, Limits, PluginHost, StateSnapshot};
 
 #[derive(Debug)]
 pub struct Report {
     pub info: Option<ModuleInfo>,
+    /// What the module asks for under the config given to the check.
+    pub effective: Option<Capabilities>,
     pub problems: Vec<String>,
     pub init: Option<Effects>,
     pub on_timer: Option<Effects>,
@@ -31,10 +34,17 @@ fn describe(entry: &str, e: &CallError) -> String {
     }
 }
 
-/// Check `bytes` as the host would load it.
+/// Check `bytes` as the host would load it, with an empty install config.
 pub fn check(bytes: &[u8]) -> Report {
+    check_with_config(bytes, &serde_json::Value::Null)
+}
+
+/// Check `bytes` as the host would load it for an install with `config`: the config is
+/// checked against the module's options and handed to `init`.
+pub fn check_with_config(bytes: &[u8], config: &serde_json::Value) -> Report {
     let mut report = Report {
         info: None,
+        effective: None,
         problems: Vec::new(),
         init: None,
         on_timer: None,
@@ -47,6 +57,14 @@ pub fn check(bytes: &[u8]) -> Report {
         }
     };
     report.info = Some(info.clone());
+    let effective = match info.effective_caps(config) {
+        Ok(c) => c,
+        Err(e) => {
+            report.problems.push(e.to_string());
+            return report;
+        }
+    };
+    report.effective = Some(effective.clone());
     let host = match PluginHost::new(Limits::default()) {
         Ok(h) => h,
         Err(e) => {
@@ -54,19 +72,24 @@ pub fn check(bytes: &[u8]) -> Report {
             return report;
         }
     };
-    let plugin = match host.load(bytes, &info.caps) {
+    let plugin = match host.load_with_config(bytes, &effective, config) {
         Ok(p) => p,
         Err(e) => {
             report.problems.push(e.to_string());
             return report;
         }
     };
+    let init_config = if config.is_null() {
+        Vec::new()
+    } else {
+        serde_json::to_vec(config).unwrap_or_default()
+    };
     let state = StateSnapshot::new();
-    match plugin.init(&[], &state) {
+    match plugin.init(&init_config, &state) {
         Ok(fx) => report.init = Some(fx),
         Err(e) => report.problems.push(describe("init", &e)),
     }
-    if info.caps.triggers.on_timer {
+    if effective.triggers.on_timer {
         match plugin.on_timer(&state) {
             Ok(fx) => report.on_timer = Some(fx),
             Err(e) => report.problems.push(describe("on_timer", &e)),
@@ -83,7 +106,7 @@ mod tests {
         let caps = caps.replace('"', "\\\"");
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (memory (export "memory") 1)
@@ -149,5 +172,40 @@ mod tests {
             "{:?}",
             r.problems
         );
+    }
+
+    fn bound_guest() -> Vec<u8> {
+        let caps = r#"{"log":true,"routes":{"hosts":["${opt:pat}"],"backends":["10.0.0.0/8"],"max_entries":1}}"#;
+        let manifest = r#"{"name":"b","options":{"type":"object","required":["pat"],"properties":{"pat":{"type":"string"}}},"bindings":[{"option":"pat","kind":"route_host_pattern"}]}"#;
+        let (caps, manifest) = (caps.replace('"', "\\\""), manifest.replace('"', "\\\""));
+        wat::parse_str(format!(
+            r#"(module
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-caps" "{caps}")
+  (@custom "wayhouse.plugin-manifest" "{manifest}")
+  (memory (export "memory") 1)
+  (func (export "alloc") (param i32) (result i32) (i32.const 4096))
+  (func (export "init") (param i32 i32)))"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_bound_module_needs_its_options_and_reports_the_effective_caps() {
+        let m = bound_guest();
+        let r = check(&m);
+        assert!(
+            !r.ok() && r.problems[0].contains("options"),
+            "{:?}",
+            r.problems
+        );
+        let r = check_with_config(&m, &serde_json::json!({"pat":"*.mc.example.com"}));
+        assert!(r.ok(), "{:?}", r.problems);
+        assert_eq!(
+            r.effective.unwrap().routes.unwrap().hosts,
+            ["*.mc.example.com"]
+        );
+        let r = check_with_config(&m, &serde_json::json!({"pat":"*"}));
+        assert!(!r.ok());
     }
 }
