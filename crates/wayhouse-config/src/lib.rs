@@ -11,6 +11,8 @@
 use std::path::Path;
 
 mod cidr;
+#[cfg(feature = "json-schema")]
+mod json_schema;
 mod keys;
 mod matcher;
 mod parse;
@@ -22,6 +24,11 @@ pub mod version;
 mod web;
 
 pub use cidr::{Acl, Cidr, CidrSet, GeoAcl};
+#[cfg(feature = "json-schema")]
+pub use json_schema::json_schema;
+/// The config document's JSON Schema, generated from the raw types (`--features json-schema`)
+/// and checked in; a test fails when it drifts. Served by the controller.
+pub const CONFIG_JSON_SCHEMA: &str = include_str!("../schema/config.schema.json");
 pub use keys::base64_decode_32;
 pub use matcher::{extract_sni, HostPattern, MatchContext, Matcher, RouteHint, PEEK_MAX};
 pub use resolved::{

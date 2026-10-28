@@ -771,6 +771,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn validate_is_admin_only_and_schema_is_for_viewers() {
+        let app = router(users_state());
+        let resp = login_as(&app, "bob", "bob-pass").await; // bob is Operator
+        let cookie = cookie_header_from(&set_cookie_value(&resp));
+        let resp = app
+            .clone()
+            .oneshot(
+                HttpRequest::post("/api/config/validate")
+                    .header(header::COOKIE, cookie.clone())
+                    .body(Body::from("pools: []"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // 503 (no controller configured), not 403: the gate let the read through.
+        let resp = app
+            .oneshot(
+                HttpRequest::get("/api/config/schema")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
     async fn an_operator_cannot_install_or_upload_a_plugin() {
         let app = router(users_state());
         let resp = login_as(&app, "bob", "bob-pass").await; // bob is Operator

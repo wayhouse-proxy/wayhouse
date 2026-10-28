@@ -96,6 +96,7 @@ mod header_contract {
         ("POST", "/api/fleet/sniffers/a2s.wasm/rollback"),
         // controller_proxy: viewer reads
         ("GET", "/api/config"),
+        ("GET", "/api/config/schema"),
         ("GET", "/api/config/revisions"),
         ("GET", "/api/config/revisions/1"),
         ("GET", "/api/config/revisions/1/diff?against=2"),
@@ -105,6 +106,7 @@ mod header_contract {
         ("GET", "/api/acme/account"),
         // controller_proxy: admin writes
         ("POST", "/api/config"),
+        ("POST", "/api/config/validate"),
         ("POST", "/api/config/rollback/1"),
         ("POST", "/api/config/promote/1"),
     ];

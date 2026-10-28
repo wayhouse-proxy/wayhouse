@@ -670,6 +670,43 @@ a document that declares `schema_version` or uses a field introduced by the new
 version. Proxies that do not register (no tunnel) are not tracked: they still refuse a
 document they cannot parse and keep their previous config.
 
+## Editing through the controller API
+
+Three controller routes (also under `/api/config/...` on `wayhouse-ui`) back a config editor. They
+change nothing about the document format, so they need no schema bump. The examples use
+`$CONTROLLER` and `$TOKEN` (fish: `set CONTROLLER http://127.0.0.1:8081`).
+
+- **`POST /config/validate`** takes the same raw YAML body as `POST /config` and runs the same
+  checks (parse, validation, the mixed-fleet schema gate above) without storing anything. `200
+  {"ok":true,"schema_version":N}` (`N` is the declared version, `1` if none) or `422
+  {"error":"..."}`, the same message a submission would get. It is read-only, so a `slave` tier or an
+  HA follower answers it itself. Via `wayhouse-ui` it needs the admin role, like a submission.
+
+  ```
+  curl -sS -X POST -H "Authorization: Bearer $TOKEN" --data-binary @config.yaml $CONTROLLER/config/validate
+  ```
+
+- **`POST /config?base=<revision>`** refuses with `409 {"error":"...","current":N}` when the latest
+  revision is not `<revision>`, so a save cannot silently overwrite an edit made meanwhile (a file
+  edit, `curl`, another browser tab). `base=0` means "no revision yet". Without `base` a submission
+  behaves as before. It combines with `stage=canary`. `GET /config` reports the revision in
+  `X-Config-Revision`. With HA the leader checks `base` before it proposes the write; a write that
+  commits between that check and the proposal is not caught, so this guards people from each other
+  and is not a lock.
+
+  ```
+  curl -sS -X POST -H "Authorization: Bearer $TOKEN" --data-binary @config.yaml "$CONTROLLER/config?base=7"
+  ```
+
+- **`GET /config/schema`** returns the JSON Schema (2020-12) of the document, with the
+  `X-Config-Schema-Version` header (the build's `CONFIG_SCHEMA_VERSION`). Each field in `FIELD_SINCE`
+  carries `x-wayhouse-since` with the schema version that introduced it, and serde defaults appear as
+  `default`. Readable by every role.
+
+The schema is generated from the raw config types and checked in as
+`crates/wayhouse-config/schema/config.schema.json`; a test fails when it drifts. Regenerate it with
+`cargo run -p wayhouse-config --features json-schema --example gen_schema > crates/wayhouse-config/schema/config.schema.json`.
+
 ## Reload semantics
 
 | Change | Behavior |

@@ -598,7 +598,8 @@ what order," which a stateless replica set cannot give.
 - **Writes go through Raft; reads don't.** `POST /config`, `POST /intent`,
   and `POST /admin/adopt` propose a Raft entry and wait for it to commit
   before responding (this is where "who is the leader" matters). `GET
-  /config`, `/config/subscribe`, `/config/revisions*`, `GET /intent`-side
+  /config`, `/config/schema`, `POST /config/validate` (it stores nothing),
+  `/config/subscribe`, `/config/revisions*`, `GET /intent`-side
   reads, and `/healthz` are served by **whichever replica received the
   request**, straight from its own local `Store` — no `ReadIndex` /
   leader-lease read protocol. This is a deliberate relaxation of Raft's

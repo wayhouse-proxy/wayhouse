@@ -14,6 +14,19 @@ serde.workspace = true
 serde_norway.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+schemars = { version = "1", optional = true }
+serde_json = { workspace = true, optional = true }
+
+[features]
+# The config JSON Schema (`json_schema()`), served by the controller. Off for the proxy build.
+json-schema = ["dep:schemars", "dep:serde_json"]
 
 [dev-dependencies]
 serde_json.workspace = true
+# Turns the feature on for this crate's own tests, so the schema drift test runs under a plain `cargo test`.
+wayhouse-config = { path = ".", features = ["json-schema"] }
+
+
+[[example]]
+name = "gen_schema"
+required-features = ["json-schema"]

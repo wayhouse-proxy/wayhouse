@@ -25,6 +25,7 @@ pub(crate) mod view;
 const MAX_INTERNAL_PORTS: u32 = 1000;
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawWeb {
     /// Pool whose backends are Caddy listeners (default `web`).
@@ -47,6 +48,7 @@ pub(crate) struct RawWeb {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawWebListen {
     #[serde(default = "default_http")]
@@ -65,6 +67,7 @@ impl Default for RawWebListen {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawSite {
     #[serde(default)]
@@ -77,6 +80,7 @@ pub(crate) struct RawSite {
     pub(crate) tls: Option<RawSiteTls>,
     /// How Caddy talks to the upstreams; unset is plain HTTP.
     #[serde(default)]
+    #[cfg_attr(feature = "json-schema", schemars(with = "Option<serde_json::Value>"))]
     pub(crate) upstream_tls: Option<serde_norway::Value>,
     /// Path Caddy probes on each upstream; unset means passive checks only.
     #[serde(default)]
@@ -84,6 +88,7 @@ pub(crate) struct RawSite {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawSiteTls {
     pub(crate) cert: String,
@@ -91,6 +96,7 @@ pub(crate) struct RawSiteTls {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawUpstream {
     #[serde(default)]
@@ -106,6 +112,7 @@ pub(crate) struct RawUpstream {
 
 /// How Caddy reaches a pool upstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum WebVia {
     /// Caddy connects to the pool's backends itself.

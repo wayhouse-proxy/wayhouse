@@ -1,0 +1,1315 @@
+{
+  "$defs": {
+    "AdminTls": {
+      "additionalProperties": false,
+      "description": "`settings.admin.tls`: the admin API serves HTTPS with this pair (PEM chain,\nleaf first; PEM private key). Both or neither, by type. Startup-only like\n`listen`; the files themselves are re-read when they change.\n\nThe optional `max_pending*` / `new_per_source_*` settings bound the TLS\nhandshakes in flight (same as `wayhouse-controller`'s `--tls-max-pending*` /\n`--tls-new-per-source-*` flags); unset ones keep the defaults.",
+      "properties": {
+        "cert": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "max_pending": {
+          "default": null,
+          "description": "Handshakes in flight in total (default 512, at least 1).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_pending_per_source": {
+          "default": null,
+          "description": "Handshakes in flight per source: an IPv4 address or an IPv6 /64 (default\n16, at least 1).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "new_per_source_burst": {
+          "default": null,
+          "description": "Burst a source may open at once (default 64, at least 1).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "new_per_source_per_sec": {
+          "default": null,
+          "description": "New connections per second a source may open on average (default 20;\n`0` = no rate limit).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "cert",
+        "key"
+      ],
+      "type": "object"
+    },
+    "Balancer": {
+      "description": "Backend selection strategy within a pool.",
+      "oneOf": [
+        {
+          "enum": [
+            "round_robin",
+            "least_conn"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "consistent_hash",
+          "description": "Rendezvous (HRW) hash of a per-client key over the healthy backends: the\nsame key sticks to the same backend without a session table, and only\nthat backend's share moves when the set changes. Key selected by the\npool's `hash_on` (`src_ip` default).",
+          "type": "string"
+        },
+        {
+          "const": "weighted",
+          "description": "Round-robin biased by a per-backend `weight` (from the pool's `weights`\nmap; any backend not listed there weighs `1`). A backend weighing `3`\nreceives three times the new sessions of a backend weighing `1`.",
+          "type": "string"
+        }
+      ]
+    },
+    "HashOn": {
+      "description": "What a UDP session's client key hashes on for backend stickiness.",
+      "enum": [
+        "src_ip",
+        "src_ip_port"
+      ],
+      "type": "string"
+    },
+    "OnError": {
+      "description": "What to do when an external resolver call fails or times out.",
+      "oneOf": [
+        {
+          "const": "reject",
+          "description": "Drop the connection / datagram.",
+          "type": "string"
+        },
+        {
+          "const": "fallback_route",
+          "description": "Treat the resolver route as \"did not match\" and continue the route list.",
+          "type": "string"
+        },
+        {
+          "const": "stale_ok",
+          "description": "Serve the last successful (now-expired) cached answer if there is one,\nelse `reject`. (Needs the resolver cache — phase 4 slice 2.)",
+          "type": "string"
+        }
+      ]
+    },
+    "Protocol": {
+      "description": "Listener transport.",
+      "enum": [
+        "tcp",
+        "udp"
+      ],
+      "type": "string"
+    },
+    "ProxyProtocol": {
+      "description": "Whether to prepend a [PROXY protocol] header to the upstream connection so\nthe backend learns the real client address. `none` (default) sends nothing;\n`v1` sends the human-readable text header; `v2` sends the binary header.\nOnly the first bytes toward the backend carry it (TCP: before any payload).\n\n[PROXY protocol]: https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt",
+      "oneOf": [
+        {
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "v1",
+          "description": "TCP text header. TCP listeners only.",
+          "type": "string"
+        },
+        {
+          "const": "v2",
+          "description": "TCP binary header. TCP listeners only.",
+          "type": "string"
+        },
+        {
+          "const": "v2-udp",
+          "description": "Binary header prepended to the **first datagram** of a UDP session.\nUDP listeners only.",
+          "type": "string"
+        }
+      ]
+    },
+    "RawAction": {
+      "additionalProperties": false,
+      "description": "A route action: exactly one of `pool` (fixed) or `resolver` (external lookup).",
+      "properties": {
+        "pool": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolver": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawAdmin": {
+      "additionalProperties": false,
+      "properties": {
+        "auth_token": {
+          "default": null,
+          "description": "Bearer token every admin API request (except `GET /healthz`) must\npresent. `None` leaves the API open — network-boundary-only auth,\nsame posture as always. Needed once anything calls in from outside\nthat boundary — today, `wayhouse-aggregator`'s intent-verb fan-out\n(phase 10+11 slice 10, `docs/10` \"The aggregator\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "listen": {
+          "default": "127.0.0.1:9900",
+          "type": "string"
+        },
+        "tls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdminTls"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Serve the admin API over HTTPS with this certificate pair."
+        }
+      },
+      "type": "object"
+    },
+    "RawBackendSource": {
+      "additionalProperties": false,
+      "description": "A named backend discovery source (phase 8). Level-triggered: an adapter\nreturns the *current* address set for the pool; the runtime diffs it against\nthe live set. `static` is resolved to the pool's `targets` at validation\ntime; the other kinds get a control-plane refresh task in `wayhouse-core`.",
+      "properties": {
+        "api": {
+          "default": null,
+          "description": "`kubernetes` only: API server base URL (default the in-cluster address).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "consul_addr": {
+          "default": null,
+          "description": "`consul` only: base URL of the Consul HTTP API.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "consul_token_file": {
+          "default": null,
+          "description": "`consul` only: file holding an ACL token, sent as `X-Consul-Token`.\nRe-read while running, so a rotated token is picked up. A path, never the\ntoken itself, so `GET /config` and the YAML carry no secret.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "default": null,
+          "description": "`kubernetes` only: the namespace (default `default`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port_name": {
+          "default": null,
+          "description": "`kubernetes` only: pick this named port from each EndpointSlice;\nabsent ⇒ the first port.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pubkey": {
+          "default": null,
+          "description": "`tunnel` only: the origin's WireGuard public key (base64, 32 bytes) —\nidentifies which `wayhouse-agent`-registered origin this source resolves\nbackends from, and pins the key `wayhouse` expects that origin to present.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "record": {
+          "default": null,
+          "description": "`dns_srv` only: the SRV record to resolve (port comes from the record).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "refresh_interval_sec": {
+          "default": 15,
+          "description": "How often the refresh task re-queries the source (dynamic kinds only).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "service": {
+          "default": null,
+          "description": "`consul` / `kubernetes` only: the service name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tag": {
+          "default": null,
+          "description": "`consul` only: restrict to service instances carrying this tag.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targets": {
+          "default": [],
+          "description": "`static` only: the fixed address list.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "RawBucket": {
+      "additionalProperties": false,
+      "properties": {
+        "burst": {
+          "default": null,
+          "description": "Bucket capacity (max burst). Defaults to `rate` (one second of slack).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "rate": {
+          "description": "Sustained rate in permits per second (new connections / new UDP\nsessions). Must be >= 1.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rate"
+      ],
+      "type": "object"
+    },
+    "RawCache": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "description": "Key parts, joined to form the cache key: `src_ip` | `src_ip_port` |\n`sni` | `routing_key` | `first_bytes:<a>:<b>`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_entries": {
+          "default": 10000,
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "negative_ttl_sec": {
+          "default": 2,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "positive_ttl_sec": {
+          "default": 30,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "RawGeo": {
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "deny": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RawGossip": {
+      "additionalProperties": false,
+      "properties": {
+        "bind": {
+          "description": "UDP address this instance's gossip mesh listens/sends on.",
+          "type": "string"
+        },
+        "psk": {
+          "description": "Pre-shared key: every gossip datagram carries an HMAC-SHA256 tag\ncomputed with it. A wrong or missing tag is dropped silently.",
+          "type": "string"
+        },
+        "quorum_fraction": {
+          "default": 0.66,
+          "description": "Fraction of the domain's known members that must report a backend\ndown for that verdict to override this instance's own \"up\" reading.\nMust be > 0.5 and <= 1.0 (a same-or-under-half quorum could contradict\nitself between two overlapping majorities).",
+          "format": "double",
+          "type": "number"
+        },
+        "seeds": {
+          "default": [],
+          "description": "Known peers to bootstrap membership from (any subset of the domain's\nlive members is enough — foca's own SWIM traffic discovers the rest).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "bind",
+        "psk"
+      ],
+      "type": "object"
+    },
+    "RawHealthCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "expect_hex_prefix": {
+          "default": null,
+          "description": "`udp_probe` only: hex-encoded prefix the reply must start with. Empty /\nabsent means \"any reply datagram counts as healthy\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fall": {
+          "default": 3,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "interval_sec": {
+          "default": 2,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rise": {
+          "default": 2,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "send_hex": {
+          "default": null,
+          "description": "`udp_probe` only: hex-encoded payload to send to the backend.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_ms": {
+          "default": 500,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "default": null,
+          "description": "Absent means `tcp_connect`, but validation rejects that default on a\npool that only UDP listeners use.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawLen": {
+      "additionalProperties": false,
+      "properties": {
+        "max": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "min": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "min",
+        "max"
+      ],
+      "type": "object"
+    },
+    "RawLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "max_connections": {
+          "default": null,
+          "description": "Max live proxied TCP connections across all listeners. Absent ⇒ no cap.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_new_sessions_per_sec": {
+          "default": null,
+          "description": "Max new connections + UDP sessions accepted per second (token bucket,\nburst = the rate). Absent ⇒ no cap.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_udp_sessions": {
+          "default": null,
+          "description": "Max live UDP sessions across all listeners. Absent ⇒ no cap.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawListener": {
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "default": [],
+          "description": "Filter chain, checked on the client source IP before routing. If `deny`\nmatches, the connection / new datagram is dropped. If `allow` is\nnon-empty, only source IPs it matches are admitted. `deny` wins over\n`allow`. CIDR strings (`10.0.0.0/8`, `2001:db8::/32`).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "bind": {
+          "type": "string"
+        },
+        "deny": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "first_packet_gate": {
+          "default": false,
+          "description": "UDP only: create a session only when the first datagram is positively\nrecognised — a `sniffer` hint that is not `reject`, or a `first_bytes`\nroute on this listener that matches it. Keeps generic spoof floods off\nthe session table. Needs at least one `first_bytes` route or a `sniffer`.",
+          "type": "boolean"
+        },
+        "freebind": {
+          "default": false,
+          "description": "TCP only: set `IP_FREEBIND` / `IPV6_FREEBIND` so the listener can bind an\naddress that is not (yet) configured on an interface.",
+          "type": "boolean"
+        },
+        "geo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawGeo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "GeoIP country filter on the client source IP, checked after the CIDR ACL.\nNeeds `settings.geo_db`. `deny` wins; a non-empty `allow` is default-deny."
+        },
+        "name": {
+          "type": "string"
+        },
+        "per_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawPerSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Cap on concurrent connections / UDP sessions per client IP and/or /24\n(v4) / /64 (v6). Refused before allocation once reached."
+        },
+        "plugin_routes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawPluginRoutes"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "TCP only: accept routes that enabled plugins declare (`docs/plugins.md` \"Routes\").\nThey are appended after this listener's own routes, matched by the hostname the\nconnection announces (`type: sni`, or `type: sniffer` with a `sniffer:` name).",
+          "x-wayhouse-since": 2
+        },
+        "pool": {
+          "default": null,
+          "description": "Shorthand for a single `always` route. Mutually exclusive with `routes`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "prefix": {
+          "default": null,
+          "description": "UDP only: serve a whole routed prefix on one wildcard socket, reading the\nreal destination address per datagram (`IP_PKTINFO` / `IPV6_RECVPKTINFO`)\nand replying from it. `bind` must be a wildcard address. Datagrams whose\ndestination falls outside the prefix are dropped.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "protocol": {
+          "$ref": "#/$defs/Protocol"
+        },
+        "rate_limit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawRateLimit"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Token-bucket rate limit on new connections / new UDP sessions, keyed by\nsource IP and/or /24 (v4) / /64 (v6). Checked after the ACL, before\nrouting. Excess is dropped silently (no reflection)."
+        },
+        "route_hint": {
+          "default": false,
+          "description": "Consult the push-resolver table (`POST /route-hint`) before the route\nlist: a live `src_ip → pool` hint wins if its pool still exists.",
+          "type": "boolean"
+        },
+        "routes": {
+          "description": "Priority-ordered route rules; the first matching rule wins.",
+          "items": {
+            "$ref": "#/$defs/RawRoute"
+          },
+          "type": "array"
+        },
+        "transparent": {
+          "default": false,
+          "description": "TCP only (Linux): transparent mode. The listen socket is bound with\n`IP_TRANSPARENT` (accepts connections TPROXY-redirected to non-local\naddresses) and every upstream connection binds the real client address\nas its source, so the backend sees the client IP directly. Needs\n`CAP_NET_ADMIN` and policy routing that returns the backend's replies\nthrough this host — see `docs/04-transport-and-client-ip.md`.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "bind"
+      ],
+      "type": "object"
+    },
+    "RawMatch": {
+      "additionalProperties": false,
+      "properties": {
+        "cidrs": {
+          "default": null,
+          "description": "`client_cidr` (source IP) / `dst` (destination IP): prefix list.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "host": {
+          "default": null,
+          "description": "`sni` / `sniffer`: host patterns — exact, `*.suffix` or `.suffix`.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "length": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawLen"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`first_bytes` only: observed first-bytes length must fall in this range."
+        },
+        "ports": {
+          "description": "`port` only: destination ports (bare int `30001` or `\"lo-hi\"` range).",
+          "items": {
+            "$ref": "#/$defs/RawPort"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "prefix": {
+          "default": null,
+          "description": "`first_bytes` only: `\"hex:ffffffff\"` or `\"ascii:hello\"`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sniffer": {
+          "default": null,
+          "description": "`sniffer` only: the sniffer name (see `KNOWN_SNIFFERS`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "RawPerBackend": {
+      "additionalProperties": false,
+      "properties": {
+        "max_sessions": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawPerSource": {
+      "additionalProperties": false,
+      "properties": {
+        "max_per_ip": {
+          "default": null,
+          "description": "Max concurrent connections / UDP sessions from one client IP.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_per_net": {
+          "default": null,
+          "description": "Max concurrent connections / UDP sessions from one /24 (v4) / /64 (v6).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RawPluginRoutes": {
+      "additionalProperties": false,
+      "description": "How a listener reads the hostname plugin routes match on.",
+      "properties": {
+        "sniffer": {
+          "default": null,
+          "description": "`sniffer` only: the sniffer name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "`sni` or `sniffer`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "RawPool": {
+      "additionalProperties": false,
+      "properties": {
+        "balancer": {
+          "$ref": "#/$defs/Balancer"
+        },
+        "connect_timeout_ms": {
+          "default": 300,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hash_on": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HashOn"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`consistent_hash` only: which part of the client address is the hash key."
+        },
+        "health_check": {
+          "$ref": "#/$defs/RawHealthCheck"
+        },
+        "idle_timeout_sec": {
+          "default": 90,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "per_backend": {
+          "$ref": "#/$defs/RawPerBackend"
+        },
+        "proxy_protocol": {
+          "$ref": "#/$defs/ProxyProtocol",
+          "description": "Prepend a PROXY protocol header to the upstream connection."
+        },
+        "source": {
+          "default": null,
+          "description": "Name of a `backend_sources[]` entry that discovers this pool's backends.\nMutually exclusive with `targets`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "targets": {
+          "default": [],
+          "description": "Static backend list. Mutually exclusive with `source`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "weights": {
+          "additionalProperties": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "default": {},
+          "description": "`weighted` only: `\"ip:port\"` → weight (>= 1). A backend (static or\ndiscovered) not listed here weighs `1`.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "RawPort": {
+      "anyOf": [
+        {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "RawRateLimit": {
+      "additionalProperties": false,
+      "properties": {
+        "per_ip": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawBucket"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Token bucket per client source IP."
+        },
+        "per_net": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawBucket"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Token bucket per client /24 (IPv4) or /64 (IPv6) — catches distributed\nsingle-IP floods."
+        }
+      },
+      "type": "object"
+    },
+    "RawResolver": {
+      "additionalProperties": false,
+      "properties": {
+        "cache": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawCache"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "endpoint": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "on_error": {
+          "$ref": "#/$defs/OnError"
+        },
+        "proxy_protocol": {
+          "$ref": "#/$defs/ProxyProtocol",
+          "description": "PROXY protocol header to prepend when this resolver returns a `target`\n(a pool-less connect, so there is no pool setting to read). A\nresolver-chosen *pool* uses that pool's own `proxy_protocol`."
+        },
+        "target_connect_timeout_ms": {
+          "default": 300,
+          "description": "Connect / idle timeout for a `target` result (a pool-less connect — no\npool to read `connect_timeout_ms` / `idle_timeout_sec` from). A\nresolver-chosen *pool* uses that pool's own timeouts.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "target_idle_timeout_sec": {
+          "default": 90,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timeout_ms": {
+          "default": 40,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": {
+          "default": "http",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "endpoint"
+      ],
+      "type": "object"
+    },
+    "RawRoute": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/RawAction"
+        },
+        "match": {
+          "$ref": "#/$defs/RawMatch"
+        }
+      },
+      "required": [
+        "match",
+        "action"
+      ],
+      "type": "object"
+    },
+    "RawSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "admin": {
+          "$ref": "#/$defs/RawAdmin"
+        },
+        "failure_domain": {
+          "default": null,
+          "description": "Tier-2 regional health fabric (phase 13, docs/10 \"Tier 2\"). This\ninstance's reachability-equivalence class. Must be set together with\n`gossip`, or not at all. Startup-only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "geo_db": {
+          "default": null,
+          "description": "Path to a MaxMind Country `.mmdb`, required when any listener has a `geo`\nfilter. Startup-only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gossip": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawGossip"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Tier-2 gossip mesh membership (phase 13). Must be set together with\n`failure_domain`, or not at all. Startup-only."
+        },
+        "group": {
+          "default": null,
+          "description": "Self-reported fleet organization path (e.g. `\"eu/frankfurt/cluster-a\"`),\npushed to wayhouse-aggregator alongside this instance's `IngestPayload` so\nthe admin GUI can render a grouped/tree view. Purely a fleet-display\nlabel — never consulted by routing/forwarding. `/`-separated,\nnon-empty segments, no leading/trailing `/`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limits": {
+          "$ref": "#/$defs/RawLimits",
+          "description": "Process-wide caps (phase 7). Startup-only (like `workers`)."
+        },
+        "shutdown_grace_sec": {
+          "default": 30,
+          "description": "Grace period for in-flight connections on shutdown, in seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sniffers": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawSniffers"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sniffer loader (phase 9). Absent ⇒ no sniffers load; a `sniffer:`\nroute never matches. Startup-only for `dir` itself (rescanned on\nreload once the loader lands — phase 9 slice 4)."
+        },
+        "workers": {
+          "default": 0,
+          "description": "Accept-loop tasks per listener. `0` means \"one per CPU core\".",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "RawSite": {
+      "additionalProperties": false,
+      "properties": {
+        "health_path": {
+          "default": null,
+          "description": "Path Caddy probes on each upstream; unset means passive checks only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hosts": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tls": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RawSiteTls"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Operator-supplied certificate files; unset means Caddy gets no certificate\nfor these hosts from this section."
+        },
+        "upstream_tls": {
+          "default": null,
+          "description": "How Caddy talks to the upstreams; unset is plain HTTP."
+        },
+        "upstreams": {
+          "items": {
+            "$ref": "#/$defs/RawUpstream"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RawSiteTls": {
+      "additionalProperties": false,
+      "properties": {
+        "cert": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cert",
+        "key"
+      ],
+      "type": "object"
+    },
+    "RawSnifferModule": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {
+          "default": null,
+          "description": "Opaque per-sniffer configuration string, handed to the module on every\n`sniff` call (the sniffer parses it however it likes — e.g. a pattern for\n`regex-firstbytes`). Omitted ⇒ the sniffer gets an empty config.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "RawSniffers": {
+      "additionalProperties": false,
+      "properties": {
+        "call_timeout_ms": {
+          "default": 20,
+          "description": "Per-call wall-clock budget (epoch interruption traps a sniffer that\noverruns this).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dir": {
+          "description": "Directory scanned for `*.wasm` sniffer modules.",
+          "type": "string"
+        },
+        "max_memory_bytes": {
+          "default": 16777216,
+          "description": "Per-call memory ceiling for a sniffer instance.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "modules": {
+          "description": "Optional supply-chain pin: a module whose file name isn't listed here,\nor whose SHA-256 doesn't match, is refused at load time.",
+          "items": {
+            "$ref": "#/$defs/RawSnifferModule"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "dir"
+      ],
+      "type": "object"
+    },
+    "RawUpstream": {
+      "additionalProperties": false,
+      "properties": {
+        "addr": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pool": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "port": {
+          "default": null,
+          "description": "`via: wayhouse` only: pin the generated listener's port.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "via": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebVia"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "RawWeb": {
+      "additionalProperties": false,
+      "properties": {
+        "internal_bind": {
+          "default": "127.0.0.1",
+          "description": "Address of the `via: wayhouse` listeners; loopback only.",
+          "type": "string"
+        },
+        "internal_ports": {
+          "default": "19000-19999",
+          "description": "`lo-hi` ports for the `via: wayhouse` listeners.",
+          "type": "string"
+        },
+        "listen": {
+          "$ref": "#/$defs/RawWebListen",
+          "description": "Where Caddy listens for the connections Wayhouse forwards."
+        },
+        "pool": {
+          "default": "web",
+          "description": "Pool whose backends are Caddy listeners (default `web`).",
+          "type": "string"
+        },
+        "sites": {
+          "items": {
+            "$ref": "#/$defs/RawSite"
+          },
+          "type": "array"
+        },
+        "trusted_proxy": {
+          "default": [],
+          "description": "Addresses or CIDRs whose PROXY headers Caddy trusts (loopback, peer gateway nodes).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RawWebListen": {
+      "additionalProperties": false,
+      "properties": {
+        "http": {
+          "default": "127.0.0.1:8080",
+          "type": "string"
+        },
+        "https": {
+          "default": "127.0.0.1:8443",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "WebVia": {
+      "description": "How Caddy reaches a pool upstream.",
+      "oneOf": [
+        {
+          "const": "direct",
+          "description": "Caddy connects to the pool's backends itself.",
+          "type": "string"
+        },
+        {
+          "const": "wayhouse",
+          "description": "Caddy connects to a loopback listener that routes to the pool.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "backend_sources": {
+      "items": {
+        "$ref": "#/$defs/RawBackendSource"
+      },
+      "type": "array"
+    },
+    "listeners": {
+      "items": {
+        "$ref": "#/$defs/RawListener"
+      },
+      "type": "array"
+    },
+    "pools": {
+      "items": {
+        "$ref": "#/$defs/RawPool"
+      },
+      "type": "array"
+    },
+    "resolvers": {
+      "items": {
+        "$ref": "#/$defs/RawResolver"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "default": null,
+      "description": "Minimum config schema the document needs (`version`). Kept as a raw YAML\nvalue so a string or `0` gets a precise error, not a serde one.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "settings": {
+      "$ref": "#/$defs/RawSettings"
+    },
+    "web": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RawWeb"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Sites published through the packaged Caddy (`web.rs`). Config schema 3.",
+      "x-wayhouse-since": 3
+    }
+  },
+  "title": "RawConfig",
+  "type": "object"
+}

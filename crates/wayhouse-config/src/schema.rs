@@ -13,11 +13,13 @@ fn present<'de, D: serde::Deserializer<'de>>(
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawConfig {
     /// Minimum config schema the document needs (`version`). Kept as a raw YAML
     /// value so a string or `0` gets a precise error, not a serde one.
     #[serde(default, deserialize_with = "present")]
+    #[cfg_attr(feature = "json-schema", schemars(with = "Option<u32>"))]
     pub(crate) schema_version: Option<serde_norway::Value>,
     #[serde(default)]
     pub(crate) settings: RawSettings,
@@ -35,6 +37,7 @@ pub(crate) struct RawConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawSettings {
     /// Accept-loop tasks per listener. `0` means "one per CPU core".
@@ -92,6 +95,7 @@ impl Default for RawSettings {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawGossip {
     /// UDP address this instance's gossip mesh listens/sends on.
@@ -116,6 +120,7 @@ pub(crate) fn default_gossip_quorum_fraction() -> f64 {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawSniffers {
     /// Directory scanned for `*.wasm` sniffer modules.
@@ -134,6 +139,7 @@ pub(crate) struct RawSniffers {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawSnifferModule {
     pub(crate) name: String,
@@ -154,6 +160,7 @@ pub(crate) fn default_sniffer_max_memory_bytes() -> usize {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawLimits {
     /// Max live proxied TCP connections across all listeners. Absent ⇒ no cap.
@@ -173,6 +180,7 @@ pub(crate) fn default_shutdown_grace_sec() -> u64 {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawAdmin {
     #[serde(default = "default_admin_listen")]
@@ -207,6 +215,7 @@ impl Default for RawAdmin {
 /// handshakes in flight (same as `wayhouse-controller`'s `--tls-max-pending*` /
 /// `--tls-new-per-source-*` flags); unset ones keep the defaults.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct AdminTls {
     pub cert: String,
@@ -232,6 +241,7 @@ pub(crate) fn default_admin_listen() -> String {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawPool {
     pub(crate) name: String,
@@ -277,6 +287,7 @@ pub(crate) fn default_idle_timeout_sec() -> u64 {
 /// the live set. `static` is resolved to the pool's `targets` at validation
 /// time; the other kinds get a control-plane refresh task in `wayhouse-core`.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawBackendSource {
     pub(crate) name: String,
@@ -327,6 +338,7 @@ pub(crate) fn default_source_refresh_sec() -> u64 {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawHealthCheck {
     /// Absent means `tcp_connect`, but validation rejects that default on a
@@ -378,6 +390,7 @@ pub(crate) fn default_hc_fall() -> u32 {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawPerBackend {
     #[serde(default)]
@@ -385,6 +398,7 @@ pub(crate) struct RawPerBackend {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawListener {
     pub(crate) name: String,
@@ -455,6 +469,7 @@ pub(crate) struct RawListener {
 
 /// How a listener reads the hostname plugin routes match on.
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawPluginRoutes {
     /// `sni` or `sniffer`.
@@ -466,6 +481,7 @@ pub(crate) struct RawPluginRoutes {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawRoute {
     pub(crate) r#match: RawMatch,
@@ -473,6 +489,7 @@ pub(crate) struct RawRoute {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawMatch {
     #[serde(rename = "type")]
@@ -498,6 +515,7 @@ pub(crate) struct RawMatch {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawLen {
     pub(crate) min: usize,
@@ -505,6 +523,7 @@ pub(crate) struct RawLen {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub(crate) enum RawPort {
     Single(u32),
@@ -513,6 +532,7 @@ pub(crate) enum RawPort {
 
 /// A route action: exactly one of `pool` (fixed) or `resolver` (external lookup).
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawAction {
     #[serde(default)]
@@ -522,6 +542,7 @@ pub(crate) struct RawAction {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawResolver {
     pub(crate) name: String,
@@ -549,6 +570,7 @@ pub(crate) struct RawResolver {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawCache {
     /// Key parts, joined to form the cache key: `src_ip` | `src_ip_port` |
@@ -586,6 +608,7 @@ pub(crate) fn default_target_idle_timeout_sec() -> u64 {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawGeo {
     #[serde(default)]
@@ -595,6 +618,7 @@ pub(crate) struct RawGeo {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawPerSource {
     /// Max concurrent connections / UDP sessions from one client IP.
@@ -606,6 +630,7 @@ pub(crate) struct RawPerSource {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawRateLimit {
     /// Token bucket per client source IP.
@@ -618,6 +643,7 @@ pub(crate) struct RawRateLimit {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawBucket {
     /// Sustained rate in permits per second (new connections / new UDP
