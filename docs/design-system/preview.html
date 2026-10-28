@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wayhouse design system preview</title>
+    <!-- Docs preview only: the app self-hosts its fonts through @fontsource. -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:wght@400;500;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="tokens.css" />
+    <style>
+      body { margin: 0; background: var(--bg); color: var(--ink); font: var(--fs-sm)/var(--leading-body) var(--font-ui); }
+      main { max-width: 960px; margin: 0 auto; padding: var(--space-5) var(--space-4) var(--space-7); display: flex; flex-direction: column; gap: var(--space-5); }
+      h1 { font-size: var(--fs-xl); margin: 0; letter-spacing: -0.015em; }
+      h2 { font-size: var(--fs-lg); margin: 0 0 var(--space-3); }
+      p { margin: 0; color: var(--ink-muted); max-width: var(--measure); }
+      header { display: flex; flex-wrap: wrap; gap: var(--space-3); justify-content: space-between; align-items: center; }
+      .row { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+      .panel { background: var(--surface); border: var(--border) solid var(--line); border-radius: var(--radius); padding: var(--space-3); display: flex; flex-direction: column; gap: var(--space-3); }
+      .sw { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: var(--space-2); }
+      .sw div { border: var(--border) solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+      .sw i { display: block; height: 36px; }
+      .sw span { display: block; padding: 4px 8px; font-size: var(--fs-xs); }
+      .sw code, .mono { font-family: var(--font-code); font-size: var(--fs-xs); }
+      button, select, input { font: inherit; }
+      .btn { height: var(--control-height); padding: 0 11px; border-radius: var(--radius); border: var(--border) solid var(--control-border); background: var(--surface); color: var(--ink); font-weight: var(--weight-semibold); cursor: pointer; }
+      .btn.primary { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
+      .btn.danger { color: var(--bad); }
+      .btn[disabled] { opacity: 0.5; cursor: not-allowed; }
+      input[type="text"], input[type="number"], select { height: var(--control-height); padding: 0 9px; border: var(--border) solid var(--control-border); border-radius: var(--radius); background: var(--surface); color: var(--ink); }
+      :focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+      .switch { width: 34px; height: 18px; border-radius: 9px; border: var(--border) solid var(--control-border); background: var(--bg); position: relative; padding: 0; cursor: pointer; }
+      .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--ink-muted); transition: transform var(--dur-base) var(--ease-out); }
+      .switch[aria-checked="true"] { background: var(--select); border-color: var(--select); }
+      .switch[aria-checked="true"]::after { transform: translateX(16px); background: var(--primary-ink); }
+      .st { display: inline-flex; align-items: center; gap: 7px; font-weight: var(--weight-medium); }
+      .st i { width: 9px; height: 9px; background: currentColor; display: inline-block; }
+      .st span { color: var(--ink); }
+      .good { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+      .good i { border-radius: 50%; } .warn i { clip-path: polygon(50% 0, 100% 100%, 0 100%); width: 11px; height: 10px; } .bad i { border-radius: 1px; }
+      table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+      th, td { text-align: left; padding: 0 12px; height: var(--row-height); border-bottom: var(--border) solid var(--line); white-space: nowrap; }
+      th { background: var(--surface-sunken); color: var(--ink-muted); font-size: var(--fs-xs); font-weight: var(--weight-semibold); }
+      td.num, th.num { text-align: right; }
+      tr[aria-selected="true"] { background: var(--select-bg); }
+      .tbl { overflow-x: auto; border: var(--border) solid var(--line); border-radius: var(--radius); }
+      .big { font-size: var(--fs-stat); font-weight: var(--weight-semibold); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: var(--leading-tight); }
+      .big small { font-size: var(--fs-sm); color: var(--ink-muted); font-weight: var(--weight-regular); letter-spacing: 0; }
+      .bar { display: flex; height: 10px; gap: 2px; }
+      .bar span { display: block; border-radius: 1px; }
+      .rail { background: var(--rail); color: var(--rail-ink); padding: var(--space-3); border-radius: var(--radius); display: flex; flex-direction: column; gap: 1px; width: 200px; }
+      .rail div { padding: 6px 10px; border-radius: var(--radius); }
+      .rail .cur { background: var(--rail-hover); font-weight: var(--weight-semibold); }
+      .rail .mut { color: var(--rail-ink-muted); }
+      .seg { display: inline-flex; border: var(--border) solid var(--control-border); border-radius: var(--radius); overflow: hidden; }
+      .seg button { border: 0; background: transparent; color: var(--ink); padding: 5px 11px; cursor: pointer; }
+      .seg button + button { border-left: var(--border) solid var(--control-border); }
+      .seg button[aria-pressed="true"] { background: var(--primary); color: var(--primary-ink); }
+      .scale p { color: var(--ink); max-width: none; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Wayhouse design system</h1>
+          <p>Switchboard. Renders the tokens in <span class="mono">tokens.css</span> and the core components. Rules: DESIGN.md, components.md.</p>
+        </div>
+        <div class="seg" role="group" aria-label="Theme">
+          <button type="button" data-theme-set="system" aria-pressed="true">System</button>
+          <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
+          <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
+        </div>
+      </header>
+
+      <section aria-labelledby="h-colour">
+        <h2 id="h-colour">Colour</h2>
+        <div class="sw" id="swatches"></div>
+      </section>
+
+      <section aria-labelledby="h-type" class="panel scale">
+        <h2 id="h-type">Type</h2>
+        <p style="font-size: var(--fs-xl); font-weight: 600">Page title 20 px, Public Sans semibold</p>
+        <p style="font-size: var(--fs-lg); font-weight: 600">Panel title 16 px</p>
+        <p style="font-size: var(--fs-md)">Body in forms and prose 14 px. Help text names what the setting does and its default.</p>
+        <p style="font-size: var(--fs-sm)">Dense body, table cells and controls 13 px</p>
+        <p style="font-size: var(--fs-xs); color: var(--ink-muted)">Help text, column headers, captions 12 px</p>
+        <p class="mono" style="font-size: var(--fs-sm)">Machine data in IBM Plex Mono: 10.0.0.0/8  :25565/tcp  ams-edge-01  0.3.0</p>
+      </section>
+
+      <section aria-labelledby="h-status" class="panel">
+        <h2 id="h-status">Status: shape, colour and word</h2>
+        <div class="row" style="gap: var(--space-5)">
+          <span class="st good"><i></i><span>Up</span></span>
+          <span class="st warn"><i></i><span>Degraded</span></span>
+          <span class="st bad"><i></i><span>Down</span></span>
+        </div>
+        <div class="bar" role="img" aria-label="451 up, 37 degraded, 8 draining, 4 down">
+          <span style="width: 90.2%; background: var(--good)"></span>
+          <span style="width: 7.4%; background: var(--warn)"></span>
+          <span style="width: 1.6%; background: var(--warn)"></span>
+          <span style="width: 0.8%; background: var(--bad)"></span>
+        </div>
+      </section>
+
+      <section aria-labelledby="h-controls" class="panel">
+        <h2 id="h-controls">Buttons and controls</h2>
+        <div class="row">
+          <button class="btn primary" type="button">Apply</button>
+          <button class="btn" type="button">Discard</button>
+          <button class="btn danger" type="button">Drain node</button>
+          <button class="btn" type="button" disabled>Disabled</button>
+        </div>
+        <div class="row">
+          <input type="text" aria-label="Search" placeholder="Search name, region or tag" />
+          <select aria-label="State"><option>All states</option><option>Degraded</option></select>
+          <input type="number" aria-label="Connections per IP" value="64" style="width: 100px" />
+          <span style="color: var(--ink-muted)">connections</span>
+          <button class="switch" role="switch" aria-checked="true" aria-label="Trust proxy headers" type="button"></button>
+        </div>
+      </section>
+
+      <section aria-labelledby="h-table">
+        <h2 id="h-table">Table</h2>
+        <div class="tbl">
+          <table>
+            <thead><tr><th>Node</th><th>State</th><th class="num">Connections</th><th class="num">Mbit/s</th></tr></thead>
+            <tbody>
+              <tr aria-selected="true"><td class="mono">ams-edge-01</td><td><span class="st warn"><i></i><span>Degraded</span></span></td><td class="num">2,210</td><td class="num">19.8</td></tr>
+              <tr><td class="mono">ams-edge-02</td><td><span class="st good"><i></i><span>Up</span></span></td><td class="num">3,977</td><td class="num">35.1</td></tr>
+              <tr><td class="mono">ams-edge-03</td><td><span class="st bad"><i></i><span>Down</span></span></td><td class="num">0</td><td class="num">0.0</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section aria-labelledby="h-panel" class="row" style="align-items: stretch">
+        <div class="panel" style="flex: 1 1 320px">
+          <h2 id="h-panel" style="margin: 0">Widget: nodes</h2>
+          <div class="big">451 <small>of 500 up</small></div>
+          <div class="bar" role="img" aria-label="451 of 500 up"><span style="width: 90.2%; background: var(--good)"></span><span style="width: 9.8%; background: var(--warn)"></span></div>
+          <p>Updated 4 s ago</p>
+        </div>
+        <div class="rail" aria-label="Navigation rail sample">
+          <div class="mut">Operate</div>
+          <div>Dashboard</div>
+          <div class="cur">Fleet</div>
+          <div class="mut" style="padding-left: 26px">Nodes</div>
+          <div>Stats</div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const root = document.documentElement;
+      document.querySelectorAll("[data-theme-set]").forEach((b) => {
+        b.onclick = () => {
+          const t = b.dataset.themeSet;
+          if (t === "system") root.removeAttribute("data-theme"); else root.setAttribute("data-theme", t);
+          document.querySelectorAll("[data-theme-set]").forEach((x) => x.setAttribute("aria-pressed", x === b));
+          paint();
+        };
+      });
+      function paint() {
+        const names = ["bg", "surface", "surface-sunken", "ink", "ink-muted", "line", "control-border", "rail", "select", "select-bg", "primary", "good", "warn", "bad", "series-1", "series-2", "series-3", "series-4", "series-5"];
+        const cs = getComputedStyle(root);
+        document.getElementById("swatches").innerHTML = names
+          .map((n) => `<div><i style="background: var(--${n})"></i><span>--${n}<br /><code>${cs.getPropertyValue("--" + n).trim()}</code></span></div>`)
+          .join("");
+      }
+      paint();
+    </script>
+  </body>
+</html>
