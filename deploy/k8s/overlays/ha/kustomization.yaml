@@ -1,0 +1,21 @@
+# Three-node Raft controller (docs/10 "Intra-tier HA", docs/12). Needs an extra
+# `ha-token` key in the wayhouse-tokens Secret (>= 16 chars, see deploy/README.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - controller-ha.yaml
+patches:
+  # The StatefulSet replaces the single-writer Deployment and its shared PVC.
+  - target: { kind: Deployment, name: wayhouse-controller }
+    patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: { name: wayhouse-controller }
+  - target: { kind: PersistentVolumeClaim, name: wayhouse-controller-data }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata: { name: wayhouse-controller-data }
