@@ -18,6 +18,12 @@ tunnel=$(docker compose -f $C/docker-compose.yml -f $C/compose.tunnel.yml \
          --profile origin-demo config --format json)
 web=$(docker compose -f $C/docker-compose.yml -f $C/compose.web.yml config --format json)
 smoke_plan=$(make -n deploy-smoke)
+# Every overlay must build; the Ruby below checks the rendered DaemonSets, not the source files.
+if command -v kubectl >/dev/null 2>&1; then kz="kubectl kustomize"; else kz="kustomize build"; fi
+for o in single ha web-gateway; do
+  $kz deploy/k8s/overlays/$o > "${TMPDIR:-/tmp}/wayhouse-k8s-$o.yaml"
+done
+export K8S_RENDERED="${TMPDIR:-/tmp}/wayhouse-k8s"
 
 BASE="$base" TUNNEL="$tunnel" WEB="$web" SMOKE_PLAN="$smoke_plan" ruby -rjson -ryaml -e '
 errs = []
@@ -32,11 +38,25 @@ errs << "seed passes --opt=value args to curl: #{bad.inspect}" unless bad.empty?
 
 # wayhouse must report a unique instance name (default = admin listen addr).
 errs << "compose wayhouse lacks --aggregator-instance" unless base["wayhouse"]["command"].any? { |a| a.start_with?("--aggregator-instance=") }
-ds = YAML.load_stream(File.read("deploy/k8s/50-wayhouse-daemonset.yaml")).find { |d| d["kind"] == "DaemonSet" }
-c = ds["spec"]["template"]["spec"]["containers"][0]
-errs << "k8s wayhouse DaemonSet lacks serviceAccountName wayhouse (45-wayhouse-rbac.yaml)" unless ds.dig("spec", "template", "spec", "serviceAccountName") == "wayhouse"
-errs << "k8s wayhouse lacks --aggregator-instance=$(NODE_NAME)" unless c["args"].include?("--aggregator-instance=$(NODE_NAME)")
-errs << "k8s wayhouse lacks NODE_NAME from spec.nodeName" unless c["env"].any? { |e| e["name"] == "NODE_NAME" && e.dig("valueFrom", "fieldRef", "fieldPath") == "spec.nodeName" }
+k8s = %w[single ha web-gateway].to_h { |o| [o, YAML.load_stream(File.read("#{ENV["K8S_RENDERED"]}-#{o}.yaml"))] }
+k8s.each do |o, docs|
+  ds = docs.find { |d| d["kind"] == "DaemonSet" && d.dig("metadata", "name") == "wayhouse" }
+  c = ds["spec"]["template"]["spec"]["containers"][0]
+  errs << "k8s #{o}: wayhouse DaemonSet lacks serviceAccountName wayhouse (base/45-wayhouse-rbac.yaml)" unless ds.dig("spec", "template", "spec", "serviceAccountName") == "wayhouse"
+  errs << "k8s #{o}: wayhouse lacks --aggregator-instance=$(NODE_NAME)" unless c["args"].include?("--aggregator-instance=$(NODE_NAME)")
+  errs << "k8s #{o}: wayhouse lacks NODE_NAME from spec.nodeName" unless c["env"].any? { |e| e["name"] == "NODE_NAME" && e.dig("valueFrom", "fieldRef", "fieldPath") == "spec.nodeName" }
+end
+# HA overlay: a 3-node StatefulSet replaces the Deployment, node ids come from the pod ordinal, and the peer token is wired.
+ha = k8s["ha"]
+errs << "k8s ha: the single-writer controller Deployment must be gone" if ha.any? { |d| d["kind"] == "Deployment" && d.dig("metadata", "name") == "wayhouse-controller" }
+errs << "k8s ha: the shared controller PVC must be gone" if ha.any? { |d| d["kind"] == "PersistentVolumeClaim" }
+sts = ha.find { |d| d["kind"] == "StatefulSet" && d.dig("metadata", "name") == "wayhouse-controller" }
+errs << "k8s ha: no wayhouse-controller StatefulSet with 3 replicas" unless sts && sts["spec"]["replicas"] == 3
+if sts
+  a = sts["spec"]["template"]["spec"]["containers"][0]["args"]
+  errs << "k8s ha: controller needs --ha-node-id=$(POD_INDEX), --ha-token and 3 --ha-peers" unless a.include?("--ha-node-id=$(POD_INDEX)") && a.include?("--ha-token=$(HA_TOKEN)") && a.any? { |x| x.start_with?("--ha-peers=") && x.split(",").size == 3 }
+end
+errs << "k8s single/web-gateway must keep the one-replica controller Deployment" unless %w[single web-gateway].all? { |o| k8s[o].any? { |d| d["kind"] == "Deployment" && d.dig("metadata", "name") == "wayhouse-controller" } }
 
 # NET_ADMIN is only in the bounding set for a non-root user: tunnel services run as root.
 %w[wayhouse agent].each { |s| errs << "tunnel #{s} must run as root (user: \"0\")" unless tunnel[s]["user"] == "0" }
@@ -92,7 +112,7 @@ errs << "tunnel override: agent backends should use the :port shorthand" unless 
 errs << "web override: web-sync must run wayhouse-web-sync from the wayhouse image" unless web["web-sync"]["image"] == "wayhouse-deploy/wayhouse:local" && web["web-sync"]["entrypoint"] == ["/usr/local/bin/wayhouse-web-sync"]
 errs << "web override: caddy and web-sync must share /run/caddy" unless [web["caddy"], web["web-sync"]].all? { |x| x["volumes"].any? { |v| v["target"] == "/run/caddy" && v["source"] == "caddy-run" } }
 errs << "web override: caddy must drop all capabilities" unless web["caddy"]["cap_drop"] == ["ALL"]
-gw = YAML.load_stream(File.read("deploy/k8s/60-web-gateway.yaml")).find { |d| d["kind"] == "DaemonSet" }
+gw = k8s["web-gateway"].find { |d| d["kind"] == "DaemonSet" && d.dig("metadata", "name") == "wayhouse-web" }
 gwc = gw["spec"]["template"]["spec"]["containers"]
 errs << "k8s web gateway must use hostNetwork (wayhouse reaches Caddy on the node loopback)" unless gw["spec"]["template"]["spec"]["hostNetwork"] == true
 errs << "k8s web gateway probes must set host: 127.0.0.1 (hostNetwork pods probe the node IP; both targets listen on loopback)" unless gwc.flat_map { |c| %w[readinessProbe livenessProbe].map { |k| c[k] } }.compact.all? { |pr| (pr["httpGet"] || pr["tcpSocket"])["host"] == "127.0.0.1" }

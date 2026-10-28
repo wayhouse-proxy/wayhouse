@@ -98,12 +98,16 @@ in CI; `make tunnel-e2e` covers the logic. The controller allocates tunnel addre
 Retag/push the images to your registry and edit `image:` first, then:
 
 ```sh
-kubectl apply -f deploy/k8s/00-namespace.yaml
-# copy 10-secrets.example.yaml, change every value, apply it
-kubectl apply -f deploy/k8s/20-controller.yaml -f deploy/k8s/30-aggregator.yaml \
-  -f deploy/k8s/40-ui.yaml -f deploy/k8s/45-wayhouse-rbac.yaml \
-  -f deploy/k8s/50-wayhouse-daemonset.yaml
+kubectl apply -f deploy/k8s/base/00-namespace.yaml
+# copy base/10-secrets.example.yaml, change every value, apply it
+kubectl apply -k deploy/k8s/overlays/single
 ```
+
+Overlays (`deploy/k8s/overlays/`): `single` is the default (one standalone controller, one aggregator);
+`web-gateway` adds the Caddy tier (`docs/web-proxy.md`; label nodes `wayhouse/web-gateway=true`);
+`ha` swaps the controller for a 3-node Raft StatefulSet (ids = pod ordinals, Kubernetes 1.28+) and
+needs an extra `ha-token` key (16+ characters) in the `wayhouse-tokens` Secret. Preview with `kubectl kustomize <overlay>`.
+Only validated by `kustomize build` + `kubeconform` in CI, not applied to a real cluster yet.
 
 `wayhouse` runs as a `hostNetwork` DaemonSet. `45-wayhouse-rbac.yaml` grants its service account
 `list`/`watch` on EndpointSlices in the `games` namespace (create it, or edit the
@@ -119,7 +123,7 @@ Ingress/LoadBalancer (with TLS) in front of it.
   registrations cross the network in the clear. Every service can serve TLS
   itself (`--tls-cert`/`--tls-key`; `settings.admin.tls` for `wayhouse`'s admin API) — see
   [TLS for the fleet services](../docs/12-deployment.md#tls-for-the-fleet-services).
-- One standalone controller; no HA (see docs/10).
+- The `single` overlay runs one standalone controller; use the `ha` overlay for Raft (docs/10).
 - Aggregator intent fan-out (drain etc.) cannot reach `wayhouse` from these examples: the
   `admin_url` a `wayhouse` reports is derived from `settings.admin.listen` and no flag
   overrides it. Fleet _reads_ (pools, sessions) work.

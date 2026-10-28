@@ -546,7 +546,7 @@ selected by the `kubernetes.io/service-name` label) and merges them: ready
 endpoints only (an unset `ready` counts as ready), duplicates across slices
 collapsed, `FQDN` slices skipped, and a slice without the wanted port ignored.
 Its service account needs `list` and `watch` on `endpointslices` in the
-namespace; [`deploy/k8s/45-wayhouse-rbac.yaml`](../deploy/k8s/45-wayhouse-rbac.yaml) is a
+namespace; [`deploy/k8s/base/45-wayhouse-rbac.yaml`](../deploy/k8s/base/45-wayhouse-rbac.yaml) is a
 ready-made Role. Without `watch` the source logs one warning per outage and keeps
 converging on the poll interval, so a missing grant slows updates but never breaks
 discovery. The watch resumes from the version of the last list and reopens itself

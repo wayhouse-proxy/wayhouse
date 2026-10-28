@@ -187,7 +187,7 @@ Skip this unless you want to publish HTTP(S) sites through the same entry node.
 - Use the **`wayhouse-caddy`** image (stock Caddy 2.11.7 built with a patched Go and
   `golang.org/x/net`, uid 65532, high ports, no capabilities) rather than the upstream
   `caddy` image. Recipes: [`deploy/compose/compose.web.yml`](../deploy/compose/compose.web.yml),
-  [`deploy/k8s/60-web-gateway.yaml`](../deploy/k8s/60-web-gateway.yaml).
+  [`deploy/k8s/overlays/web-gateway/web-gateway.yaml`](../deploy/k8s/overlays/web-gateway/web-gateway.yaml).
 - Caddy's own ACME is off; certificates come from files or from controller ACME
   (`wayhouse-certsync`). Running Caddy's built-in ACME next to the sync is not supported.
 - First release is hostname-only routing; the real WireGuard path through Caddy is covered by

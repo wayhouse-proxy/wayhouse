@@ -584,7 +584,7 @@ CI runs Rust tests under `cargo nextest` (each test in its own process) — see
   (for `make tunnel-e2e-ci`); `actionlint` (workflow lint; release binary from
   `github.com/rhysd/actionlint`, v1.7.7 used); `hadolint` (Dockerfile lint, v2.12.0 — its
   `DL3008`/`DL3006` warnings are expected); `kubeconform` (v0.6.7, the version CI
-  downloads: `kubeconform -strict -summary deploy/k8s`). `docker compose ... config` renders
+  downloads: `kubectl kustomize deploy/k8s/overlays/<o> | kubeconform -strict -summary -` per overlay). `docker compose ... config` renders
   the compose files without a daemon. The docs-only push filter means a pure `*.md` /
   `docs/**` change runs no CI; any other change runs at least `test`.
 - git remote `github.com/wayhouse-proxy/wayhouse`, branch `main`; `git push`

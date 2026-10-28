@@ -67,7 +67,7 @@ reasons: `wayhouse` links `wasmtime` (phase 9 sniffers) and
 
 [`deploy/compose/`](../deploy/compose/) is a runnable control-plane demo (controller,
 aggregator, UI, one `wayhouse` pulling its config from the controller) with a tunnel
-override; [`deploy/k8s/`](../deploy/k8s/) has plain manifests (the proxy as a
+override; [`deploy/k8s/`](../deploy/k8s/) has Kustomize manifests (`kubectl apply -k deploy/k8s/overlays/single`, plus `ha` and `web-gateway` overlays) (the proxy as a
 `hostNetwork` DaemonSet, plus the RBAC its `kubernetes` sources need). Both are reference only (the images themselves are published to GHCR on version tags by `.github/workflows/release.yml`). CI smoke-tests the compose demo and schema-validates the manifests (the `deploy`
 job, blocking since 2026-10-02; first green run 2026-10-01). Aggregator intent fan-out (drain etc.) goes to the `admin_url`
 each `wayhouse` reports, by default `http(s)://<settings.admin.listen>`; when that
