@@ -90,8 +90,8 @@ pub fn check_flags(ha_peers: bool, ha_join: bool, node_id: Option<NodeId>) -> Re
 }
 
 /// `/raft/*` and the membership API let a caller rewrite replicated state, so
-/// HA never starts without a peer token (security review N1), and a token it
-/// is given must not be short (O7). Unlike the client-facing `--auth-token`
+/// HA never starts without a peer token, and a token it
+/// is given must not be short. Unlike the client-facing `--auth-token`
 /// there is no opt-out.
 pub fn check_ha_token(ha_enabled: bool, token: Option<&str>) -> Result<(), String> {
     match token {

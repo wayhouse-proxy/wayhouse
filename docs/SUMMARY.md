@@ -28,7 +28,3 @@
 - [Web proxy (Caddy)](web-proxy.md)
 - [Certificates (ACME)](acme.md)
 - [Third-party notices](third-party-notices.md)
-
-# Reference
-
-- [Security review 2026-10](security-review-2026-10.md)
