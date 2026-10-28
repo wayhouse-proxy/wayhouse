@@ -12,7 +12,7 @@
   listener whose definition is unchanged keeps running untouched. `backend_sources`
   discovery refresh tasks are reconciled the same way (added / removed /
   re-parameterised → started / stopped / restarted).
-- Environment-variable interpolation (`${VAR}`) for secrets/tokens.
+- Secrets (`settings.admin.auth_token`, `settings.gossip.psk`) are plain strings in the document. There is no `${VAR}` interpolation, and the loader does not read environment variables. Keep the file readable only by the service user.
 
 ## Schema (reference)
 
@@ -362,7 +362,7 @@ settings:
   shutdown_grace_sec: 30     # wait this long for in-flight conns on SIGTERM
   admin:
     listen: "127.0.0.1:9900"
-    auth: { mode: "bearer", token: "${ADMIN_TOKEN}" }   # or mode: mtls
+    auth: { mode: "bearer", token: "change-me" }   # plain string, no ${VAR} expansion; or mode: mtls
   metrics: { path: "/metrics" }
   log:
     format: "json"

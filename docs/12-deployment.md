@@ -485,6 +485,43 @@ leader imports exactly one node's copy, whichever node wins the first election.
 - **A TLS proxy is a trust boundary.** It sees every token and registration in the
   clear. Run it on a host you control — or use native TLS where it exists.
 
+## Spreading a fleet across sites (`failure_domain`)
+
+Use this when proxies and backends live in more than one site, provider or region. A
+failure domain is a set of proxies that reach their backends over the same network path
+(an availability zone, a region, a rack row; see [docs/10](10-distributed-control-plane.md)
+"Failure domain"). Sharing "backend X is down" is only meaningful inside one domain, so
+give each proxy the domain it actually sits in.
+
+1. Name the domains after reachability, not ownership. Two proxies in `eu-west-1a` share
+   opinions; a proxy in another region or provider gets its own name.
+2. On every proxy, set `settings.failure_domain` and `settings.gossip` together (setting
+   one alone fails `validate()`). `gossip.bind` is that proxy's own reachable UDP address
+   (not `0.0.0.0`); `seeds` can be any subset of the domain's other proxies; `psk` is the
+   same string on every proxy of the domain, at least 16 bytes.
+3. Open the gossip UDP port between proxies of the same domain only. Do not peer across
+   domains.
+4. Keep `quorum_fraction` at the default 0.66 unless the domain has two or three proxies;
+   it must stay above 0.5.
+
+```yaml
+# proxies in eu-west-1a (the proxies in us-east-1 use failure_domain: "us-east-1"
+# and their own psk and seeds)
+settings:
+  failure_domain: "eu-west-1a"
+  gossip:
+    bind: "10.0.1.4:7946"
+    seeds: ["10.0.1.5:7946", "10.0.1.6:7946"]
+    psk: "a-long-random-string-per-domain"
+```
+
+What this does: a proxy marks a backend unhealthy on its own failed checks or when a
+quorum of its domain reports it down. It only returns to healthy on its own successful
+checks, and an operator `force-down` always wins. An empty or partitioned mesh falls back
+to each proxy's own checks. Gossip carries health only, not load, and does not move
+traffic between sites; to prefer a nearer backend use the pool balancer and weights
+([docs/03](03-routing.md)).
+
 ## Certificates from the controller
 
 With `--acme` the controller can issue the web front door's certificates; a gateway host
