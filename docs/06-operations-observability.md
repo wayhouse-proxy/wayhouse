@@ -663,6 +663,7 @@ view + web UI.
   HA). Aggregate throughput (N3), the full 500k conns / 1M sessions (N4/N5)
   and HA (N9) still need dedicated hardware, multiple hosts, and a real load
   generator (`tcpkali`, `wrk2`, `iperf3`).
+- A reference Grafana dashboard and Prometheus rules covering these live in [`deploy/observability/`](../deploy/observability/README.md).
 - Alert: `wayhouse_pool_backends{state="healthy"} < N_min` per pool.
 - Alert: `wayhouse_datagrams_dropped_total` rate > 0 (buffers too small / overload).
 - Alert: `wayhouse_resolver_requests_total{result!="ok"}` share > 1%.

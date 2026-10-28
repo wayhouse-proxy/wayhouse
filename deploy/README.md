@@ -16,6 +16,7 @@ background: [`docs/12-deployment.md`](../docs/12-deployment.md).
 | `compose/`        | runnable control-plane demo (+ `compose.tunnel.yml` WireGuard override, `compose.web.yml` Caddy web front door)                                          |
 | `smoke.sh`        | the HTTP smoke test CI runs against the compose demo                                                                                                     |
 | `k8s/`            | plain manifests (namespace, secrets example, controller, aggregator, ui, wayhouse RBAC, wayhouse DaemonSet, `60-web-gateway.yaml` Caddy sidecars)        |
+| `observability/`  | reference Grafana dashboard and Prometheus alert rules (`make deploy-lint` checks every metric name they use)                                            |
 
 To move a running deployment to a newer image set one component at a time, follow
 [`docs/upgrading.md`](../docs/upgrading.md).
