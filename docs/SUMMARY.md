@@ -30,4 +30,3 @@
 
 # Reference
 
-- [Security review 2026-10](security-review-2026-10.md)

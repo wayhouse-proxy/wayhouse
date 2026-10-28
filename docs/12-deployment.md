@@ -473,8 +473,7 @@ leader imports exactly one node's copy, whichever node wins the first election.
   peers, replica traffic is plain HTTP; then keep
   the replicas on a private network — `--ha-token` is a shared secret, not encryption.
   The controller logs a warning for each non-loopback `http://` peer.
-- **Upgrading a gossip mesh** (the datagram format gained a MAC'd sender timestamp,
-  security review O4): upgrade all instances in a failure domain together. While old
+- **Upgrading a gossip mesh** (the datagram format gained a MAC'd sender timestamp): upgrade all instances in a failure domain together. While old
   and new instances are mixed they cannot exchange membership or health, so the
   domain quorum derived from gossip is unreliable until the rollout finishes (local
   health checks keep working). Old-to-new datagrams are counted in

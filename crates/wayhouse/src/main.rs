@@ -611,7 +611,7 @@ async fn run(
 /// slashes are trimmed because the fan-out appends absolute paths), else this
 /// instance's own admin listener.
 /// Refuse an open admin API on a routable address and weak admin/gossip
-/// secrets (docs/security-review-2026-10.md O1, O7).
+/// secrets.
 fn check_admin_auth(cfg: &wayhouse_config::Config, insecure_no_auth: bool) -> anyhow::Result<()> {
     let token = cfg.admin_auth_token.as_deref();
     wayhouse_http::policy::check_optional_secret("settings.admin.auth_token", token)

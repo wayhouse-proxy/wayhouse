@@ -1,5 +1,4 @@
 //! Startup refusals for unauthenticated or weakly protected APIs
-//! (docs/security-review-2026-10.md N1, O1, O7).
 
 use std::time::Duration;
 

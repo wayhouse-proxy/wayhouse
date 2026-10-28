@@ -75,7 +75,7 @@ const MAX_WARNED_ORIGINS: usize = 1024;
 /// Minimum gap between two warnings about registers dropped from one origin.
 const DROP_WARN_INTERVAL_MS: u64 = 60_000;
 /// How far a datagram's sender timestamp may sit from our clock before it is
-/// dropped as a replay (security review O4). Also the clock skew the mesh
+/// dropped as a replay. Also the clock skew the mesh
 /// tolerates between instances; a replay inside the window is still possible.
 const MAX_DATAGRAM_AGE: std::time::Duration = std::time::Duration::from_secs(30);
 

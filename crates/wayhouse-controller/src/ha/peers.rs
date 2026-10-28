@@ -25,7 +25,7 @@ pub fn peer_url(addr: &str, path: &str) -> String {
 
 /// Whether traffic to the peer at `addr` crosses the network unencrypted: plain
 /// `http://` (or a bare `host:port`) to anything but a loopback host. Raft RPCs
-/// carry the `--ha-token` and all replicated state (security review N3).
+/// carry the `--ha-token` and all replicated state.
 pub fn is_plain_remote(addr: &str) -> bool {
     let Ok(url) = Url::parse(&peer_url(addr, "")) else {
         return false;

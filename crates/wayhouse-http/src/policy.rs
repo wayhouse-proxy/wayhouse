@@ -1,5 +1,5 @@
 //! Startup checks for how a fleet binary's API is exposed and how strong its
-//! shared secrets are (docs/security-review-2026-10.md O1, O7).
+//! shared secrets are.
 //!
 //! Every fleet API is open when no token is configured, which is safe on the
 //! default loopback bind but not on a routable address. These helpers let each
