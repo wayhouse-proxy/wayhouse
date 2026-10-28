@@ -22,6 +22,7 @@
 
 - [Upgrading a fleet](upgrading.md)
 - [Migrating from 0.2.0 to 0.3.0](migrating-0.2-to-0.3.md)
+- [Migrating from 0.3.0 to 0.4.0](migrating-0.3-to-0.4.md)
 - [Plugins](plugins.md)
 - [Sniffers](sniffers.md)
 - [Web proxy (Caddy)](web-proxy.md)
