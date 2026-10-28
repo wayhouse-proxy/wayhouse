@@ -27,6 +27,3 @@
 - [Web proxy (Caddy)](web-proxy.md)
 - [Certificates (ACME)](acme.md)
 - [Third-party notices](third-party-notices.md)
-
-# Reference
-
