@@ -216,9 +216,9 @@ describe("PluginsPage install", () => {
     expect(dlg).toHaveTextContent(/cannot make network requests/i);
     expect(dlg).toHaveTextContent(/uploaded by hand/i);
     const button = within(dlg).getByRole("button", { name: "Install" });
-    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-disabled", "true");
     await userEvent.click(within(dlg).getByRole("checkbox", { name: /I approve/i }));
-    expect(button).toBeEnabled();
+    expect(button).not.toHaveAttribute("aria-disabled", "true");
   });
 
   it("installs with exactly the declared capabilities and the file's name", async () => {
@@ -294,7 +294,7 @@ describe("PluginsPage install", () => {
     await userEvent.click(screen.getByRole("button", { name: "Upload plugin" }));
     await act(async () => finish(install({ name: "demo" })));
     expect(await screen.findByText("installed demo")).toBeInTheDocument();
-    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Inspect module" })).toBeEnabled();
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Inspect module" })).not.toHaveAttribute("aria-disabled", "true");
   });
 
   it("shows an upload error from the controller", async () => {

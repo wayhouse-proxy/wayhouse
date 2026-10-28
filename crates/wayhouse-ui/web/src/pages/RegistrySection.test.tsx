@@ -108,9 +108,9 @@ describe("RegistrySection", () => {
     const dlg = screen.getByRole("dialog");
     await userEvent.type(within(dlg).getByLabelText("Index URL"), "https://x.example/index.json");
     const add = within(dlg).getByRole("button", { name: "Add" });
-    expect(add).toBeDisabled();
+    expect(add).toHaveAttribute("aria-disabled", "true");
     await userEvent.click(within(dlg).getByRole("checkbox"));
-    expect(add).toBeEnabled();
+    expect(add).not.toHaveAttribute("aria-disabled", "true");
     await userEvent.click(add);
     expect(api.addRegistry).toHaveBeenCalledWith("https://x.example/index.json", undefined);
   });
@@ -119,7 +119,7 @@ describe("RegistrySection", () => {
     render(<RegistrySection />);
     const row = (await screen.findByText("old")).closest("tr")!;
     expect(row).toHaveTextContent("no version matches sniffer ABI 0.1");
-    expect(within(row).getByRole("button", { name: "Install" })).toBeDisabled();
+    expect(within(row).getByRole("button", { name: "Install" })).toHaveAttribute("aria-disabled", "true");
   });
 
   it("the install dialog shows limits and config", async () => {
@@ -164,7 +164,7 @@ describe("RegistrySection", () => {
     const dlg = await openInstall();
     expect(dlg).toHaveTextContent(/at your own risk/i);
     const go = within(dlg).getByRole("button", { name: "Install on every instance" });
-    expect(go).toBeDisabled();
+    expect(go).toHaveAttribute("aria-disabled", "true");
     await userEvent.click(within(dlg).getByRole("checkbox"));
     await userEvent.click(go);
     expect(api.installFromRegistry).toHaveBeenCalledWith(EXTERNAL.id, "demo", "1.2.0");

@@ -1,54 +1,49 @@
 @import "tailwindcss";
+/* Design tokens: a copy of docs/design-system/tokens.css (a test keeps them identical). */
+@import "./tokens.css";
 
 /*
- * Design tokens — a "night ops" console palette: a deep blue-slate ground
- * (not neutral black) with one signal-teal accent reserved for interactive
- * state, plus the three status colors (good/warn/bad) status badges use
- * everywhere so a state is never color-only (always paired with a shape/
- * label too — see Badge). IBM Plex Sans carries UI text; IBM Plex Mono is
- * reserved for things that are actually machine data (addresses, hashes,
- * YAML) — never used as a decorative label face.
+ * Old names the pages not yet ported to the design system still use. U1b ports
+ * the pages and deletes this block.
  */
-@theme {
-  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
-
-  --color-bg: #0e1420;
-  --color-surface: #16202f;
-  --color-surface-raised: #1d2a3d;
-  --color-ink: #e4eaf2;
-  --color-ink-muted: #8ca0b8;
-  --color-ink-faint: #5b6b81;
-  --color-line: #263349;
-  --color-accent: #4fd1c5;
-  --color-accent-ink: #06282a;
-  --color-good: #34d399;
-  --color-warn: #fbbf24;
-  --color-bad: #f87171;
+@theme inline {
+  --color-accent: var(--primary);
+  --color-accent-ink: var(--primary-ink);
+  --color-surface-raised: var(--surface-sunken);
+  --color-ink-faint: var(--ink-muted);
 }
 
 html {
-  color-scheme: dark;
+  font-size: 100%;
 }
 
 body {
   margin: 0;
-  background: var(--color-bg);
-  color: var(--color-ink);
-  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--fs-md);
+  line-height: var(--leading-body);
   -webkit-font-smoothing: antialiased;
 }
 
-/* Visible keyboard focus everywhere, regardless of what Tailwind reset the
-   browser applies by default — an ops tool is used with a keyboard a lot. */
+/* Visible keyboard focus everywhere (components.md: never removed). On the dark rail the ring is the rail ink. */
 :focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+
+[data-rail] :focus-visible {
+  outline-color: var(--rail-ink);
 }
 
 ::selection {
-  background: var(--color-accent);
-  color: var(--color-accent-ink);
+  background: var(--select-bg);
+  color: var(--ink);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -56,6 +51,7 @@ body {
   *::before,
   *::after {
     animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
 }

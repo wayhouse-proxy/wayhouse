@@ -10,8 +10,8 @@ describe("fonts are self-hosted", () => {
     expect(indexHtml).not.toMatch(/https?:\/\//);
   });
 
-  it("main.tsx imports the bundled Plex faces", () => {
-    expect(mainTsx).toContain("@fontsource/ibm-plex-sans");
+  it("main.tsx imports the bundled Public Sans and Plex Mono faces", () => {
+    expect(mainTsx).toContain("@fontsource/public-sans");
     expect(mainTsx).toContain("@fontsource/ibm-plex-mono");
   });
 });

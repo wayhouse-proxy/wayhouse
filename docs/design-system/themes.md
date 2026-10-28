@@ -34,7 +34,7 @@ A theme may **not** change: type families and scale, spacing, row and control he
 
 ## Validation
 
-A theme can be previewed freely but is saved only if it passes these checks, run in the browser and again by the controller on save. Failures name the token pair and the ratio.
+A theme can be previewed freely but is saved only if it passes these checks, run in the browser and again by the controller on save. Failures name the token pair and the ratio (or the colour difference). The implementation is `src/lib/theme/validate.ts` in the web project; the controller's Rust port must give the same result on `src/lib/theme/fixtures.json`.
 
 1. `ink` on `bg`, `surface` and `surface-sunken`: at least 4.5:1.
 2. `ink-muted` on `bg`, `surface` and `surface-sunken`: at least 4.5:1.
@@ -43,9 +43,9 @@ A theme can be previewed freely but is saved only if it passes these checks, run
 5. `primary-ink` on `primary`: at least 4.5:1.
 6. `good`, `warn`, `bad` on `bg`, `surface` and `surface-sunken`: at least 4.5:1.
 7. `control-border` on `surface` and `bg`: at least 3:1.
-8. `good`, `warn` and `bad` must stay distinguishable from each other: pairwise colour difference above a set threshold (the exact metric is chosen in implementation; the check must also hold under simulated deuteranopia and protanopia), because shape and word are the primary signal and colour reinforces them.
-9. `series-1` to `series-5`: each at least 3:1 on `surface`, and pairwise distinguishable.
-10. `select` must differ from `good`, `warn` and `bad` so selection never reads as state.
+8. `good`, `warn` and `bad` must stay distinguishable from each other: pairwise CIEDE2000 difference of at least 10, in normal vision and under simulated deuteranopia, protanopia and tritanopia (Machado et al. 2009 matrices at full severity, applied in linear RGB), because shape and word are the primary signal and colour reinforces them.
+9. `series-1` to `series-5`: each at least 3:1 on `surface`, and pairwise at least 10 apart by the same measure as check 8 (all four vision types).
+10. `select` must differ from `good`, `warn` and `bad` (CIEDE2000 of at least 10, normal vision) so selection never reads as state.
 
 A theme that fails any check cannot be saved or set as the default. The built-in themes are checked by the same code.
 
@@ -61,6 +61,5 @@ Settings > Appearance lists themes, each with a live swatch strip and a "Preview
 
 ## Open items
 
-- Which colour-difference metric and thresholds item 8 uses.
 - Whether the series palette is themable per theme or derived from `select` and a fixed hue set.
 - Controller endpoints and schema for themes (to be added to the UI overhaul design).
