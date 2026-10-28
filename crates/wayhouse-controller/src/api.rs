@@ -651,7 +651,7 @@ async fn submit(
         return slave_rejects_write();
     }
 
-    if let Err(rejection) = check_document(state, &text) {
+    if let Err(rejection) = check_document(state, &text, true) {
         return *rejection;
     }
 
@@ -701,9 +701,20 @@ fn check_base(store: &Store, base: u64) -> Result<(), StoreError> {
 
 /// Parses `text` and applies the schema-floor gate — everything a submission must pass before it
 /// is stored, shared by [`submit`] and [`validate_config`] so the two cannot disagree.
-fn check_document(state: &AppState, text: &str) -> Result<wayhouse_config::Config, Box<Response>> {
+///
+/// A rejected submission logs at `warn`; a rejected validation (an editor may check on every
+/// keystroke) only at `debug`.
+fn check_document(
+    state: &AppState,
+    text: &str,
+    submission: bool,
+) -> Result<wayhouse_config::Config, Box<Response>> {
     let parsed = wayhouse_config::parse_str(text).map_err(|e| {
-        tracing::warn!(error = %e, "rejected an invalid config submission");
+        if submission {
+            tracing::warn!(error = %e, "rejected an invalid config submission");
+        } else {
+            tracing::debug!(error = %e, "config validation failed");
+        }
         Box::new(
             (
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -739,7 +750,7 @@ async fn config_schema() -> Response {
 /// submission and stores nothing, so it is read-only: no role gate, no Raft, fine on a slave or a
 /// follower.
 async fn validate_config(State(state): State<AppState>, body: String) -> Response {
-    match check_document(&state, &body) {
+    match check_document(&state, &body, false) {
         Ok(cfg) => Json(serde_json::json!({"ok": true, "schema_version": cfg.schema_version}))
             .into_response(),
         Err(rejection) => *rejection,

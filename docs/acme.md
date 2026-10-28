@@ -335,6 +335,7 @@ anyway.
 [`plugins.md`](plugins.md)), but the rewrap is a separate call for the ACME keys: (1) append the new key to the
 keyring file on every controller, (2) `POST /admin/plugins/secrets/rewrap` for the plugin secrets (if plugins are on) **and**
 `POST /admin/acme/rewrap` for the account key and every certificate key, (3) remove the old key. The ACME call refuses until
-every member reports the active key, is idempotent, and answers `{"rewrapped", "skipped", "unreadable", "active_key_id"}`;
+every member reports the active key, is idempotent, and answers `{"rewrapped", "skipped", "unreadable", "active_key_id"}`
+with status 200 even when `skipped` or `unreadable` is not empty, so remove the old key only once both lists are empty;
 `GET /acme/account` and `GET /acme/sites` show the `key_id` each secret is under. Removing the old key before step 2 stops
 issuance (the account cannot be opened) and makes the certificate keys under it unservable.

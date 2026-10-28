@@ -232,6 +232,12 @@ impl AcmeCa {
     }
 
     fn builder(&self) -> Result<AccountBuilder, IssueError> {
+        // A 429 the client retried past leaves its `Retry-After` behind; it must not leak into
+        // the next call's rate-limit error.
+        self.retry_after
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         let inner = match &self.http {
             Some(f) => f(),
             None => default_client()?,
@@ -526,6 +532,14 @@ pub fn leaf_info(chain_pem: &str) -> Result<(u64, String), IssueError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_account_call_forgets_a_stale_retry_after() {
+        let ca = AcmeCa::new("https://ca.invalid/dir", true);
+        *ca.retry_after.lock().unwrap() = Some(Duration::from_secs(60));
+        let _ = ca.builder();
+        assert_eq!(*ca.retry_after.lock().unwrap(), None);
+    }
 
     #[test]
     fn the_order_limit_grows_with_the_number_of_names() {

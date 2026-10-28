@@ -92,6 +92,7 @@ pub fn disabled_router(reason: &'static str) -> Router {
     Router::new()
         .route("/acme/sites", axum::routing::any(refuse))
         .route("/acme/{*rest}", axum::routing::any(refuse))
+        .route("/admin/acme/rewrap", axum::routing::any(refuse))
 }
 
 #[derive(Deserialize)]
@@ -1073,6 +1074,10 @@ mod tests {
         );
         assert_eq!(
             call(&app, "PUT", "/acme/sites/x", SITE, None).await.0,
+            StatusCode::NOT_IMPLEMENTED
+        );
+        assert_eq!(
+            call(&app, "POST", "/admin/acme/rewrap", "", None).await.0,
             StatusCode::NOT_IMPLEMENTED
         );
     }
