@@ -1,6 +1,6 @@
 # Web front door (docs/web-proxy.md): Caddy plus wayhouse-web-sync as a gateway tier. Label
 # the nodes that should terminate HTTPS (`kubectl label node <n> wayhouse/web-gateway=true`);
-# each runs next to its wayhouse pod (50-wayhouse-daemonset.yaml) and shares the node's
+# each runs next to its wayhouse pod (base/50-wayhouse-daemonset.yaml) and shares the node's
 # network, which is how wayhouse reaches Caddy on the node's loopback and how Caddy sees a
 # tunnel interface to origins behind wayhouse-agent. The wayhouse config needs a `web:` section
 # and a `web` pool (compose/wayhouse-web.yaml shows one).

@@ -482,7 +482,11 @@ jobs:
       - name: Validate Kubernetes manifests (schema only)
         run: |
           curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar -xz kubeconform
-          ./kubeconform -strict -summary deploy/k8s
+          for o in single ha web-gateway; do
+            kubectl kustomize deploy/k8s/overlays/$o | ./kubeconform -strict -summary -
+          done
+          # the example Secrets are not part of any overlay
+          ./kubeconform -strict -summary deploy/k8s/base/10-secrets.example.yaml
 
   # linux/arm64 images are published next to amd64 (release.yml, issue #88);
   # building them only at release time would find an arm64-only break too late.

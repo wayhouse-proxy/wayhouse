@@ -1,0 +1,6 @@
+# Single instance plus the Caddy web tier (docs/web-proxy.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - web-gateway.yaml

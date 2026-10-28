@@ -1,0 +1,163 @@
+# Wayhouse Prometheus alerting rules.
+#
+# ACME series are emitted only by the Raft leader (or a standalone controller).
+# The 30m `for` plus no absent() alert is deliberate so a leader change does not page.
+# Gossip/skew alerts never fire on a single instance.
+
+groups:
+  - name: wayhouse
+    interval: 1m
+    rules:
+      # Every pool has zero healthy backends, so no traffic can be served.
+      - alert: WayhousePoolNoHealthyBackends
+        expr: sum by (pool) (wayhouse_pool_backends{state="healthy"}) == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "A pool has no healthy backends"
+          description: "Pool {{ $labels.pool }} has no healthy backends left to serve requests."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhousepoolnohealthybackends"
+
+      # A backend domain is reported down.
+      - alert: WayhouseBackendDomainDown
+        expr: wayhouse_backend_domain_down == 1
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "A backend domain is down"
+          description: "A backend domain is reported as down by wayhouse_backend_domain_down."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhousebackenddomaindown"
+
+      # Open file descriptors are above 80% of the limit.
+      - alert: WayhouseFdUsageHigh
+        expr: wayhouse_fd_open / wayhouse_fd_limit > 0.8
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "File descriptor usage is above 80 percent"
+          description: "File descriptor usage on this instance is above 80 percent of its limit."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhousefdusagehigh"
+
+      # Listeners are failing to accept connections.
+      - alert: WayhouseAcceptErrors
+        expr: sum by (listener) (rate(wayhouse_accept_errors_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Listener is failing to accept connections"
+          description: "Listener {{ $labels.listener }} is recording accept errors."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhouseaccepterrors"
+
+      # Instances disagree on the active config version.
+      - alert: WayhouseConfigVersionSkew
+        expr: max(wayhouse_config_version) - min(wayhouse_config_version) > 0
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Instances are running different config versions"
+          description: "Not all instances in the cluster are running the same config version."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhouseconfigversionskew"
+
+      # Config reloads are failing.
+      - alert: WayhouseConfigReloadFailing
+        expr: increase(wayhouse_config_reload_total{result="failed"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Config reloads are failing"
+          description: "One or more config reloads failed in the last 15 minutes."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhouseconfigreloadfailing"
+
+      # A listener cannot bind its socket.
+      - alert: WayhouseListenerBindFailures
+        expr: sum by (listener) (increase(wayhouse_listener_bind_failures_total[15m])) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Listener failed to bind"
+          description: "Listener {{ $labels.listener }} has recorded bind failures in the last 15 minutes."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhouselistenerbindfailures"
+
+      # An ACME certificate expires within 2 days.
+      - alert: WayhouseAcmeCertExpiryCritical
+        expr: min by (site) (wayhouse_acme_cert_expiry_seconds) < 2 * 86400
+        for: 30m
+        labels:
+          severity: page
+        annotations:
+          summary: "ACME certificate expires in under 2 days"
+          description: "The ACME certificate for site {{ $labels.site }} expires in less than 2 days."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhouseacmecertexpirycritical"
+
+      # An ACME certificate expires within 10 days.
+      - alert: WayhouseAcmeCertExpirySoon
+        expr: min by (site) (wayhouse_acme_cert_expiry_seconds) < 10 * 86400
+        for: 30m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "ACME certificate expires in under 10 days"
+          description: "The ACME certificate for site {{ $labels.site }} expires in less than 10 days."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhouseacmecertexpirysoon"
+
+      # ACME certificate issuance is returning errors.
+      - alert: WayhouseAcmeIssueErrors
+        expr: increase(wayhouse_acme_issue_total{result="error"}[1h]) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "ACME certificate issuance is failing"
+          description: "ACME certificate issuance returned errors in the last hour."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhouseacmeissueerrors"
+
+      # ACME key is held and not released.
+      - alert: WayhouseAcmeKeyHeld
+        expr: wayhouse_acme_held == 1
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "ACME key is held"
+          description: "The ACME key has been held for 15 minutes or more."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhouseacmekeyheld"
+
+      # Gossip membership is smaller than the largest observed membership, indicating a partition.
+      - alert: WayhouseGossipPartition
+        expr: wayhouse_gossip_members < scalar(max(wayhouse_gossip_members))
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Gossip membership is partitioned"
+          description: "This instance sees fewer gossip members than the largest observed membership."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhousegossippartition"
+
+      # Web sync is reporting errors or rejects.
+      - alert: WayhouseWebSyncErrors
+        expr: sum(increase(wayhouse_web_sync_errors_total[15m])) + sum(increase(wayhouse_web_sync_rejects_total[15m])) > 0
+        for: 0m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Web sync is returning errors or rejects"
+          description: "Web sync recorded errors or rejected updates in the last 15 minutes."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhousewebsyncerrors"
+
+      # Web sync has not succeeded for more than 10 minutes.
+      - alert: WayhouseWebSyncStale
+        expr: time() - wayhouse_web_sync_last_ok > 600
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "Web sync is stale"
+          description: "Web sync has not completed successfully for more than 10 minutes."
+          runbook_url: "https://github.com/wayhouse-proxy/wayhouse/blob/main/deploy/observability/README.md#wayhousewebsyncstale"

@@ -272,10 +272,8 @@ signatures and new key material. Treat the key like the other fleet secrets and
 keep it out of instances you do not trust.
 
 **Config schema** (built exactly as designed — `settings.gossip.psk` is a
-plain string, not env-substituted like the `${GOSSIP_PSK}` sketch below;
-this codebase has no env-substitution mechanism anywhere else in
-`wayhouse-config` either, so that stayed a design-stage placeholder, see
-`config.example.yaml` for the real, commented-out syntax):
+plain string; `wayhouse-config` has no env-substitution mechanism, see
+`config.example.yaml` for the commented-out syntax):
 
 ```yaml
 settings:
@@ -286,7 +284,7 @@ settings:
                                     # identity and vote origin; 0.0.0.0 is refused)
     seeds: ["10.0.1.5:7946", "10.0.1.6:7946"]
     quorum_fraction: 0.66           # default; the ">⅔" from the authority model
-    psk: "${GOSSIP_PSK}"
+    psk: "change-me"                # plain string, no ${VAR} expansion
 ```
 
 `validate()` rejects `gossip` set without `failure_domain` or vice versa — a

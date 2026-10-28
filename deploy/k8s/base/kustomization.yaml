@@ -1,0 +1,10 @@
+# Everything except 10-secrets.example.yaml: create the Secrets yourself first (deploy/README.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 00-namespace.yaml
+  - 20-controller.yaml
+  - 30-aggregator.yaml
+  - 40-ui.yaml
+  - 45-wayhouse-rbac.yaml
+  - 50-wayhouse-daemonset.yaml

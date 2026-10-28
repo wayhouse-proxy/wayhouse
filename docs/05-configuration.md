@@ -12,7 +12,7 @@
   listener whose definition is unchanged keeps running untouched. `backend_sources`
   discovery refresh tasks are reconciled the same way (added / removed /
   re-parameterised → started / stopped / restarted).
-- Environment-variable interpolation (`${VAR}`) for secrets/tokens.
+- Secrets (`settings.admin.auth_token`, `settings.gossip.psk`) are plain strings in the document. There is no `${VAR}` interpolation, and the loader does not read environment variables. Keep the file readable only by the service user.
 
 ## Schema (reference)
 
@@ -362,7 +362,7 @@ settings:
   shutdown_grace_sec: 30     # wait this long for in-flight conns on SIGTERM
   admin:
     listen: "127.0.0.1:9900"
-    auth: { mode: "bearer", token: "${ADMIN_TOKEN}" }   # or mode: mtls
+    auth: { mode: "bearer", token: "change-me" }   # plain string, no ${VAR} expansion; or mode: mtls
   metrics: { path: "/metrics" }
   log:
     format: "json"
@@ -546,7 +546,7 @@ selected by the `kubernetes.io/service-name` label) and merges them: ready
 endpoints only (an unset `ready` counts as ready), duplicates across slices
 collapsed, `FQDN` slices skipped, and a slice without the wanted port ignored.
 Its service account needs `list` and `watch` on `endpointslices` in the
-namespace; [`deploy/k8s/45-wayhouse-rbac.yaml`](../deploy/k8s/45-wayhouse-rbac.yaml) is a
+namespace; [`deploy/k8s/base/45-wayhouse-rbac.yaml`](../deploy/k8s/base/45-wayhouse-rbac.yaml) is a
 ready-made Role. Without `watch` the source logs one warning per outage and keeps
 converging on the poll interval, so a missing grant slows updates but never breaks
 discovery. The watch resumes from the version of the last list and reopens itself

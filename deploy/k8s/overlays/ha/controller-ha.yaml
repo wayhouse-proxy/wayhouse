@@ -1,0 +1,50 @@
+# Node ids are the pod ordinals 0..2 (apps.kubernetes.io/pod-index, Kubernetes 1.28+).
+# --ha-peers is read only when the cluster first bootstraps; to change the replica
+# count later use --ha-join (docs/12), not a new peer list.
+apiVersion: v1
+kind: Service
+metadata: { name: wayhouse-controller-peers, namespace: wayhouse }
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true     # peers must resolve each other before they are ready
+  selector: { app: wayhouse-controller }
+  ports: [{ port: 9901, targetPort: 9901 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: wayhouse-controller, namespace: wayhouse }
+spec:
+  replicas: 3
+  serviceName: wayhouse-controller-peers
+  podManagementPolicy: Parallel      # Raft bootstrap needs a quorum up, not an ordered start
+  selector: { matchLabels: { app: wayhouse-controller } }
+  template:
+    metadata: { labels: { app: wayhouse-controller } }
+    spec:
+      securityContext: { fsGroup: 65532, runAsNonRoot: true }
+      containers:
+        - name: controller
+          image: wayhouse-deploy/wayhouse-controller:local
+          args:
+            - --listen=0.0.0.0:9901
+            - --data-dir=/data
+            - --auth-token=$(TOKEN)
+            - --ha-node-id=$(POD_INDEX)
+            - --ha-peers=0=wayhouse-controller-0.wayhouse-controller-peers:9901,1=wayhouse-controller-1.wayhouse-controller-peers:9901,2=wayhouse-controller-2.wayhouse-controller-peers:9901
+            - --ha-token=$(HA_TOKEN)
+          env:
+            - name: TOKEN
+              valueFrom: { secretKeyRef: { name: wayhouse-tokens, key: controller-token } }
+            - name: HA_TOKEN
+              valueFrom: { secretKeyRef: { name: wayhouse-tokens, key: ha-token } }
+            - name: POD_INDEX
+              valueFrom: { fieldRef: { fieldPath: "metadata.labels['apps.kubernetes.io/pod-index']" } }
+          ports: [{ containerPort: 9901 }]
+          readinessProbe: { httpGet: { path: /healthz, port: 9901 } }
+          livenessProbe: { httpGet: { path: /healthz, port: 9901 }, initialDelaySeconds: 10 }
+          volumeMounts: [{ name: data, mountPath: /data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 1Gi } }

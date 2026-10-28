@@ -1,8 +1,17 @@
 # Migrating from 0.3.0 to 0.4.0
 
-Breaking changes in 0.4.0 and what to do about each. Nothing here needs a data migration.
+This is the operator's checklist for moving a running 0.3.0 deployment to 0.4.0. The general
+rules for any upgrade (compatibility window, order of operations, draining a proxy) are in
+[Upgrading a fleet](upgrading.md); this page covers what is specific to this release.
 
-## Plugin ABI 0.2: rebuild your plugins
+> **Skeleton.** The 0.4.0 slices fill in their own sections as they land. Nothing is
+> final until the release notes say so.
+
+## Config schema
+
+Not yet filled in.
+
+## Plugin ABI 0.2 rebuilds
 
 The plugin ABI is now 0.2. The host requires an exact `major.minor` match while the major is 0, so
 a plugin built against ABI 0.1 is refused at upload:
@@ -18,8 +27,25 @@ the plugin declares ABI 0.1, this host speaks 0.2
 3. Under HA, upgrade every controller before installing: the leader refuses plugin installs while
    a member reports a plugin support level below 5.
 
+Plugins that are already installed keep their stored 0.1 module, which no longer loads: the
+install stays listed, its status shows the ABI error as `last_error`, and it does not run. That
+includes the ACME DNS plugin, so certificate issuance through it pauses until the rebuilt module is
+installed. Install the rebuilt module, then delete the old install.
+
 A plugin that wants operator-supplied values (a panel host, a node network) can now declare
 options and capability bindings in a `wayhouse.plugin-manifest` section; see
 [Install options and capability bindings](plugins.md#install-options-and-capability-bindings). The
 official plugins (Pelican, `acme-dns-cloudflare`, `selftest`) are rebuilt in the plugins
 repository.
+
+## Secrets
+
+Not yet filled in.
+
+## Feature flags
+
+Not yet filled in.
+
+## Deploy layout
+
+Not yet filled in.
