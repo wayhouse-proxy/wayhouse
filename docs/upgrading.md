@@ -52,6 +52,16 @@ its row. Use `unreleased` for the product column until the release is tagged.
 | 0.2.0      | 1.1      | 2             | 1            | 0.1         |
 | 0.1.0      | 1.0      | 1             | 1            | 0.1         |
 
+## Upgrading from 0.3.0 to 0.4.0
+
+The plugin ABI moves from 0.1 to **0.2** and the plugin support level under HA from 4 to **5**
+(manifest and capability bindings, see [`plugins.md`](plugins.md)). The host still requires an
+exact ABI match, so every plugin module is rebuilt against `wayhouse-plugin-abi` 0.2 and
+uploaded again; a 0.1 module answers `the plugin declares ABI 0.1, this host speaks 0.2`. Under
+HA, upgrade every controller before installing a plugin: the leader refuses installs while a
+member reports a lower level. The steps are in
+[Migrating from 0.3.0 to 0.4.0](migrating-0.3-to-0.4.md).
+
 ## Upgrading from 0.2.0 to 0.3.0
 
 0.3.0 replaces the controller's embedded database (`sled` to `redb`) **without a
@@ -89,8 +99,8 @@ protocol 1.2, config schema 3 (`web:` needs every proxy on 0.3.0 first), plugin 
   schema (0.1.0) is sent only revisions that need schema 1: one that first starts after the
   first schema 2 revision exists gets the newest schema 1 revision, not the newer ones, and
   keeps it until it is upgraded.
-- **Plugin ABI.** The version table has no plugin column: the plugin ABI is 0.1 and the host
-  requires an exact minor match while the major is 0.
+- **Plugin ABI.** The version table has no plugin column: the plugin ABI was 0.1 in 0.2.0 and the host
+  requires an exact minor match while the major is 0 (0.2 since 0.4.0).
 
 ## Order of operations
 

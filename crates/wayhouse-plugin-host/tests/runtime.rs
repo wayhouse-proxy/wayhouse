@@ -7,7 +7,7 @@ use wayhouse_plugin_host::{
     MAX_STATE_ENTRIES,
 };
 
-const ABI: &str = "\\00\\00\\01\\00";
+const ABI: &str = "\\00\\00\\02\\00";
 const TIMER_LOG_STATE: &str =
     r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"state":{"max_bytes":64}}"#;
 

@@ -10,13 +10,15 @@
 //! Depending on this crate declares the ABI version: a `wayhouse.plugin-abi` custom
 //! section ([`ABI_BYTES`]) is linked into every wasm32 module that uses it, and the host
 //! refuses a module without it or with another version. The capabilities live in a
-//! second custom section, [`CAPS_SECTION`], whose JSON the plugin author embeds.
+//! second custom section, [`CAPS_SECTION`], whose JSON the plugin author embeds. A third,
+//! optional one, [`MANIFEST_SECTION`], declares install options and which capability values
+//! they bind (`"${opt:NAME}"` placeholders in the capability JSON).
 
 /// ABI version this crate implements: the host accepts a module only when it declares
 /// the same version (while the major is 0 a minor bump may break the ABI).
 pub const ABI_MAJOR: u16 = 0;
 /// See [`ABI_MAJOR`].
-pub const ABI_MINOR: u16 = 1;
+pub const ABI_MINOR: u16 = 2;
 
 /// The payload of the [`ABI_SECTION`] custom section: major then minor, both u16 LE.
 pub const ABI_BYTES: [u8; 4] = {
@@ -29,6 +31,9 @@ pub const ABI_BYTES: [u8; 4] = {
 pub const ABI_SECTION: &str = "wayhouse.plugin-abi";
 /// Name of the custom section that carries the capability declaration (JSON).
 pub const CAPS_SECTION: &str = "wayhouse.plugin-caps";
+/// Name of the optional custom section that carries the manifest (JSON): the options
+/// schema for the install config and the capability bindings (ABI 0.2).
+pub const MANIFEST_SECTION: &str = "wayhouse.plugin-manifest";
 
 /// Stamps every wasm32 module that links this crate with its ABI version. Only on
 /// wasm32: on a native build the attribute would put a section in the host test binary.
@@ -58,7 +63,7 @@ mod tests {
 
     #[test]
     fn abi_bytes_are_major_then_minor_le() {
-        assert_eq!(ABI_BYTES, [0, 0, 1, 0]);
+        assert_eq!(ABI_BYTES, [0, 0, 2, 0]);
     }
 
     #[test]

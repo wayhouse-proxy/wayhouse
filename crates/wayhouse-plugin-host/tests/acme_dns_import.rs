@@ -53,7 +53,7 @@ fn guest(caps: &str, body: &Body) -> Vec<u8> {
     let msg = msg.replace('"', "\\\"");
     wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (import "wayhouse" "acme_dns_result" (func $result (param i32 i32 i32) (result i32)))
@@ -143,7 +143,7 @@ fn an_undeclared_trigger_is_never_called_and_the_import_is_denied() {
     let no_trigger = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30}"#;
     let m = wat::parse_str(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{\"triggers\":{\"on_timer\":true},\"tick_interval_secs\":30}")
   (import "wayhouse" "acme_dns_result" (func $result (param i32 i32 i32) (result i32)))
   (memory (export "memory") 1)
@@ -172,7 +172,7 @@ fn an_undeclared_trigger_is_never_called_and_the_import_is_denied() {
 fn a_module_that_declares_the_trigger_needs_the_export() {
     let m = wat::parse_str(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{\"triggers\":{\"on_timer\":true,\"on_acme_dns\":true},\"tick_interval_secs\":30}")
   (memory (export "memory") 1)
   (func (export "alloc") (param i32) (result i32) (i32.const 1024))

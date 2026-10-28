@@ -21,7 +21,7 @@ fn guest(caps: &str, request: &str) -> Vec<u8> {
     let len = request.len();
     wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (import "wayhouse" "http_request" (func $req (param i32 i32) (result i32)))

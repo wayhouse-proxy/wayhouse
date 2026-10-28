@@ -37,7 +37,7 @@ fn module(caps: &str, sets: [&str; 2], flip: bool) -> Vec<u8> {
     };
     wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\01\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "state_get" (func $get (param i32 i32 i32 i32) (result i32)))
   (import "wayhouse" "state_put" (func $put (param i32 i32 i32 i32) (result i32)))

@@ -126,7 +126,7 @@ pub fn valid_slot_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
-fn valid_host(host: &str) -> bool {
+pub(crate) fn valid_host(host: &str) -> bool {
     if host.parse::<std::net::IpAddr>().is_ok() {
         return true;
     }

@@ -54,6 +54,8 @@ A plugin declares the triggers it uses; an undeclared trigger is never delivered
 | `backends` | add, remove or patch backends in pools the operator named | named pools only, op-rate cap, ownership rules below |
 | `log` | log lines tagged with the plugin | rate limit |
 
+**[decided, 0.4.0]** The ABI is 0.2: a module may carry a manifest with install options and bind some capability values to them (`"${opt:NAME}"`), so one prebuilt module fits every deployment; the operator still approves a concrete effective set. See `2026-10-28-plugin-manifest-and-bindings.md`.
+
 New capabilities are added the same way: one import, one approval line, its own limits. Nothing outside this table is reachable. Network access beyond `http`, launching processes, reading other plugins' state and touching operator routes are not offered.
 
 ### Backends capability: ownership and fencing
