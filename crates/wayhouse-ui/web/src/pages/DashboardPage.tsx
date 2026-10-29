@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { ArrowLeft, ArrowRight, Settings2, X } from "lucide-react";
 import { WidgetBoundary } from "../components/dashboard/WidgetFrame";
-import { WIDGETS, widgetById, rangeOf, topOf, type WidgetDef } from "../components/dashboard/widgets";
+import { FleetFeed, WIDGETS, widgetById, rangeOf, topOf, type WidgetDef } from "../components/dashboard/widgets";
 import { useInspector } from "../components/shell/Inspector";
 import { PageHeader } from "../components/shell/Page";
 import { ErrorState, Loading } from "../components/shell/States";
@@ -103,7 +103,8 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
   const [draft, setDraft] = useState<Dashboard | null>(null);
   const [naming, setNaming] = useState<{ mode: "new" | "rename"; value: string } | null>(null);
   const [showJson, setShowJson] = useState(false);
-  const [settingsFor, setSettingsFor] = useState<number | null>(null);
+  const [settingsFor, setSettingsFor] = useState<string | null>(null);
+  const [said, setSaid] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
   const file = useRef<HTMLInputElement>(null);
 
@@ -116,6 +117,13 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
   const savedBoard = list.find((d) => d.name === wanted) ?? list[0];
   const board = draft ?? savedBoard;
   const customizing = draft !== null;
+  // Keyed by widget id so a move keeps each widget (and keyboard focus) mounted; a repeated id gets its occurrence number.
+  const seen = new Map<string, number>();
+  const keys = board.widgets.map((w) => {
+    const n = (seen.get(w.id) ?? 0) + 1;
+    seen.set(w.id, n);
+    return n === 1 ? w.id : `${w.id}#${n}`;
+  });
   const names = list.map((d) => d.name);
 
   const select = (name: string) => setParams((p) => (p.set("d", name), p), { replace: true });
@@ -132,6 +140,7 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
   const edit = (f: (w: PlacedWidget[]) => PlacedWidget[]) => setDraft((d) => ({ ...(d ?? board), widgets: f((d ?? board).widgets) }));
   const stopCustomizing = () => {
     setDraft(null);
+    setSaid("");
     setShowJson(false);
     setSettingsFor(null);
     inspector.close();
@@ -146,7 +155,10 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
   async function create(name: string) {
     const next: Dashboard = naming?.mode === "rename" ? { ...savedBoard, name } : { name, widgets: [] };
     if (!(await run(() => save.mutateAsync(next)))) return;
-    if (naming?.mode === "rename" && !unsaved && !(await run(() => remove.mutateAsync(savedBoard.name)))) return;
+    if (naming?.mode === "rename" && !unsaved && !(await run(() => remove.mutateAsync(savedBoard.name)))) {
+      setProblem(`The renamed copy "${name}" was saved but the old dashboard "${savedBoard.name}" still exists: delete it by hand.`);
+      return;
+    }
     setNaming(null);
     select(name);
     if (next.widgets.length === 0) setDraft(next);
@@ -186,10 +198,28 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
       setProblem(message(e));
     }
   }
-  const showSettings = (i: number) => {
+  const titleOf = (w: PlacedWidget) => widgetById(w.id)?.title ?? w.id;
+  const shift = (i: number, by: number) => {
+    const to = Math.max(0, Math.min(board.widgets.length - 1, i + by));
+    edit((all) => move(all, i, by));
+    setSaid(`${titleOf(board.widgets[i])} moved to position ${to + 1} of ${board.widgets.length}`);
+  };
+  const drop = (i: number) => {
+    setSaid(`${titleOf(board.widgets[i])} removed`);
+    edit((all) => all.filter((_, j) => j !== i));
+    // The removed widget took the focused button with it; the Done button is the nearest stable place.
+    requestAnimationFrame(() => document.querySelector<HTMLElement>("[data-done]")?.focus());
+  };
+  const showSettings = (key: string) => {
+    const i = keys.indexOf(key);
     const w = board.widgets[i];
     const def = w && widgetById(w.id);
-    if (def) inspector.open(def.title, <SettingsForm def={def} w={w} onChange={(patch) => edit((all) => all.map((x, j) => (j === i ? { ...x, settings: { ...x.settings, ...patch } } : x)))} />);
+    if (!def) {
+      setSettingsFor(null);
+      inspector.close();
+      return;
+    }
+    inspector.open(def.title, <SettingsForm def={def} w={w} onChange={(patch) => edit((all) => all.map((x, j) => (j === i ? { ...x, settings: { ...x.settings, ...patch } } : x)))} />);
   };
   // The inspector holds a snapshot, so a change re-opens it with the current values while it is showing.
   useEffect(() => {
@@ -211,7 +241,7 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
           actions={
             customizing ? (
               <>
-                <Button variant="primary" onClick={done} loading={save.isPending}>
+                <Button variant="primary" data-done onClick={done} loading={save.isPending}>
                   Done
                 </Button>
                 <Button onClick={() => setDraft(savedBoard)}>Reset</Button>
@@ -286,7 +316,10 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
                   disabled={free.length === 0 || board.widgets.length >= MAX_WIDGETS}
                   onChange={(e) => {
                     const d = widgetById(e.target.value);
-                    if (d) edit((all) => [...all, { id: d.id, width: d.defaultWidth }]);
+                    if (d) {
+                      edit((all) => [...all, { id: d.id, width: d.defaultWidth }]);
+                      setSaid(`${d.title} added`);
+                    }
                   }}
                 >
                   <option value="">{free.length ? "Choose a widget" : "All widgets are on the dashboard"}</option>
@@ -308,18 +341,19 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
         {board.widgets.length === 0 ? (
           <p className="py-8 text-sm text-ink-muted">{customizing ? "No widgets yet. Add one above." : "This dashboard has no widgets. Press Customize to add some."}</p>
         ) : (
+          <FleetFeed>
           <div className="grid grid-cols-12 gap-3">
             {board.widgets.map((w, i) => {
               const def = widgetById(w.id);
               const View = def?.Component;
               return (
-                <div key={`${w.id}-${i}`} className={`col-span-12 ${SPAN[w.width] ?? SPAN[6]} ${customizing ? "outline-1 outline-dashed outline-offset-2 outline-line" : ""}`}>
+                <div key={keys[i]} className={`col-span-12 ${SPAN[w.width] ?? SPAN[6]} ${customizing ? "outline-1 outline-dashed outline-offset-2 outline-line" : ""}`}>
                   {customizing && (
                     <div role="group" aria-label={`${def?.title ?? w.id} tools`} className="mb-1 flex flex-wrap items-center gap-1">
-                      <Button size="sm" variant="ghost" aria-label={`Move ${def?.title ?? w.id} earlier`} disabled={i === 0} onClick={() => edit((all) => move(all, i, -1))}>
+                      <Button size="sm" variant="ghost" aria-label={`Move ${def?.title ?? w.id} earlier`} disabled={i === 0} onClick={() => shift(i, -1)}>
                         <ArrowLeft aria-hidden size={14} strokeWidth={1.5} />
                       </Button>
-                      <Button size="sm" variant="ghost" aria-label={`Move ${def?.title ?? w.id} later`} disabled={i === board.widgets.length - 1} onClick={() => edit((all) => move(all, i, 1))}>
+                      <Button size="sm" variant="ghost" aria-label={`Move ${def?.title ?? w.id} later`} disabled={i === board.widgets.length - 1} onClick={() => shift(i, 1)}>
                         <ArrowRight aria-hidden size={14} strokeWidth={1.5} />
                       </Button>
                       <Select aria-label={`Width of ${def?.title ?? w.id}`} value={w.width} onChange={(e) => edit((all) => all.map((x, j) => (j === i ? { ...x, width: Number(e.target.value) } : x)))}>
@@ -331,13 +365,13 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
                       </Select>
                       {def && def.settings.length > 0 && (
                         <Button size="sm" variant="ghost" aria-label={`Settings of ${def.title}`} onClick={() => {
-                            setSettingsFor(i);
-                            showSettings(i);
+                            setSettingsFor(keys[i]);
+                            showSettings(keys[i]);
                           }}>
                           <Settings2 aria-hidden size={14} strokeWidth={1.5} />
                         </Button>
                       )}
-                      <Button size="sm" variant="ghost" aria-label={`Remove ${def?.title ?? w.id}`} onClick={() => edit((all) => all.filter((_, j) => j !== i))}>
+                      <Button size="sm" variant="ghost" aria-label={`Remove ${def?.title ?? w.id}`} onClick={() => drop(i)}>
                         <X aria-hidden size={14} strokeWidth={1.5} />
                       </Button>
                     </div>
@@ -351,9 +385,10 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
               );
             })}
           </div>
+          </FleetFeed>
         )}
         <p role="status" className="sr-only">
-          {customizing ? "Customizing the dashboard" : ""}
+          {said || (customizing ? "Customizing the dashboard" : "")}
         </p>
       </div>
     </div>

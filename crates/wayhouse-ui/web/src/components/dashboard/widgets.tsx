@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { createContext, useContext } from "react";
 import { Link } from "react-router-dom";
 import { listAcmeSites, listRevisions } from "../../api";
 import { fmtBytes, fmtCount, fmtRate, onset, parseRange, RANGES, useFleetStats, type Range } from "../../lib/stats";
@@ -28,11 +29,18 @@ const rangeOf = (s: Record<string, unknown>): Range => parseRange(typeof s.range
 const topOf = (s: Record<string, unknown>) => (Number.isInteger(s.top) && (s.top as number) > 0 ? Math.min(s.top as number, 50) : 5);
 const rangeLabel = (r: Range) => RANGES.find((x) => x.value === r)!.label;
 
-/** The live fleet view as a query-shaped value, so every widget handles loading the same way. */
-function useFleet() {
-  const { instances, connected } = useFleetSocket();
-  return { instances, connected };
+interface Feed {
+  instances: FleetInstanceView[];
+  connected: boolean;
 }
+const FeedCtx = createContext<Feed>({ instances: [], connected: false });
+
+/** One fleet socket for the whole dashboard: every fleet widget reads it, so a page holds a single connection and one copy of the payload. */
+export function FleetFeed({ children }: { children: React.ReactNode }) {
+  const feed = useFleetSocket();
+  return <FeedCtx.Provider value={feed}>{children}</FeedCtx.Provider>;
+}
+const useFleet = () => useContext(FeedCtx);
 
 function Nodes() {
   const { instances, connected } = useFleet();
@@ -178,7 +186,7 @@ function Rollout() {
   const versions = new Map<string, number>();
   for (const i of instances) versions.set(i.version || "unknown", (versions.get(i.version || "unknown") ?? 0) + 1);
   return (
-    <Panel title="Config rollout" footer={q.dataUpdatedAt ? updated(q.dataUpdatedAt) : undefined}>
+    <Panel title="Config rollout" footer={[q.dataUpdatedAt ? updated(q.dataUpdatedAt) : null, "Per-instance applied revisions are not reported yet"].filter(Boolean).join(" · ")}>
       <Async q={q} empty={(r) => (r.length === 0 ? "No configuration has been submitted yet." : null)}>
         {(revs) => {
           const current = revs.find((r) => r.current) ?? revs[0];

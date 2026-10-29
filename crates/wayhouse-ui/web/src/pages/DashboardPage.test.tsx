@@ -29,7 +29,7 @@ vi.mock("../useFleetSocket", () => ({
 import { QueryProvider } from "../lib/query";
 import { SessionProvider, type Role } from "../lib/session";
 import { ToastProvider } from "../components/ui/Toast";
-import { InspectorProvider } from "../components/shell/Inspector";
+import { InspectorPanel, InspectorProvider } from "../components/shell/Inspector";
 import { issuesOf } from "../components/dashboard/widgets";
 import { DashboardPage } from "./DashboardPage";
 
@@ -41,6 +41,7 @@ function show(role: Role) {
           <InspectorProvider>
             <MemoryRouter>
               <DashboardPage />
+              <InspectorPanel />
             </MemoryRouter>
           </InspectorProvider>
         </ToastProvider>
@@ -90,6 +91,29 @@ describe("DashboardPage", () => {
     await waitFor(() => expect(store.save).toHaveBeenCalled());
     expect(store.save.mock.calls[0][0]).toEqual({ name: "Ops", widgets: [{ id: "attention.v1", width: 6 }, { id: "nodes.v1", width: 12 }] });
     expect(await screen.findByText("Dashboard saved")).toBeInTheDocument();
+  });
+
+  it("keeps keyboard focus on the Move button and announces the move", async () => {
+    show("operator");
+    await screen.findByRole("region", { name: "Nodes" });
+    await userEvent.click(screen.getByRole("button", { name: "Customize" }));
+    const later = screen.getByRole("button", { name: "Move Nodes later" });
+    await userEvent.click(later);
+    expect(later).toHaveFocus();
+    expect(screen.getAllByRole("status").some((el) => el.textContent === "Nodes moved to position 2 of 3")).toBe(true);
+  });
+
+  it("settings follow the widget, not its position", async () => {
+    store.list.mockResolvedValue([{ name: "Ops", widgets: [{ id: "nodes.v1", width: 6 }, { id: "attention.v1", width: 6 }, { id: "throughput.v1", width: 6 }] }]);
+    api.getFleetStats.mockResolvedValue({ generated_at_ms: 1, range_sec: 900, fleet: { resolution_sec: 60, last_sample_ms: null, points: [] }, listeners: [], pools: [], regions: [] });
+    show("operator");
+    await screen.findByRole("region", { name: "Nodes" });
+    await userEvent.click(screen.getByRole("button", { name: "Customize" }));
+    await userEvent.click(screen.getByRole("button", { name: "Settings of Throughput by region" }));
+    await userEvent.click(screen.getByRole("button", { name: "Remove Nodes" }));
+    const panel = screen.getByRole("complementary", { name: "Details" });
+    expect(await within(panel).findByRole("heading", { name: "Throughput by region" })).toBeInTheDocument();
+    expect(within(panel).getByLabelText("Time range")).toBeInTheDocument();
   });
 
   it("Reset goes back to the saved dashboard", async () => {
