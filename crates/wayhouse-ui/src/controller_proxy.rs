@@ -26,7 +26,7 @@ use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Extension, Path, RawQuery, State};
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::Serialize;
 
@@ -44,6 +44,7 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/tunnel/addresses", get(tunnel_addresses))
         .route("/api/plugins", get(list_plugins))
         .route("/api/plugin-routes", get(plugin_routes))
+        .route("/api/plugins/{id}/status", get(plugin_status))
         .route("/api/acme/sites", get(acme_sites))
         .route("/api/acme/gateways", get(acme_gateways))
         .route("/api/acme/account", get(acme_account))
@@ -68,7 +69,27 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/plugins/{id}", delete(delete_plugin))
         .route("/api/plugins/{id}/enable", post(enable_plugin))
         .route("/api/plugins/{id}/disable", post(disable_plugin))
+        .route(
+            "/api/plugins/{id}/config",
+            put(put_plugin_config).layer(DefaultBodyLimit::max(PLUGIN_CONFIG_BODY_BYTES)),
+        )
+        .route("/api/plugins/{id}/secrets", get(list_plugin_secrets))
+        .route(
+            "/api/plugins/{id}/secrets/{slot}",
+            put(put_plugin_secret)
+                .delete(delete_plugin_secret)
+                .layer(DefaultBodyLimit::max(PLUGIN_SECRET_BODY_BYTES)),
+        )
+        .route(
+            "/api/plugins/{id}/webhook",
+            post(enable_plugin_webhook).delete(revoke_plugin_webhook),
+        )
 }
+
+/// The controller's own cap on an install's config is 64 KiB; the rest is the approved set.
+const PLUGIN_CONFIG_BODY_BYTES: usize = 80 * 1024;
+/// The controller refuses a bigger secret body (16 KiB) too.
+const PLUGIN_SECRET_BODY_BYTES: usize = 16 * 1024;
 
 /// The ACME status page is read-only: sites with their certificate and last error, the
 /// gateways that may fetch them, and the CA account. Writes stay in the controller's API.
@@ -164,6 +185,112 @@ async fn delete_plugin(
     plugin_action(&state, Method::DELETE, &id, "", actor).await
 }
 
+async fn plugin_status(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    plugin_action(&state, Method::GET, &id, "/status", None).await
+}
+
+async fn list_plugin_secrets(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    plugin_action(&state, Method::GET, &id, "/secrets", None).await
+}
+
+async fn enable_plugin_webhook(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(id): Path<String>,
+) -> Response {
+    plugin_action(&state, Method::POST, &id, "/webhook", actor).await
+}
+
+async fn revoke_plugin_webhook(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(id): Path<String>,
+) -> Response {
+    plugin_action(&state, Method::DELETE, &id, "/webhook", actor).await
+}
+
+async fn put_plugin_config(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    plugin_body(&state, Method::PUT, &id, "/config".into(), body, actor).await
+}
+
+/// The value is forwarded and never logged or echoed: the controller answers `204` or an
+/// error that does not quote the body.
+async fn put_plugin_secret(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path((id, slot)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    let Some(slot) = crate::proxy_util::path_segment(&slot) else {
+        return bad_plugin_id();
+    };
+    plugin_body(
+        &state,
+        Method::PUT,
+        &id,
+        format!("/secrets/{slot}"),
+        body,
+        actor,
+    )
+    .await
+}
+
+async fn delete_plugin_secret(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path((id, slot)): Path<(String, String)>,
+) -> Response {
+    let Some(slot) = crate::proxy_util::path_segment(&slot) else {
+        return bad_plugin_id();
+    };
+    plugin_action(
+        &state,
+        Method::DELETE,
+        &id,
+        &format!("/secrets/{slot}"),
+        actor,
+    )
+    .await
+}
+
+fn bad_plugin_id() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: "invalid plugin id".into(),
+        }),
+    )
+        .into_response()
+}
+
+/// A JSON body to `/plugins/{id}{suffix}`; the controller's `Json` extractors insist on the type.
+async fn plugin_body(
+    state: &AppState,
+    method: Method,
+    id: &str,
+    suffix: String,
+    body: Bytes,
+    actor: Option<String>,
+) -> Response {
+    let Some(segment) = crate::proxy_util::path_segment(id) else {
+        return bad_plugin_id();
+    };
+    proxy_typed(
+        state,
+        method,
+        format!("/plugins/{segment}{suffix}"),
+        Some(body),
+        Some("application/json"),
+        actor,
+    )
+    .await
+}
+
 async fn plugin_action(
     state: &AppState,
     method: Method,
@@ -172,13 +299,7 @@ async fn plugin_action(
     actor: Option<String>,
 ) -> Response {
     let Some(segment) = crate::proxy_util::path_segment(id) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "invalid plugin id".into(),
-            }),
-        )
-            .into_response();
+        return bad_plugin_id();
     };
     proxy(
         state,
@@ -834,6 +955,149 @@ mod tests {
                 "DELETE /plugins/0123abcd"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn plugin_config_secrets_webhook_and_status_hit_the_right_controller_paths() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        for (method, path) in [
+            ("GET", "/api/plugins/0123abcd/status"),
+            ("PUT", "/api/plugins/0123abcd/config"),
+            ("GET", "/api/plugins/0123abcd/secrets"),
+            ("PUT", "/api/plugins/0123abcd/secrets/PANEL_TOKEN"),
+            ("DELETE", "/api/plugins/0123abcd/secrets/PANEL_TOKEN"),
+            ("POST", "/api/plugins/0123abcd/webhook"),
+            ("DELETE", "/api/plugins/0123abcd/webhook"),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{method} {path}");
+        }
+        let paths: Vec<_> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(m, p, _, _)| format!("{m} {p}"))
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "GET /plugins/0123abcd/status",
+                "PUT /plugins/0123abcd/config",
+                "GET /plugins/0123abcd/secrets",
+                "PUT /plugins/0123abcd/secrets/PANEL_TOKEN",
+                "DELETE /plugins/0123abcd/secrets/PANEL_TOKEN",
+                "POST /plugins/0123abcd/webhook",
+                "DELETE /plugins/0123abcd/webhook",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_secret_slot_stays_one_path_segment() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        let resp = app
+            .oneshot(
+                Request::put("/api/plugins/0123abcd/secrets/a%2Fb%2F..%2Fc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"value":"x"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            seen.lock().unwrap()[0].1,
+            "/plugins/0123abcd/secrets/a%2Fb%2F..%2Fc"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_secret_body_is_forwarded_as_json_and_capped() {
+        let (url, seen) = recording_controller(StatusCode::NO_CONTENT).await;
+        let app = app_with_controller(url, None);
+        let body = r#"{"value":"hunter2-hunter2"}"#;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::put("/api/plugins/0123abcd/secrets/TOKEN")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen[0].2.as_deref(), Some("application/json"));
+            assert_eq!(seen[0].3, body.as_bytes());
+        }
+        let big = format!(r#"{{"value":"{}"}}"#, "x".repeat(17 * 1024));
+        let resp = app
+            .oneshot(
+                Request::put("/api/plugins/0123abcd/secrets/TOKEN")
+                    .body(Body::from(big))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "the oversized body is not forwarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_secret_value_is_not_in_the_answer_when_the_controller_is_down() {
+        // Nothing listens on port 1.
+        let app = app_with_controller("http://127.0.0.1:1".into(), None);
+        let resp = app
+            .oneshot(
+                Request::put("/api/plugins/0123abcd/secrets/TOKEN")
+                    .body(Body::from(r#"{"value":"sentinel-secret-value-9f3a1c77"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("sentinel-secret-value"));
+    }
+
+    #[tokio::test]
+    async fn a_config_body_keeps_its_json_content_type() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        let body = r#"{"config":{"panel":"p.example"}}"#;
+        let resp = app
+            .oneshot(
+                Request::put("/api/plugins/0123abcd/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0].2.as_deref(), Some("application/json"));
+        assert_eq!(seen[0].3, body.as_bytes());
     }
 
     #[tokio::test]

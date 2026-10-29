@@ -319,6 +319,14 @@ pub enum PluginOp<'a> {
         /// Unix seconds the delete was proposed at: when its ports start their quarantine.
         now: u64,
     },
+    /// Replace the install's config and approved set in one write, only if its approved set
+    /// is still `expected_approved` (the one the proposer resolved the new config against).
+    SetConfig {
+        id: &'a str,
+        config: &'a serde_json::Value,
+        expected_approved: &'a Capabilities,
+        approved: &'a Capabilities,
+    },
     /// Enable (a token hash) or turn off (`None`) the install's webhook.
     SetWebhook {
         id: &'a str,
@@ -687,6 +695,30 @@ impl PluginStore {
         Ok(Applied::Done(None))
     }
 
+    /// Standalone [`PluginOp::SetConfig`].
+    pub fn set_config(
+        &self,
+        id: &str,
+        config: &serde_json::Value,
+        expected_approved: &Capabilities,
+        approved: &Capabilities,
+    ) -> Result<Applied, PluginStoreError> {
+        let _guard = self.lock();
+        let Some(mut record) = self.get(id)? else {
+            return Ok(Applied::NoSuchInstall);
+        };
+        if record.approved != *expected_approved {
+            return Ok(Applied::Stale);
+        }
+        record.config = config.clone();
+        record.approved = approved.clone();
+        if let Err(why) = record.validate() {
+            return Ok(Applied::Invalid(why));
+        }
+        self.write_record(&record)?;
+        Ok(Applied::Done(None))
+    }
+
     pub fn set_enabled(
         &self,
         id: &str,
@@ -879,6 +911,27 @@ impl PluginStore {
                             return done(Applied::NoSuchInstall);
                         };
                         record.enabled = enabled;
+                        let bytes = serde_json::to_vec(&record).map_err(|e| abort(e.into()))?;
+                        inst.insert(id.as_bytes(), bytes)?;
+                        done(Applied::Done(None))
+                    }
+                    PluginOp::SetConfig {
+                        id,
+                        config,
+                        expected_approved,
+                        approved,
+                    } => {
+                        let Some(mut record) = read(id)? else {
+                            return done(Applied::NoSuchInstall);
+                        };
+                        if record.approved != *expected_approved {
+                            return done(Applied::Stale);
+                        }
+                        record.config = config.clone();
+                        record.approved = approved.clone();
+                        if let Err(why) = record.validate() {
+                            return done(Applied::Invalid(why));
+                        }
                         let bytes = serde_json::to_vec(&record).map_err(|e| abort(e.into()))?;
                         inst.insert(id.as_bytes(), bytes)?;
                         done(Applied::Done(None))
@@ -1344,6 +1397,85 @@ mod tests {
             created_by: Some("leandro".into()),
             webhook: None,
         }
+    }
+
+    fn caps(json: &str) -> Capabilities {
+        Capabilities::parse(json.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn set_config_replaces_config_and_approval_together() {
+        let (s, _d) = store();
+        let rec = valid(ID_A, 'a', 1);
+        s.apply_at(1, PluginOp::Install(&rec)).unwrap();
+        let wider = caps(r#"{"log":true,"state":{"max_bytes":10}}"#);
+        let config = serde_json::json!({"a": 2});
+        let set = |index, expected: &Capabilities| {
+            s.apply_at(
+                index,
+                PluginOp::SetConfig {
+                    id: ID_A,
+                    config: &config,
+                    expected_approved: expected,
+                    approved: &wider,
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(set(2, &rec.approved), Applied::Done(None));
+        let got = s.get(ID_A).unwrap().unwrap();
+        assert_eq!((got.config, got.approved), (config.clone(), wider.clone()));
+        // The approval moved since the proposer read it: nothing is applied.
+        assert_eq!(set(3, &rec.approved), Applied::Stale);
+        // The same index again is a replay.
+        assert_eq!(set(2, &wider), Applied::Replayed);
+    }
+
+    #[test]
+    fn set_config_refuses_unknown_installs_and_oversized_config() {
+        let (s, _d) = store();
+        let rec = valid(ID_A, 'a', 1);
+        s.apply_at(1, PluginOp::Install(&rec)).unwrap();
+        let set = |index, id, config: serde_json::Value| {
+            s.apply_at(
+                index,
+                PluginOp::SetConfig {
+                    id,
+                    config: &config,
+                    expected_approved: &rec.approved,
+                    approved: &rec.approved,
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(set(2, ID_B, serde_json::json!({})), Applied::NoSuchInstall);
+        let big = serde_json::json!({"x": "y".repeat(MAX_CONFIG_BYTES)});
+        assert!(matches!(set(3, ID_A, big), Applied::Invalid(_)));
+        assert_eq!(s.get(ID_A).unwrap().unwrap().config, rec.config);
+    }
+
+    #[test]
+    fn standalone_set_config_has_the_same_answers() {
+        let (s, _d) = store();
+        let rec = valid(ID_A, 'a', 1);
+        s.put_blob(&rec.sha256, b"abc").unwrap();
+        s.create(&rec).unwrap();
+        let config = serde_json::json!({"b": true});
+        assert_eq!(
+            s.set_config(ID_B, &config, &rec.approved, &rec.approved)
+                .unwrap(),
+            Applied::NoSuchInstall
+        );
+        let wider = caps(r#"{"log":true,"state":{"max_bytes":10}}"#);
+        assert_eq!(
+            s.set_config(ID_A, &config, &wider, &wider).unwrap(),
+            Applied::Stale
+        );
+        assert_eq!(
+            s.set_config(ID_A, &config, &rec.approved, &wider).unwrap(),
+            Applied::Done(None)
+        );
+        assert_eq!(s.get(ID_A).unwrap().unwrap().config, config);
     }
 
     #[test]

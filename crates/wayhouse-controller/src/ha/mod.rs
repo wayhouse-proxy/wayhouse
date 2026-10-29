@@ -184,6 +184,14 @@ pub enum WriteRequest {
         id: String,
         enabled: bool,
     },
+    /// Replaces an install's config and approved set, only if its approved set is still
+    /// `expected_approved`.
+    PluginSetConfig {
+        id: String,
+        config: serde_json::Value,
+        expected_approved: wayhouse_plugin_host::Capabilities,
+        approved: wayhouse_plugin_host::Capabilities,
+    },
     /// Removes an install and its state.
     PluginDelete {
         id: String,
