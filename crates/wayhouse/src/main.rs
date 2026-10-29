@@ -13,6 +13,7 @@ mod dns_srv;
 #[cfg(not(feature = "dns-srv"))]
 #[path = "dns_srv_disabled.rs"]
 mod dns_srv;
+mod features;
 #[cfg(feature = "grpc-resolver")]
 mod grpc_resolver;
 #[cfg(not(feature = "grpc-resolver"))]
@@ -470,6 +471,7 @@ async fn run(
     .map_err(|e| anyhow::anyhow!("cannot start listeners: {e}"))?;
     let handle = runtime.handle();
     metrics::gauge!(wayhouse_core::metrics_defs::CONFIG_VERSION).set(reload::unix_now());
+    features::publish(&cfg.features);
     // Build identity + fd headroom (docs/06 "Planned / not yet built", now
     // built): version/commit are fixed for the process lifetime, so
     // `wayhouse_build_info` and `wayhouse_fd_limit` are set once; `wayhouse_fd_open` needs a
