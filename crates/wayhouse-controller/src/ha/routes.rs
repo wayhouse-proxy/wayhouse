@@ -69,13 +69,22 @@ pub struct Whoami {
     /// predates them.
     #[serde(default)]
     pub acme_support: u32,
+    /// Whether this build decodes config trials ([`CONFIRM_SUPPORT`]); `0` for a build that
+    /// predates them.
+    #[serde(default)]
+    pub confirm_support: u32,
     /// Whether this build decodes UI data entries ([`UI_SUPPORT`]); `0` for a build that
     /// predates them.
     #[serde(default)]
     pub ui_support: u32,
 }
 
-/// The UI data replication level this build speaks (`2` adds feature-flag overrides; `1`: dashboards, themes, saved filters, the
+/// The config trial replication level this build speaks (`1`: `Config.trial` and
+/// `ConfirmConfig`).
+pub const CONFIRM_SUPPORT: u32 = 1;
+
+/// The UI data replication level this build speaks (`2` adds feature-flag overrides; `1`:
+/// dashboards, themes, saved filters, the
 /// form layout override and the deployment defaults).
 pub const UI_SUPPORT: u32 = 2;
 
@@ -105,6 +114,7 @@ async fn whoami(State(ha): State<Arc<HaHandle>>) -> impl IntoResponse {
         },
         secret_key_ids: ha.secret_keys.current().key_ids(),
         acme_support: ACME_SUPPORT,
+        confirm_support: CONFIRM_SUPPORT,
         ui_support: UI_SUPPORT,
     })
 }

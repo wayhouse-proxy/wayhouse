@@ -186,10 +186,16 @@ export interface UpdateCheck {
 // --- plugins (proxied to wayhouse-controller's /plugins, slice 3) ---
 
 export interface PluginCapabilities {
-  triggers: { on_timer: boolean };
+  triggers: { on_timer?: boolean; on_webhook?: boolean; on_event?: string[]; on_acme_dns?: boolean };
   tick_interval_secs: number;
   log: boolean;
   state: { max_bytes: number } | null;
+  /** HTTPS endpoints the plugin may call. */
+  http?: { hosts: { host: string; port?: number; allow_private?: boolean }[] } | null;
+  /** Secret slots it reads in request headers, each bound to hosts of `http`. */
+  secrets?: { name: string; description: string; hosts: string[] }[];
+  /** Hostnames it may claim and the networks they may point into. */
+  routes?: { hosts: string[]; backends: string[]; max_entries: number } | null;
   /** Entry ports a plugin may be given for its servers (`port_routes`, docs/plugins.md). */
   port_routes?: {
     ports: string[];
@@ -199,11 +205,21 @@ export interface PluginCapabilities {
   } | null;
 }
 
+/** What a module declares for install-time options (docs/plugins.md, "Install options"). */
+export interface PluginManifest {
+  name: string;
+  /** A JSON Schema subset; `x-wayhouse-secret` marks a value set under Secrets, not in the form. */
+  options: Record<string, any>;
+  bindings: { option: string; kind: string }[];
+}
+
 export interface PluginModule {
   sha256: string;
   size: number;
   abi: string;
+  /** Only what does not depend on the options when the module has a manifest. */
   capabilities: PluginCapabilities;
+  manifest?: PluginManifest | null;
 }
 
 export interface PluginInstall {
@@ -216,6 +232,37 @@ export interface PluginInstall {
   enabled: boolean;
   created_at: number;
   created_by: string | null;
+  /** Present while the install's webhook is enabled. */
+  webhook?: unknown;
+}
+
+/** `GET /api/plugins/{id}`: the install with its module's manifest. */
+export interface PluginDetail extends PluginInstall {
+  manifest: PluginManifest | null;
+}
+
+export interface PluginSecretSlot {
+  slot: string;
+  description: string;
+  bound_hosts: string[];
+  set: boolean;
+  /** `unset`, `ok` or `held: <reason>`. */
+  status: string;
+  key_id?: string | null;
+  updated_at?: number | null;
+}
+
+export interface PluginStatus {
+  ticks: number;
+  last_tick_unix: number | null;
+  last_ok: boolean | null;
+  last_error: string | null;
+  consecutive_failures: number;
+  held: string | null;
+  hook_calls?: number;
+  hook_failures?: number;
+  hooks_dropped?: number;
+  logs: { level: string; msg: string }[];
 }
 
 /** One entry-port route of the plugin overlay (`GET /api/plugin-routes`). */

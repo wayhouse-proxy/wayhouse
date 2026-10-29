@@ -43,7 +43,7 @@
 //! nothing new, it's still exactly the content-agnostic log slice 1 built.
 
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -57,6 +57,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 
+use crate::confirm::{self, Pending, Trial, Window, PENDING_KEY};
 use crate::role::{Role, RoleHandle};
 use crate::store::{Applied, RelayCursor, RevisionBytes, SiblingWrite, Store, StoreError};
 
@@ -144,6 +145,12 @@ pub struct AppState {
     /// `X-Actor` header `wayhouse-ui` sets on a proxied write, if any. Another
     /// sibling `kv` tree, same pattern as `stage`.
     pub actors: crate::kv::Tree,
+    /// The revision on trial, if any (`crate::confirm`): one record, written in the transaction
+    /// of the revision it guards.
+    pub(crate) pending: crate::kv::Tree,
+    /// Makes a confirm and a revert exclusive without HA (with HA the Raft apply is the
+    /// serialisation).
+    trial_lock: Arc<std::sync::Mutex<()>>,
     /// `Some` when `--ha-peers` is set (phase 12 slice 6): `submit()`
     /// proposes via Raft instead of writing `store` directly. `None` (the
     /// default, `replicas: 1`) is today's behaviour, byte-for-byte.
@@ -174,6 +181,7 @@ impl AppState {
         let store_db = store.db().clone();
         let stage = store_db.open_tree("stage")?;
         let actors = store_db.open_tree("actors")?;
+        let pending = store_db.open_tree("config_pending")?;
         Ok(AppState {
             store,
             stage,
@@ -181,6 +189,8 @@ impl AppState {
             auth_token: auth_token.map(Arc::from),
             role,
             actors,
+            pending,
+            trial_lock: Arc::default(),
             ha: None,
             relay: RelayCursor::open(&store_db)?,
             schema_floor: None,
@@ -203,6 +213,106 @@ impl AppState {
     pub fn with_ha(mut self, ha: Option<Arc<crate::ha::HaHandle>>) -> Self {
         self.ha = ha;
         self
+    }
+
+    /// The revision on trial, if its trial is live: the record names the latest revision. Any
+    /// newer revision retires it, so there is nothing to clear.
+    pub fn pending(&self) -> Result<Option<Pending>, StoreError> {
+        let Some(raw) = self.pending.get(PENDING_KEY)? else {
+            return Ok(None);
+        };
+        let latest = self.store.current_revision()?;
+        Ok(serde_json::from_slice::<Pending>(&raw)
+            .ok()
+            .filter(|p| Some(p.revision) == latest))
+    }
+
+    /// The Raft-apply form of [`Self::confirm`] for the entry at log `index`: the deletion and
+    /// the `applied_index` share one transaction. `Ok(true)` when `revision` was on trial.
+    pub fn confirm_entry(&self, index: u64, revision: u64) -> Result<bool, StoreError> {
+        let on_trial = self.pending()?.is_some_and(|p| p.revision == revision);
+        let writes = if on_trial {
+            vec![SiblingWrite {
+                tree: &self.pending,
+                key: PENDING_KEY.to_vec(),
+                value: None,
+            }]
+        } else {
+            Vec::new()
+        };
+        // Skipped (a replay): the trial was ended the first time, `on_trial` is already false.
+        self.store.mark_applied_with(index, writes)?;
+        Ok(on_trial)
+    }
+
+    /// Brings the revision `revision` replaced back as a new revision, if `revision` is on trial
+    /// and still the latest, else `Ok(None)` (a confirm or a newer edit got there first).
+    pub fn revert_trial(
+        &self,
+        revision: u64,
+        actor: Option<&str>,
+    ) -> Result<Option<u64>, StoreError> {
+        let _lock = self
+            .trial_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(bytes) = self.revert_bytes(revision)? else {
+            return Ok(None);
+        };
+        let stage = stage_bytes(&Stage::promoted());
+        let new = match self.store.put_with_base(Some(revision), bytes, &|new| {
+            self.stage_and_actor_writes(new, &stage, actor, None)
+        }) {
+            Ok(new) => new,
+            Err(StoreError::StaleBase { .. }) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let _ = self.updates.send(new);
+        Ok(Some(new))
+    }
+
+    /// The Raft-apply form of [`Self::revert_trial`] for the entry at log `index`: the check and
+    /// the write are one step of the (single-threaded) apply. `Ok(None)`: nothing written.
+    pub fn revert_entry(
+        &self,
+        index: u64,
+        revision: u64,
+        actor: Option<&str>,
+    ) -> Result<Option<u64>, StoreError> {
+        let Some(bytes) = self.revert_bytes(revision)? else {
+            self.store.mark_applied(index)?;
+            return Ok(None);
+        };
+        self.apply_entry(index, bytes, Stage::promoted(), actor, None)
+    }
+
+    /// The bytes to bring back, if `revision` is on trial (live: still the latest).
+    fn revert_bytes(&self, revision: u64) -> Result<Option<RevisionBytes>, StoreError> {
+        let Some(pending) = self.pending()?.filter(|p| p.revision == revision) else {
+            return Ok(None);
+        };
+        let bytes = self.store.get(pending.trial.revert_to)?;
+        if bytes.is_none() {
+            tracing::error!(
+                revert_to = pending.trial.revert_to,
+                "the revision to revert to is gone"
+            );
+        }
+        Ok(bytes)
+    }
+
+    /// Ends the trial of `revision` without a revert. `Ok(false)`: `revision` is not on trial.
+    pub fn confirm(&self, revision: u64) -> Result<bool, StoreError> {
+        let _lock = self
+            .trial_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !self.pending()?.is_some_and(|p| p.revision == revision) {
+            return Ok(false);
+        }
+        self.pending.remove(PENDING_KEY)?;
+        self.pending.flush()?;
+        Ok(true)
     }
 
     /// Persists `bytes` as a new, immediately-[`Stage::promoted`] revision
@@ -241,7 +351,7 @@ impl AppState {
         stage: Stage,
         actor: Option<&str>,
     ) -> Result<u64, StoreError> {
-        self.apply_revision_if_current(None, bytes, stage, actor)
+        self.apply_revision_if_current(None, bytes, stage, actor, None)
     }
 
     /// [`Self::apply_revision_with_stage_and_actor`] that only lands if the latest revision is
@@ -254,22 +364,24 @@ impl AppState {
         bytes: RevisionBytes,
         stage: Stage,
         actor: Option<&str>,
+        trial: Option<&Trial>,
     ) -> Result<u64, StoreError> {
         let stage_bytes = stage_bytes(&stage);
         let revision = self.store.put_with_base(base, bytes, &|revision| {
-            self.stage_and_actor_writes(revision, &stage_bytes, actor)
+            self.stage_and_actor_writes(revision, &stage_bytes, actor, trial)
         })?;
         let _ = self.updates.send(revision);
         Ok(revision)
     }
 
     /// The sibling-tree entries that join a revision's transaction: its
-    /// stage and, if known, its actor.
+    /// stage, its actor if known and the trial it starts, if any.
     fn stage_and_actor_writes<'a>(
         &'a self,
         revision: u64,
         stage_bytes: &[u8],
         actor: Option<&str>,
+        trial: Option<&Trial>,
     ) -> Vec<SiblingWrite<'a>> {
         let mut writes = vec![SiblingWrite {
             tree: &self.stage,
@@ -281,6 +393,19 @@ impl AppState {
                 tree: &self.actors,
                 key: encode_rev(revision).to_vec(),
                 value: Some(actor.as_bytes().to_vec()),
+            });
+        }
+        if let Some(trial) = trial {
+            writes.push(SiblingWrite {
+                tree: &self.pending,
+                key: PENDING_KEY.to_vec(),
+                value: Some(
+                    serde_json::to_vec(&Pending {
+                        revision,
+                        trial: trial.clone(),
+                    })
+                    .expect("Pending always serializes"),
+                ),
             });
         }
         writes
@@ -298,10 +423,11 @@ impl AppState {
         bytes: RevisionBytes,
         stage: Stage,
         actor: Option<&str>,
+        trial: Option<&Trial>,
     ) -> Result<Option<u64>, StoreError> {
         let stage_bytes = stage_bytes(&stage);
         let applied = self.store.put_applied_with(bytes, index, &|revision| {
-            self.stage_and_actor_writes(revision, &stage_bytes, actor)
+            self.stage_and_actor_writes(revision, &stage_bytes, actor, trial)
         })?;
         match applied {
             Applied::Written(revision) => {
@@ -327,7 +453,7 @@ impl AppState {
         }
         let stage_bytes = stage_bytes(&Stage::promoted());
         let revision = self.store.put_with(bytes, &|revision| {
-            let mut writes = self.stage_and_actor_writes(revision, &stage_bytes, None);
+            let mut writes = self.stage_and_actor_writes(revision, &stage_bytes, None, None);
             writes.push(self.relay.write(parent_revision));
             writes
         })?;
@@ -352,7 +478,7 @@ impl AppState {
         }
         let stage_bytes = stage_bytes(&Stage::promoted());
         let applied = self.store.put_applied_with(bytes, index, &|revision| {
-            let mut writes = self.stage_and_actor_writes(revision, &stage_bytes, None);
+            let mut writes = self.stage_and_actor_writes(revision, &stage_bytes, None, None);
             writes.push(self.relay.write(parent_revision));
             writes
         })?;
@@ -523,6 +649,9 @@ pub fn router(state: AppState) -> Router {
         .route("/config/revisions/{revision}/diff", get(diff_revision))
         .route("/config/rollback/{revision}", post(rollback))
         .route("/config/promote/{revision}", post(promote))
+        .route("/config/pending", get(get_pending))
+        .route("/config/confirm/{revision}", post(confirm_revision))
+        .route("/config/revert", post(revert_now))
         .route_layer(middleware::from_fn_with_state(
             wayhouse_http::server::BearerAuth::new(state.auth_token.as_deref()),
             wayhouse_http::server::require_bearer,
@@ -552,6 +681,18 @@ struct SubmitParams {
     /// The revision the caller's edit started from (`0` = none yet). `409` if the latest
     /// revision is another one, so a save cannot silently overwrite a newer edit.
     base: Option<u64>,
+    /// Seconds to hold the new revision on trial: unless it is confirmed
+    /// (`POST /config/confirm/{revision}`) by then, the controller re-submits the previous
+    /// revision. Absent: a window of [`confirm::AUTO_CONFIRM_SECS`] when the diff could lock the
+    /// operator out ([`confirm::RISKS`]), none otherwise. `0`: none, whatever the diff.
+    confirm_within: Option<u64>,
+}
+
+/// What `submit` guards a write with.
+#[derive(Clone, Copy)]
+struct Guard {
+    base: Option<u64>,
+    window: Window,
 }
 
 /// Longest canary group name.
@@ -607,7 +748,10 @@ async fn submit_config(
         &format!("/config{query_suffix}"),
         actor,
         &forward,
-        params.base,
+        Guard {
+            base: params.base,
+            window: Window::from_param(params.confirm_within),
+        },
     )
     .await
 }
@@ -642,8 +786,9 @@ async fn submit(
     forward_path: &str,
     actor: Option<String>,
     forward: &crate::ha::client::ForwardHeaders,
-    base: Option<u64>,
+    guard: Guard,
 ) -> Response {
+    let Guard { base, window } = guard;
     // Held through the store commit so an adoption cannot claim the slave role
     // between the role check and the commit (`crate::adopt`).
     let _gate = state.role.write_gate().await;
@@ -651,8 +796,19 @@ async fn submit(
         return slave_rejects_write();
     }
 
-    if let Err(rejection) = check_document(state, &text, true) {
-        return *rejection;
+    let parsed = match check_document(state, &text, true) {
+        Ok(parsed) => parsed,
+        Err(rejection) => return *rejection,
+    };
+    let trial = match plan_trial(state, &parsed, &stage, window) {
+        Ok(trial) => trial,
+        Err(rejection) => return *rejection,
+    };
+
+    if let (Some(ha), Some(_)) = (&state.ha, &trial) {
+        if let Err(why) = confirm::check_support(ha).await {
+            return (StatusCode::CONFLICT, Json(ErrorResponse { error: why })).into_response();
+        }
     }
 
     if let Some(ha) = &state.ha {
@@ -671,6 +827,7 @@ async fn submit(
                 bytes: text.clone().into_bytes(),
                 stage,
                 actor: actor.clone(),
+                trial,
             },
             forward_path,
             text,
@@ -680,12 +837,267 @@ async fn submit(
         .await;
     }
 
-    match state.apply_revision_if_current(base, text.into_bytes(), stage, actor.as_deref()) {
+    match state.apply_revision_if_current(
+        base,
+        text.into_bytes(),
+        stage,
+        actor.as_deref(),
+        trial.as_ref(),
+    ) {
         Ok(revision) => {
             tracing::info!(revision, ?actor, "accepted a new config revision");
             (StatusCode::OK, Json(SubmitResponse { revision })).into_response()
         }
         Err(e) => store_error_response(e),
+    }
+}
+
+/// The trial `parsed` starts, if any, against the live revision (see [`confirm::plan`]). A
+/// canary revision is never on trial: it reaches only the instances of one group, and the
+/// previous revision still serves everyone else.
+fn plan_trial(
+    state: &AppState,
+    parsed: &wayhouse_config::Config,
+    stage: &Stage,
+    window: Window,
+) -> Result<Option<Trial>, Box<Response>> {
+    let bad_request = |error: String| {
+        Box::new((StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response())
+    };
+    if !stage.promoted {
+        return match window {
+            Window::Secs(_) => Err(bad_request(
+                "confirm_within does not apply to a canary revision".into(),
+            )),
+            _ => Ok(None),
+        };
+    }
+    let live = state
+        .current_for_group(None, None)
+        .map_err(|e| Box::new(store_error_response(e)))?;
+    let live_cfg = live
+        .as_ref()
+        .and_then(|(_, bytes)| wayhouse_config::parse_str(&String::from_utf8_lossy(bytes)).ok());
+    let fallback = live.as_ref().map(|(rev, _)| (*rev, live_cfg.as_ref()));
+    confirm::plan(window, parsed, fallback, confirm::now_ms()).map_err(bad_request)
+}
+
+#[derive(Serialize)]
+struct PendingResponse {
+    /// The revision on trial, or `null`.
+    pending: Option<PendingView>,
+    /// The controller's clock, for a countdown that does not trust the browser's.
+    now_ms: u64,
+    /// The window applied when the diff is risky and the caller named none.
+    auto_confirm_secs: u64,
+    /// What counts as risky: `reasons` carry these ids.
+    risks: Vec<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct PendingView {
+    #[serde(flatten)]
+    pending: Pending,
+    remaining_ms: u64,
+}
+
+/// `GET /config/pending` — the revision on trial, with the time left, so every operator's page
+/// shows the same countdown.
+async fn get_pending(State(state): State<AppState>) -> Response {
+    let now_ms = confirm::now_ms();
+    match state.pending() {
+        Ok(pending) => Json(PendingResponse {
+            pending: pending.map(|pending| PendingView {
+                remaining_ms: pending.trial.deadline_ms.saturating_sub(now_ms),
+                pending,
+            }),
+            now_ms,
+            auto_confirm_secs: confirm::AUTO_CONFIRM_SECS,
+            risks: confirm::RISKS
+                .iter()
+                .map(|(id, text)| serde_json::json!({"id": id, "text": text}))
+                .collect(),
+        })
+        .into_response(),
+        Err(e) => store_error_response(e),
+    }
+}
+
+fn not_on_trial(revision: Option<u64>) -> Response {
+    let what = revision.map_or("no revision".to_string(), |r| format!("revision {r}"));
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorResponse {
+            error: format!("{what} is on trial"),
+        }),
+    )
+        .into_response()
+}
+
+/// `POST /config/confirm/{revision}` — keeps the revision on trial. `409` when it is not (it was
+/// confirmed, reverted or replaced).
+async fn confirm_revision(
+    State(state): State<AppState>,
+    Path(revision): Path<u64>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(ha) = &state.ha {
+        // Checked on this replica first so a stale click answers at once; the entry applies the
+        // same test again, on every replica.
+        match state.pending() {
+            Ok(Some(p)) if p.revision == revision => {}
+            Ok(_) if ha.is_leader() => return not_on_trial(Some(revision)),
+            Ok(_) => {} // a follower's copy may lag: the leader it forwards to decides
+            Err(e) => return store_error_response(e),
+        }
+        if let Err(why) = confirm::check_decoders(ha).await {
+            return (StatusCode::CONFLICT, Json(ErrorResponse { error: why })).into_response();
+        }
+        return crate::ha::client::propose_write(
+            ha,
+            crate::ha::WriteRequest::ConfirmConfig { revision },
+            &format!("/config/confirm/{revision}"),
+            String::new(),
+            &crate::ha::client::ForwardHeaders::from_headers(&headers),
+            |resp| match resp {
+                crate::ha::WriteResponse::Revision(Some(revision)) => {
+                    (StatusCode::OK, Json(SubmitResponse { revision })).into_response()
+                }
+                _ => not_on_trial(Some(revision)),
+            },
+        )
+        .await;
+    }
+    match state.confirm(revision) {
+        Ok(true) => {
+            tracing::info!(revision, "confirmed a config revision");
+            (StatusCode::OK, Json(SubmitResponse { revision })).into_response()
+        }
+        Ok(false) => not_on_trial(Some(revision)),
+        Err(e) => store_error_response(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct RevertParams {
+    /// Revert only this revision's trial. A request forwarded to the leader carries it, so a
+    /// trial that started meanwhile is not reverted by a decision about an older one.
+    revision: Option<u64>,
+}
+
+/// `POST /config/revert[?revision=N]` — ends the trial now by bringing the previous revision
+/// back as a new one. `409` when nothing (or not `N`) is on trial.
+async fn revert_now(
+    State(state): State<AppState>,
+    Query(params): Query<RevertParams>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let revision = match (params.revision, state.pending()) {
+        (Some(revision), _) => revision,
+        (None, Ok(Some(pending))) => pending.revision,
+        (None, Ok(None)) => return not_on_trial(None),
+        (None, Err(e)) => return store_error_response(e),
+    };
+    revert(
+        &state,
+        revision,
+        actor_header(&headers),
+        &crate::ha::client::ForwardHeaders::from_headers(&headers),
+    )
+    .await
+}
+
+/// Brings the revision `revision` replaced back as a new revision, if `revision` is still on
+/// trial and still the latest when the write applies: the check and the write are one step
+/// (under the lock without HA, in the Raft apply with it), so a confirm or a newer edit that got
+/// there first wins and this answers `409`.
+async fn revert(
+    state: &AppState,
+    revision: u64,
+    actor: Option<String>,
+    forward: &crate::ha::client::ForwardHeaders,
+) -> Response {
+    let _gate = state.role.write_gate().await;
+    if state.role.get() == Role::Slave {
+        return slave_rejects_write();
+    }
+    let resp = if let Some(ha) = &state.ha {
+        if let Err(why) = confirm::check_decoders(ha).await {
+            return (StatusCode::CONFLICT, Json(ErrorResponse { error: why })).into_response();
+        }
+        crate::ha::client::propose_write(
+            ha,
+            crate::ha::WriteRequest::RevertConfig {
+                revision,
+                actor: actor.clone(),
+            },
+            &format!("/config/revert?revision={revision}"),
+            String::new(),
+            forward,
+            |resp| match resp {
+                crate::ha::WriteResponse::Revision(Some(new)) => {
+                    (StatusCode::OK, Json(SubmitResponse { revision: new })).into_response()
+                }
+                _ => not_on_trial(Some(revision)),
+            },
+        )
+        .await
+    } else {
+        match state.revert_trial(revision, actor.as_deref()) {
+            Ok(Some(new)) => {
+                (StatusCode::OK, Json(SubmitResponse { revision: new })).into_response()
+            }
+            Ok(None) => not_on_trial(Some(revision)),
+            Err(e) => store_error_response(e),
+        }
+    };
+    if resp.status().is_success() {
+        tracing::warn!(reverted = revision, ?actor, "reverted a config revision");
+    }
+    resp
+}
+
+/// Reverts the revision on trial if its deadline has passed at `now_ms`. `true` when it reverted.
+/// Run by the leader (or the only controller) on a timer, see [`confirm_loop`].
+pub async fn revert_expired(state: &AppState, now_ms: u64) -> bool {
+    let pending = match state.pending() {
+        Ok(Some(p)) if now_ms >= p.trial.deadline_ms => p,
+        Ok(_) => return false,
+        Err(e) => {
+            tracing::error!(error = %e, "cannot read the config trial");
+            return false;
+        }
+    };
+    let resp = revert(
+        state,
+        pending.revision,
+        Some("auto-revert".into()),
+        &crate::ha::client::ForwardHeaders::default(),
+    )
+    .await;
+    if !resp.status().is_success() {
+        // A confirm or a newer edit got there first (409) is fine; anything else leaves the
+        // operator's lock-out in place, so say so.
+        tracing::warn!(
+            revision = pending.revision,
+            status = %resp.status(),
+            "could not revert an unconfirmed config revision"
+        );
+    }
+    resp.status().is_success()
+}
+
+/// Reverts unconfirmed trials once a second. Only the leader acts (every replica has the record
+/// from the log, so a new leader picks up a window the old one opened); a restart resumes from
+/// the stored deadline.
+pub async fn confirm_loop(state: AppState) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        if state.is_relay_leader() {
+            revert_expired(&state, confirm::now_ms()).await;
+        }
     }
 }
 
@@ -1054,7 +1466,10 @@ async fn rollback(
                 "/config",
                 actor_header(&headers),
                 &crate::ha::client::ForwardHeaders::from_headers(&headers),
-                None,
+                Guard {
+                    base: None,
+                    window: Window::Auto,
+                },
             )
             .await;
             tracing::info!(from_revision = revision, "rolled back");

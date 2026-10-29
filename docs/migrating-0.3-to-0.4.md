@@ -41,11 +41,23 @@ options and capability bindings in a `wayhouse.plugin-manifest` section; see
 official plugins (Pelican, `acme-dns-cloudflare`, `selftest`) are rebuilt in the plugins
 repository.
 
+## Config changes that can lock you out are applied on trial
+
+A `POST /config` that changes `settings.admin.listen`, the admin token or TLS, `settings.gossip`
+or a listener on the admin port now starts a 60 second window: unless you confirm the revision
+(`POST /config/confirm/{revision}`), the controller re-submits the previous revision. A script
+that makes such a change on purpose passes `confirm_within=0` (no window) or confirms. See
+[Operations: confirm and revert](06-operations-observability.md). Under HA, upgrade every
+controller first: a request that would start a window answers `409` while a member runs an older
+build.
+
 ## Stored UI data
 
 The controller now stores dashboards, custom themes, saved filters, the form layout override and the
 deployment defaults (see [Stored UI data](ui-data.md)). Nothing to migrate. Under HA, upgrade every
 controller before the first save: a write is refused (`409`) while a member runs an older build.
+
+The web UI now opens on a **Dashboard** (a 12-column grid of widgets) instead of the Fleet page. A default dashboard shows until an operator customizes and saves one; nothing to migrate.
 
 ## Secrets
 

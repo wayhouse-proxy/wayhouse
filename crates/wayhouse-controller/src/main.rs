@@ -602,6 +602,9 @@ async fn main() -> anyhow::Result<()> {
         },
     ));
 
+    // Reverts a config revision nobody confirmed in time (`confirm`): the leader's job, resumed
+    // from the stored deadline after a restart or a failover.
+    tokio::spawn(wayhouse_controller::api::confirm_loop(config_state.clone()));
     let state = Arc::new(config_state);
     let intent_state = Arc::new(intent_state_val);
 
