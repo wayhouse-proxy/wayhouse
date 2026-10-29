@@ -60,6 +60,22 @@ fn err(status: StatusCode, msg: impl std::fmt::Display) -> Response {
         .into_response()
 }
 
+/// The 400 for an `approved` that is not the set the options resolve to; the structured
+/// `effective` lets a client re-send without parsing the message.
+fn approved_mismatch(effective: &Capabilities) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "error": format!(
+                "approved must be exactly what the options resolve to: {}",
+                serde_json::to_string(effective).expect("capabilities serialize")
+            ),
+            "effective": effective,
+        })),
+    )
+        .into_response()
+}
+
 #[allow(clippy::needless_pass_by_value)] // `map_err` callback
 pub(crate) fn internal(e: PluginStoreError) -> ApiError {
     tracing::error!(error = %e, "plugin store failure");
@@ -243,6 +259,10 @@ struct InstallRequest {
     config: serde_json::Value,
     #[serde(default = "yes")]
     enabled: bool,
+    /// Checks the module and options and answers `{"effective": ...}` (the set to approve)
+    /// without installing anything.
+    #[serde(default)]
+    dry_run: bool,
 }
 
 fn yes() -> bool {
@@ -328,14 +348,11 @@ async fn install_inner(
     let effective = info
         .effective_caps(&config)
         .map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    if req.dry_run {
+        return Ok(Json(serde_json::json!({ "effective": effective })).into_response());
+    }
     if info.declared.has_placeholders() && approved != effective {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "approved must be exactly what the options resolve to: {}",
-                serde_json::to_string(&effective).expect("capabilities serialize")
-            ),
-        ));
+        return Err(approved_mismatch(&effective));
     }
     if let Some(ha) = &st.ha {
         // Before the compile: a refusal costs the operator nothing.
@@ -490,15 +507,24 @@ async fn list(State(st): State<PluginsState>) -> Result<Json<Vec<InstallRecord>>
     Ok(Json(st.store.list().map_err(internal)?))
 }
 
+/// The install plus its module's manifest (`null` without one), so a client can render the
+/// options form without keeping the upload response around.
 async fn get_one(
     State(st): State<PluginsState>,
     Path(id): Path<String>,
-) -> Result<Json<InstallRecord>, ApiError> {
-    st.store
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let record = st
+        .store
         .get(&id)
         .map_err(internal)?
-        .map(Json)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such install"))
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such install"))?;
+    let manifest = match st.store.get_blob(&record.sha256).map_err(internal)? {
+        Some(bytes) => inspect(&bytes).ok().and_then(|i| i.manifest),
+        None => None,
+    };
+    let mut out = serde_json::to_value(&record).expect("install record serializes");
+    out["manifest"] = serde_json::to_value(manifest).expect("manifest serializes");
+    Ok(Json(out))
 }
 
 /// What the install's ticks have done (empty before the first one). Under HA only the
@@ -662,15 +688,7 @@ async fn put_config_inner(
         .map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     let approved = if info.declared.has_placeholders() {
         match &req.approved {
-            Some(given) if *given != effective => {
-                return Err(err(
-                    StatusCode::BAD_REQUEST,
-                    format!(
-                        "approved must be exactly what the options resolve to: {}",
-                        serde_json::to_string(&effective).expect("capabilities serialize")
-                    ),
-                ))
-            }
+            Some(given) if *given != effective => return Err(approved_mismatch(&effective)),
             None if effective != record.approved => {
                 return Err((
                     StatusCode::CONFLICT,
@@ -1440,6 +1458,10 @@ mod tests {
         let wrong = r#"{"config":{"panel":"q.example"},"approved":{"log":true}}"#;
         let (status, v) = put_config(&app, &id, wrong).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        assert_eq!(
+            v["effective"]["http"]["hosts"][0]["host"], "q.example",
+            "{v}"
+        );
         let ok = format!(
             r#"{{"config":{{"panel":"q.example"}},"approved":{}}}"#,
             needs["effective"]
@@ -1501,6 +1523,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_dry_run_resolves_the_set_and_installs_nothing() {
+        let (st, _d) = state(None);
+        let app = router(st.clone());
+        let sha = upload(&app, &bound_module()).await;
+        let body = format!(
+            r#"{{"name":"demo","sha256":"{sha}","approved":{{"log":true}},"config":{{"panel":"p.example"}},"dry_run":true}}"#
+        );
+        let (status, v) = call(&app, "POST", "/plugins", body.into_bytes(), None).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["effective"]["http"]["hosts"][0]["host"], "p.example");
+        assert!(st.store.list().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_one_carries_the_manifest_of_its_module() {
+        let (st, _d) = state(None);
+        let app = router(st);
+        let id = install_bound(&app, r#"{"panel":"p.example"}"#).await;
+        let (status, v) = call(&app, "GET", &format!("/plugins/{id}"), Vec::new(), None).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["config"]["panel"], "p.example");
+        assert_eq!(v["manifest"]["bindings"][0]["option"], "panel");
+    }
+
+    #[tokio::test]
     async fn install_approves_the_resolved_set_only() {
         let (st, _d) = state(None);
         let app = router(st.clone());
@@ -1524,6 +1571,10 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{approved}: {v}");
             assert!(v["error"].as_str().unwrap().contains("p.example"), "{v}");
+            assert_eq!(
+                v["effective"]["http"]["hosts"][0]["host"], "p.example",
+                "{v}"
+            );
         }
         assert!(st.store.list().unwrap().is_empty());
         let (status, v) = call(

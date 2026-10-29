@@ -44,6 +44,7 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/tunnel/addresses", get(tunnel_addresses))
         .route("/api/plugins", get(list_plugins))
         .route("/api/plugin-routes", get(plugin_routes))
+        .route("/api/plugins/{id}", get(get_plugin))
         .route("/api/plugins/{id}/status", get(plugin_status))
         .route("/api/acme/sites", get(acme_sites))
         .route("/api/acme/gateways", get(acme_gateways))
@@ -183,6 +184,10 @@ async fn delete_plugin(
     Path(id): Path<String>,
 ) -> Response {
     plugin_action(&state, Method::DELETE, &id, "", actor).await
+}
+
+async fn get_plugin(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    plugin_action(&state, Method::GET, &id, "", None).await
 }
 
 async fn plugin_status(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -962,6 +967,7 @@ mod tests {
         let (url, seen) = recording_controller(StatusCode::OK).await;
         let app = app_with_controller(url, None);
         for (method, path) in [
+            ("GET", "/api/plugins/0123abcd"),
             ("GET", "/api/plugins/0123abcd/status"),
             ("PUT", "/api/plugins/0123abcd/config"),
             ("GET", "/api/plugins/0123abcd/secrets"),
@@ -992,6 +998,7 @@ mod tests {
         assert_eq!(
             paths,
             [
+                "GET /plugins/0123abcd",
                 "GET /plugins/0123abcd/status",
                 "PUT /plugins/0123abcd/config",
                 "GET /plugins/0123abcd/secrets",

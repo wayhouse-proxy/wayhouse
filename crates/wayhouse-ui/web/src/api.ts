@@ -9,7 +9,10 @@ import type {
   AcmeSite,
   FanoutResponse,
   InstallResponse,
+  PluginDetail,
   PluginInstall,
+  PluginSecretSlot,
+  PluginStatus,
   PluginModule,
   PluginRouteOverlay,
   PluginCapabilities,
@@ -25,9 +28,12 @@ import type { FleetStats, Range } from "./lib/stats";
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** The parsed JSON error body, for answers that carry more than `error` (a 409's `effective`). */
+  body?: any;
+  constructor(status: number, message: string, body?: unknown) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -41,13 +47,14 @@ export async function requestJson<T>(path: string, init?: RequestInit): Promise<
   const text = await resp.text();
   if (!resp.ok) {
     let message = text;
+    let parsed: unknown;
     try {
-      const body = JSON.parse(text);
-      if (typeof body?.error === "string") message = body.error;
+      parsed = JSON.parse(text);
+      if (typeof (parsed as any)?.error === "string") message = (parsed as any).error;
     } catch {
       // not JSON; use the raw text as-is
     }
-    throw new ApiError(resp.status, message || resp.statusText);
+    throw new ApiError(resp.status, message || resp.statusText, parsed);
   }
   return text ? (JSON.parse(text) as T) : (undefined as T);
 }
@@ -245,17 +252,63 @@ export function uploadPluginModule(bytes: ArrayBuffer): Promise<PluginModule> {
   });
 }
 
-export function installPlugin(req: {
+export interface InstallRequest {
   name: string;
   sha256: string;
   approved: PluginCapabilities;
   enabled: boolean;
-}): Promise<PluginInstall> {
-  return requestJson("/api/plugins", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(req),
-  });
+  config?: unknown;
+}
+
+export function installPlugin(req: InstallRequest): Promise<PluginInstall> {
+  return requestJson("/api/plugins", jsonInit("POST", req));
+}
+
+/** What the options resolve to (the set to approve); nothing is installed. */
+export function resolvePluginCapabilities(req: InstallRequest): Promise<{ effective: PluginCapabilities }> {
+  return requestJson("/api/plugins", jsonInit("POST", { ...req, dry_run: true }));
+}
+
+const jsonInit = (method: string, body: unknown): RequestInit => ({
+  method,
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(body),
+});
+const pluginPath = (id: string, suffix = "") => `/api/plugins/${encodeURIComponent(id)}${suffix}`;
+
+export function getPlugin(id: string): Promise<PluginDetail> {
+  return requestJson(pluginPath(id));
+}
+
+export function getPluginStatus(id: string): Promise<PluginStatus> {
+  return requestJson(pluginPath(id, "/status"));
+}
+
+/** A 409 means the options move the approved capabilities: `body.approved` and `body.effective` hold both sets. */
+export function putPluginConfig(id: string, config: unknown, approved?: PluginCapabilities): Promise<PluginInstall> {
+  return requestJson(pluginPath(id, "/config"), jsonInit("PUT", { config, approved }));
+}
+
+export async function listPluginSecrets(id: string): Promise<PluginSecretSlot[]> {
+  return (await requestJson<{ secrets: PluginSecretSlot[] }>(pluginPath(id, "/secrets"))).secrets;
+}
+
+/** Write-only: the value goes to the controller and is never read back or kept here. */
+export function putPluginSecret(id: string, slot: string, value: string): Promise<void> {
+  return requestJson(pluginPath(id, `/secrets/${encodeURIComponent(slot)}`), jsonInit("PUT", { value }));
+}
+
+export function deletePluginSecret(id: string, slot: string): Promise<void> {
+  return requestJson(pluginPath(id, `/secrets/${encodeURIComponent(slot)}`), { method: "DELETE" });
+}
+
+/** The bearer token is in this answer only; asking again rotates it. */
+export function enablePluginWebhook(id: string): Promise<{ token: string; path: string }> {
+  return requestJson(pluginPath(id, "/webhook"), { method: "POST" });
+}
+
+export function revokePluginWebhook(id: string): Promise<void> {
+  return requestJson(pluginPath(id, "/webhook"), { method: "DELETE" });
 }
 
 export function setPluginEnabled(id: string, enabled: boolean): Promise<PluginInstall> {
