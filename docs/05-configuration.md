@@ -211,6 +211,28 @@
 > `wayhouse_filter_blocked_total{filter="max_conn"|"max_udp"|"max_new_rate"}`.
 > Startup-only, like `settings.workers`.
 >
+> **Feature flags (schema 4):** the optional top-level `features:` section switches
+> individual capabilities on or off by name, without removing their configuration. A flag
+> that is not listed keeps its registry default (on). Unknown names are an error, so a typo
+> never leaves a kill switch silently inactive, and the section needs `schema_version: 4`.
+>
+> ```yaml
+> schema_version: 4
+> features:
+>   gossip_verdicts: false # ignore gossip verdicts, judge backends by own health checks
+> ```
+>
+> The proxy flags are `gossip_verdicts`, `sniffers`, `port_routes`, `admin_write.backends`,
+> `admin_write.sniffer_upload`, `admin_write.route_hint`, and the protection flags
+> `rate_limit`, `per_source`, `acl`, `geo` (turning those off removes protection). The
+> controller reads `plugin_webhooks`, `registry_install`, `acme_issuance` and
+> `tunnel_registration`; they are not valid in a proxy config. `GET /features` on the proxy
+> admin API and on the controller lists every flag of that process with its effective value,
+> its source (`default`, `config`, `override`, `build`), whether the flag is `wired` (read by
+> the runtime yet) and whether it is `available` (a flag whose code was compiled out reports
+> `available: false`). Metrics: `wayhouse_feature_enabled{flag}` and
+> `wayhouse_feature_source{flag,source}`.
+>
 > **Web sites (schema 3):** the optional top-level `web:` section describes HTTP(S) sites
 > published through a Caddy that sits behind a Wayhouse pool (design: issue #297, spec
 > `docs/superpowers/specs/2026-10-15-web-routing-design.md`). It is validated and resolved

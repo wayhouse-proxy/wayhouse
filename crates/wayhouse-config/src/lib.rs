@@ -11,6 +11,7 @@
 use std::path::Path;
 
 mod cidr;
+pub mod features;
 #[cfg(feature = "json-schema")]
 mod json_schema;
 mod keys;
