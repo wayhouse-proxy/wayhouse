@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_LAYOUT } from "../form/layout";
-import { SOURCE_TYPES, newPool, newResolver, newSource, poolFields, setPoolSource, sourceFields, usedBy } from "./lists";
+import { SOURCE_TYPES, newPool, newResolver, newSource, poolFields, setPoolSource, sourceFields, tidyPool, usedBy } from "./lists";
 
 describe("pool, source and resolver helpers", () => {
   it("starts each with only what names it", () => {
@@ -27,6 +27,14 @@ describe("pool, source and resolver helpers", () => {
     expect(poolFields({ balancer: "consistent_hash" })).toContain("hash_on");
     expect(poolFields({})).toContain("targets");
     expect(poolFields({ source: "dns" })).not.toContain("targets");
+  });
+
+  it("leaving the weighted or consistent-hash balancer drops the fields only they take (the config parser refuses them)", () => {
+    const stale = { name: "p", balancer: "round_robin", weights: { "a:1": 2 }, hash_on: "src_ip", targets: ["a:1"] };
+    expect(tidyPool(stale)).toEqual({ name: "p", balancer: "round_robin", targets: ["a:1"] });
+    expect(tidyPool({ ...stale, balancer: "weighted" })).toEqual({ name: "p", balancer: "weighted", weights: { "a:1": 2 }, targets: ["a:1"] });
+    expect(tidyPool({ ...stale, balancer: "consistent_hash" })).toEqual({ name: "p", balancer: "consistent_hash", hash_on: "src_ip", targets: ["a:1"] });
+    expect(tidyPool({ name: "p", targets: [] })).toEqual({ name: "p", targets: [] });
   });
 
   it("choosing a source drops the static list; choosing the list again drops the source", () => {
@@ -69,6 +77,13 @@ describe("coverage guard: every pool, source and resolver field is rendered, han
     const nested = (def: string, parent: string, page: string, prefix: string) => props(def).filter((p) => DEFAULT_LAYOUT.fields[`${prefix}${parent}.${p}`]?.page !== page);
     expect([nested("RawHealthCheck", "health_check", "pool", "pools.*."), nested("RawPerBackend", "per_backend", "pool", "pools.*."), nested("RawCache", "cache", "resolver", "resolvers.*.")]).toEqual([[], [], []]);
   });
+  it("the hand-written field lists leave no schema field out: a new one fails here until it is placed", () => {
+    const poolShown = new Set(["weighted", "consistent_hash", "round_robin"].flatMap((balancer) => [...poolFields({ balancer }), ...poolFields({ balancer, source: "s" })]));
+    expect(props("RawPool").filter((p) => !poolShown.has(p) && !HAND.pool.includes(p))).toEqual([]);
+    const sourceShown = new Set(SOURCE_TYPES.flatMap((t) => sourceFields(t.value)));
+    expect(props("RawBackendSource").filter((p) => !sourceShown.has(p) && !HAND.source.includes(p))).toEqual([]);
+  });
+
   it("every source type's fields are real RawBackendSource fields", () => {
     const real = new Set(props("RawBackendSource"));
     for (const t of SOURCE_TYPES) expect(sourceFields(t.value).filter((f) => !real.has(f))).toEqual([]);

@@ -52,3 +52,13 @@ export function usedBy(config: Json, kind: "pool" | "resolver" | "source", name:
   }
   return out;
 }
+
+/** Drops what the chosen balancer does not take: the form hides `weights` and `hash_on`, but the YAML would keep them and the config parser refuses them. */
+export function tidyPool(pool: Json): Json {
+  const { weights, hash_on, ...rest } = pool;
+  return {
+    ...rest,
+    ...(pool.balancer === "weighted" && weights !== undefined ? { weights } : {}),
+    ...(pool.balancer === "consistent_hash" && hash_on !== undefined ? { hash_on } : {}),
+  };
+}

@@ -114,6 +114,19 @@ describe("Pools editor", () => {
     expect(screen.getByLabelText("Backends come from")).toHaveValue("dns");
   });
 
+  it("switching the balancer away from weighted removes the weights from the YAML", async () => {
+    api.getCurrentConfig.mockResolvedValue({
+      text: FILE.replace("    balancer: weighted\n", "    balancer: weighted\n    weights: { \"10.0.0.9:1\": 3 }\n"),
+      revision: "3",
+    });
+    pools("admin", "/config/pools?i=1");
+    await userEvent.selectOptions(await screen.findByLabelText(/^Balancer/), "round_robin");
+    const text = await apply();
+    const eu = text.slice(text.indexOf("name: eu"), text.indexOf("resolvers:"));
+    expect(eu).toMatch(/balancer: "?round_robin"?/);
+    expect(eu).not.toContain("weights");
+  });
+
   it("choosing a source drops the static list from the YAML", async () => {
     pools();
     await userEvent.selectOptions(await screen.findByLabelText("Backends come from"), "dns");

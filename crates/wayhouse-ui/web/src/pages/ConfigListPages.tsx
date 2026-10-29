@@ -3,7 +3,7 @@ import { PoolLines, type BackendRow } from "../components/editors/PoolLines";
 import { Select } from "../components/ui/Input";
 import type { State } from "../components/ui/StatusMark";
 import type { Json } from "../lib/editors/listeners";
-import { SOURCE_TYPES, newPool, newResolver, newSource, poolFields, setPoolSource, sourceFields } from "../lib/editors/lists";
+import { SOURCE_TYPES, newPool, newResolver, newSource, poolFields, setPoolSource, sourceFields, tidyPool } from "../lib/editors/lists";
 import { useFleetSocket } from "../useFleetSocket";
 import { ConfigListPage } from "./ConfigListPage";
 
@@ -48,6 +48,7 @@ export function PoolsEditorPage() {
       ]}
       create={newPool}
       fieldsOf={poolFields}
+      tidy={tidyPool}
       above={({ item, root, update, canWrite }) => {
         const sources: string[] = (Array.isArray(root.backend_sources) ? root.backend_sources : []).map((s: Json) => s.name).filter(Boolean);
         return (

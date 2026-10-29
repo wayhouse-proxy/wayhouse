@@ -12,7 +12,7 @@ import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { useSharedConfigDoc } from "../lib/config/SharedConfigDoc";
 import type { Json } from "../lib/editors/listeners";
 import { usedBy } from "../lib/editors/lists";
-import { set } from "../lib/form/path";
+import { get, set } from "../lib/form/path";
 import { useFormLayout } from "../lib/form/useFormLayout";
 import { useCan } from "../lib/session";
 
@@ -28,6 +28,8 @@ export interface ListPageProps {
   refKind: "pool" | "resolver" | "source";
   columns: { label: string; cell: (item: Json) => React.ReactNode; numeric?: boolean }[];
   create: (items: Json[]) => Json;
+  /** Applied to the open item after every form edit: drops fields the item's current choices hide. */
+  tidy?: (item: Json) => Json;
   /** The form fields of the open item; default all. */
   fieldsOf?: (item: Json) => string[] | undefined;
   /** Hand-edited parts above the form: the diagram, a type picker. */
@@ -143,7 +145,11 @@ export function ConfigListPage(p: ListPageProps) {
                 schema={doc.schema}
                 value={doc.value}
                 saved={doc.savedValue}
-                onChange={doc.setValue}
+                onChange={(next) => {
+                  const item = get(next, [p.listKey, index]);
+                  const tidy = item && p.tidy ? p.tidy(item) : item;
+                  doc.setValue(tidy === item ? next : set(next, [p.listKey, index], tidy));
+                }}
                 layout={layout}
                 path={[p.listKey, index]}
                 page={p.page}
