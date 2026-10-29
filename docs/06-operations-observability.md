@@ -491,6 +491,20 @@ un-namespaced names.
   default 10s push interval) and the product `version` each instance runs (empty from
   a build that predates the field). The UI backend checks a registry sniffer's
   `min_proxy` against these versions on install and update.
+- `GET /fleet/stats?range=5m|15m|1h` (default `15m`) — fleet rates and gauges
+  from a rolling in-memory history: one-minute points, an hour deep, aggregates
+  only (fleet, per listener, per pool, per region; never per node). Proxies push
+  cumulative per-listener counters (accepted, blocked, bytes per direction, UDP
+  packets) and the aggregator adds the differences to the minute buckets: a
+  counter that drops is read as a restart, a gap between pushes is spread over the
+  minutes it spans. Pool backend counts and session counts are sampled once per
+  instance per minute. The last point is the open minute (`partial: true`, rates
+  over the time up to the newest push; its gauges are a partial sum of the instances that have pushed this minute). `range` is a span of time: minutes with no push are absent, and a minute only a gap reached has `null` session counts. Each series carries `resolution_sec` and
+  `last_sample_ms` for freshness, and `generated_at_ms` is on the response.
+  TCP bytes are counted, UDP is counted in packets. Not persisted: a restart or a
+  replica swap starts the charts empty, and replicas each see only the pushes they
+  receive. The extra payload is about 130 bytes per listener per push (about 1.2 KB
+  for ten listeners, next to about 4.3 KB for ten five-backend pools).
 - `GET /fleet/subscribe` (SSE) — the same summaries, pushed on change
   (debounced 150ms so a burst of near-simultaneous instance pushes collapses
   into one resend, not one per push).

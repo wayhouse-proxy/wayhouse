@@ -18,7 +18,7 @@
 //! instance's own admin API, where the eventual effect lands.
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Extension, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path, Query, RawQuery, State};
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
@@ -34,6 +34,7 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/fleet/pools", get(get_pools))
         .route("/api/fleet/sessions", get(get_sessions))
         .route("/api/fleet/healthz", get(get_healthz))
+        .route("/api/fleet/stats", get(get_stats))
         .route(
             "/api/fleet/instances/{instance}/sniffers",
             get(get_instance_sniffers),
@@ -84,6 +85,15 @@ async fn get_sessions(State(state): State<AppState>) -> Response {
 
 async fn get_healthz(State(state): State<AppState>) -> Response {
     proxy(&state, Method::GET, "/fleet/healthz", None, None).await
+}
+
+/// The `range` query rides along unchanged; the aggregator validates it.
+async fn get_stats(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
+    let path = match query {
+        Some(q) => format!("/fleet/stats?{q}"),
+        None => "/fleet/stats".to_string(),
+    };
+    proxy(&state, Method::GET, &path, None, None).await
 }
 
 async fn get_instance_sniffers(
@@ -625,6 +635,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn stats_forwards_the_range_to_the_aggregator() {
+        let upstream = Router::new().route(
+            "/fleet/stats",
+            axum::routing::get(
+                |axum::extract::RawQuery(q): axum::extract::RawQuery| async move {
+                    q.unwrap_or_default()
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let (app, session_id) = logged_in_app(url, None);
+
+        let resp = app
+            .oneshot(
+                Request::get("/api/fleet/stats?range=1h")
+                    .header(header::COOKIE, cookie(&session_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(bytes, "range=1h".as_bytes());
     }
 
     #[tokio::test]
