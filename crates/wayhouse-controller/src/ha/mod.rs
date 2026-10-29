@@ -145,6 +145,13 @@ pub enum WriteRequest {
     ConfirmConfig {
         revision: u64,
     },
+    /// Brings back the revision a trial replaced (`crate::confirm`), if `revision` is still on
+    /// trial and the latest when the entry applies. Answers the new revision, or `Revision(None)`
+    /// when nothing was reverted.
+    RevertConfig {
+        revision: u64,
+        actor: Option<String>,
+    },
     /// Phase 12 slice 7: flips an existing config revision's `Stage::promoted`
     /// to `true` in place — the same operation `AppState::promote_revision`
     /// does directly when HA is off.

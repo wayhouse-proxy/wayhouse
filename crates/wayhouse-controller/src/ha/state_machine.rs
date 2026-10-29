@@ -630,6 +630,11 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                                 .map_err(|e| StorageIOError::write_state_machine(&e))?
                                 .then_some(revision),
                         ),
+                        WriteRequest::RevertConfig { revision, actor } => WriteResponse::Revision(
+                            self.config
+                                .revert_entry(index, revision, actor.as_deref())
+                                .map_err(|e| StorageIOError::write_state_machine(&e))?,
+                        ),
                         WriteRequest::Promote(revision) => {
                             // A promote of a revision this replica doesn't
                             // have (shouldn't happen — the promoted
@@ -2456,6 +2461,77 @@ mod tests {
             None,
             "the snapshot clears a stale trial"
         );
+    }
+
+    #[tokio::test]
+    async fn a_revert_entry_applies_only_while_its_revision_is_still_on_trial() {
+        let trial = crate::confirm::Trial {
+            revert_to: 1,
+            deadline_ms: 9_000,
+            reasons: vec![],
+        };
+        let revert = |revision| WriteRequest::RevertConfig {
+            revision,
+            actor: Some("auto-revert".into()),
+        };
+        let (mut a, _a) = test_sm();
+        apply_one(&mut a, 1, trial_config(b"old", None)).await;
+        apply_one(&mut a, 2, trial_config(b"risky", Some(trial.clone()))).await;
+
+        // The old revision comes back as a new one, attributed to the reverter.
+        assert_eq!(
+            apply_one(&mut a, 3, revert(2)).await,
+            WriteResponse::Revision(Some(3))
+        );
+        assert_eq!(a.config.store.get(3).unwrap().unwrap(), b"old");
+        assert_eq!(a.config.actor_of(3).as_deref(), Some("auto-revert"));
+        assert_eq!(a.config.pending().unwrap(), None);
+        // The same entry again (a second proposal) finds nothing on trial.
+        assert_eq!(
+            apply_one(&mut a, 4, revert(2)).await,
+            WriteResponse::Revision(None)
+        );
+        assert_eq!(a.config.store.current_revision().unwrap(), Some(3));
+
+        // A confirm that committed first wins over the revert behind it in the log.
+        apply_one(
+            &mut a,
+            5,
+            trial_config(
+                b"risky2",
+                Some(crate::confirm::Trial {
+                    revert_to: 3,
+                    ..trial.clone()
+                }),
+            ),
+        )
+        .await;
+        apply_one(&mut a, 6, WriteRequest::ConfirmConfig { revision: 4 }).await;
+        assert_eq!(
+            apply_one(&mut a, 7, revert(4)).await,
+            WriteResponse::Revision(None)
+        );
+        assert_eq!(a.config.store.get(4).unwrap().unwrap(), b"risky2");
+
+        // So does a newer revision.
+        apply_one(
+            &mut a,
+            8,
+            trial_config(
+                b"risky3",
+                Some(crate::confirm::Trial {
+                    revert_to: 4,
+                    ..trial
+                }),
+            ),
+        )
+        .await;
+        apply_one(&mut a, 9, trial_config(b"newer", None)).await;
+        assert_eq!(
+            apply_one(&mut a, 10, revert(5)).await,
+            WriteResponse::Revision(None)
+        );
+        assert_eq!(a.config.store.current_revision().unwrap(), Some(6));
     }
 
     #[test]

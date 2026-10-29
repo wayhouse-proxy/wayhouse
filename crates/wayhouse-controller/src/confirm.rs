@@ -177,6 +177,32 @@ pub fn check_support_answers(
     Ok(())
 }
 
+/// The gate for ending a trial (confirm, revert): only a member that *answered* with a build
+/// that cannot decode the entries blocks it. A member that does not answer must not stop a
+/// revert, which is what gets the operator back in.
+pub async fn check_decoders(ha: &crate::ha::HaHandle) -> Result<(), String> {
+    check_decoders_answers(&crate::plugins::peer::whoami_all(ha).await)
+}
+
+pub fn check_decoders_answers(
+    answers: &[(
+        crate::ha::NodeId,
+        Result<crate::ha::routes::Whoami, crate::ha::members::WhoamiError>,
+    )],
+) -> Result<(), String> {
+    for (id, answer) in answers {
+        if answer
+            .as_ref()
+            .is_ok_and(|who| who.confirm_support < crate::ha::routes::CONFIRM_SUPPORT)
+        {
+            return Err(format!(
+                "node {id} runs a build without confirm-and-revert; upgrade every replica first"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -462,6 +488,62 @@ mod tests {
         assert!(pending(&app).await.is_null());
         assert!(!crate::api::revert_expired(&st, now_ms() + 120_000).await);
         assert_eq!(st.store.current_revision().unwrap(), Some(3));
+    }
+
+    #[tokio::test]
+    async fn a_revert_decided_before_a_confirm_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = state(dir.path());
+        let app = router(st.clone());
+        post(&app, "/config", "").await;
+        post(&app, "/config", MOVED_ADMIN).await;
+        let stale = st.pending().unwrap().unwrap();
+
+        // The confirm lands between the timer reading the trial and acting on it.
+        assert!(st.confirm(2).unwrap());
+        assert_eq!(
+            st.revert_trial(stale.revision, Some("auto-revert"))
+                .unwrap(),
+            None
+        );
+        assert_eq!(st.store.current_revision().unwrap(), Some(2));
+        assert_eq!(current(&app).await, format!("{BASE}{MOVED_ADMIN}"));
+    }
+
+    #[tokio::test]
+    async fn a_revert_decided_before_a_newer_edit_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = state(dir.path());
+        let app = router(st.clone());
+        post(&app, "/config", "").await;
+        post(&app, "/config", MOVED_ADMIN).await;
+        let stale = st.pending().unwrap().unwrap();
+
+        let newer = format!("{MOVED_ADMIN}  workers: 2\n");
+        post(&app, "/config", &newer).await;
+        assert_eq!(st.revert_trial(stale.revision, None).unwrap(), None);
+        assert_eq!(st.store.current_revision().unwrap(), Some(3));
+        assert_eq!(current(&app).await, format!("{BASE}{newer}"));
+    }
+
+    #[test]
+    fn only_a_build_that_answered_without_support_blocks_a_confirm_or_revert() {
+        use crate::ha::members::WhoamiError;
+        let who = |confirm_support| crate::ha::routes::Whoami {
+            node_id: 2,
+            log_empty: false,
+            pre_ha: crate::ha::import::PreHaSummary::default(),
+            plugin_support: 0,
+            secret_key_ids: Vec::new(),
+            acme_support: 0,
+            confirm_support,
+        };
+        let current = crate::ha::routes::CONFIRM_SUPPORT;
+        // A member that is down may be old, but a revert must not wait for it.
+        let down = (3, Err(WhoamiError::Unreachable("down".into())));
+        assert!(check_decoders_answers(&[(2, Ok(who(current))), down]).is_ok());
+        let old = check_decoders_answers(&[(2, Ok(who(0)))]).unwrap_err();
+        assert!(old.contains("node 2") && old.contains("upgrade"), "{old}");
     }
 
     #[tokio::test]
