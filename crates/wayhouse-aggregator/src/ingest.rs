@@ -230,7 +230,7 @@ impl IngestStore {
         self.try_ingest_at(payload, unix_ms())
     }
 
-    fn try_ingest_at(&self, mut payload: IngestPayload, now: u64) -> Result<(), IngestRejected> {
+    fn try_ingest_at(&self, payload: IngestPayload, now: u64) -> Result<(), IngestRejected> {
         let mut instances = self
             .instances
             .write()
@@ -248,8 +248,6 @@ impl IngestStore {
             None => None,
         };
         self.history.record(&payload, now);
-        // The history holds the counters now; the stored view does not need them twice.
-        payload.listeners = Vec::new();
         let state = InstanceState {
             payload,
             received_at_ms: now,
@@ -390,19 +388,6 @@ mod tests {
             ),
             ("", "", 0)
         );
-    }
-
-    #[test]
-    fn the_stored_payload_does_not_keep_the_counters_the_history_holds() {
-        let store = IngestStore::new();
-        let mut p = payload("a");
-        p.listeners = vec![ListenerStats {
-            name: "main".into(),
-            accepted: 5,
-            ..Default::default()
-        }];
-        store.ingest(p);
-        assert!(store.get("a").unwrap().payload.listeners.is_empty());
     }
 
     #[test]
