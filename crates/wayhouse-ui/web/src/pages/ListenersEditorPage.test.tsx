@@ -1,3 +1,4 @@
+import { describeRoute } from "../lib/editors/listeners";
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
@@ -78,10 +79,25 @@ describe("Listeners and routes editor", () => {
     expect(within(await route(2)).getByLabelText("Target of route 2")).toHaveValue("eu");
   });
 
-  it("opens the listener named in the URL", async () => {
-    page("admin", "/config/listeners?name=voice");
+  it("opens the listener the URL selects", async () => {
+    page("admin", "/config/listeners?l=1");
     expect(await screen.findByLabelText(/^Bind address/)).toHaveValue("0.0.0.0:30000");
     expect(screen.getByLabelText(/^Pool/)).toHaveValue("lobby");
+  });
+
+  it("renaming the open listener keeps it open", async () => {
+    page("admin", "/config/listeners?l=1");
+    const name = await screen.findByLabelText(/^Name/);
+    await userEvent.clear(name);
+    await userEvent.type(name, "voice2");
+    expect(await screen.findByRole("heading", { name: "voice2" })).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Bind address/)).toHaveValue("0.0.0.0:30000");
+  });
+
+  it("a half-filled length is spelled without undefined", () => {
+    const text = describeRoute({ match: { type: "first_bytes", length: { min: 5 } }, action: { pool: "lobby" } });
+    expect(text).toContain("length at least 5");
+    expect(text).not.toContain("undefined");
   });
 
   it("a field edit is a patch: comments and the other listener survive", async () => {

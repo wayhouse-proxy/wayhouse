@@ -36,7 +36,8 @@ export function ListenersEditorPage() {
   const listeners: Json[] = Array.isArray(root.listeners) ? root.listeners : [];
   const pools = names(root.pools);
   const resolvers = names(root.resolvers);
-  const index = Math.max(0, listeners.findIndex((l) => l.name === params.get("name")));
+  // By position, not name: the name is an editable field, and renaming must not move the selection.
+  const index = Math.min(Math.max(0, Number(params.get("l")) || 0), Math.max(0, listeners.length - 1));
   const current = listeners[index];
 
   /** Live pool state from the fleet socket: every backend of the pool, over every instance that reports it. */
@@ -54,7 +55,7 @@ export function ListenersEditorPage() {
   if (doc.error || !doc.schema) return <ErrorState onRetry={doc.reload}>{doc.error ?? "The configuration schema is not available."}</ErrorState>;
 
   const put = (path: (string | number)[], next: unknown) => doc.setValue(set(doc.value ?? {}, path, next));
-  const select = (name: string) => setParams({ name }, { replace: true });
+  const select = (i: number) => setParams({ l: String(i) }, { replace: true });
 
   return (
     <div className="max-w-4xl">
@@ -90,7 +91,7 @@ export function ListenersEditorPage() {
                 {listeners.map((l, i) => (
                   <TR key={i} selected={i === index}>
                     <TD className="font-mono">
-                      <Link replace className="underline" aria-current={i === index || undefined} to={`?${new URLSearchParams({ name: String(l.name ?? "") })}`}>
+                      <Link replace className="underline" aria-current={i === index || undefined} to={`?l=${i}`}>
                         {String(l.name ?? "(unnamed)")}
                       </Link>
                     </TD>
@@ -109,7 +110,7 @@ export function ListenersEditorPage() {
               onClick={() => {
                 const created = newListener(listeners);
                 put(["listeners"], [...listeners, created]);
-                select(created.name);
+                select(listeners.length);
               }}
             >
               <Plus aria-hidden size={14} strokeWidth={1.5} /> Add listener

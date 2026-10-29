@@ -47,6 +47,13 @@ export function routeTarget(route: Json): { kind: "pool" | "resolver"; name: str
 }
 
 /** One route in words, for the diagram's label and the table equivalent. */
+function lengthText({ min, max }: { min?: number; max?: number }): string {
+  if (min !== undefined && max !== undefined) return `length ${min}-${max}`;
+  if (min !== undefined) return `length at least ${min}`;
+  if (max !== undefined) return `length at most ${max}`;
+  return "";
+}
+
 export function describeRoute(route: Json): string {
   const m = route.match ?? {};
   const list = (v: unknown) => (Array.isArray(v) ? v.join(", ") : "");
@@ -55,7 +62,7 @@ export function describeRoute(route: Json): string {
     client_cidr: `client ${list(m.cidrs)}`,
     dst: `destination ${list(m.cidrs)}`,
     port: `destination port ${list(m.ports)}`,
-    first_bytes: `first bytes ${[m.prefix, m.length && `length ${m.length.min}-${m.length.max}`].filter(Boolean).join(" ")}`,
+    first_bytes: `first bytes ${[m.prefix, m.length && lengthText(m.length)].filter(Boolean).join(" ")}`,
     sni: `SNI ${list(m.host)}`,
     sniffer: `sniffer ${m.sniffer ?? ""}${m.host?.length ? ` ${list(m.host)}` : ""}`,
   };
