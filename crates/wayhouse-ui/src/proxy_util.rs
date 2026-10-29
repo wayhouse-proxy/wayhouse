@@ -92,6 +92,8 @@ mod header_contract {
         ("POST", "/api/fleet/pools/lobby/backends"),
         ("PATCH", "/api/fleet/pools/lobby/backends/10.0.0.5:7777"),
         ("DELETE", "/api/fleet/pools/lobby/backends/10.0.0.5:7777"),
+        ("PUT", "/api/fleet/nodes/fra-1/tags"),
+        ("DELETE", "/api/fleet/nodes/fra-1/tags"),
         ("POST", "/api/fleet/route-hint"),
         ("POST", "/api/fleet/sniffers?name=a2s.wasm"),
         ("DELETE", "/api/fleet/sniffers/a2s.wasm"),
@@ -126,16 +128,22 @@ mod header_contract {
     /// An upstream that answers *every* method and path the same way: a
     /// non-200 success status, two end-to-end headers, and a body.
     async fn spawn_upstream() -> String {
-        let app = Router::new().fallback(any(|| async {
-            (
-                StatusCode::ACCEPTED,
-                [
-                    ("x-config-revision", "42"),
-                    ("x-contract-probe", "survives"),
-                ],
-                "upstream-body",
+        // The one read the UI backend makes of its own accord (operator tags) must parse.
+        let app = Router::new()
+            .route(
+                "/ui/node-tags",
+                axum::routing::get(|| async { r#"{"items":[]}"# }),
             )
-        }));
+            .fallback(any(|| async {
+                (
+                    StatusCode::ACCEPTED,
+                    [
+                        ("x-config-revision", "42"),
+                        ("x-contract-probe", "survives"),
+                    ],
+                    "upstream-body",
+                )
+            }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {

@@ -545,6 +545,20 @@ un-namespaced names.
   most 64 characters). An invalid label stops the proxy at startup, and the
   aggregator refuses a push that carries one. The aggregator keeps nothing of its
   own, so a replica swap loses nothing that the next push does not bring back.
+- Operator tags: an operator can add tags to any node in the UI (`PUT` and `DELETE
+  /api/fleet/nodes/{instance}/tags`, body `{"tags": {"rack": "r12"}}`, operator role). They are
+  kept in the controller, replicated under HA (see [stored UI data](ui-data.md)), so the
+  aggregator stays stateless. The UI backend sends them with each list query: `GET
+  /api/fleet/nodes` and `POST /api/fleet/nodes/resolve` ask the aggregator's `POST
+  /fleet/nodes/query` and `POST /fleet/nodes/resolve` with a body `{"operator_tags":
+  {"<instance>": {"key": "value"}}}` (the same rules as declared tags; tags for an unknown
+  instance are ignored). An operator tag wins over a declared tag of the same key, filters and
+  `q` see the merged tags, and each item lists the operator's part as `operator_tags`. A node's
+  declared tag cannot be removed by an operator, only overridden. If the controller does not
+  answer, the list is served from declared tags and the reply carries `X-Operator-Tags:
+  unavailable`; `resolve` answers `502` instead, so a bulk action never acts on a set the
+  operator did not see. With no controller configured there are no operator tags and the PUT
+  answers `503`.
 - `GET /fleet/stats?range=5m|15m|1h` (default `15m`) — fleet rates and gauges
   from a rolling in-memory history: one-minute points, an hour deep, aggregates
   only (fleet, per listener, per pool, per region; never per node). Proxies push

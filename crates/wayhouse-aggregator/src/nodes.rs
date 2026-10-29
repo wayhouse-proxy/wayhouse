@@ -4,13 +4,15 @@
 //! many) a filter selects before the operator confirms.
 //!
 //! Tags and region are what an instance reports about itself (`--region`, `--tag key=value`); the
-//! aggregator stores nothing of its own, like the rest of this crate.
+//! aggregator stores nothing of its own, like the rest of this crate. Tags an operator set live in
+//! the controller; the UI backend sends them with each query ([`parse_operator`], [`overlay`]) and
+//! they win over a declared tag of the same key.
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use wayhouse_http::labels::{key_ok, MAX_TAGS};
+use wayhouse_http::labels::{check_labels, key_ok, MAX_TAGS};
 
 use crate::ingest::{InstanceState, SessionCounts};
 use crate::skew::{classify, Reported, Skew};
@@ -215,7 +217,11 @@ pub struct Node {
     pub region: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// Declared tags with the operator's laid over them.
     pub tags: BTreeMap<String, String>,
+    /// The part of `tags` an operator set (the tag editor shows these as editable).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub operator_tags: BTreeMap<String, String>,
     pub version: String,
     pub protocol: String,
     pub skew: Skew,
@@ -301,6 +307,7 @@ pub fn nodes(states: &[InstanceState], now_ms: u64, stale_after_ms: u64) -> Vec<
                 region: s.payload.region.clone(),
                 group: s.payload.group.clone(),
                 tags: s.payload.tags.clone(),
+                operator_tags: BTreeMap::new(),
                 version: s.payload.version.clone(),
                 protocol: s.payload.protocol.clone(),
                 skew,
@@ -310,6 +317,38 @@ pub fn nodes(states: &[InstanceState], now_ms: u64, stale_after_ms: u64) -> Vec<
             }
         })
         .collect()
+}
+
+/// Operator-set tags by instance id.
+pub type OperatorTags = BTreeMap<String, BTreeMap<String, String>>;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverlayBody {
+    operator_tags: OperatorTags,
+}
+
+/// The body of a query that carries operator tags: `{"operator_tags": {"<instance>": {"k": "v"}}}`,
+/// every tag held to the same rules as a declared one. An empty body means none.
+pub fn parse_operator(body: &[u8]) -> Result<OperatorTags, String> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(OperatorTags::new());
+    }
+    let b: OverlayBody = serde_json::from_slice(body).map_err(|e| format!("body: {e}"))?;
+    for (instance, tags) in &b.operator_tags {
+        check_labels(None, tags).map_err(|e| format!("operator_tags[{instance:?}]: {e}"))?;
+    }
+    Ok(b.operator_tags)
+}
+
+/// Lays `operator` over the nodes' declared tags. Tags for an instance not in `all` are ignored.
+pub fn overlay(all: &mut [Node], operator: &OperatorTags) {
+    for n in all {
+        if let Some(t) = operator.get(&n.instance) {
+            n.tags.extend(t.clone());
+            n.operator_tags = t.clone();
+        }
+    }
 }
 
 /// The nodes `filter` selects, instance ascending.
@@ -559,6 +598,47 @@ mod tests {
         assert_eq!(names(&p), ["b", "c", "a"]);
         let p = page(fleet(), &q("sort=instance&dir=desc&size=2"));
         assert_eq!(names(&p), ["g", "f"]);
+    }
+
+    #[test]
+    fn operator_tags_overlay_the_declared_ones_and_filters_see_the_merge() {
+        let mut all = fleet();
+        let op = parse_operator(
+            br#"{"operator_tags": {"a": {"env": "stage", "rack": "r1"}, "f": {"env": "prod"}, "ghost": {"env": "prod"}}}"#,
+        )
+        .unwrap();
+        overlay(&mut all, &op);
+        let a = all.iter().find(|n| n.instance == "a").unwrap();
+        assert_eq!(a.tags["env"], "stage", "the operator's value wins");
+        assert_eq!(a.tags["rack"], "r1");
+        assert_eq!(a.operator_tags.len(), 2, "provenance is kept apart");
+        let b = all.iter().find(|n| n.instance == "b").unwrap();
+        assert!(b.operator_tags.is_empty() && b.tags["gpu"] == "a100");
+        assert_eq!(all.len(), 7, "a tag for an unknown node adds no row");
+        assert_eq!(
+            names(&page(all.clone(), &q("tag=env%3Dprod"))),
+            ["b", "d", "f", "g"]
+        );
+        assert_eq!(names(&page(all, &q("q=r1"))), ["a"]);
+    }
+
+    #[test]
+    fn a_bad_operator_overlay_is_refused() {
+        assert_eq!(parse_operator(b"").unwrap(), OperatorTags::new());
+        for bad in [
+            &br#"{"operator_tags": {"a": {"Env": "x"}}}"#[..],
+            br#"{"operator_tags": {"a": {"env": ""}}}"#,
+            br#"{"operator_tags": {"a": ["env"]}}"#,
+            br#"{"operator_tags": 1}"#,
+            br#"{"tags": {}}"#,
+            b"not json",
+        ] {
+            assert!(
+                parse_operator(bad).is_err(),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
+        }
     }
 
     #[test]

@@ -182,6 +182,26 @@ async fn a_write_on_a_follower_is_readable_on_every_replica() -> Result<()> {
         "the other replica serves the override",
     )
     .await?;
+
+    // An operator's node tags written on a follower are listed on every replica.
+    let (status, body) = send(
+        &http,
+        reqwest::Method::PUT,
+        writer,
+        "/ui/node-tags/fra-1",
+        Some(json!({"tags": {"rack": "r12"}})),
+    )
+    .await?;
+    assert_eq!(status, 200, "{body}");
+    wait_until(
+        || async {
+            let (_, l) = send(&http, reqwest::Method::GET, reader, "/ui/node-tags", None).await?;
+            Ok(l["items"][0]["tags"]["rack"] == "r12")
+        },
+        Duration::from_secs(10),
+        "the other replica lists the node tags",
+    )
+    .await?;
     drop(procs);
     Ok(())
 }
