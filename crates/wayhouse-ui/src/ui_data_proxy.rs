@@ -117,7 +117,6 @@ async fn write(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use axum::body::{Body, Bytes};
@@ -127,7 +126,6 @@ mod tests {
 
     use crate::api::AppState;
     use crate::role::Role;
-    use crate::users::UserRecord;
 
     type Seen = Arc<Mutex<Vec<(String, String, Vec<u8>)>>>;
 
@@ -154,48 +152,33 @@ mod tests {
     }
 
     async fn app_and_cookies(url: String) -> (Router, [String; 3]) {
-        let mut users = HashMap::new();
-        for (name, role) in [
-            ("viv", Role::Viewer),
-            ("olly", Role::Operator),
-            ("ada", Role::Admin),
-        ] {
-            users.insert(
-                name.to_string(),
-                UserRecord {
+        let users = ["viv", "olly", "ada"]
+            .map(|name| {
+                let record = crate::users::UserRecord {
                     username: name.into(),
-                    password_hash: crate::users::hash_password("pw"),
-                    role,
-                },
-            );
-        }
+                    // Sessions are minted below; nobody logs in.
+                    password_hash: String::new(),
+                    role: Role::Viewer,
+                };
+                (name.to_string(), record)
+            })
+            .into();
         let state = AppState::new(None)
             .with_users(users)
             .with_controller(url, None);
-        let app = crate::api::router(state);
-        let mut cookies = Vec::new();
-        for name in ["viv", "olly", "ada"] {
-            let resp = app
-                .clone()
-                .oneshot(
-                    Request::post("/ui/login")
-                        .header("content-type", "application/json")
-                        .body(Body::from(format!(
-                            r#"{{"username":"{name}","password":"pw"}}"#
-                        )))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            let set = resp
-                .headers()
-                .get(header::SET_COOKIE)
-                .unwrap()
-                .to_str()
-                .unwrap();
-            cookies.push(set.split(';').next().unwrap().to_string());
-        }
-        (app, cookies.try_into().unwrap())
+        let cookies = [
+            ("viv", Role::Viewer),
+            ("olly", Role::Operator),
+            ("ada", Role::Admin),
+        ]
+        .map(|(name, role)| {
+            let id = state.sessions.create(crate::session::Session {
+                role,
+                username: Some(name.into()),
+            });
+            format!("{}={id}", crate::api::SESSION_COOKIE)
+        });
+        (crate::api::router(state), cookies)
     }
 
     async fn call(app: &Router, cookie: &str, method: &str, uri: &str, body: &str) -> StatusCode {
