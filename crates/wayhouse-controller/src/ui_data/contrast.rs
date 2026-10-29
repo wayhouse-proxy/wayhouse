@@ -63,7 +63,7 @@ const LIGHT: [(&str, &str); 23] = [
     ("primary", "#1d1b18"),
     ("primary-ink", "#fbfaf8"),
     ("good", "#1b7654"),
-    ("warn", "#713900"),
+    ("warn", "#b87400"),
     ("bad", "#c40e3b"),
     ("series-1", "#2b5ff3"),
     ("series-2", "#219a77"),
@@ -303,7 +303,13 @@ pub fn validate_theme(base: &str, overrides: &Map<String, Value>) -> Result<Vec<
     ratio(&mut out, &colour, 5, "primary-ink", "primary", TEXT_RATIO);
     for s in STATES {
         for g in GROUNDS {
-            ratio(&mut out, &colour, 6, s, g, TEXT_RATIO);
+            // warn is only drawn as a mark or border, so it needs the graphic ratio (see validate.ts).
+            let needed = if s == "warn" {
+                GRAPHIC_RATIO
+            } else {
+                TEXT_RATIO
+            };
+            ratio(&mut out, &colour, 6, s, g, needed);
         }
     }
     for g in ["surface", "bg"] {
@@ -451,7 +457,7 @@ mod tests {
 
     #[test]
     fn a_colour_pair_failure_names_the_vision_that_failed() {
-        let f = run(&json!({"base": "light", "tokens": {"bad": "#713900"}}));
+        let f = run(&json!({"base": "light", "tokens": {"warn": "#c40e3b"}}));
         let f: Vec<_> = f.iter().filter(|f| f.check == 8).collect();
         assert_eq!(f.len(), 1);
         assert_eq!(

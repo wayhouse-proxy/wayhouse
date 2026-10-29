@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { parseHex } from "./color";
 import fixtures from "./fixtures.json";
 import { BUILTIN, THEME_TOKENS, type Theme } from "./builtin";
 import { failedChecks, validateTheme } from "./validate";
@@ -32,6 +33,19 @@ describe("built-in themes", () => {
         : /:root\[data-theme="dark"\] \{([\s\S]*?)\n\}/.exec(tokensCss)![1];
     const css = Object.fromEntries([...block.matchAll(/--([\w-]+):\s*(#[0-9a-f]{6})/gi)].map((m) => [m[1], m[2]]));
     for (const name of THEME_TOKENS) expect(css[name], name).toBe(BUILTIN[base][name]);
+  });
+
+  // A state colour must look like its convention: warn is amber (yellow-orange), never brown.
+  it.each(["light", "dark"] as const)("%s warn is amber, not brown", (base) => {
+    const [r, g, b] = parseHex(BUILTIN[base].warn)!;
+    const [max, min] = [Math.max(r, g, b), Math.min(r, g, b)];
+    const l = (max + min) / 2;
+    const s = (max - min) / (1 - Math.abs(2 * l - 1));
+    const h = (60 * (max === r ? ((g - b) / (max - min)) % 6 : max === g ? (b - r) / (max - min) + 2 : (r - g) / (max - min) + 4) + 360) % 360;
+    expect(h).toBeGreaterThanOrEqual(35);
+    expect(h).toBeLessThanOrEqual(55);
+    expect(s).toBeGreaterThanOrEqual(0.8);
+    expect(l).toBeGreaterThanOrEqual(0.33);
   });
 
   it("the media-query dark block equals the data-theme dark block", () => {

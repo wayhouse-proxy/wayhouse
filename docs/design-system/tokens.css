@@ -40,7 +40,7 @@
 
   /* State. Always paired with a shape and a word (see DESIGN.md). */
   --good: #1b7654;
-  --warn: #713900;
+  --warn: #b87400;
   --bad: #c40e3b;
 
   /* Data series. Checked for colour-vision deficiency by the theme validator
