@@ -10,63 +10,16 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+use wayhouse_http::labels::{key_ok, MAX_TAGS};
+
 use crate::ingest::{InstanceState, SessionCounts};
 use crate::skew::{classify, Reported, Skew};
 
-/// Most tags one instance may report.
-pub const MAX_TAGS: usize = 16;
-const MAX_KEY: usize = 32;
-const MAX_VALUE: usize = 64;
-const MAX_REGION: usize = 64;
 /// Most rows one page holds.
 pub const MAX_PAGE_SIZE: usize = 200;
 const DEFAULT_PAGE_SIZE: usize = 25;
 /// Longest free-text filter.
 const MAX_QUERY: usize = 128;
-
-fn key_ok(key: &str) -> bool {
-    let mut chars = key.chars();
-    key.len() <= MAX_KEY
-        && chars
-            .next()
-            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
-}
-
-fn value_ok(value: &str, max: usize) -> bool {
-    !value.is_empty()
-        && value.len() <= max
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/' | '@' | '+'))
-}
-
-/// `Err` names the first label that breaks the rules: keys are lowercase letters, digits, `.`,
-/// `_` and `-` (at most 32); values and the region use letters, digits and `. _ - : / @ +` (at
-/// most 64, not empty); at most 16 tags.
-pub fn check_labels(region: Option<&str>, tags: &BTreeMap<String, String>) -> Result<(), String> {
-    if let Some(r) = region {
-        if !value_ok(r, MAX_REGION) {
-            return Err(format!("region {r:?} is not 1 to {MAX_REGION} of A-Z a-z 0-9 . _ - : / @ +"));
-        }
-    }
-    if tags.len() > MAX_TAGS {
-        return Err(format!("more than {MAX_TAGS} tags"));
-    }
-    for (k, v) in tags {
-        if !key_ok(k) {
-            return Err(format!(
-                "tag key {k:?} is not 1 to {MAX_KEY} of a-z 0-9 . _ - starting with a letter or digit"
-            ));
-        }
-        if !value_ok(v, MAX_VALUE) {
-            return Err(format!(
-                "value of tag {k:?} is not 1 to {MAX_VALUE} of A-Z a-z 0-9 . _ - : / @ +"
-            ));
-        }
-    }
-    Ok(())
-}
 
 /// A node's health at a glance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -128,7 +81,9 @@ pub struct Query {
 impl Filter {
     fn parse_pair(&mut self, key: &str, value: &str) -> Result<bool, String> {
         match key {
-            "q" if value.len() > MAX_QUERY => return Err(format!("q is longer than {MAX_QUERY} bytes")),
+            "q" if value.len() > MAX_QUERY => {
+                return Err(format!("q is longer than {MAX_QUERY} bytes"))
+            }
             "q" if !value.is_empty() => self.q = Some(value.to_lowercase()),
             "state" => {
                 let s = NodeState::parse(value).ok_or("state must be ok, degraded or stale")?;
@@ -166,11 +121,15 @@ impl Filter {
 
     fn matches(&self, n: &Node) -> bool {
         self.state.is_none_or(|s| s.0 == n.state)
-            && self.region.as_ref().is_none_or(|r| n.region.as_ref() == Some(r))
             && self
-                .tags
-                .iter()
-                .all(|(k, v)| n.tags.get(k).is_some_and(|have| v.as_ref().is_none_or(|v| v == have)))
+                .region
+                .as_ref()
+                .is_none_or(|r| n.region.as_ref() == Some(r))
+            && self.tags.iter().all(|(k, v)| {
+                n.tags
+                    .get(k)
+                    .is_some_and(|have| v.as_ref().is_none_or(|v| v == have))
+            })
             && self.q.as_ref().is_none_or(|q| {
                 let hay = |s: &str| s.to_lowercase().contains(q.as_str());
                 hay(&n.instance)
@@ -199,7 +158,13 @@ impl Query {
                 continue;
             }
             match &*k {
-                "page" => q.page = v.parse().ok().filter(|p| *p >= 1).ok_or("page must be 1 or more")?,
+                "page" => {
+                    q.page = v
+                        .parse()
+                        .ok()
+                        .filter(|p| *p >= 1)
+                        .ok_or("page must be 1 or more")?
+                }
                 "size" => {
                     q.size = v
                         .parse()
@@ -214,7 +179,11 @@ impl Query {
                         "region" => SortKey::Region,
                         "sessions" => SortKey::Sessions,
                         "version" => SortKey::Version,
-                        _ => return Err("sort must be instance, state, region, sessions or version".into()),
+                        _ => {
+                            return Err(
+                                "sort must be instance, state, region, sessions or version".into()
+                            )
+                        }
                     }
                 }
                 "dir" => {
@@ -316,7 +285,8 @@ pub fn nodes(states: &[InstanceState], now_ms: u64, stale_after_ms: u64) -> Vec<
         .map(|(s, skew)| {
             let age = now_ms.saturating_sub(s.received_at_ms);
             let backends = s.payload.pools.iter().flat_map(|p| &p.backends);
-            let (total, unhealthy) = backends.fold((0, 0), |(t, u), b| (t + 1, u + usize::from(!b.healthy)));
+            let (total, unhealthy) =
+                backends.fold((0, 0), |(t, u), b| (t + 1, u + usize::from(!b.healthy)));
             let state = if age > stale_after_ms {
                 NodeState::Stale
             } else if unhealthy > 0 {
@@ -381,10 +351,16 @@ pub fn page(all: Vec<Node>, q: &Query) -> Page {
             SortKey::Version => a.version.cmp(&b.version),
         };
         let by_key = if q.desc { by_key.reverse() } else { by_key };
-        by_region.then(by_key).then_with(|| a.instance.cmp(&b.instance))
+        by_region
+            .then(by_key)
+            .then_with(|| a.instance.cmp(&b.instance))
     });
     let total = selected.len();
-    let items = selected.into_iter().skip((q.page - 1) * q.size).take(q.size).collect();
+    let items = selected
+        .into_iter()
+        .skip((q.page - 1) * q.size)
+        .take(q.size)
+        .collect();
     let groups = q.group_by_region.then(|| {
         let mut out: Vec<Group> = regions
             .into_iter()
@@ -443,7 +419,10 @@ mod tests {
                 protocol: "1.2".into(),
                 protocol_mismatches: 0,
                 region: region.map(String::from),
-                tags: tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                tags: tags
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
                 listeners: vec![],
             },
             received_at_ms: NOW - age_ms,
@@ -456,7 +435,14 @@ mod tests {
         nodes(
             &[
                 state("a", Some("eu"), &[("env", "prod")], true, 1_000, 10),
-                state("b", Some("eu"), &[("env", "prod"), ("gpu", "a100")], true, 1_000, 30),
+                state(
+                    "b",
+                    Some("eu"),
+                    &[("env", "prod"), ("gpu", "a100")],
+                    true,
+                    1_000,
+                    30,
+                ),
                 state("c", Some("eu"), &[("env", "stage")], false, 1_000, 20),
                 state("d", Some("us"), &[("env", "prod")], true, 1_000, 5),
                 state("e", Some("us"), &[], true, 90_000, 0),
@@ -511,7 +497,10 @@ mod tests {
     #[test]
     fn pages_are_sliced_and_total_counts_the_whole_selection() {
         let p = page(fleet(), &q("size=3&page=2"));
-        assert_eq!((names(&p), p.total, p.page, p.size), (vec!["d", "e", "f"], 7, 2, 3));
+        assert_eq!(
+            (names(&p), p.total, p.page, p.size),
+            (vec!["d", "e", "f"], 7, 2, 3)
+        );
         let p = page(fleet(), &q("size=3&page=3"));
         assert_eq!(names(&p), ["g"]);
         let p = page(fleet(), &q("size=3&page=9"));
@@ -542,11 +531,22 @@ mod tests {
         let groups = p.groups.unwrap();
         let shape: Vec<_> = groups
             .iter()
-            .map(|g| (g.region.as_deref(), g.rollup.nodes, g.rollup.degraded, g.rollup.stale))
+            .map(|g| {
+                (
+                    g.region.as_deref(),
+                    g.rollup.nodes,
+                    g.rollup.degraded,
+                    g.rollup.stale,
+                )
+            })
             .collect();
         assert_eq!(
             shape,
-            [(Some("eu"), 3, 1, 0), (Some("us"), 2, 0, 1), (None, 2, 0, 0)]
+            [
+                (Some("eu"), 3, 1, 0),
+                (Some("us"), 2, 0, 1),
+                (None, 2, 0, 0)
+            ]
         );
         assert!(page(fleet(), &q("size=100")).groups.is_none());
     }
@@ -578,21 +578,5 @@ mod tests {
         assert!(Query::parse(&format!("q={}", "x".repeat(200))).is_err());
         // Unknown keys are ignored so `resolve` takes a list view's query as it is.
         assert!(Filter::parse("page=2&sort=region&region=eu").is_ok());
-    }
-
-    #[test]
-    fn labels_are_checked() {
-        let tags = |k: &str, v: &str| BTreeMap::from([(k.to_string(), v.to_string())]);
-        assert!(check_labels(Some("eu-west-1"), &tags("env", "prod")).is_ok());
-        assert!(check_labels(None, &BTreeMap::new()).is_ok());
-        assert!(check_labels(Some(""), &BTreeMap::new()).is_err());
-        assert!(check_labels(Some("a b"), &BTreeMap::new()).is_err());
-        assert!(check_labels(None, &tags("Env", "prod")).is_err());
-        assert!(check_labels(None, &tags("env", "")).is_err());
-        assert!(check_labels(None, &tags("env", "pr od")).is_err());
-        assert!(check_labels(None, &tags(&"k".repeat(33), "v")).is_err());
-        assert!(check_labels(None, &tags("k", &"v".repeat(65))).is_err());
-        let many: BTreeMap<_, _> = (0..17).map(|i| (format!("k{i}"), "v".to_string())).collect();
-        assert!(check_labels(None, &many).is_err());
     }
 }

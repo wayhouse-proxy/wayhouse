@@ -20,6 +20,7 @@
 //! store design; this is the correct behavior for that design, not a cut
 //! corner.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -48,6 +49,35 @@ struct IngestPayload {
     protocol_mismatches: u64,
     /// Cumulative per-listener counters; the aggregator derives rates (#461).
     listeners: Vec<ListenerStats>,
+    /// `--region` and `--tag`: what the fleet list filters and groups by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    region: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    tags: BTreeMap<String, String>,
+}
+
+/// What this instance reports about itself besides its state (`--region`, `--tag`), already
+/// checked by [`wayhouse_http::labels::check_labels`].
+#[derive(Debug, Default, Clone)]
+pub struct Labels {
+    pub region: Option<String>,
+    pub tags: BTreeMap<String, String>,
+}
+
+impl Labels {
+    /// The labels from the command line; `--tag key=value`, the last of a repeated key wins.
+    pub fn from_args(region: Option<String>, tags: &[String]) -> Result<Self, String> {
+        let mut map = BTreeMap::new();
+        for t in tags {
+            let (k, v) = t
+                .split_once('=')
+                .ok_or_else(|| format!("--tag {t:?} is not key=value"))?;
+            map.insert(k.to_string(), v.to_string());
+        }
+        wayhouse_http::labels::check_labels(region.as_deref(), &map)
+            .map_err(|e| format!("--region/--tag: {e}"))?;
+        Ok(Labels { region, tags: map })
+    }
 }
 
 #[derive(Serialize, Default, Debug, PartialEq)]
@@ -98,6 +128,7 @@ pub struct PushConfig {
     /// one — the aggregator side of the pair `settings.admin.auth_token` is
     /// for calls coming the other way.
     pub token: Option<String>,
+    pub labels: Labels,
 }
 
 /// Runs forever, pushing one summary per `cfg.interval`. `tokio::spawn`ed
@@ -109,6 +140,7 @@ pub async fn run(cfg: PushConfig, handle: RuntimeHandle, prometheus: PrometheusH
         admin_url,
         interval,
         token,
+        labels,
     } = cfg;
     let client = wayhouse_http::client();
     let url = format!("{base_url}/ingest");
@@ -119,7 +151,7 @@ pub async fn run(cfg: PushConfig, handle: RuntimeHandle, prometheus: PrometheusH
 
     loop {
         ticker.tick().await;
-        let payload = build_payload(&instance, &admin_url, &handle, &prometheus);
+        let payload = build_payload(&instance, &admin_url, &labels, &handle, &prometheus);
         let mut req = client.post(&url).json(&payload);
         if let Some(token) = &token {
             req = req.bearer_auth(token);
@@ -184,6 +216,7 @@ fn listener_stats(exposition: &str) -> Vec<ListenerStats> {
 fn build_payload(
     instance: &str,
     admin_url: &str,
+    labels: &Labels,
     handle: &RuntimeHandle,
     prometheus: &PrometheusHandle,
 ) -> IngestPayload {
@@ -221,6 +254,8 @@ fn build_payload(
         protocol: wayhouse_http::protocol::ProtocolVersion::current().to_string(),
         protocol_mismatches: wayhouse_http::protocol::mismatches_total(),
         listeners: listener_stats(&prometheus.render()),
+        region: labels.region.clone(),
+        tags: labels.tags.clone(),
     }
 }
 
@@ -253,9 +288,17 @@ listeners:
         let payload = build_payload(
             "test-instance",
             "http://127.0.0.1:9900",
+            &Labels::from_args(
+                Some("eu-west".into()),
+                &["env=prod".into(), "gpu=a100".into()],
+            )
+            .unwrap(),
             &runtime.handle(),
             &prometheus,
         );
+        assert_eq!(payload.region.as_deref(), Some("eu-west"));
+        assert_eq!(payload.tags["env"], "prod");
+        assert_eq!(payload.tags.len(), 2);
 
         assert_eq!(payload.instance, "test-instance");
         assert_eq!(payload.admin_url, "http://127.0.0.1:9900");
@@ -275,6 +318,22 @@ listeners:
             payload.protocol,
             wayhouse_http::protocol::ProtocolVersion::CURRENT.to_string()
         );
+    }
+
+    #[test]
+    fn labels_come_from_region_and_repeated_tags_and_are_checked() {
+        let l = Labels::from_args(None, &["env=a".into(), "env=b".into()]).unwrap();
+        assert_eq!(l.tags["env"], "b");
+        for bad in [
+            vec!["env".to_string()],
+            vec!["Env=a".to_string()],
+            vec!["a=b c".to_string()],
+        ] {
+            assert!(Labels::from_args(None, &bad).is_err(), "{bad:?}");
+        }
+        assert!(Labels::from_args(Some("a b".into()), &[]).is_err());
+        let seventeen: Vec<String> = (0..17).map(|i| format!("k{i}=v")).collect();
+        assert!(Labels::from_args(None, &seventeen).is_err());
     }
 
     #[test]

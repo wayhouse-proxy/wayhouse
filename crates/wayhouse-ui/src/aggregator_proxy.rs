@@ -35,6 +35,8 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/fleet/sessions", get(get_sessions))
         .route("/api/fleet/healthz", get(get_healthz))
         .route("/api/fleet/stats", get(get_stats))
+        .route("/api/fleet/nodes", get(get_nodes))
+        .route("/api/fleet/nodes/resolve", post(resolve_nodes))
         .route(
             "/api/fleet/instances/{instance}/sniffers",
             get(get_instance_sniffers),
@@ -94,6 +96,37 @@ async fn get_stats(State(state): State<AppState>, RawQuery(query): RawQuery) -> 
         None => "/fleet/stats".to_string(),
     };
     proxy(&state, Method::GET, &path, None, None).await
+}
+
+/// The paged node list: every filter, sort and page key rides along unchanged.
+async fn get_nodes(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
+    proxy(
+        &state,
+        Method::GET,
+        &with_query("/fleet/nodes", query),
+        None,
+        None,
+    )
+    .await
+}
+
+/// Which instances a filter selects (a read, so a viewer may ask before an operator acts).
+async fn resolve_nodes(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
+    proxy(
+        &state,
+        Method::POST,
+        &with_query("/fleet/nodes/resolve", query),
+        None,
+        None,
+    )
+    .await
+}
+
+fn with_query(path: &str, query: Option<String>) -> String {
+    match query {
+        Some(q) => format!("{path}?{q}"),
+        None => path.to_string(),
+    }
 }
 
 async fn get_instance_sniffers(
@@ -666,6 +699,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bytes, "range=1h".as_bytes());
+    }
+
+    #[tokio::test]
+    async fn the_node_list_and_resolve_forward_the_whole_query() {
+        let echo = |path: &'static str, post: bool| {
+            let handler = |axum::extract::RawQuery(q): axum::extract::RawQuery| async move {
+                q.unwrap_or_default()
+            };
+            Router::new().route(
+                path,
+                if post {
+                    axum::routing::post(handler)
+                } else {
+                    axum::routing::get(handler)
+                },
+            )
+        };
+        for (method, path, uri) in [
+            (
+                "GET",
+                "/fleet/nodes",
+                "/api/fleet/nodes?page=2&tag=env%3Dprod&tag=gpu",
+            ),
+            (
+                "POST",
+                "/fleet/nodes/resolve",
+                "/api/fleet/nodes/resolve?q=eu&state=degraded",
+            ),
+        ] {
+            let upstream = echo(path, method == "POST");
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+            let (app, session_id) = logged_in_app(url, None);
+            let resp = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header(header::COOKIE, cookie(&session_id))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(bytes, uri.split_once('?').unwrap().1.as_bytes(), "{uri}");
+        }
     }
 
     #[tokio::test]

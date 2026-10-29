@@ -159,7 +159,7 @@ impl IngestPayload {
         {
             return Err(format!("a field is longer than {MAX_FIELD_BYTES} bytes"));
         }
-        crate::nodes::check_labels(self.region.as_deref(), &self.tags)?;
+        wayhouse_http::labels::check_labels(self.region.as_deref(), &self.tags)?;
         if self.pools.len() > MAX_POOLS {
             return Err(format!("more than {MAX_POOLS} pools"));
         }

@@ -34,7 +34,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{ConnectInfo, Extension, Query, State};
+use axum::extract::{ConnectInfo, Extension, Query, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -46,6 +46,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 
 use crate::ingest::{IngestPayload, IngestStore, PoolSummary, SessionCounts};
+use crate::nodes;
 use crate::skew::{classify, Reported, Skew};
 use crate::trust::AdminUrlPolicy;
 use crate::util::unix_ms;
@@ -54,7 +55,7 @@ use crate::util::unix_ms;
 /// `stale` — roughly 3x `wayhouse`'s default `--aggregator-interval-sec` (10s),
 /// generous enough to absorb one missed tick without false-flagging a
 /// perfectly healthy instance.
-const STALE_AFTER_MS: u64 = 30_000;
+pub(crate) const STALE_AFTER_MS: u64 = 30_000;
 
 /// How long `/fleet/subscribe` waits after a signal before rebuilding and
 /// sending the fleet view, draining any further signals that land in that
@@ -169,6 +170,8 @@ pub fn router(state: AppState) -> Router {
         .route("/fleet/sessions", get(fleet_sessions))
         .route("/fleet/healthz", get(fleet_healthz))
         .route("/fleet/stats", get(fleet_stats))
+        .route("/fleet/nodes", get(fleet_nodes))
+        .route("/fleet/nodes/resolve", post(resolve_nodes))
         .route("/fleet/subscribe", get(subscribe_fleet))
         .merge(crate::fanout::router())
         .route_layer(axum::middleware::from_fn_with_state(
@@ -353,6 +356,37 @@ async fn fleet_stats(State(state): State<AppState>, Query(q): Query<StatsQuery>)
         Json(state.store.history().stats(range_sec, unix_ms())),
     )
         .into_response()
+}
+
+fn bad_request(error: String) -> Response {
+    (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response()
+}
+
+/// `GET /fleet/nodes?page=&size=&sort=&dir=&q=&state=&region=&tag=&group_by=region` — the
+/// filtered, sorted and paged node list with rollups ([`crate::nodes`]).
+async fn fleet_nodes(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
+    let q = match nodes::Query::parse(query.as_deref().unwrap_or_default()) {
+        Ok(q) => q,
+        Err(e) => return bad_request(e),
+    };
+    let all = nodes::nodes(&state.store.snapshot(), unix_ms(), STALE_AFTER_MS);
+    (StatusCode::OK, Json(nodes::page(all, &q))).into_response()
+}
+
+/// `POST /fleet/nodes/resolve?<filter>` — the instances a filter selects and how many, for a bulk
+/// action to show the count before the operator confirms. Takes the query a list view sent
+/// (paging keys are ignored); reads, changes nothing.
+async fn resolve_nodes(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
+    let filter = match nodes::Filter::parse(query.as_deref().unwrap_or_default()) {
+        Ok(f) => f,
+        Err(e) => return bad_request(e),
+    };
+    let all = nodes::nodes(&state.store.snapshot(), unix_ms(), STALE_AFTER_MS);
+    let instances: Vec<String> = nodes::select(all, &filter)
+        .into_iter()
+        .map(|n| n.instance)
+        .collect();
+    Json(serde_json::json!({ "count": instances.len(), "instances": instances })).into_response()
 }
 
 #[derive(Serialize)]
@@ -1116,5 +1150,135 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(resp.status(), StatusCode::UPGRADE_REQUIRED);
+    }
+
+    // --- the node list ---
+
+    async fn get_json(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
+        let resp = app
+            .clone()
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        (resp.status(), body_json(resp).await)
+    }
+
+    fn labelled(instance: &str, region: Option<&str>, tags: &[(&str, &str)]) -> IngestPayload {
+        let mut p = full_payload(instance);
+        p.region = region.map(String::from);
+        p.tags = tags
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        p
+    }
+
+    #[tokio::test]
+    async fn the_node_list_filters_pages_and_groups_what_instances_reported() {
+        let state = test_state();
+        for (name, region, tags) in [
+            ("a", Some("eu"), vec![("env", "prod")]),
+            ("b", Some("eu"), vec![("env", "stage")]),
+            ("c", Some("us"), vec![("env", "prod")]),
+            ("d", None, vec![]),
+        ] {
+            state.store.ingest(labelled(name, region, &tags));
+        }
+        let app = router(state);
+
+        let (status, v) = get_json(&app, "/fleet/nodes?tag=env%3Dprod&size=1&page=2").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            (v["total"].as_u64(), v["items"][0]["instance"].as_str()),
+            (Some(2), Some("c"))
+        );
+        assert_eq!(v["items"][0]["tags"]["env"], "prod");
+        assert_eq!(v["rollup"]["nodes"], 2);
+
+        let (_, v) = get_json(&app, "/fleet/nodes?group_by=region").await;
+        let regions: Vec<_> = v["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|g| g["region"].clone())
+            .collect();
+        assert_eq!(
+            regions,
+            [
+                serde_json::json!("eu"),
+                serde_json::json!("us"),
+                serde_json::Value::Null
+            ]
+        );
+
+        let (status, v) = get_json(&app, "/fleet/nodes?size=500").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("size"));
+    }
+
+    #[tokio::test]
+    async fn resolve_lists_the_instances_a_filter_selects_and_changes_nothing() {
+        let state = test_state();
+        state
+            .store
+            .ingest(labelled("a", Some("eu"), &[("env", "prod")]));
+        state
+            .store
+            .ingest(labelled("b", Some("us"), &[("env", "prod")]));
+        let app = router(state);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/fleet/nodes/resolve?region=eu&page=3&size=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(
+            (v["count"].as_u64(), v["instances"].clone()),
+            (Some(1), serde_json::json!(["a"]))
+        );
+        let resp = app
+            .oneshot(
+                Request::post("/fleet/nodes/resolve?state=sad")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn a_push_with_a_bad_tag_is_refused_and_a_good_one_is_listed() {
+        let state = test_state();
+        let app = router(state.clone());
+        let push = |body: String| {
+            Request::post("/ingest")
+                .header("content-type", "application/json")
+                .header(wayhouse_http::protocol::HEADER, "1.0")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        let mut bad = labelled("bad", None, &[("Env", "prod")]);
+        bad.admin_url = "http://127.0.0.1:0".into();
+        let resp = app
+            .clone()
+            .oneshot(push(serde_json::to_string(&bad).unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let good = labelled("good", Some("eu"), &[("env", "prod")]);
+        let resp = app
+            .clone()
+            .oneshot(push(serde_json::to_string(&good).unwrap()))
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+        let (_, v) = get_json(&app, "/fleet/nodes").await;
+        assert_eq!(v["items"][0]["region"], "eu");
     }
 }

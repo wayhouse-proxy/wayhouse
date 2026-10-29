@@ -48,7 +48,8 @@ its row. Use `unreleased` for the product column until the release is tagged.
 
 | Release    | Protocol | Config schema | Store format | Sniffer ABI |
 | ---------- | -------- | ------------- | ------------ | ----------- |
-| unreleased | 1.2      | 3             | 1            | 0.1         |
+| unreleased | 1.3      | 3             | 1            | 0.1         |
+| 0.3.0      | 1.2      | 3             | 1            | 0.1         |
 | 0.2.0      | 1.1      | 2             | 1            | 0.1         |
 | 0.1.0      | 1.0      | 1             | 1            | 0.1         |
 
@@ -61,6 +62,10 @@ uploaded again; a 0.1 module answers `the plugin declares ABI 0.1, this host spe
 HA, upgrade every controller before installing a plugin: the leader refuses installs while a
 member reports a lower level. The steps are in
 [Migrating from 0.3.0 to 0.4.0](migrating-0.3-to-0.4.md).
+
+Protocol 1.3 adds `region` and `tags` to the proxy's push to the aggregator (`--region`,
+`--tag`, see [operations](06-operations-observability.md)). The change is additive: a proxy on
+0.3.0 pushes none and lists without a region or tags; upgrade the aggregator first to see them.
 
 ## Upgrading from 0.2.0 to 0.3.0
 
