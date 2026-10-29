@@ -10,6 +10,7 @@ export function FieldRow({
   help,
   yamlKey,
   changed,
+  required,
   error,
   render,
   className,
@@ -19,6 +20,8 @@ export function FieldRow({
   help?: string;
   yamlKey?: string;
   changed?: boolean;
+  /** Said in words, not by colour or an asterisk alone. */
+  required?: boolean;
   error?: string;
   render: (a: { id: string; "aria-describedby"?: string; "aria-invalid"?: true }) => React.ReactNode;
   className?: string;
@@ -33,6 +36,7 @@ export function FieldRow({
       <div>
         <label htmlFor={id} className="font-medium text-sm text-ink">
           {label}
+          {required && <span className="ml-1 text-xs font-normal text-ink-muted">(required)</span>}
           {changed && (
             <span
               aria-hidden

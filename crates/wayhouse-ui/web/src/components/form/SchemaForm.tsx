@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import Form from "@rjsf/core";
 import { customizeValidator } from "@rjsf/validator-ajv8";
 import Ajv2020 from "ajv/dist/2020";
+import { ADDITIONAL_PROPERTY_FLAG } from "@rjsf/utils";
 import type {
   ArrayFieldItemTemplateProps,
   ArrayFieldTemplateProps,
@@ -152,6 +153,7 @@ function FieldTemplate(p: FieldTemplateProps) {
   const l = lay(ctx, path);
   if (p.hidden) return p.children;
   if (l?.advanced && !ctx.showAdvanced) return null;
+  if ((p.schema as any)[ADDITIONAL_PROPERTY_FLAG]) return <MapEntry {...p} />;
   if (p.schema.type === "object" || (p.schema.type === "array" && !p.uiSchema?.["ui:widget"])) return p.children;
   const name = String(path[path.length - 1] ?? "");
   const since = sinceOf(p.schema);
@@ -162,9 +164,31 @@ function FieldTemplate(p: FieldTemplateProps) {
       yamlKey={l?.label ? name : undefined}
       help={[l?.help ?? helpOf(p.rawDescription), since ? `Since schema ${since}.` : ""].filter(Boolean).join(" ") || undefined}
       changed={changedCount(ctx, path) > 0}
+      required={p.required}
       error={p.rawErrors?.[0]}
       render={() => p.children}
     />
+  );
+}
+
+/** One entry of a map (e.g. a pool's weights): the key is editable, the entry removable. */
+function MapEntry(p: FieldTemplateProps) {
+  const key = String(p.fieldPathId.path[p.fieldPathId.path.length - 1] ?? "");
+  return (
+    <div role="group" aria-label={`Entry ${key}`} className="flex items-start gap-2 py-1">
+      <Input
+        aria-label={`Key of entry ${key}`}
+        mono
+        defaultValue={key}
+        disabled={p.disabled || p.readonly}
+        onBlur={p.onKeyRenameBlur}
+        className="w-48"
+      />
+      <div className="flex-1">{p.children}</div>
+      <Button variant="danger" size="sm" onClick={p.onRemoveProperty} disabled={p.disabled || p.readonly}>
+        Remove {key}
+      </Button>
+    </div>
   );
 }
 
@@ -184,6 +208,11 @@ function ObjectTemplate(p: ObjectFieldTemplateProps) {
       {flat.map(({ x }) => (
         <div key={x.name}>{x.content}</div>
       ))}
+      {p.schema.additionalProperties && (
+        <Button size="sm" className="mt-1" onClick={p.onAddProperty} disabled={p.disabled || p.readonly}>
+          <Plus aria-hidden size={14} strokeWidth={1.5} /> Add entry
+        </Button>
+      )}
       {groups.map((g) => {
         const members = visible.filter(({ l }) => l?.group === g);
         const changed = members.reduce((n, { x }) => n + changedCount(ctx, [...path, x.name]), 0);

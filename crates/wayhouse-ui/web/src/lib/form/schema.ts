@@ -38,6 +38,9 @@ export function simplify(node: any): any {
     if (k === "properties" || k === "$defs") n[k] = Object.fromEntries(Object.entries(n[k]).map(([p, v]) => [p, simplify(v)]));
     else if (k === "items" || k === "additionalProperties" || k === "anyOf" || k === "oneOf" || k === "allOf") n[k] = simplify(n[k]);
   }
+  // rjsf seeds a new map entry from the value schema's default and falls back to the text "New Value" for integers.
+  const ap = n.additionalProperties;
+  if (ap && typeof ap === "object" && ap.type === "integer" && ap.default === undefined) n.additionalProperties = { ...ap, default: Math.max(ap.minimum ?? 1, 1) };
   return n;
 }
 

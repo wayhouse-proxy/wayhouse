@@ -131,4 +131,32 @@ describe("SchemaForm on the real schema", () => {
     render(<Harness path={["nope"]} />);
     expect(screen.getByRole("alert")).toHaveTextContent("no part at nope");
   });
+
+  it("a oneOf of string variants (balancer, proxy_protocol) renders as a select with every variant", async () => {
+    render(<Harness path={["pools", 0]} showAdvanced />);
+    const sel = await screen.findByLabelText(/balancer/i);
+    const options = within(sel).getAllByRole("option").map((o) => o.getAttribute("value"));
+    expect(options).toEqual(expect.arrayContaining(["round_robin", "least_conn", "consistent_hash", "weighted"]));
+    await userEvent.selectOptions(sel, "least_conn");
+    expect(yaml()).toMatch(/balancer: least_conn/);
+    expect(yaml()).toContain("# edge");
+  });
+
+  it("a map (pool weights) gets entries added, renamed and removed", async () => {
+    render(<Harness path={["pools", 0]} showAdvanced initial={FILE.replace("pools:\n  - name: eu", "pools:\n  - name: eu\n    balancer: weighted\n    weights:\n      10.0.0.1:25565: 3")} />);
+    const key = screen.getByLabelText("Key of entry 10.0.0.1:25565");
+    await userEvent.clear(key);
+    await userEvent.type(key, "10.0.0.2:25565");
+    await userEvent.tab();
+    expect(yaml()).toMatch(/10\.0\.0\.2:25565: 3/);
+    await userEvent.click(screen.getByRole("button", { name: /Add entry/ }));
+    expect(yaml()).toMatch(/newKey: 1\b/);
+    await userEvent.click(screen.getByRole("button", { name: "Remove 10.0.0.2:25565" }));
+    expect(yaml()).not.toMatch(/10\.0\.0\.2:25565/);
+  });
+
+  it("says in words which fields are required", () => {
+    render(<Harness path={["pools", 0]} />);
+    expect(screen.getAllByText("(required)").length).toBeGreaterThan(0);
+  });
 });

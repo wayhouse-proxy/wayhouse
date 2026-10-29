@@ -72,7 +72,11 @@ export function useConfigDoc(): ConfigDoc {
   const changes = useMemo(() => (parsed.error ? 0 : diff(saved.value, parsed.value).length), [parsed, saved]);
 
   const setValue = useCallback(
-    (next: unknown) => setText((t) => patchText(t, parseText(t).value, next)),
+    (next: unknown) =>
+      setText((t) => {
+        const { value, error } = parseText(t);
+        return error ? t : patchText(t, value, next); // the YAML is broken: leave it to the Source page
+      }),
     [],
   );
 

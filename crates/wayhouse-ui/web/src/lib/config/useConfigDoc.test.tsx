@@ -51,6 +51,13 @@ describe("useConfigDoc", () => {
     expect(result.current.changes).toBe(0);
   });
 
+  it("a form edit while the YAML does not parse leaves the text alone instead of throwing", async () => {
+    const { result } = await loaded();
+    act(() => result.current.setText("settings: [1,"));
+    act(() => result.current.setValue({ settings: { workers: 4 } }));
+    expect(result.current.text).toBe("settings: [1,");
+  });
+
   it("no config yet (404) starts from an empty document", async () => {
     api.getCurrentConfig.mockRejectedValue(new ApiError(404, "none"));
     const { result } = await loaded();
