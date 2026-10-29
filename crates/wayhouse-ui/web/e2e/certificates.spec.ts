@@ -31,6 +31,9 @@ test("an admin adds an ACME site and registers a gateway, the token shows once",
   await page.getByRole("dialog").getByLabel("Gateway name").fill("edge-1");
   await page.getByRole("dialog").getByRole("button", { name: "Register" }).click();
   await expect(page.getByLabel("Gateway token")).toHaveValue("tok-abc-123");
+  await page.keyboard.press("Escape");
+  await expect(page.getByLabel("Gateway token")).toBeVisible();
+  await page.getByLabel(/copied the token/).check();
   await page.getByRole("button", { name: "Done" }).click();
   await expect(page.getByText("tok-abc-123")).toHaveCount(0);
 });
