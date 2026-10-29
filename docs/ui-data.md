@@ -16,15 +16,15 @@ The controller checks only its bearer token. The UI backend (`/api/ui/*`) holds 
 
 ## Controller API
 
-| Route                                             | What                                                                                      |
-| ------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `GET /ui/dashboards`, `/ui/themes`, `/ui/filters` | `{"items": [...]}`, each record with its `name`.                                          |
-| `GET`/`PUT`/`DELETE /ui/dashboards/{name}`        | One dashboard. The export shape is `{"name", "widgets": [{"id", "width", "settings"?}]}`. |
-| `GET`/`PUT`/`DELETE /ui/themes/{name}`            | One theme: `{"name", "base": "light"\|"dark", "tokens": {"bg": "#101216", ...}}`.         |
-| `GET`/`PUT`/`DELETE /ui/filters/{name}`           | One saved fleet filter (a JSON object).                                                   |
+| Route                                                              | What                                                                                                                                                                                                               |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /ui/dashboards`, `/ui/themes`, `/ui/filters`                  | `{"items": [...]}`, each record with its `name`.                                                                                                                                                                   |
+| `GET`/`PUT`/`DELETE /ui/dashboards/{name}`                         | One dashboard. The export shape is `{"name", "widgets": [{"id", "width", "settings"?}]}`.                                                                                                                          |
+| `GET`/`PUT`/`DELETE /ui/themes/{name}`                             | One theme: `{"name", "base": "light"\|"dark", "tokens": {"bg": "#101216", ...}}`.                                                                                                                                  |
+| `GET`/`PUT`/`DELETE /ui/filters/{name}`                            | One saved fleet filter (a JSON object).                                                                                                                                                                            |
 | `GET /ui/node-tags`, `GET`/`PUT`/`DELETE /ui/node-tags/{instance}` | An operator's tags for one node: `{"name", "tags": {"rack": "r12"}}`, the rules of declared tags ([operations](06-operations-observability.md)). The UI backend serves them as `/api/fleet/nodes/{instance}/tags`. |
-| `GET`/`PUT`/`DELETE /ui/layout`                   | The form layout override. `404` means "use the shipped default".                          |
-| `GET`/`PUT /ui/defaults`                          | `{"dashboard"?, "theme"?}`; an empty object when nothing is set.                          |
+| `GET`/`PUT`/`DELETE /ui/layout`                                    | The form layout override. `404` means "use the shipped default".                                                                                                                                                   |
+| `GET`/`PUT /ui/defaults`                                           | `{"dashboard"?, "theme"?}`; an empty object when nothing is set.                                                                                                                                                   |
 
 A `PUT` replaces the record. The name in the path wins over a `name` in the body. Answers: `200` with the record, `204` on delete, `404` unknown record, `409` the collection is full, `422` malformed or over a limit (the text names the path, for example `widgets[0].width must be an integer from 1 to 12`).
 
