@@ -7,6 +7,7 @@ import { Loading } from "./components/shell/States";
 import { SessionProvider } from "./lib/session";
 import { QueryProvider } from "./lib/query";
 import { ThemeSync } from "./lib/uidata";
+import { ListenersEditorPage } from "./pages/ListenersEditorPage";
 import { FleetPage } from "./pages/FleetPage";
 import { DashboardPage } from "./pages/DashboardPage";
 
@@ -63,6 +64,7 @@ export function App() {
         <Route element={<SharedConfigDoc />}>
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/settings/source" element={<SourcePage />} />
+          <Route path="/config/listeners" element={<ListenersEditorPage />} />
         </Route>
         <Route path="/settings/appearance" element={<AppearancePage />} />
         <Route path="/settings/layout" element={<LayoutPage />} />
