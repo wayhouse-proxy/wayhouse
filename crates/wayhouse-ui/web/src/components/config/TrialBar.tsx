@@ -32,7 +32,7 @@ export function TrialBar() {
   }, [pending?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const end = useMutation({
-    mutationFn: (keep: boolean) => (keep ? confirmRevision(pending!.revision) : revertNow()),
+    mutationFn: (keep: boolean) => (keep ? confirmRevision(pending!.revision) : revertNow(pending!.revision)),
     onSettled: () => qc.invalidateQueries({ queryKey: PENDING_KEY }),
   });
 

@@ -2,6 +2,7 @@ import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
+import type { Role } from "../lib/session";
 import { renderConfigPage } from "../test/configPage";
 
 const api = vi.hoisted(() => ({
@@ -48,7 +49,7 @@ beforeEach(() => {
   api.validateConfig.mockResolvedValue({ ok: true, schema_version: 3 });
 });
 
-const page = () => renderConfigPage("/settings", { "/settings": <SettingsPage />, "/settings/source": <SourcePage /> });
+const page = (role: Role = "admin") => renderConfigPage("/settings", { "/settings": <SettingsPage />, "/settings/source": <SourcePage /> }, role);
 
 async function editWorkers(to: string) {
   const field = await screen.findByLabelText(/Worker tasks per listener/);
@@ -57,6 +58,12 @@ async function editWorkers(to: string) {
 }
 
 describe("Settings general form", () => {
+  it("is read-only for a role that cannot save", async () => {
+    page("operator");
+    expect(await screen.findByLabelText(/Worker tasks per listener/)).toBeDisabled();
+    expect(screen.getByText(/Changing the configuration needs the admin role/)).toBeInTheDocument();
+  });
+
   it("shows the saved values from the schema and the layout, with Apply off until something changes", async () => {
     page();
     expect(await screen.findByLabelText(/Worker tasks per listener/)).toHaveValue(2);

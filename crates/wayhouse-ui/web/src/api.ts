@@ -379,8 +379,9 @@ export function getPendingConfig(): Promise<PendingConfig> {
 export function confirmRevision(revision: number): Promise<void> {
   return requestJson(`/api/config/confirm/${revision}`, { method: "POST" });
 }
-export function revertNow(): Promise<void> {
-  return requestJson("/api/config/revert", { method: "POST" });
+/** Ends the trial of `revision`, the one the operator saw; the controller refuses (409) when another is on trial by now. */
+export function revertNow(revision: number): Promise<void> {
+  return requestJson(`/api/config/revert?revision=${revision}`, { method: "POST" });
 }
 export function promoteRevision(revision: number): Promise<void> {
   return requestJson(`/api/config/promote/${revision}`, { method: "POST" });

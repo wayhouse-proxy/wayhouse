@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({ getPendingConfig: vi.fn(), confirmRevision: vi.fn(), revertNow: vi.fn() }));
 vi.mock("../../api", async (orig) => ({ ...(await orig<typeof import("../../api")>()), ...api }));
+import { SessionProvider } from "../../lib/session";
 import { TrialBar } from "./TrialBar";
 
 const RISKS = [{ id: "admin_listen", text: "settings.admin.listen changed" }];
@@ -31,6 +32,20 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("TrialBar", () => {
+  it("shows the trial to a viewer but leaves both buttons off", async () => {
+    api.getPendingConfig.mockResolvedValue(pending(45_000));
+    render(
+      <SessionProvider value={{ username: "ana", role: "viewer" }}>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <TrialBar />
+        </QueryClientProvider>
+      </SessionProvider>,
+    );
+    await screen.findByText(/Applied as revision 9/);
+    expect(screen.getByRole("button", { name: "Keep changes" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Revert now" })).toHaveAttribute("aria-disabled", "true");
+  });
+
   it("renders nothing when no revision is on trial", async () => {
     api.getPendingConfig.mockResolvedValue({ pending: null, now_ms: 1, auto_confirm_secs: 60, risks: RISKS });
     bar();
@@ -47,7 +62,7 @@ describe("TrialBar", () => {
     await userEvent.click(screen.getByRole("button", { name: "Keep changes" }));
     expect(api.confirmRevision).toHaveBeenCalledWith(9);
     await userEvent.click(screen.getByRole("button", { name: "Revert now" }));
-    expect(api.revertNow).toHaveBeenCalled();
+    expect(api.revertNow).toHaveBeenCalledWith(9);
   });
 
   it("counts down locally and announces only at 30, 10 and 0 seconds", async () => {
