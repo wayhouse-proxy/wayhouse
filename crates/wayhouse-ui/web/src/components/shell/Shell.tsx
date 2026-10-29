@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Menu } from "lucide-react";
 import { Button } from "../ui/Button";
 import { InspectorPanel, InspectorProvider } from "./Inspector";
 import { breadcrumbFor, NAV, type NavGroup } from "./nav";
 import { Rail } from "./Rail";
+import { Loading } from "./States";
 
 /**
  * Three zones: the dark rail on the left, the page in the middle, the inspector on the
@@ -36,7 +37,9 @@ export function Shell({ onSignOut, nav = NAV }: { onSignOut: () => void; nav?: N
                 {crumbs.join(" / ")}
               </nav>
             )}
-            <Outlet />
+            <Suspense fallback={<Loading />}>
+              <Outlet />
+            </Suspense>
           </main>
           <InspectorPanel />
         </div>

@@ -21,6 +21,7 @@ import type {
   UpdateCheck,
   TunnelAddresses,
 } from "./types";
+import type { FleetStats, Range } from "./lib/stats";
 
 export class ApiError extends Error {
   status: number;
@@ -342,4 +343,10 @@ export function listAcmeGateways(): Promise<{ gateways: AcmeGateway[] }> {
 
 export function getAcmeAccount(): Promise<AcmeAccount> {
   return requestJson("/api/acme/account");
+}
+
+// --- fleet stats (proxied to wayhouse-aggregator) ---
+
+export function getFleetStats(range: Range): Promise<FleetStats> {
+  return requestJson(`/api/fleet/stats?range=${range}`);
 }

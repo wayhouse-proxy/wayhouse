@@ -15,7 +15,15 @@ export interface NavGroup {
 }
 
 export const NAV: NavGroup[] = [
-  { label: "Operate", items: [{ to: "/fleet", label: "Fleet" }] },
+  {
+    label: "Operate",
+    items: [
+      { to: "/overview", label: "Overview" },
+      { to: "/fleet", label: "Fleet" },
+      { to: "/listeners", label: "Listeners" },
+      { to: "/pools", label: "Pools" },
+    ],
+  },
   {
     label: "Configure",
     items: [
