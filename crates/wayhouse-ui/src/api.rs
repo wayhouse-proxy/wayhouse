@@ -242,15 +242,19 @@ pub fn router(state: AppState) -> Router {
         .route("/ui/session", get(session_status))
         .merge(crate::aggregator_proxy::viewer_router())
         .merge(crate::controller_proxy::viewer_router())
+        .merge(crate::ui_data_proxy::viewer_router())
         .merge(crate::registry_api::viewer_router())
         .merge(crate::ws::router())
         .route_layer(role_layer!(Role::Viewer));
 
     let operator = crate::aggregator_proxy::operator_router()
+        .merge(crate::ui_data_proxy::operator_router())
         .merge(crate::registry_api::operator_router())
         .route_layer(role_layer!(Role::Operator));
 
-    let admin = crate::controller_proxy::admin_router().route_layer(role_layer!(Role::Admin));
+    let admin = crate::controller_proxy::admin_router()
+        .merge(crate::ui_data_proxy::admin_router())
+        .route_layer(role_layer!(Role::Admin));
 
     Router::new()
         .route("/ui/login", post(login))
