@@ -15,7 +15,11 @@ import type {
   PluginRouteOverlay,
 } from "../types";
 import { Badge } from "../components/ui/Badge";
+import { useCan } from "../lib/session";
+import { PageHeader } from "../components/shell/Page";
+import { EmptyState, ErrorState, Loading } from "../components/shell/States";
 import { Button, Input } from "../components/ui/Button";
+import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { Dialog } from "../components/ui/Dialog";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 
@@ -82,6 +86,7 @@ function errorText(err: unknown): string {
 // Plugins on the controller (docs/plugins.md): upload, review what a module asks for,
 // approve, then enable, disable or delete. Registry install is a later slice.
 export function PluginsPage() {
+  const canWrite = useCan("admin");
   const [plugins, setPlugins] = useState<PluginInstall[] | null>(null);
   const [overlay, setOverlay] = useState<PluginRouteOverlay | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -153,60 +158,68 @@ export function PluginsPage() {
 
   return (
     <div className="max-w-4xl">
-      <div className="mb-5 flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-ink">Plugins</h1>
-        <Button variant="primary" onClick={() => setUploadOpen(true)}>
-          Upload plugin
-        </Button>
-      </div>
+      <PageHeader
+        title="Plugins"
+        summary="Modules that add integrations. A plugin runs only with the capabilities you approve."
+        actions={
+          <Button
+            variant="primary"
+            disabled={!canWrite}
+            title={canWrite ? undefined : "Installing plugins needs the admin role"}
+            onClick={() => setUploadOpen(true)}
+          >
+            Upload plugin
+          </Button>
+        }
+      />
 
       {notice && (
-        <p className="mb-4 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">{notice}</p>
+        <p role="status" className="mb-4 text-sm text-ink-muted">{notice}</p>
       )}
 
-      <div className="rounded border border-line bg-surface">
-        {error && <p className="px-4 py-3 text-sm text-ink-muted">{error}</p>}
-        {!error && plugins === null && <p className="px-4 py-3 text-sm text-ink-muted">Loading…</p>}
+      <div>
+        {error && <ErrorState>{error}</ErrorState>}
+        {!error && plugins === null && <Loading />}
         {!error && plugins?.length === 0 && (
-          <p className="px-4 py-3 text-sm text-ink-muted">No plugins installed yet.</p>
+          <EmptyState>No plugins installed yet. Upload a module to add one.</EmptyState>
         )}
         {!error && plugins && plugins.length > 0 && (
-          <table className="w-full text-sm">
-            <thead className="text-ink-faint">
-              <tr className="text-left">
-                <th className="px-4 py-2 font-medium">name</th>
-                <th className="px-4 py-2 font-medium">approved</th>
-                <th className="px-4 py-2 font-medium">module</th>
-                <th className="px-4 py-2 font-medium">status</th>
-                <th className="px-4 py-2" />
-              </tr>
-            </thead>
-            <tbody>
+          <Table>
+            <THead>
+              <TR>
+                <TH>name</TH>
+                <TH>approved</TH>
+                <TH>module</TH>
+                <TH>status</TH>
+                <TH />
+              </TR>
+            </THead>
+            <TBody>
               {plugins.map((p) => (
-                <tr key={p.id} className="border-t border-line align-top">
-                  <td className="px-4 py-2">
+                <TR key={p.id} className="align-top">
+                  <TD>
                     <div className="font-mono text-ink">{p.name}</div>
-                    <div className="text-xs text-ink-faint">
+                    <div className="text-xs text-ink-muted">
                       installed {ago(p.created_at)}
                       {p.created_by ? ` by ${p.created_by}` : ""}
                     </div>
-                  </td>
-                  <td className="px-4 py-2">
+                  </TD>
+                  <TD>
                     <CapabilityList caps={p.approved} />
-                  </td>
-                  <td className="px-4 py-2">
-                    <div className="font-mono text-xs text-ink-faint" title={p.sha256}>
+                  </TD>
+                  <TD>
+                    <div className="font-mono text-xs text-ink-muted" title={p.sha256}>
                       {p.sha256.slice(0, 12)}…
                     </div>
-                    <div className="text-xs text-ink-faint">{bytes(p.size)}</div>
-                  </td>
-                  <td className="px-4 py-2">
+                    <div className="text-xs text-ink-muted">{bytes(p.size)}</div>
+                  </TD>
+                  <TD>
                     {p.enabled ? <Badge tone="good">enabled</Badge> : <Badge tone="neutral">disabled</Badge>}
-                  </td>
-                  <td className="px-4 py-2 text-right whitespace-nowrap">
+                  </TD>
+                  <TD className="text-right whitespace-nowrap">
                     <Button
                       className="mr-2"
-                      disabled={busy}
+                      disabled={busy || !canWrite}
                       aria-label={`${p.enabled ? "Disable" : "Enable"} ${p.name}`}
                       onClick={() => toggle(p)}
                     >
@@ -214,23 +227,23 @@ export function PluginsPage() {
                     </Button>
                     <Button
                       variant="danger"
-                      disabled={busy}
+                      disabled={busy || !canWrite}
                       aria-label={`Delete ${p.name}`}
                       onClick={() => remove(p)}
                     >
                       Delete
                     </Button>
-                  </td>
-                </tr>
+                  </TD>
+                </TR>
               ))}
-            </tbody>
-          </table>
+            </TBody>
+          </Table>
         )}
       </div>
 
       {overlay && <PortRoutes overlay={overlay} />}
 
-      <p className="mt-4 text-sm text-ink-faint">
+      <p className="mt-4 text-sm text-ink-muted">
         A plugin can still misuse what you approve: it can read and act on whatever its capabilities
         reach. Approve only modules you trust.
       </p>
@@ -257,39 +270,39 @@ function PortRoutes({ overlay }: { overlay: PluginRouteOverlay }) {
   if (ports.length === 0 && exhausted.length === 0) return null;
   return (
     <section className="mt-6">
-      <h2 className="mb-2 text-base font-semibold text-ink">Port routes</h2>
+      <h2 className="mb-2 text-lg font-semibold">Port routes</h2>
       {exhausted.length > 0 && (
-        <p className="mb-2 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">
+        <p className="mb-2 text-sm text-ink-muted">
           No free entry port for {exhausted.map((e) => e.key).join(", ")} ({exhausted[0].plugin}
           {exhausted.length > 1 ? " and others" : ""}). Approve a wider port range or remove servers.
         </p>
       )}
       {ports.length > 0 && (
-        <div className="rounded border border-line bg-surface">
-          <table className="w-full text-sm">
-            <thead className="text-ink-faint">
-              <tr className="text-left">
-                <th className="px-4 py-2 font-medium">entry port</th>
-                <th className="px-4 py-2 font-medium">key</th>
-                <th className="px-4 py-2 font-medium">protocol</th>
-                <th className="px-4 py-2 font-medium">backend</th>
-                <th className="px-4 py-2 font-medium">plugin</th>
-              </tr>
-            </thead>
-            <tbody>
+        <div>
+          <Table>
+            <THead>
+              <TR>
+                <TH>entry port</TH>
+                <TH>key</TH>
+                <TH>protocol</TH>
+                <TH>backend</TH>
+                <TH>plugin</TH>
+              </TR>
+            </THead>
+            <TBody>
               {[...ports]
                 .sort((a, b) => a.port - b.port)
                 .map((r) => (
-                  <tr key={`${r.owner}/${r.key}`} className="border-t border-line">
-                    <td className="px-4 py-2 font-mono text-ink">{r.port}</td>
-                    <td className="px-4 py-2 font-mono text-xs text-ink-muted">{r.key}</td>
-                    <td className="px-4 py-2 text-ink-muted">{PROTO_WORDS[r.proto]}</td>
-                    <td className="px-4 py-2 font-mono text-xs text-ink-muted">{r.backend}</td>
-                    <td className="px-4 py-2 text-ink-muted">{r.plugin}</td>
-                  </tr>
+                  <TR key={`${r.owner}/${r.key}`}>
+                    <TD className="font-mono text-ink">{r.port}</TD>
+                    <TD className="font-mono text-xs text-ink-muted">{r.key}</TD>
+                    <TD className="text-ink-muted">{PROTO_WORDS[r.proto]}</TD>
+                    <TD className="font-mono text-xs text-ink-muted">{r.backend}</TD>
+                    <TD className="text-ink-muted">{r.plugin}</TD>
+                  </TR>
                 ))}
-            </tbody>
-          </table>
+            </TBody>
+          </Table>
         </div>
       )}
     </section>
@@ -399,7 +412,7 @@ function UploadDialog({
               className="text-sm text-ink"
             />
           </label>
-          {error && <p className="text-sm text-bad">{error}</p>}
+          {error && <ErrorState>{error}</ErrorState>}
           <div className="mt-2 flex justify-end gap-2">
             <Button type="button" variant="ghost" onClick={() => close(false)}>
               Cancel
@@ -446,7 +459,7 @@ function UploadDialog({
           />
           I approve these capabilities for this exact module
         </label>
-        {error && <p className="text-sm text-bad">{error}</p>}
+        {error && <ErrorState>{error}</ErrorState>}
         <div className="mt-2 flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={() => close(false)}>
             Cancel

@@ -2,6 +2,10 @@ import { useEffect, useState } from "react";
 import { ApiError, getCurrentConfig, submitConfig } from "../api";
 import { parseConfigText, stringifyConfigDoc, type ConfigDoc } from "../lib/configDoc";
 import { Button, Input } from "../components/ui/Button";
+import { Select, Textarea } from "../components/ui/Input";
+import { Section } from "../components/ui/Section";
+import { AlertBar, PageHeader } from "../components/shell/Page";
+import { Loading } from "../components/shell/States";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 
 export function SettingsPage() {
@@ -11,8 +15,7 @@ export function SettingsPage() {
   const [parseError, setParseError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const { confirm, dialog } = useConfirm();
+    const { confirm, dialog } = useConfirm();
 
   async function refresh() {
     try {
@@ -69,55 +72,42 @@ export function SettingsPage() {
     }
   }
 
-  if (loading) return <p className="text-sm text-ink-muted">Loading…</p>;
+  if (loading) return <Loading />;
 
   return (
     <div className="max-w-3xl">
-      <div className="mb-5 flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-ink">Settings</h1>
-        <span className="text-xs text-ink-faint">
-          {revision ? `revision ${revision}` : "no revision submitted yet"}
-        </span>
-      </div>
+      <PageHeader
+        title="Settings"
+        summary={revision ? `Revision ${revision}` : "No revision submitted yet"}
+      />
 
       {notice && (
-        <p className="mb-4 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">{notice}</p>
+        <p role="status" className="mb-4 text-sm text-ink-muted">{notice}</p>
       )}
 
       {parseError ? (
-        <p className="mb-4 rounded border border-warn/30 bg-warn/10 px-3 py-2 text-sm text-warn">
+        <AlertBar>
           The raw YAML below has a parse error, so the structured form is disabled until it's fixed: {parseError}
-        </p>
+        </AlertBar>
       ) : (
         doc && <StructuredForm doc={doc} patch={patchDoc} />
       )}
 
-      <section className="mt-6 rounded border border-line bg-surface">
-        <button
-          onClick={() => setAdvancedOpen((o) => !o)}
-          className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm font-medium text-ink"
-        >
-          <span className="text-ink-faint">{advancedOpen ? "▾" : "▸"}</span>
-          Advanced: raw YAML
-          <span className="ml-auto font-normal text-ink-faint">
-            everything here is also reachable above, but every field — including ones with no form yet — is
-            always editable here
-          </span>
-        </button>
-        {advancedOpen && (
-          <div className="border-t border-line p-4">
-            <textarea
-              value={text}
-              onChange={(e) => onRawChange(e.target.value)}
-              spellCheck={false}
-              rows={22}
-              className="w-full rounded border border-line bg-bg p-3 font-mono text-xs text-ink"
-            />
-          </div>
-        )}
-      </section>
+      <Section title="Advanced: raw YAML" advanced className="mt-6">
+        <p className="mb-2 max-w-(--measure) text-xs text-ink-muted">
+          Everything here is also reachable above, but every field, including ones with no form yet, is always
+          editable here.
+        </p>
+        <Textarea
+          value={text}
+          onChange={(e) => onRawChange(e.target.value)}
+          spellCheck={false}
+          rows={22}
+          className="w-full text-xs"
+        />
+      </Section>
 
-      <div className="mt-4 flex justify-end">
+      <div className="sticky bottom-0 mt-4 flex justify-end border-t border-line bg-bg py-2">
         <Button variant="primary" onClick={submit} disabled={!!parseError}>
           Submit as a new revision
         </Button>
@@ -147,9 +137,8 @@ function StructuredForm({
 
   return (
     <div className="flex flex-col gap-4">
-      <section className="rounded border border-line bg-surface p-4">
-        <h3 className="mb-3 text-sm font-medium text-ink">General</h3>
-        <div className="grid grid-cols-3 gap-3">
+      <Section title="General">
+        <div className="grid gap-3 min-[760px]:grid-cols-3">
           <Field label="workers (0 = one per CPU)">
             <Input
               type="number"
@@ -192,11 +181,10 @@ function StructuredForm({
             />
           </Field>
         </div>
-      </section>
+      </Section>
 
-      <section className="rounded border border-line bg-surface p-4">
-        <h3 className="mb-3 text-sm font-medium text-ink">Global limits</h3>
-        <div className="grid grid-cols-3 gap-3">
+      <Section title="Global limits">
+        <div className="grid gap-3 min-[760px]:grid-cols-3">
           <Field label="max connections">
             <Input
               type="number"
@@ -243,13 +231,12 @@ function StructuredForm({
             />
           </Field>
         </div>
-      </section>
+      </Section>
 
-      <section className="rounded border border-line bg-surface p-4">
-        <h3 className="mb-3 text-sm font-medium text-ink">Pools</h3>
+      <Section title="Pools">
         <div className="flex flex-col gap-3">
           {(doc.pools ?? []).map((pool, i) => (
-            <div key={i} className="flex flex-wrap items-center gap-2 rounded border border-line/60 p-2">
+            <div key={i} className="flex flex-wrap items-center gap-2 border border-line p-2">
               <Input
                 placeholder="name"
                 value={pool.name}
@@ -274,12 +261,7 @@ function StructuredForm({
                   )
                 }
               />
-              <button
-                onClick={() => patch((d) => d.pools.splice(i, 1))}
-                className="text-xs text-bad hover:underline"
-              >
-                remove
-              </button>
+              <Button variant="danger" size="sm" onClick={() => patch((d) => d.pools.splice(i, 1))}>remove</Button>
             </div>
           ))}
           <Button
@@ -290,13 +272,12 @@ function StructuredForm({
             + add pool
           </Button>
         </div>
-      </section>
+      </Section>
 
-      <section className="rounded border border-line bg-surface p-4">
-        <h3 className="mb-3 text-sm font-medium text-ink">Listeners</h3>
+      <Section title="Listeners">
         <div className="flex flex-col gap-3">
           {(doc.listeners ?? []).map((l, i) => (
-            <div key={i} className="flex flex-wrap items-center gap-2 rounded border border-line/60 p-2">
+            <div key={i} className="flex flex-wrap items-center gap-2 border border-line p-2">
               <Input
                 placeholder="name"
                 value={l.name}
@@ -307,26 +288,20 @@ function StructuredForm({
                 value={l.bind}
                 onChange={(e) => patch((d) => (d.listeners[i].bind = e.target.value))}
               />
-              <select
+              <Select
                 value={l.protocol ?? "tcp"}
                 onChange={(e) => patch((d) => (d.listeners[i].protocol = e.target.value))}
-                className="rounded border border-line bg-bg px-2 py-1.5 text-sm text-ink"
-              >
+                >
                 <option value="tcp">tcp</option>
                 <option value="udp">udp</option>
-              </select>
+              </Select>
               <Input
                 placeholder="pool"
                 value={l.pool ?? ""}
                 onChange={(e) => patch((d) => (d.listeners[i].pool = e.target.value || undefined))}
               />
-              <button
-                onClick={() => patch((d) => d.listeners.splice(i, 1))}
-                className="text-xs text-bad hover:underline"
-              >
-                remove
-              </button>
-              <span className="w-full text-xs text-ink-faint">
+              <Button variant="danger" size="sm" onClick={() => patch((d) => d.listeners.splice(i, 1))}>remove</Button>
+              <span className="w-full text-xs text-ink-muted">
                 Routes/matchers on this listener aren't editable here yet — use the raw YAML panel below.
               </span>
             </div>
@@ -339,10 +314,9 @@ function StructuredForm({
             + add listener
           </Button>
         </div>
-      </section>
+      </Section>
 
-      <section className="rounded border border-line bg-surface p-4">
-        <h3 className="mb-3 text-sm font-medium text-ink">Sniffers</h3>
+      <Section title="Sniffers">
         <Field label="sniffers.dir">
           <Input
             value={s.sniffers?.dir ?? ""}
@@ -355,14 +329,13 @@ function StructuredForm({
             className="max-w-md"
           />
         </Field>
-        <p className="mt-2 text-xs text-ink-faint">
+        <p className="mt-2 text-xs text-ink-muted">
           Manage which modules live in this directory from the Sniffers page.
         </p>
-      </section>
+      </Section>
 
-      <section className="rounded border border-line bg-surface p-4">
-        <h3 className="mb-3 text-sm font-medium text-ink">Tier-2 regional health fabric</h3>
-        <div className="grid grid-cols-2 gap-3">
+      <Section title="Tier-2 regional health fabric">
+        <div className="grid gap-3 min-[760px]:grid-cols-2">
           <Field label="failure domain">
             <Input
               value={s.failure_domain ?? ""}
@@ -416,10 +389,10 @@ function StructuredForm({
             />
           </Field>
         </div>
-        <p className="mt-2 text-xs text-ink-faint">
+        <p className="mt-2 text-xs text-ink-muted">
           Both fields must be set together, or neither — see docs/05-configuration.md.
         </p>
-      </section>
+      </Section>
     </div>
   );
 }

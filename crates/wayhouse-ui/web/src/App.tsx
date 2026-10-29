@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
-import { checkSession } from "./api";
+import { getSession, logout, type SessionInfo } from "./api";
 import { Login } from "./components/Login";
-import { Layout } from "./components/Layout";
+import { Shell } from "./components/shell/Shell";
+import { Loading } from "./components/shell/States";
+import { SessionProvider } from "./lib/session";
+import { QueryProvider } from "./lib/query";
 import { FleetPage } from "./pages/FleetPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SniffersPage } from "./pages/SniffersPage";
@@ -12,24 +15,29 @@ import { TunnelAddressesPage } from "./pages/TunnelAddressesPage";
 import { CertificatesPage } from "./pages/CertificatesPage";
 
 export function App() {
-  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  // undefined while checking, null when signed out
+  const [session, setSession] = useState<SessionInfo | null | undefined>(undefined);
 
   useEffect(() => {
-    checkSession().then(setAuthenticated);
+    getSession().then(setSession);
   }, []);
 
-  if (authenticated === null) {
+  if (session === undefined) {
     return (
-      <div className="flex h-screen items-center justify-center text-sm text-ink-muted">Loading…</div>
+      <div className="p-(--page-pad)">
+        <Loading rows={1} />
+      </div>
     );
   }
-  if (!authenticated) {
-    return <Login onLoggedIn={() => setAuthenticated(true)} />;
+  if (!session) {
+    return <Login onLoggedIn={() => getSession().then(setSession)} />;
   }
 
   return (
+    <SessionProvider value={session}>
+    <QueryProvider>
     <Routes>
-      <Route element={<Layout onLoggedOut={() => setAuthenticated(false)} />}>
+      <Route element={<Shell onSignOut={() => logout().finally(() => setSession(null))} />}>
         <Route index element={<Navigate to="/fleet" replace />} />
         <Route path="/fleet" element={<FleetPage />} />
         <Route path="/settings" element={<SettingsPage />} />
@@ -41,5 +49,7 @@ export function App() {
         <Route path="*" element={<Navigate to="/fleet" replace />} />
       </Route>
     </Routes>
+    </QueryProvider>
+    </SessionProvider>
   );
 }

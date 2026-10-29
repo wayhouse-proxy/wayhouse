@@ -1,8 +1,11 @@
 import { useRef, useState } from "react";
 import { ApiError, checkUpdates, listRegistrySniffers } from "../api";
 import type { RegistrySniffer, RegistryRef, UpdateCheck, UpdateCheckRow } from "../types";
+import { AlertBar } from "../components/shell/Page";
+import { EmptyState } from "../components/shell/States";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
+import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { InstallDialog } from "./RegistrySection";
 
 function message(err: unknown): string {
@@ -67,7 +70,7 @@ export function UpdatesSection({ onChanged }: { onChanged: (notice: string) => v
   return (
     <section className="mt-8" aria-labelledby="updates-heading">
       <div className="mb-3 flex items-center justify-between">
-        <h2 id="updates-heading" className="text-base font-semibold text-ink">
+        <h2 id="updates-heading" className="text-lg font-semibold">
           Updates
         </h2>
         <Button onClick={check} disabled={checking}>
@@ -114,47 +117,47 @@ function Results({
   return (
     <div className="flex flex-col gap-2">
       {down.map((r) => (
-        <p key={r.id} className="rounded border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-ink">
+        <AlertBar key={r.id}>
           Could not reach registry {r.name}: {r.error}
-        </p>
+        </AlertBar>
       ))}
       {result.instance_errors.map((e) => (
-        <p key={e.instance} className="rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">
+        <AlertBar key={e.instance}>
           {e.instance} did not answer (status {e.status}); it is missing from this list.
-        </p>
+        </AlertBar>
       ))}
-      <div className="rounded border border-line bg-surface">
+      <div>
         {result.sniffers.length === 0 ? (
-          <p className="px-4 py-3 text-sm text-ink-muted">No sniffers are installed on the instances that answered.</p>
+          <EmptyState>No sniffers are installed on the instances that answered.</EmptyState>
         ) : (
-          <table className="w-full text-sm">
-            <thead className="text-ink-faint">
-              <tr className="text-left">
-                <th className="px-4 py-2 font-medium">name</th>
-                <th className="px-4 py-2 font-medium">installed</th>
-                <th className="px-4 py-2 font-medium">instances</th>
-                <th className="px-4 py-2 font-medium">update</th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table>
+            <THead>
+              <TR>
+                <TH>name</TH>
+                <TH>installed</TH>
+                <TH>instances</TH>
+                <TH>update</TH>
+              </TR>
+            </THead>
+            <TBody>
               {result.sniffers.map((row) => (
-                <tr key={`${row.sniffer}:${row.installed_sha256}`} className="border-t border-line align-top">
-                  <td className="px-4 py-2 font-mono text-ink">{row.sniffer}</td>
-                  <td className="px-4 py-2 text-ink-muted">
+                <TR key={`${row.sniffer}:${row.installed_sha256}`} className="align-top">
+                  <TD className="font-mono text-ink">{row.sniffer}</TD>
+                  <TD className="text-ink-muted">
                     {row.known ? row.installed_version : <span title={row.installed_sha256}>unknown build</span>}
-                  </td>
-                  <td className="px-4 py-2 text-ink-muted">{row.instances.join(", ")}</td>
-                  <td className="px-4 py-2">
+                  </TD>
+                  <TD className="text-ink-muted">{row.instances.join(", ")}</TD>
+                  <TD>
                     <UpdateCell row={row} onUpdate={onUpdate} busy={busy} registryDown={down.length > 0} />
-                  </td>
-                </tr>
+                  </TD>
+                </TR>
               ))}
-            </tbody>
-          </table>
+            </TBody>
+          </Table>
         )}
       </div>
       {!result.min_proxy_checked && (
-        <p className="text-xs text-ink-faint">
+        <p className="text-xs text-ink-muted">
           Compatibility is checked against sniffer ABI {result.host_abi}. Each sniffer&apos;s minimum proxy version
           could not be checked against every proxy: the aggregator is unreachable, no proxy is registered, or one
           runs a build that reports no version.
@@ -176,7 +179,7 @@ function UpdateCell({
   registryDown: boolean;
 }) {
   if (!row.known) {
-    return <span className="text-ink-faint">not in any registry, so no update is offered</span>;
+    return <span className="text-ink-muted">not in any registry, so no update is offered</span>;
   }
   if (!row.update) {
     // An unreachable registry might hold a newer version, so "up to date" would be a guess.
