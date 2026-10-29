@@ -2,6 +2,7 @@
 // with no server. State lives in memory and resets on reload. Only demo.html loads this file.
 import YAML from "yaml";
 import { createTwoFilesPatch } from "diff";
+// Outside the web folder on purpose: the Docker web stage copies only this folder, so tsconfig.json excludes src/demo and only build:demo needs the file.
 import schema from "../../../../wayhouse-config/schema/config.schema.json";
 import type { FleetNode } from "../lib/fleet/nodes";
 import type { FeatureOverride, PluginInstall, SnifferInfo } from "../types";
