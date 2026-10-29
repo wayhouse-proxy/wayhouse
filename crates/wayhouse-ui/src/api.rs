@@ -839,6 +839,8 @@ mod tests {
             ("DELETE", "/api/plugins/abc/secrets/TOKEN"),
             ("POST", "/api/plugins/abc/webhook"),
             ("DELETE", "/api/plugins/abc/webhook"),
+            ("PUT", "/api/features/overrides/acl"),
+            ("DELETE", "/api/features/overrides/acl"),
             ("PUT", "/api/acme/sites/panel"),
             ("DELETE", "/api/acme/sites/panel"),
             ("POST", "/api/acme/gateways"),

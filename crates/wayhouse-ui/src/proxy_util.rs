@@ -109,6 +109,8 @@ mod header_contract {
         ("GET", "/api/acme/sites"),
         ("GET", "/api/acme/gateways"),
         ("GET", "/api/acme/account"),
+        ("GET", "/api/features"),
+        ("GET", "/api/features/overrides"),
         ("GET", "/api/plugins/0123abcd/status"),
         // controller_proxy: admin writes
         ("POST", "/api/config"),
@@ -126,6 +128,8 @@ mod header_contract {
         ("DELETE", "/api/plugins/0123abcd/secrets/TOKEN"),
         ("POST", "/api/plugins/0123abcd/webhook"),
         ("DELETE", "/api/plugins/0123abcd/webhook"),
+        ("PUT", "/api/features/overrides/acl"),
+        ("DELETE", "/api/features/overrides/acl"),
     ];
 
     /// An upstream that answers *every* method and path the same way: a

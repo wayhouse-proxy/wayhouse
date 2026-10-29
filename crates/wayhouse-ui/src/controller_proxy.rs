@@ -53,6 +53,8 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/acme/sites", get(acme_sites))
         .route("/api/acme/gateways", get(acme_gateways))
         .route("/api/acme/account", get(acme_account))
+        .route("/api/features", get(features))
+        .route("/api/features/overrides", get(feature_overrides))
 }
 
 /// Config-changing writes — `Role::Admin`.
@@ -96,7 +98,16 @@ pub fn admin_router() -> Router<AppState> {
             "/api/plugins/{id}/webhook",
             post(enable_plugin_webhook).delete(revoke_plugin_webhook),
         )
+        .route(
+            "/api/features/overrides/{name}",
+            put(put_feature_override)
+                .delete(delete_feature_override)
+                .layer(DefaultBodyLimit::max(FEATURE_OVERRIDE_BODY_BYTES)),
+        )
 }
+
+/// A reason, a boolean and an expiry; the controller reads little more.
+const FEATURE_OVERRIDE_BODY_BYTES: usize = 8 * 1024;
 
 /// The controller's own cap on an install's config is 64 KiB; the rest is the approved set.
 const PLUGIN_CONFIG_BODY_BYTES: usize = 80 * 1024;
@@ -186,6 +197,69 @@ async fn acme_gateways(State(state): State<AppState>) -> Response {
         None,
     )
     .await
+}
+
+async fn features(State(state): State<AppState>) -> Response {
+    proxy(&state, Method::GET, "/features".to_string(), None, None).await
+}
+
+async fn feature_overrides(State(state): State<AppState>) -> Response {
+    proxy(
+        &state,
+        Method::GET,
+        "/features/overrides".to_string(),
+        None,
+        None,
+    )
+    .await
+}
+
+async fn put_feature_override(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    let Some(name) = crate::proxy_util::path_segment(&name) else {
+        return bad_feature_name();
+    };
+    proxy_typed(
+        &state,
+        Method::PUT,
+        format!("/features/overrides/{name}"),
+        Some(body),
+        Some("application/json"),
+        actor,
+    )
+    .await
+}
+
+async fn delete_feature_override(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(name): Path<String>,
+) -> Response {
+    let Some(name) = crate::proxy_util::path_segment(&name) else {
+        return bad_feature_name();
+    };
+    proxy(
+        &state,
+        Method::DELETE,
+        format!("/features/overrides/{name}"),
+        None,
+        actor,
+    )
+    .await
+}
+
+fn bad_feature_name() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: "invalid feature name".into(),
+        }),
+    )
+        .into_response()
 }
 
 async fn acme_account(State(state): State<AppState>) -> Response {
@@ -1295,6 +1369,77 @@ mod tests {
         assert_eq!(
             paths,
             ["GET /acme/sites", "GET /acme/gateways", "GET /acme/account"]
+        );
+    }
+
+    #[tokio::test]
+    async fn feature_reads_and_override_writes_reach_the_controller() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        let body = r#"{"value":false,"reason":"storm","expires_at":1900000000}"#;
+        for (method, path, send) in [
+            ("GET", "/api/features", ""),
+            ("GET", "/api/features/overrides", ""),
+            ("PUT", "/api/features/overrides/acl", body),
+            ("DELETE", "/api/features/overrides/admin_write.backends", ""),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::from(send))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{method} {path}");
+        }
+        let seen = seen.lock().unwrap();
+        let calls: Vec<_> = seen.iter().map(|(m, p, _, _)| format!("{m} {p}")).collect();
+        assert_eq!(
+            calls,
+            [
+                "GET /features",
+                "GET /features/overrides",
+                "PUT /features/overrides/acl",
+                "DELETE /features/overrides/admin_write.backends"
+            ]
+        );
+        assert_eq!(seen[2].2.as_deref(), Some("application/json"));
+        assert_eq!(seen[2].3, body.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn a_flag_name_cannot_be_steered_to_another_controller_path() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        for (name, want) in [
+            ("..", StatusCode::BAD_REQUEST),
+            ("%2e%2e", StatusCode::BAD_REQUEST),
+            ("..%2Fconfig", StatusCode::OK),
+            ("a%2Fb", StatusCode::OK),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::delete(format!("/api/features/overrides/{name}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), want, "{name}");
+        }
+        // The slash stays inside one segment, so the controller sees a name, not a path.
+        let paths: Vec<_> = seen.lock().unwrap().iter().map(|c| c.1.clone()).collect();
+        assert_eq!(
+            paths,
+            [
+                "/features/overrides/..%2Fconfig",
+                "/features/overrides/a%2Fb"
+            ]
         );
     }
 

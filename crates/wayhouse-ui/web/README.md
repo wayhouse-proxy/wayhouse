@@ -83,7 +83,7 @@ runs Vite's dev server with hot reload, proxying `/ui`, `/api`, `/ws`, and
 
 Client-side routing uses `react-router` (`/fleet`, `/settings`, `/sniffers`,
 `/plugins`, `/plugins/new`, `/plugins/:id`, `/config-history`, `/tunnel`,
-`/settings/source` for the raw YAML editor, `/config/listeners` for listeners, routes and the patch-line diagram, `/config/pools`, `/config/sources`, `/config/resolvers` and `/config/web` for the other named lists), so each page has its own URL and works with the
+`/settings/source` for the raw YAML editor, `/config/listeners` for listeners, routes and the patch-line diagram, `/config/pools`, `/config/sources`, `/config/resolvers` and `/config/web` for the other named lists, `/features` for the feature flags and their overrides), so each page has its own URL and works with the
 browser back button. The server answers any non-API page path with `index.html`.
 
 ## Browser e2e (Playwright)

@@ -243,6 +243,14 @@
 > controller every 15 s, judge the expiry themselves and keep the last overrides when the
 > controller is unreachable. Overrides are replicated under HA like dashboards.
 >
+> **In the UI:** Configure > Features (`/features`) lists every flag the build enforces with its
+> value and where it comes from (default, config, override, or "not in this build"), the risk
+> of switching it off, and, for admins, the override form (a reason is required; a protection
+> flag needs an expiry) with a clear button. A banner shows while a protection flag is off.
+> The page shows the `features:` value of the current config revision; a canary revision that
+> proxies still have to adopt may differ per node, and a per-node breakdown is not shown yet.
+> Flags the build does not enforce yet (`wired: false`) are listed by name only.
+>
 > **Web sites (schema 3):** the optional top-level `web:` section describes HTTP(S) sites
 > published through a Caddy that sits behind a Wayhouse pool (design: issue #297, spec
 > `docs/superpowers/specs/2026-10-15-web-routing-design.md`). It is validated and resolved

@@ -25,6 +25,7 @@ import { PluginDetailPage } from "./pages/PluginDetailPage";
 import { ConfigHistoryPage } from "./pages/ConfigHistoryPage";
 import { TunnelAddressesPage } from "./pages/TunnelAddressesPage";
 import { CertificatesPage } from "./pages/CertificatesPage";
+import { FeaturesPage } from "./pages/FeaturesPage";
 
 // The chart library is the heaviest dependency, so the pages that use it load on first visit.
 const OverviewPage = lazy(() => import("./pages/OverviewPage").then((m) => ({ default: m.OverviewPage })));
@@ -80,6 +81,7 @@ export function App() {
         <Route path="/config-history" element={<ConfigHistoryPage />} />
         <Route path="/tunnel" element={<TunnelAddressesPage />} />
         <Route path="/certificates" element={<CertificatesPage />} />
+        <Route path="/features" element={<FeaturesPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>

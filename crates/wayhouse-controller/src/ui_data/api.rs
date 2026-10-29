@@ -160,10 +160,16 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// `GET /features`: the controller's flags with the overrides in force.
+/// `GET /features`: the controller's flags with the overrides in force, and `proxy_flags`,
+/// the proxy flags as the fleet sees them (default and override; the config value is the
+/// UI's to overlay, each node's build decides `available`).
 fn flags(st: &UiState) -> Response {
     match crate::features::active(&st.store, now()) {
-        Ok(o) => Json(json!({ "flags": crate::features::effective(&o) })).into_response(),
+        Ok(o) => Json(json!({
+            "flags": crate::features::effective(&o),
+            "proxy_flags": crate::features::fleet_view(&o),
+        }))
+        .into_response(),
         Err(e) => internal(e),
     }
 }
@@ -431,6 +437,29 @@ mod tests {
         assert_eq!(st, StatusCode::NO_CONTENT);
         let (_, v) = call(&app, "GET", "/features", Value::Null, None).await;
         assert_eq!(flag(&v, "plugin_webhooks")["value"], true);
+    }
+
+    #[tokio::test]
+    async fn the_proxy_flags_are_listed_with_the_overrides_that_apply_to_them() {
+        let (app, _s, _d) = app(None);
+        let (_, v) = call(&app, "GET", "/features", Value::Null, None).await;
+        let proxy = |v: &Value, n: &str| {
+            v["proxy_flags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["name"] == n)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(proxy(&v, "geo")["scope"], "proxy");
+        assert_eq!(proxy(&v, "geo")["source"], "default");
+        let body = json!({"value": false, "reason": "geo db wrong", "expires_at": now() + 600});
+        let (st, got) = call(&app, "PUT", "/features/overrides/geo", body, None).await;
+        assert_eq!(st, StatusCode::OK, "{got}");
+        let (_, v) = call(&app, "GET", "/features", Value::Null, None).await;
+        assert_eq!(proxy(&v, "geo")["value"], false);
+        assert_eq!(proxy(&v, "geo")["source"], "override");
     }
 
     #[tokio::test]

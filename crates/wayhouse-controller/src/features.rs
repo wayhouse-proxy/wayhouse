@@ -17,6 +17,12 @@ pub fn effective(overrides: &BTreeMap<String, bool>) -> Vec<FeatureView> {
     view(Scope::Controller, &BTreeMap::new(), overrides, available)
 }
 
+/// Every proxy flag with the default or override that applies fleet-wide. The `features:`
+/// section is per config revision and per node, so it is not folded in here.
+pub fn fleet_view(overrides: &BTreeMap<String, bool>) -> Vec<FeatureView> {
+    view(Scope::Proxy, &BTreeMap::new(), overrides, |_| true)
+}
+
 /// Sets `wayhouse_feature_enabled` and `wayhouse_feature_source`.
 pub fn publish(overrides: &BTreeMap<String, bool>) {
     for row in effective(overrides) {

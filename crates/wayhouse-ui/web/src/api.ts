@@ -5,6 +5,8 @@
 
 import type {
   AcmeAccount,
+  FeatureFlag,
+  FeatureOverride,
   AcmeGateway,
   AcmeSite,
   FanoutResponse,
@@ -548,4 +550,23 @@ export function deleteFilter(name: string): Promise<void> {
 
 export function getFleetStats(range: Range): Promise<FleetStats> {
   return requestJson(`/api/fleet/stats?range=${range}`);
+}
+
+// --- Feature flags (proxied to wayhouse-controller) ---
+
+/** `flags` are the controller's own; `proxy_flags` show default and override fleet-wide, the config value is the caller's to add. */
+export function getFeatures(): Promise<{ flags: FeatureFlag[]; proxy_flags: FeatureFlag[] }> {
+  return requestJson("/api/features");
+}
+export function listFeatureOverrides(): Promise<{ items: FeatureOverride[] }> {
+  return requestJson("/api/features/overrides");
+}
+export function putFeatureOverride(name: string, value: boolean, reason: string, expiresAt?: number): Promise<FeatureOverride> {
+  return requestJson(
+    `/api/features/overrides/${encodeURIComponent(name)}`,
+    jsonInit("PUT", { value, reason, ...(expiresAt ? { expires_at: expiresAt } : {}) }),
+  );
+}
+export function clearFeatureOverride(name: string): Promise<void> {
+  return requestJson(`/api/features/overrides/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
