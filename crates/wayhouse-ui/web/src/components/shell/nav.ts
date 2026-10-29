@@ -33,6 +33,7 @@ export const NAV: NavGroup[] = [
         label: "Settings",
         children: [
           { to: "/settings", label: "General" },
+          { to: "/settings/source", label: "Source" },
           { to: "/settings/appearance", label: "Appearance" },
           { to: "/settings/layout", label: "Layout" },
         ],

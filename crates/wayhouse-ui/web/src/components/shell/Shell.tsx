@@ -11,7 +11,7 @@ import { Loading } from "./States";
  * Three zones: the dark rail on the left, the page in the middle, the inspector on the
  * right (below the page under 1100 px). Under 760 px the rail becomes a top bar with a menu.
  */
-export function Shell({ onSignOut, nav = NAV }: { onSignOut: () => void; nav?: NavGroup[] }) {
+export function Shell({ onSignOut, nav = NAV, banner }: { onSignOut: () => void; nav?: NavGroup[]; banner?: React.ReactNode }) {
   const { pathname } = useLocation();
   const [menu, setMenu] = useState(false);
   // Picking a page on a narrow screen must reveal it, not leave the rail on top.
@@ -32,6 +32,7 @@ export function Shell({ onSignOut, nav = NAV }: { onSignOut: () => void; nav?: N
         </div>
         <div className="flex min-w-0 flex-1 flex-col min-[1100px]:flex-row min-[760px]:overflow-hidden">
           <main className="min-w-0 flex-1 overflow-y-auto p-(--page-pad)">
+            {banner}
             {crumbs.length > 0 && (
               <nav aria-label="Breadcrumb" className="mb-1 text-xs text-ink-muted">
                 {crumbs.join(" / ")}

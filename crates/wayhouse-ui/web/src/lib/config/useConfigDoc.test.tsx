@@ -70,13 +70,32 @@ describe("useConfigDoc", () => {
     act(() => result.current.setValue({ settings: { workers: 4 } }));
     api.submitConfig.mockRejectedValueOnce(new ApiError(409, "stale"));
     expect(await result.current.apply()).toMatchObject({ ok: false, stale: true });
-    expect(api.submitConfig).toHaveBeenCalledWith(expect.stringContaining("workers: 4"), 7);
+    expect(api.submitConfig).toHaveBeenCalledWith(expect.stringContaining("workers: 4"), { base: 7 });
     api.submitConfig.mockResolvedValueOnce({ revision: 8 });
     let r: any;
     await act(async () => (r = await result.current.apply()));
     expect(r).toEqual({ ok: true, revision: 8 });
     expect(result.current.revision).toBe(8);
     expect(result.current.changes).toBe(0);
+  });
+
+  it("apply passes canary and confirm options along with the base", async () => {
+    const { result } = await loaded();
+    api.submitConfig.mockResolvedValueOnce({ revision: 8 });
+    await act(async () => void (await result.current.apply({ canaryGroup: "eu", confirmWithin: 60 })));
+    expect(api.submitConfig).toHaveBeenCalledWith(FILE, { canaryGroup: "eu", confirmWithin: 60, base: 7 });
+  });
+
+  it("raises schema_version when a form edit sets a field newer than the document", async () => {
+    api.getConfigSchema.mockResolvedValue({
+      type: "object",
+      properties: { settings: { type: "object", properties: { workers: { type: "integer" }, fancy: { type: "boolean", "x-wayhouse-since": 4 } } } },
+    });
+    const { result } = await loaded();
+    act(() => result.current.setValue({ settings: { workers: 2, fancy: true } }));
+    expect(result.current.text).toContain("schema_version: 4");
+    act(() => result.current.setValue({ settings: { workers: 3, fancy: true }, schema_version: 4 }));
+    expect(result.current.text.match(/schema_version/g)).toHaveLength(1);
   });
 
   it("validate returns the controller's message", async () => {

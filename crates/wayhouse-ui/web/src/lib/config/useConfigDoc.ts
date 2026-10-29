@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ApiError, getConfigSchema, getCurrentConfig, submitConfig, validateConfig } from "../../api";
+import { ApiError, getConfigSchema, getCurrentConfig, submitConfig, validateConfig, type SubmitOptions } from "../../api";
 import { diff, parseText, patchText } from "./patch";
+import { requiredSchemaVersion } from "./schemaVersion";
 
 export interface ConfigDoc {
   /** The YAML as it stands in the editor. */
@@ -18,7 +19,8 @@ export interface ConfigDoc {
   error: string | null;
   /** The number of changed values, for the save bar. */
   changes: number;
-  /** Replace the whole document value (what SchemaForm gives back); comments and unknown keys stay. */
+  /** Replace the whole document value (what SchemaForm gives back); comments and unknown keys stay.
+   *  `schema_version` is raised when the edit sets a field newer than the document says. */
   setValue: (next: unknown) => void;
   /** Replace the YAML text (the Source page). */
   setText: (text: string) => void;
@@ -26,7 +28,7 @@ export interface ConfigDoc {
   reload: () => Promise<void>;
   validate: () => Promise<{ ok: boolean; message?: string; schemaVersion?: number }>;
   /** Submits the edit based on the loaded revision; a 409 means someone else changed it (`stale`). */
-  apply: () => Promise<{ ok: true; revision: number } | { ok: false; stale: boolean; message: string }>;
+  apply: (opts?: Omit<SubmitOptions, "base">) => Promise<{ ok: true; revision: number } | { ok: false; stale: boolean; message: string }>;
 }
 
 /**
@@ -75,9 +77,12 @@ export function useConfigDoc(): ConfigDoc {
     (next: unknown) =>
       setText((t) => {
         const { value, error } = parseText(t);
-        return error ? t : patchText(t, value, next); // the YAML is broken: leave it to the Source page
+        if (error) return t; // the YAML is broken: leave it to the Source page
+        const need = schema ? requiredSchemaVersion(schema, value, next) : 1;
+        const have = Number((value as { schema_version?: number })?.schema_version ?? 1);
+        return patchText(t, value, need > have ? { ...(next as object), schema_version: need } : next);
       }),
-    [],
+    [schema],
   );
 
   const validate = useCallback(async () => {
@@ -89,9 +94,9 @@ export function useConfigDoc(): ConfigDoc {
     }
   }, [text]);
 
-  const apply = useCallback(async () => {
+  const apply = useCallback(async (opts: Omit<SubmitOptions, "base"> = {}) => {
     try {
-      const r = await submitConfig(text, revision ?? 0);
+      const r = await submitConfig(text, { ...opts, base: revision ?? 0 });
       setSavedText(text);
       setRevision(r.revision);
       return { ok: true as const, revision: r.revision };

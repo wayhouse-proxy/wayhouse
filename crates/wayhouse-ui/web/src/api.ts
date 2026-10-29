@@ -342,9 +342,48 @@ export async function getCurrentConfig(): Promise<CurrentConfig> {
   return { text, revision: resp.headers.get("x-config-revision") };
 }
 
-/** Submits a document as a new revision. With `base`, the controller answers 409 if another edit landed since you loaded it. */
-export function submitConfig(text: string, base?: number): Promise<{ revision: number }> {
-  return requestJson(`/api/config${base === undefined ? "" : `?base=${base}`}`, { method: "POST", body: text });
+export interface SubmitOptions {
+  /** The controller answers 409 if another edit landed since this revision. */
+  base?: number;
+  /** Visible only to proxies reporting this group until promoted. */
+  canaryGroup?: string;
+  /** Seconds (10 to 600) the controller waits for a confirmation before it reverts; 0 opts out of the automatic window. */
+  confirmWithin?: number;
+}
+
+/** Submits a document as a new revision. */
+export function submitConfig(text: string, opts: SubmitOptions = {}): Promise<{ revision: number }> {
+  const q = new URLSearchParams();
+  if (opts.base !== undefined) q.set("base", String(opts.base));
+  if (opts.canaryGroup) {
+    q.set("stage", "canary");
+    q.set("group", opts.canaryGroup);
+  }
+  if (opts.confirmWithin !== undefined) q.set("confirm_within", String(opts.confirmWithin));
+  const qs = q.toString();
+  return requestJson(`/api/config${qs ? `?${qs}` : ""}`, { method: "POST", body: text });
+}
+
+/** A revision on trial: unless confirmed by `deadline_ms` (the controller's clock) the controller re-submits `revert_to`. */
+export interface PendingConfig {
+  pending: null | { revision: number; revert_to: number; deadline_ms: number; reasons: string[]; remaining_ms: number };
+  /** The controller's clock, so every operator's countdown matches. */
+  now_ms: number;
+  auto_confirm_secs: number;
+  risks: { id: string; text: string }[];
+}
+
+export function getPendingConfig(): Promise<PendingConfig> {
+  return requestJson("/api/config/pending");
+}
+export function confirmRevision(revision: number): Promise<void> {
+  return requestJson(`/api/config/confirm/${revision}`, { method: "POST" });
+}
+export function revertNow(): Promise<void> {
+  return requestJson("/api/config/revert", { method: "POST" });
+}
+export function promoteRevision(revision: number): Promise<void> {
+  return requestJson(`/api/config/promote/${revision}`, { method: "POST" });
 }
 
 /** Runs a submission's checks and stores nothing: `{ok, schema_version}`, or a 422 whose message names the problem. */
