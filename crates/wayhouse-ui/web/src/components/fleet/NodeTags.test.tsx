@@ -80,4 +80,26 @@ describe("node tags", () => {
     expect(screen.getByText(/cannot be tagged/i)).toBeInTheDocument();
     expect(screen.getByLabelText("Tag key")).toBeDisabled();
   });
+
+  it("holds a key to the server's rule: 32 characters, starting with a letter or digit", async () => {
+    show();
+    await userEvent.type(screen.getByLabelText("Tag key"), ".hidden");
+    await userEvent.type(screen.getByLabelText("Tag value"), "x");
+    await userEvent.click(screen.getByRole("button", { name: "Add tag" }));
+    expect(screen.getByText(/at most 32/)).toBeInTheDocument();
+    expect(api.setNodeTags).not.toHaveBeenCalled();
+  });
+
+  it("Enter adds, the problem is tied to the input and goes away when it is edited", async () => {
+    show();
+    const key = screen.getByLabelText("Tag key");
+    await userEvent.type(key, "Bad");
+    await userEvent.type(screen.getByLabelText("Tag value"), "x{Enter}");
+    expect(key).toHaveAttribute("aria-invalid", "true");
+    expect(key).toHaveAccessibleDescription(/lowercase letters/);
+    await userEvent.clear(key);
+    expect(screen.queryByRole("alert")).toBeNull();
+    await userEvent.type(key, "zone{Enter}");
+    expect(api.setNodeTags.mock.calls[0].slice(0, 2)).toEqual(["n1", { rack: "r1", zone: "x" }]);
+  });
 });

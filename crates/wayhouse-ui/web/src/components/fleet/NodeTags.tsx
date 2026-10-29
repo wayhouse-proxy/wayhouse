@@ -7,7 +7,7 @@ import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { useToast } from "../ui/Toast";
 
-const KEY = /^[a-z0-9._-]{1,64}$/;
+const KEY = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 const VALUE = /^[A-Za-z0-9._:/@+-]{1,64}$/;
 const MAX_TAGS = 16;
 
@@ -32,7 +32,7 @@ export function NodeTags({
   const qc = useQueryClient();
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
-  const [problem, setProblem] = useState("");
+  const [problem, setProblem] = useState<{ field: "key" | "value"; text: string } | null>(null);
 
   const mine = node?.operator_tags ?? {};
   const reported = Object.entries(node?.tags ?? {}).filter(([k]) => !(k in mine));
@@ -50,11 +50,13 @@ export function NodeTags({
     onError: (e) => toast(`Tags not saved: ${e instanceof ApiError ? e.message : e}`, "down"),
   });
 
-  function add() {
-    if (!KEY.test(key)) return setProblem("A key uses lowercase letters, digits and . _ - (at most 64).");
-    if (!VALUE.test(value)) return setProblem("A value uses letters, digits and . _ : / @ + - (1 to 64).");
-    if (!(key in mine) && Object.keys(mine).length >= MAX_TAGS) return setProblem(`At most ${MAX_TAGS} tags.`);
-    setProblem("");
+  function add(e: React.FormEvent) {
+    e.preventDefault();
+    if (off || save.isPending || !key || !value) return;
+    if (!KEY.test(key)) return setProblem({ field: "key", text: "A key uses lowercase letters, digits and . _ - (at most 32, starting with a letter or digit)." });
+    if (!VALUE.test(value)) return setProblem({ field: "value", text: "A value uses letters, digits and . _ : / @ + - (1 to 64)." });
+    if (!(key in mine) && Object.keys(mine).length >= MAX_TAGS) return setProblem({ field: "key", text: `At most ${MAX_TAGS} tags.` });
+    setProblem(null);
     save.mutate({ ...mine, [key]: value });
   }
   function remove(k: string) {
@@ -88,14 +90,14 @@ export function NodeTags({
         ))}
         {reported.length === 0 && Object.keys(mine).length === 0 && <li className="text-ink-muted">None. A node reports its own with <code className="font-mono">--tag key=value</code>.</li>}
       </ul>
-      <div className="flex gap-1">
-        <Input mono aria-label="Tag key" placeholder="key" value={key} disabled={off} onChange={(e) => setKey(e.target.value)} />
-        <Input mono aria-label="Tag value" placeholder="value" value={value} disabled={off} onChange={(e) => setValue(e.target.value)} />
-        <Button disabled={off || save.isPending || !key || !value} onClick={add}>
+      <form className="flex gap-1" onSubmit={add}>
+        <Input mono aria-label="Tag key" placeholder="key" value={key} disabled={off} aria-invalid={problem?.field === "key" || undefined} aria-describedby={problem?.field === "key" ? "tag-problem" : undefined} onChange={(e) => { setKey(e.target.value); setProblem(null); }} />
+        <Input mono aria-label="Tag value" placeholder="value" value={value} disabled={off} aria-invalid={problem?.field === "value" || undefined} aria-describedby={problem?.field === "value" ? "tag-problem" : undefined} onChange={(e) => { setValue(e.target.value); setProblem(null); }} />
+        <Button type="submit" disabled={off || save.isPending || !key || !value}>
           Add tag
         </Button>
-      </div>
-      {problem && <p role="alert" className="text-bad">{problem}</p>}
+      </form>
+      {problem && <p id="tag-problem" role="alert" className="text-bad">{problem.text}</p>}
     </section>
   );
 }
