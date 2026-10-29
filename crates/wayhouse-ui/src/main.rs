@@ -16,7 +16,6 @@ use std::path::PathBuf;
 use axum::routing::get;
 use axum::Router;
 use clap::Parser;
-use tower_http::services::ServeDir;
 use tracing_subscriber::EnvFilter;
 
 use wayhouse_ui::api::{self, AppState};
@@ -228,7 +227,7 @@ async fn main() -> anyhow::Result<()> {
     }
     let app = wayhouse_ui::origin_guard::with_security_headers(
         app.merge(api::router(state))
-            .fallback_service(ServeDir::new(&args.static_dir)),
+            .fallback_service(wayhouse_ui::static_files::service(&args.static_dir)),
     );
 
     wayhouse_http::tls::serve(args.listen, app, tls_cert, args.tls.limits(), "wayhouse-ui").await?;
