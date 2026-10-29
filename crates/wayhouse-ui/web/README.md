@@ -102,3 +102,16 @@ identical, so edit the docs file and copy it). Components live in `src/component
 source on Radix, restyled to `docs/design-system/components.md`). `src/lib/theme` holds the theme
 provider and the validator for custom themes (`themes.md`); `fixtures.json` there is shared with the
 controller's Rust port.
+
+## Interactive demo (fake data)
+
+```sh
+npm run build:demo        # dist-demo/ plus one self-contained dist-demo/wayhouse-demo.html
+npx vite preview -c vite.demo.config.ts --outDir dist-demo
+```
+
+`demo.html` is a second entry that runs the real UI against an in-browser mock of the
+controller and aggregator APIs (`src/demo/`): about 40 invented nodes, pools, listeners,
+sites with certificates, feature flags, plugins and a revision on trial. Changes live in
+memory and reset on reload. The mock is only reachable from `demo.html`; `npm run build`
+does not include it. The demo file imports the config schema from `crates/wayhouse-config`.
