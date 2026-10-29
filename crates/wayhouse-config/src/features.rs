@@ -415,7 +415,9 @@ mod tests {
     #[test]
     fn the_view_reports_source_and_build_availability() {
         let config = BTreeMap::from([("sniffers".to_string(), false)]);
-        let rows = view(Scope::Proxy, &config, &BTreeMap::new(), |n| n != "gossip_verdicts");
+        let rows = view(Scope::Proxy, &config, &BTreeMap::new(), |n| {
+            n != "gossip_verdicts"
+        });
         let row = |n: &str| rows.iter().find(|r| r.name == n).unwrap();
         assert_eq!(
             (row("sniffers").value, row("sniffers").source),
@@ -431,7 +433,12 @@ mod tests {
             (false, Source::Build, false)
         );
         assert!(rows.iter().all(|r| r.scope == Scope::Proxy));
-        let ctl = view(Scope::Controller, &BTreeMap::new(), &BTreeMap::new(), |_| true);
+        let ctl = view(
+            Scope::Controller,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            |_| true,
+        );
         assert!(ctl.iter().all(|r| r.scope == Scope::Controller) && ctl.len() == 4);
     }
 
@@ -443,10 +450,16 @@ mod tests {
             .find(|f| f.override_mode == OverrideMode::OffOnly && !f.protection)
             .unwrap()
             .name;
-        assert!(check_override("nope", false, None).unwrap_err().contains("unknown flag"));
-        assert!(check_override(off_only, true, None).unwrap_err().contains("only be turned off"));
+        assert!(check_override("nope", false, None)
+            .unwrap_err()
+            .contains("unknown flag"));
+        assert!(check_override(off_only, true, None)
+            .unwrap_err()
+            .contains("only be turned off"));
         assert!(check_override(off_only, false, None).is_ok());
-        assert!(check_override(some_protection, false, None).unwrap_err().contains("expires_at"));
+        assert!(check_override(some_protection, false, None)
+            .unwrap_err()
+            .contains("expires_at"));
         assert!(check_override(some_protection, false, Some(10)).is_ok());
     }
 
@@ -475,7 +488,12 @@ mod tests {
 
     #[test]
     fn the_view_serialises_the_shape_the_ui_reads() {
-        let rows = view(Scope::Controller, &BTreeMap::new(), &BTreeMap::new(), |_| true);
+        let rows = view(
+            Scope::Controller,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            |_| true,
+        );
         let v = serde_json::to_value(&rows[0]).unwrap();
         for key in [
             "name",

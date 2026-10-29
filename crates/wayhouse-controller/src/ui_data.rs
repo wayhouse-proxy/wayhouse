@@ -182,7 +182,11 @@ fn check_name(kind: Kind, name: &str) -> Result<(), String> {
     if kind.is_single() {
         return Ok(());
     }
-    if kind == Kind::FeatureOverride && !name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') {
+    if kind == Kind::FeatureOverride
+        && !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    {
         return Err("name must be a flag name (a-z, 0-9 and _)".into());
     }
     let n = name.chars().count();
@@ -317,7 +321,11 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
             Ok(())
         }
         Kind::FeatureOverride => {
-            only_keys(obj, "", &["value", "reason", "actor", "set_at", "expires_at"])?;
+            only_keys(
+                obj,
+                "",
+                &["value", "reason", "actor", "set_at", "expires_at"],
+            )?;
             if !obj.get("value").is_some_and(Value::is_boolean) {
                 return Err("value must be true or false".into());
             }
@@ -325,7 +333,10 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
             if let Some(a) = obj.get("actor") {
                 string_max(a, "actor", 128)?;
             }
-            let set_at = obj.get("set_at").and_then(Value::as_u64).ok_or("set_at must be a unix time")?;
+            let set_at = obj
+                .get("set_at")
+                .and_then(Value::as_u64)
+                .ok_or("set_at must be a unix time")?;
             if let Some(e) = obj.get("expires_at") {
                 if !e.as_u64().is_some_and(|e| e > set_at) {
                     return Err("expires_at must be a unix time after set_at".into());
@@ -611,7 +622,8 @@ mod tests {
         let (s, _d) = store();
         let ok = json!({"value": false, "reason": "noisy", "actor": "ops", "set_at": 100});
         assert_eq!(
-            s.apply_local(&put(Kind::FeatureOverride, "sniffers", ok.clone())).unwrap(),
+            s.apply_local(&put(Kind::FeatureOverride, "sniffers", ok.clone()))
+                .unwrap(),
             Applied::Done
         );
         assert_eq!(s.get(Kind::FeatureOverride, "sniffers").unwrap(), Some(ok));
@@ -619,14 +631,26 @@ mod tests {
             (json!({"value": "no", "reason": "r", "set_at": 1}), "value"),
             (json!({"value": false, "reason": "", "set_at": 1}), "reason"),
             (json!({"value": false, "reason": "r"}), "set_at"),
-            (json!({"value": false, "reason": "r", "set_at": 5, "expires_at": 5}), "expires_at"),
-            (json!({"value": false, "reason": "r", "set_at": 1, "x": 1}), "known key"),
+            (
+                json!({"value": false, "reason": "r", "set_at": 5, "expires_at": 5}),
+                "expires_at",
+            ),
+            (
+                json!({"value": false, "reason": "r", "set_at": 1, "x": 1}),
+                "known key",
+            ),
         ] {
-            let why = invalid(s.apply_local(&put(Kind::FeatureOverride, "sniffers", bad)).unwrap());
+            let why = invalid(
+                s.apply_local(&put(Kind::FeatureOverride, "sniffers", bad))
+                    .unwrap(),
+            );
             assert!(why.contains(needle), "{why}");
         }
         let ok = json!({"value": false, "reason": "r", "set_at": 1});
-        let why = invalid(s.apply_local(&put(Kind::FeatureOverride, "a/b", ok)).unwrap());
+        let why = invalid(
+            s.apply_local(&put(Kind::FeatureOverride, "a/b", ok))
+                .unwrap(),
+        );
         assert!(why.contains("name"), "{why}");
     }
 

@@ -39,7 +39,7 @@ pub fn active(
         .into_iter()
         .filter_map(|(name, v)| {
             let live = v["expires_at"].as_u64().is_none_or(|e| e > now);
-            Some((name, v["value"].as_bool()?)).filter(|_| live)
+            live.then_some((name, v["value"].as_bool()?))
         })
         .collect())
 }

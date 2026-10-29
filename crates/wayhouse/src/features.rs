@@ -82,10 +82,12 @@ pub async fn run(base_url: String, token: Option<String>, handle: wayhouse_core:
             req = req.bearer_auth(t);
         }
         let next = match req.send().await {
-            Ok(r) if r.status().is_success() => match r.bytes().await.ok().and_then(|b| parse_overrides(&b)) {
-                Some(n) => n,
-                None => continue,
-            },
+            Ok(r) if r.status().is_success() => {
+                match r.bytes().await.ok().and_then(|b| parse_overrides(&b)) {
+                    Some(n) => n,
+                    None => continue,
+                }
+            }
             Ok(r) if matches!(r.status().as_u16(), 404 | 501) => BTreeMap::new(),
             Ok(r) => {
                 tracing::debug!(status = %r.status(), "feature overrides not read");
@@ -132,7 +134,6 @@ mod tests {
         assert!(!set_overrides(same));
         set_overrides(BTreeMap::new());
     }
-
 
     #[test]
     fn a_flag_absent_from_the_config_takes_its_default_and_a_set_one_its_value() {

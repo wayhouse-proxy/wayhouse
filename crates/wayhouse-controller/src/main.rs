@@ -259,7 +259,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let prometheus =
         wayhouse_http::metrics::install("wayhouse-controller", env!("CARGO_PKG_VERSION"))?;
-    wayhouse_controller::features::publish(&Default::default());
+    wayhouse_controller::features::publish(&std::collections::BTreeMap::new());
     wayhouse_http::policy::check_exposure(
         "wayhouse-controller",
         args.listen,
