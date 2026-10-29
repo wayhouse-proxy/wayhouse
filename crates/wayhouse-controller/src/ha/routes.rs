@@ -89,8 +89,8 @@ pub const ACME_SUPPORT: u32 = 5;
 /// member): `1` replicated installs and state, `2`
 /// adds module blob replication (`/raft/plugin-blob`), `3` adds webhooks
 /// (`PluginSetWebhook`, `/raft/plugin-hook`), `4` adds port routes (`PluginState.port_routes` and the clock that
-/// quarantine counts from), `5` adds the plugin manifest and capability bindings (ABI 0.2). A leader proposes a new plugin install, or a
-/// webhook change, only when every member reports at least this.
+/// quarantine counts from), `5` adds the plugin manifest and capability bindings (ABI 0.2) and `PluginSetConfig`. A leader proposes a new plugin install, a
+/// config edit or a webhook change, only when every member reports at least this.
 pub const PLUGIN_SUPPORT: u32 = 5;
 
 async fn whoami(State(ha): State<Arc<HaHandle>>) -> impl IntoResponse {

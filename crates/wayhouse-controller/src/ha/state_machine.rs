@@ -731,6 +731,20 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                         WriteRequest::PluginSetEnabled { id, enabled } => {
                             self.apply_plugin(index, PluginOp::SetEnabled { id: &id, enabled })?
                         }
+                        WriteRequest::PluginSetConfig {
+                            id,
+                            config,
+                            expected_approved,
+                            approved,
+                        } => self.apply_plugin(
+                            index,
+                            PluginOp::SetConfig {
+                                id: &id,
+                                config: &config,
+                                expected_approved: &expected_approved,
+                                approved: &approved,
+                            },
+                        )?,
                         WriteRequest::PluginDelete { id, now } => {
                             self.apply_plugin(index, PluginOp::Delete { id: &id, now })?
                         }
@@ -2127,6 +2141,42 @@ mod tests {
             sm.plugins().state(ID_A).unwrap().0,
             0,
             "delete removes state"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_config_entry_applies_once_and_is_stale_after_an_approval_change() {
+        let (mut sm, _d) = test_sm();
+        let rec = plugin_record(ID_A);
+        apply_one(&mut sm, 1, WriteRequest::PluginInstall(rec.clone())).await;
+        let wider =
+            wayhouse_plugin_host::Capabilities::parse(br#"{"log":true,"state":{"max_bytes":10}}"#)
+                .unwrap();
+        let set = |id: &str, expected: &wayhouse_plugin_host::Capabilities| {
+            WriteRequest::PluginSetConfig {
+                id: id.into(),
+                config: serde_json::json!({"panel": "q.example"}),
+                expected_approved: expected.clone(),
+                approved: wider.clone(),
+            }
+        };
+        assert_eq!(
+            apply_one(&mut sm, 2, set(ID_A, &rec.approved)).await,
+            WriteResponse::PluginApplied(None)
+        );
+        let got = sm.plugins().get(ID_A).unwrap().unwrap();
+        assert_eq!(
+            (got.config["panel"].clone(), got.approved),
+            ("q.example".into(), wider.clone())
+        );
+        // A proposal resolved against the old approval no longer applies.
+        assert_eq!(
+            apply_one(&mut sm, 3, set(ID_A, &rec.approved)).await,
+            WriteResponse::PluginRejected(PluginReject::Stale)
+        );
+        assert_eq!(
+            apply_one(&mut sm, 4, set(ID_NOPE, &rec.approved)).await,
+            WriteResponse::PluginRejected(PluginReject::NoSuchInstall)
         );
     }
 
