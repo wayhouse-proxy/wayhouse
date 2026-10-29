@@ -49,13 +49,14 @@ describe("built-in themes", () => {
   });
 
   // No chart series in the muddy olive/brown band (hue 20-100 degrees at low lightness or saturation).
-  it.each(["light", "dark"] as const)("%s series avoid muddy olive and brown", (base) => {
+  it("light series avoid muddy olive and brown", () => {
+    const base = "light";
     for (const n of ["series-1", "series-2", "series-3", "series-4", "series-5"]) {
       const [r, g, b] = parseHex(BUILTIN[base][n])!;
       const [max, min] = [Math.max(r, g, b), Math.min(r, g, b)];
       const h = max === min ? 0 : (60 * (max === r ? ((g - b) / (max - min)) % 6 : max === g ? (b - r) / (max - min) + 2 : (r - g) / (max - min) + 4) + 360) % 360;
       const l = (max + min) / 2;
-      expect(h >= 20 && h <= 100 && l < 0.5 && base === "light", `${n} ${BUILTIN[base][n]}`).toBe(false);
+      expect(h >= 20 && h <= 100 && l < 0.5, `${n} ${BUILTIN[base][n]}`).toBe(false);
     }
   });
 
