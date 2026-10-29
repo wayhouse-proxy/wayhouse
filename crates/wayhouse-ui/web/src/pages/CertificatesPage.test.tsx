@@ -1,4 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { SessionProvider } from "../lib/session";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
 
@@ -6,6 +8,9 @@ const api = vi.hoisted(() => ({
   listAcmeSites: vi.fn(),
   listAcmeGateways: vi.fn(),
   getAcmeAccount: vi.fn(),
+  putAcmeSite: vi.fn(),
+  deleteAcmeSite: vi.fn(),
+  createAcmeGateway: vi.fn(),
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
 
@@ -166,5 +171,104 @@ describe("CertificatesPage", () => {
     expect(within(both).getByText("key unreadable")).toBeInTheDocument();
     expect(within(both).getByText(/CA said no/)).toBeInTheDocument();
     expect(within(both).getByText("held: key k1 missing")).toBeInTheDocument();
+  });
+
+  describe("writes", () => {
+    beforeEach(() => {
+      api.putAcmeSite.mockReset().mockResolvedValue(undefined);
+      api.deleteAcmeSite.mockReset().mockResolvedValue(undefined);
+      api.createAcmeGateway.mockReset().mockResolvedValue({ name: "edge-2", token: "tok-secret-123" });
+    });
+
+    it("adds an http-01 site with exactly the fields the controller accepts", async () => {
+      render(<CertificatesPage />);
+      await screen.findByText("https://ca.test/acct/1");
+      await userEvent.click(screen.getByRole("button", { name: "Add site" }));
+      const dlg = await screen.findByRole("dialog");
+      await userEvent.type(within(dlg).getByLabelText("Site name"), "panel");
+      await userEvent.type(within(dlg).getByLabelText(/^Names/), "panel.example.com");
+      await userEvent.selectOptions(within(dlg).getByLabelText("Challenge"), "http-01");
+      expect(within(dlg).queryByLabelText("DNS plugin")).toBeNull();
+      await userEvent.click(within(dlg).getByRole("button", { name: "Add site" }));
+      expect(api.putAcmeSite).toHaveBeenCalledWith("panel", { names: ["panel.example.com"], challenge: "http-01", gateways: [], enabled: true });
+    });
+
+    it("says before the call what the controller would refuse: a wildcard needs a gateway, DNS-01 needs a plugin", async () => {
+      render(<CertificatesPage />);
+      await screen.findByText("https://ca.test/acct/1");
+      await userEvent.click(screen.getByRole("button", { name: "Add site" }));
+      const dlg = await screen.findByRole("dialog");
+      await userEvent.type(within(dlg).getByLabelText("Site name"), "wild");
+      await userEvent.type(within(dlg).getByLabelText(/^Names/), "*.example.com");
+      await userEvent.click(within(dlg).getByRole("button", { name: "Add site" }));
+      expect(await within(dlg).findByText(/wildcard needs at least one gateway/)).toBeInTheDocument();
+      await userEvent.click(within(dlg).getByLabelText("edge-1"));
+      await userEvent.click(within(dlg).getByRole("button", { name: "Add site" }));
+      expect(await within(dlg).findByText(/needs a DNS plugin/)).toBeInTheDocument();
+      expect(api.putAcmeSite).not.toHaveBeenCalled();
+    });
+
+    it("shows the controller's refusal in the dialog", async () => {
+      api.putAcmeSite.mockRejectedValue(new ApiError(409, "name a.example.com belongs to site web"));
+      render(<CertificatesPage />);
+      await screen.findByText("https://ca.test/acct/1");
+      await userEvent.click(screen.getByRole("button", { name: "Edit site shop" }));
+      const dlg = await screen.findByRole("dialog");
+      expect(within(dlg).getByLabelText("Site name")).toBeDisabled();
+      await userEvent.click(within(dlg).getByRole("button", { name: "Save site" }));
+      expect(await within(dlg).findByText(/belongs to site web/)).toBeInTheDocument();
+    });
+
+    it("shows a gateway the site names but the controller no longer has, and saving can drop it", async () => {
+      api.listAcmeSites.mockResolvedValue({ sites: [site({ name: "web", gateways: ["edge-1", "retired"] })] });
+      render(<CertificatesPage />);
+      await screen.findByText("https://ca.test/acct/1");
+      await userEvent.click(screen.getByRole("button", { name: "Edit site web" }));
+      const dlg = await screen.findByRole("dialog");
+      const stale = within(dlg).getByLabelText(/retired/);
+      expect(stale).toBeChecked();
+      expect(within(dlg).getByText(/not registered/)).toBeInTheDocument();
+      await userEvent.click(stale);
+      await userEvent.click(within(dlg).getByRole("button", { name: "Save site" }));
+      expect(api.putAcmeSite).toHaveBeenCalledWith("web", expect.objectContaining({ gateways: ["edge-1"] }));
+    });
+
+    it("removing a site asks first", async () => {
+      render(<CertificatesPage />);
+      await screen.findByText("https://ca.test/acct/1");
+      await userEvent.click(screen.getByRole("button", { name: "Remove site off" }));
+      expect(api.deleteAcmeSite).not.toHaveBeenCalled();
+      const dlg = await screen.findByRole("dialog");
+      await userEvent.click(within(dlg).getByRole("button", { name: "Remove" }));
+      expect(api.deleteAcmeSite).toHaveBeenCalledWith("off");
+    });
+
+    it("registers a gateway and shows its token once", async () => {
+      render(<CertificatesPage />);
+      await screen.findByText("https://ca.test/acct/1");
+      await userEvent.click(screen.getByRole("button", { name: "Register gateway" }));
+      const dlg = await screen.findByRole("dialog");
+      await userEvent.type(within(dlg).getByLabelText("Gateway name"), "edge-2");
+      await userEvent.click(within(dlg).getByRole("button", { name: "Register" }));
+      expect(await within(dlg).findByLabelText("Gateway token")).toHaveValue("tok-secret-123");
+      await userEvent.keyboard("{Escape}");
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(within(dlg).getByRole("button", { name: "Done" })).toHaveAttribute("aria-disabled", "true");
+      await userEvent.click(within(dlg).getByRole("checkbox", { name: /copied the token/ }));
+      await userEvent.click(within(dlg).getByRole("button", { name: "Done" }));
+      expect(screen.queryByText("tok-secret-123")).toBeNull();
+      expect(screen.queryByDisplayValue("tok-secret-123")).toBeNull();
+    });
+
+    it("is read-only below admin", async () => {
+      render(
+        <SessionProvider value={{ username: "ana", role: "operator" }}>
+          <CertificatesPage />
+        </SessionProvider>,
+      );
+      await screen.findByText("https://ca.test/acct/1");
+      expect(screen.getByRole("button", { name: "Add site" })).toHaveAttribute("aria-disabled", "true");
+      expect(screen.getByRole("button", { name: "Register gateway" })).toHaveAttribute("aria-disabled", "true");
+    });
   });
 });

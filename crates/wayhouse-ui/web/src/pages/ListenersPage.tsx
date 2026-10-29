@@ -1,3 +1,4 @@
+import { StatusMark } from "../components/ui/StatusMark";
 import { Link, useSearchParams } from "react-router-dom";
 import { EmptyState, ErrorState, Loading } from "../components/shell/States";
 import { PageHeader } from "../components/shell/Page";
@@ -20,7 +21,7 @@ export function ListenersPage() {
     <div className="max-w-4xl">
       <PageHeader
         title="Listeners"
-        summary={f ? <span className={f.stale ? "text-warn" : undefined}>{f.text}. Summed over every instance that runs the listener.</span> : "Traffic per listener."}
+        summary={f ? <span>{f.stale && <StatusMark state="degraded" word="" />} {f.text}. Summed over every instance that runs the listener.</span> : "Traffic per listener."}
         actions={<RangeSelect value={range} onChange={setRange} />}
       />
       {q.isPending && <Loading rows={4} />}

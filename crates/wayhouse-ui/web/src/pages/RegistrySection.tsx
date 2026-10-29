@@ -1,3 +1,4 @@
+import { StatusMark } from "../components/ui/StatusMark";
 import { EmptyState, ErrorState, Loading } from "../components/shell/States";
 import { AlertBar } from "../components/shell/Page";
 import { Select } from "../components/ui/Input";
@@ -199,7 +200,7 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
                       {"version" in s.compatible ? (
                         s.compatible.version
                       ) : (
-                        <span className="text-warn">{s.compatible.reason}</span>
+                        <StatusMark state="degraded" word={s.compatible.reason} />
                       )}
                     </TD>
                     <TD className="text-ink-muted">

@@ -1,3 +1,4 @@
+import { StatusMark } from "../components/ui/StatusMark";
 import { ErrorState, Loading, EmptyState } from "../components/shell/States";
 import { PageHeader } from "../components/shell/Page";
 import { TimeSeriesChart } from "../components/charts/TimeSeriesChart";
@@ -16,7 +17,7 @@ export function OverviewPage() {
     <div className="max-w-4xl">
       <PageHeader
         title="Overview"
-        summary={f ? <span className={f.stale ? "text-warn" : undefined}>{f.text}. Rates are per second, averaged over each minute.</span> : "Traffic across every instance."}
+        summary={f ? <span>{f.stale && <StatusMark state="degraded" word="" />} {f.text}. Rates are per second, averaged over each minute.</span> : "Traffic across every instance."}
         actions={<RangeSelect value={range} onChange={setRange} />}
       />
       {q.isPending && <Loading rows={4} />}

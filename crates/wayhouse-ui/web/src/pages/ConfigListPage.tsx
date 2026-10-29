@@ -10,6 +10,8 @@ import { useConfirm } from "../components/ui/ConfirmDialog";
 import { Switch } from "../components/ui/Switch";
 import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { useSharedConfigDoc } from "../lib/config/SharedConfigDoc";
+import type { ConfigDoc } from "../lib/config/useConfigDoc";
+import type { Layout } from "../lib/form/layout";
 import type { Json } from "../lib/editors/listeners";
 import { usedBy } from "../lib/editors/lists";
 import { get, set } from "../lib/form/path";
@@ -17,17 +19,21 @@ import { useFormLayout } from "../lib/form/useFormLayout";
 import { useCan } from "../lib/session";
 
 export interface ListPageProps {
-  /** The top-level list in the configuration: `pools`, `backend_sources` or `resolvers`. */
-  listKey: "pools" | "backend_sources" | "resolvers";
+  /** Where the list is in the configuration: `["pools"]`, `["backend_sources"]`, `["web", "sites"]`. */
+  listPath: string[];
   noun: string;
   title: string;
   summary: string;
   /** The layout page the generated form shows. */
   page: string;
   /** `usedBy` kind, to warn before removing something that is referred to. */
-  refKind: "pool" | "resolver" | "source";
+  refKind?: "pool" | "resolver" | "source";
   columns: { label: string; cell: (item: Json) => React.ReactNode; numeric?: boolean }[];
   create: (items: Json[]) => Json;
+  /** What an item is called in the table and the heading; default its `name`. */
+  labelOf?: (item: Json) => string;
+  /** More forms or notes under the list's own, for the parts of the object around it. */
+  below?: (ctx: { layout: Layout; doc: ConfigDoc; advanced: boolean; canWrite: boolean }) => React.ReactNode;
   /** Applied to the open item after every form edit: drops fields the item's current choices hide. */
   tidy?: (item: Json) => Json;
   /** The form fields of the open item; default all. */
@@ -49,7 +55,9 @@ export function ConfigListPage(p: ListPageProps) {
   const [advanced, setAdvanced] = useState(false);
 
   const root = (doc.value ?? {}) as Json;
-  const items: Json[] = Array.isArray(root[p.listKey]) ? root[p.listKey] : [];
+  const listed = get(root, p.listPath);
+  const items: Json[] = Array.isArray(listed) ? listed : [];
+  const labelOf = p.labelOf ?? ((it: Json) => String(it.name ?? ""));
   const index = Math.min(Math.max(0, Number(params.get("i")) || 0), Math.max(0, items.length - 1));
   const current = items[index];
 
@@ -95,7 +103,7 @@ export function ConfigListPage(p: ListPageProps) {
                   <TR key={i} selected={i === index}>
                     <TD className="font-mono">
                       <Link replace className="underline" aria-current={i === index || undefined} to={`?i=${i}`}>
-                        {String(it.name ?? "(unnamed)")}
+                        {labelOf(it) || "(unnamed)"}
                       </Link>
                     </TD>
                     {p.columns.map((c) => (
@@ -112,7 +120,7 @@ export function ConfigListPage(p: ListPageProps) {
             <Button
               disabled={!canWrite}
               onClick={() => {
-                put([p.listKey], [...items, p.create(items)]);
+                put(p.listPath, [...items, p.create(items)]);
                 select(items.length);
               }}
             >
@@ -121,37 +129,37 @@ export function ConfigListPage(p: ListPageProps) {
           </div>
 
           {current && (
-            <section aria-label={`${p.noun} ${current.name}`} className="mt-4">
+            <section aria-label={`${p.noun} ${labelOf(current)}`} className="mt-4">
               <div className="mb-2 flex items-center justify-between gap-2">
-                <h2 className="font-mono text-lg font-semibold">{String(current.name ?? "")}</h2>
+                <h2 className="font-mono text-lg font-semibold">{labelOf(current)}</h2>
                 <Button
                   variant="danger"
                   disabled={!canWrite}
                   onClick={async () => {
-                    const refs = usedBy(root, p.refKind, String(current.name));
+                    const refs = p.refKind ? usedBy(root, p.refKind, String(current.name)) : [];
                     const ok = await confirm({
-                      title: `Remove ${p.noun} ${current.name}?`,
+                      title: `Remove ${p.noun} ${labelOf(current)}?`,
                       description: `${refs.length ? `It is used by ${refs.join(", ")}; they will point at nothing. ` : ""}Nothing changes until you apply.`,
                       confirmLabel: "Remove",
                     });
-                    if (ok) put([p.listKey], items.filter((_, i) => i !== index));
+                    if (ok) put(p.listPath, items.filter((_, i) => i !== index));
                   }}
                 >
                   <Trash2 aria-hidden size={14} strokeWidth={1.5} /> Remove {p.noun}
                 </Button>
               </div>
-              {p.above?.({ item: current, index, items, root, canWrite, update: (item) => put([p.listKey, index], item) })}
+              {p.above?.({ item: current, index, items, root, canWrite, update: (item) => put([...p.listPath, index], item) })}
               <SchemaForm
                 schema={doc.schema}
                 value={doc.value}
                 saved={doc.savedValue}
                 onChange={(next) => {
-                  const item = get(next, [p.listKey, index]);
+                  const item = get(next, [...p.listPath, index]);
                   const tidy = item && p.tidy ? p.tidy(item) : item;
-                  doc.setValue(tidy === item ? next : set(next, [p.listKey, index], tidy));
+                  doc.setValue(tidy === item ? next : set(next, [...p.listPath, index], tidy));
                 }}
                 layout={layout}
-                path={[p.listKey, index]}
+                path={[...p.listPath, index]}
                 page={p.page}
                 only={p.fieldsOf?.(current)}
                 showAdvanced={advanced}
@@ -159,6 +167,7 @@ export function ConfigListPage(p: ListPageProps) {
               />
             </section>
           )}
+          {p.below?.({ layout, doc, advanced, canWrite })}
         </>
       )}
       <ConfigSaveBar doc={doc} />

@@ -1,3 +1,4 @@
+import { StatusMark } from "../components/ui/StatusMark";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SchemaForm } from "../components/form/SchemaForm";
 import { ErrorState, Loading } from "../components/shell/States";
@@ -87,7 +88,7 @@ export function LayoutPage() {
           help='Keys are JSON Pointers into the config, for example "/settings/workers". Each field takes help, group, order, widget, advanced and page.'
           render={(a) => <Textarea {...a} rows={14} spellCheck={false} value={text} placeholder={EXAMPLE} onChange={(e) => setDraft(e.target.value)} />}
         />
-        {notice && !syntax && <p role="status" className="text-sm text-warn">{notice}</p>}
+        {notice && !syntax && <p role="status"><StatusMark state="degraded" word={notice} /></p>}
         <div className="flex flex-wrap gap-2">
           <Button disabled={!canWrite || !dirty || !!syntax || !text.trim() || save.isPending} onClick={() => run(save.mutateAsync(text), () => setDraft(null))}>
             Save layout

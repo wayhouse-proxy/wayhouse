@@ -42,6 +42,7 @@ export const NAV: NavGroup[] = [
       { to: "/config/pools", label: "Pools" },
       { to: "/config/sources", label: "Backend sources" },
       { to: "/config/resolvers", label: "Resolvers" },
+      { to: "/config/web", label: "Web sites" },
       { to: "/sniffers", label: "Sniffers" },
       { to: "/plugins", label: "Plugins" },
       { to: "/certificates", label: "Certificates" },

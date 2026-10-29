@@ -41,7 +41,7 @@ A theme can be previewed freely but is saved only if it passes these checks, run
 3. `rail-ink` and `rail-ink-muted` on `rail` and `rail-hover`: at least 4.5:1.
 4. `select` on `surface`, and `ink` on `select-bg`: at least 4.5:1.
 5. `primary-ink` on `primary`: at least 4.5:1.
-6. `good`, `warn`, `bad` on `bg`, `surface` and `surface-sunken`: at least 4.5:1.
+6. `good` and `bad` on `bg`, `surface` and `surface-sunken`: at least 4.5:1 (they are used as text). `warn`: at least 3:1 (it is only drawn as a mark, border or icon, never as text, so a real amber is allowed; a 4.5:1 yellow on a light ground turns brown).
 7. `control-border` on `surface` and `bg`: at least 3:1.
 8. `good`, `warn` and `bad` must stay distinguishable from each other: pairwise CIEDE2000 difference of at least 10, in normal vision and under simulated deuteranopia, protanopia and tritanopia (Machado et al. 2009 matrices at full severity, applied in linear RGB), because shape and word are the primary signal and colour reinforces them.
 9. `series-1` to `series-5`: each at least 3:1 on `surface`, and pairwise at least 10 apart by the same measure as check 8 (all four vision types).

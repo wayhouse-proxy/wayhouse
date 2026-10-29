@@ -19,7 +19,7 @@ vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()),
 const live = vi.hoisted(() => ({ instances: [] as any[] }));
 vi.mock("../useFleetSocket", () => ({ useFleetSocket: () => ({ instances: live.instances, connected: true }) }));
 
-import { PoolsEditorPage, ResolversEditorPage, SourcesEditorPage } from "./ConfigListPages";
+import { PoolsEditorPage, ResolversEditorPage, SourcesEditorPage, WebEditorPage } from "./ConfigListPages";
 
 const FILE = `# edge
 backend_sources:
@@ -35,6 +35,15 @@ pools:
 resolvers:
   - name: lookup
     endpoint: http://127.0.0.1:9000
+web:
+  pool: web
+  sites:
+    - hosts: [panel.example.com]
+      upstreams: [{ pool: lobby }]
+      health_path: /healthz # check
+    - hosts: [wings.example.com, "*.wings.example.com"]
+      upstreams: [{ addr: "10.0.0.9:8080" }]
+      upstream_tls: skip
 listeners:
   - name: game
     bind: 0.0.0.0:25565
@@ -57,6 +66,7 @@ beforeEach(() => {
 
 const pools = (role: Role = "admin", path = "/config/pools") => renderConfigPage(path, { "/config/pools": <PoolsEditorPage /> }, role);
 const sources = (path = "/config/sources") => renderConfigPage(path, { "/config/sources": <SourcesEditorPage /> }, "admin");
+const web = (path = "/config/web") => renderConfigPage(path, { "/config/web": <WebEditorPage /> }, "admin");
 const resolvers = (path = "/config/resolvers") => renderConfigPage(path, { "/config/resolvers": <ResolversEditorPage /> }, "admin");
 
 async function apply() {
@@ -185,5 +195,49 @@ describe("Resolvers editor", () => {
     const text = await apply();
     expect(text).toContain("http://resolver.internal:9000");
     expect(text).toContain("# edge");
+  });
+});
+
+describe("Web sites editor", () => {
+  it("names a site by its hosts and opens the first with its upstreams", async () => {
+    web();
+    const list = await screen.findByRole("table", { name: "Web sites" });
+    expect(within(list).getByText("panel.example.com")).toBeInTheDocument();
+    expect(within(list).getByText("wings.example.com, *.wings.example.com")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "panel.example.com" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Upstream TLS")).toHaveValue("none");
+  });
+
+  it("shows the gateway settings under the sites", async () => {
+    web();
+    expect(await screen.findByLabelText(/^Gateway pool/)).toHaveValue("web");
+  });
+
+  it("a hosts edit is a patch: the comment on another field survives", async () => {
+    web();
+    const hosts = await screen.findByLabelText(/^Hosts/);
+    await userEvent.type(hosts, "{Enter}www.example.com");
+    const text = await apply();
+    expect(text).toContain("www.example.com");
+    expect(text).toContain("# check");
+    expect(text).toContain("wings.example.com");
+  });
+
+  it("upstream TLS: choosing a CA file asks for the path and writes it", async () => {
+    web("/config/web?i=1");
+    expect(await screen.findByLabelText("Upstream TLS")).toHaveValue("skip");
+    await userEvent.selectOptions(screen.getByLabelText("Upstream TLS"), "ca");
+    await userEvent.type(await screen.findByLabelText("CA file"), "/ca.pem");
+    const text = await apply();
+    expect(text).toMatch(/ca_file: "?\/ca.pem"?/);
+    expect(text).not.toMatch(/upstream_tls: "?skip/);
+  });
+
+  it("Add site starts an empty site and selects it", async () => {
+    web();
+    await userEvent.click(await screen.findByRole("button", { name: "Add site" }));
+    const list = await screen.findByRole("table", { name: "Web sites" });
+    expect(within(list).getAllByRole("row")).toHaveLength(4);
+    expect(screen.getByRole("link", { current: true, name: "(unnamed)" })).toBeInTheDocument();
   });
 });

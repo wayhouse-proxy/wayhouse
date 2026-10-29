@@ -23,7 +23,7 @@ export function PoolsPage() {
     <div className="max-w-4xl">
       <PageHeader
         title="Pools"
-        summary={f ? <span className={f.stale ? "text-warn" : undefined}>{f.text}. Backend health as the latest instance reports it.</span> : "Backend health per pool."}
+        summary={f ? <span>{f.stale && <StatusMark state="degraded" word="" />} {f.text}. Backend health as the latest instance reports it.</span> : "Backend health per pool."}
         actions={<RangeSelect value={range} onChange={setRange} />}
       />
       {q.isPending && <Loading rows={4} />}
