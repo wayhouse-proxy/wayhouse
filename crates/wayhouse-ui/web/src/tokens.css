@@ -26,11 +26,11 @@
   --line: #dcd8d1; /* decorative separators and panel borders */
   --control-border: #857f75; /* borders of inputs and buttons, 3:1 against surface */
 
-  /* Navigation rail: dark in both themes */
-  --rail: #1d1f23;
-  --rail-ink: #e9e7e2;
-  --rail-ink-muted: #9b9a96;
-  --rail-hover: #2b2e34;
+  /* Navigation rail: light in the light theme, dark in the dark theme */
+  --rail: #ebe8e3;
+  --rail-ink: #1d1b18;
+  --rail-ink-muted: #625d55;
+  --rail-hover: #dedad3;
 
   /* Interaction. Cobalt marks selection and focus only. */
   --select: #2b5cd6;

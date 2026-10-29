@@ -6,7 +6,7 @@ Baseline: WCAG 2.2 level AA for every screen, plus the project rules below. An o
 
 1. **Never colour alone.** State is a shape, a colour and a word. Selection is a tint plus `aria-selected` and, in the rail, semibold text. A changed field is a dot plus an accessible "changed" description.
 2. **Contrast.** Text 4.5:1 (large text 3:1). Borders of controls and the graphic parts of charts 3:1 against their surface. Decorative separators (`--line`) may be lower because they carry no meaning.
-3. **Keyboard.** Everything works without a pointer, in a logical order. Focus is always visible: 2 px `--select` outline with 1 px offset (on the dark rail the outline is `--rail-ink`). No keyboard traps; dialogs trap focus and restore it. Rows that open the inspector are focusable and open on Enter. Drag-and-drop always has a button alternative.
+3. **Keyboard.** Everything works without a pointer, in a logical order. Focus is always visible: 2 px `--select` outline with 1 px offset (on the rail the outline is `--rail-ink`). No keyboard traps; dialogs trap focus and restore it. Rows that open the inspector are focusable and open on Enter. Drag-and-drop always has a button alternative.
 4. **Targets.** At least 24 by 24 px everywhere (WCAG 2.2 target size), and 44 by 44 px under a coarse pointer (the tokens switch row and control height).
 5. **Semantics first.** Use real elements: `button`, `a`, `table`, `th scope`, `label`, `fieldset`, `details`. ARIA only where no element exists: `role="switch"` with `aria-checked`, `aria-sort`, `aria-current="page"`, `aria-expanded`, `aria-selected`, `role="tablist"`.
 6. **Live updates.** Live regions (`role="status"`, polite) announce completed actions and the confirm countdown at 30, 10 and 0 seconds. Streaming numbers (connections, throughput) are not live regions.
@@ -33,9 +33,9 @@ Computed with the WCAG relative-luminance formula, by script, on the values in [
 | `--good` on `--bg`, `--surface`, `--surface-sunken` (lowest) | 4.56  | 7.05  | 4.5   |
 | `--warn` on `--bg`, `--surface`, `--surface-sunken` (lowest) | 3.10  | 9.90  | 3     |
 | `--bad` on `--bg`, `--surface`, `--surface-sunken` (lowest)  | 4.94  | 4.66  | 4.5   |
-| `--rail-ink` on `--rail`                                     | 13.35 | 15.51 | 4.5   |
-| `--rail-ink-muted` on `--rail`                               | 5.85  | 6.32  | 4.5   |
-| `--rail-ink-muted` on `--rail-hover`                         | 4.83  | 5.07  | 4.5   |
+| `--rail-ink` on `--rail`                                     | 14.06 | 15.51 | 4.5   |
+| `--rail-ink-muted` on `--rail`                               | 5.34  | 6.32  | 4.5   |
+| `--rail-ink-muted` on `--rail-hover`                         | 4.69  | 5.07  | 4.5   |
 | `--primary-ink` on `--primary`                               | 16.47 | 15.02 | 4.5   |
 | `--select` on `--select-bg`                                  | 4.83  | 6.13  | 4.5   |
 | `--control-border` on `--surface` and `--bg` (lowest)        | 3.52  | 4.00  | 3     |

@@ -51,11 +51,11 @@ function Item({ item }: { item: NavItem }) {
   );
 }
 
-/** The dark navigation rail: brand, groups, items (with an optional second level), sign out. */
+/** The navigation rail (light in the light theme, dark in the dark theme): brand, groups, items (with an optional second level), sign out. */
 export function Rail({ nav, onSignOut }: { nav: NavGroup[]; onSignOut: () => void }) {
   const { role } = useSession();
   return (
-    <nav aria-label="Main" data-rail className="flex h-full flex-col bg-rail px-2 py-3 text-rail-ink">
+    <nav aria-label="Main" data-rail className="flex h-full flex-col bg-rail min-[760px]:border-r min-[760px]:border-line px-2 py-3 text-rail-ink">
       <div className="flex items-center gap-2 px-2 pb-4">
         <span aria-hidden className="h-2 w-2 bg-rail-ink" />
         <span className="text-sm font-semibold">wayhouse</span>

@@ -32,9 +32,9 @@ The fleet can be deployed worldwide. Every screen is designed for about 500 node
 
 ## Foundations
 
-**Palette.** A warm grey ground (`--bg`), a lighter `--surface` for panels, tables and inputs, near-black ink, and a dark ink navigation rail in both themes (a second neutral layer that gives the shell its identity). Primary buttons are ink, not accent. Cobalt (`--select`) marks selection and keyboard focus only. State colours follow convention: `--good` green, `--warn` amber, `--bad` red (selection cobalt doubles as info; it never marks state). Neutrals lean warm on purpose: pure grey reads as unconsidered. Exact values and contrast are in [tokens.css](tokens.css) and [accessibility.md](accessibility.md).
+**Palette.** A warm grey ground (`--bg`), a lighter `--surface` for panels, tables and inputs, near-black ink, and a navigation rail that follows the theme: a slightly darker warm neutral in light, near-black in dark (a second neutral layer that gives the shell its identity). Primary buttons are ink, not accent. Cobalt (`--select`) marks selection and keyboard focus only. State colours follow convention: `--good` green, `--warn` amber, `--bad` red (selection cobalt doubles as info; it never marks state). Neutrals lean warm on purpose: pure grey reads as unconsidered. Exact values and contrast are in [tokens.css](tokens.css) and [accessibility.md](accessibility.md).
 
-**Light and dark.** Both ship, follow the system by default, and can be switched by the person. Dark is designed, not inverted: surfaces step lighter with elevation, text is slightly off-white, and status colours are re-picked for contrast. The rail is dark in both.
+**Light and dark.** Both ship, follow the system by default, and can be switched by the person. Dark is designed, not inverted: surfaces step lighter with elevation, text is slightly off-white, and status colours are re-picked for contrast. The rail is light in the light theme and dark in the dark theme.
 
 **Type.** Public Sans for all UI text. IBM Plex Mono only for machine data: addresses, ports, hashes, YAML, node names, version strings. Never use mono as a decorative label face. Tabular numerals (`font-variant-numeric: tabular-nums`) wherever digits line up. A fixed rem scale from 12 to 20 px (`--fs-*`); one headline number per widget at 26 px. No fluid type. Body measure for prose and help text is 70ch.
 
@@ -69,7 +69,7 @@ This table is the checklist for review. A component that breaks a "Don't" is rej
 
 ## Layout
 
-**Shell.** Three zones: the navigation rail on the left, the page in the middle, and an optional inspector on the right (20 rem). The rail is 13.75 rem wide, dark in both themes, and collapses to a top bar under 760 px. The inspector appears when a row is selected and sits below the page under 1100 px.
+**Shell.** Three zones: the navigation rail on the left, the page in the middle, and an optional inspector on the right (20 rem). The rail is 13.75 rem wide, light in the light theme and dark in the dark theme, and collapses to a top bar under 760 px. The inspector appears when a row is selected and sits below the page under 1100 px.
 
 **Hierarchy.** Deep configuration needs depth, and each level has one job:
 

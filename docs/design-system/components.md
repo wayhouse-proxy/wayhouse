@@ -97,7 +97,7 @@ A dashboard is stored in the controller and shared by all operators; export and 
 
 ## Navigation and layout
 
-**Rail.** Dark in both themes. Brand at the top, groups with a small uppercase muted label (the only place uppercase is used), items 32 px high with a 3 px radius. The current page has `aria-current="page"` and the `--rail-hover` ground with semibold text. A parent item with children toggles with `aria-expanded` and a chevron; children are indented 16 px and shown in muted ink until current. Sign out sits at the bottom.
+**Rail.** Light in the light theme, dark in the dark theme (a hairline `--line` separates it from the page). Brand at the top, groups with a small uppercase muted label (the only place uppercase is used), items 32 px high with a 3 px radius. The current page has `aria-current="page"` and the `--rail-hover` ground with semibold text. A parent item with children toggles with `aria-expanded` and a chevron; children are indented 16 px and shown in muted ink until current. Sign out sits at the bottom.
 
 **Page tabs.** Text tabs with a 2 px `--select` underline on the selected one; `role="tablist"`, arrow keys move, content panels are labelled. Tabs hold parts of one subject; they are not steps.
 
