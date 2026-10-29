@@ -7,6 +7,7 @@ import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { InstallDialog } from "./RegistrySection";
+import { useCan } from "../lib/session";
 
 function message(err: unknown): string {
   return err instanceof ApiError || err instanceof Error ? err.message : String(err);
@@ -24,6 +25,7 @@ interface Pending {
  * the same limits and risk dialog.
  */
 export function UpdatesSection({ onChanged }: { onChanged: (notice: string) => void }) {
+  const canWrite = useCan("operator");
   const [result, setResult] = useState<UpdateCheck | null>(null);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +75,7 @@ export function UpdatesSection({ onChanged }: { onChanged: (notice: string) => v
         <h2 id="updates-heading" className="text-lg font-semibold">
           Updates
         </h2>
-        <Button onClick={check} disabled={checking}>
+        <Button onClick={check} disabled={checking || !canWrite} title={canWrite ? undefined : "This needs the operator role"}>
           {checking ? "Checking…" : "Check for updates"}
         </Button>
       </div>
@@ -178,6 +180,7 @@ function UpdateCell({
   busy: boolean;
   registryDown: boolean;
 }) {
+  const canWrite = useCan("operator");
   if (!row.known) {
     return <span className="text-ink-muted">not in any registry, so no update is offered</span>;
   }
@@ -197,7 +200,11 @@ function UpdateCell({
     );
   }
   return (
-    <Button disabled={busy} onClick={() => onUpdate(row)}>
+    <Button
+      disabled={busy || !canWrite}
+      title={canWrite ? undefined : "This needs the operator role"}
+      onClick={() => onUpdate(row)}
+    >
       Update to {row.update.version}
     </Button>
   );

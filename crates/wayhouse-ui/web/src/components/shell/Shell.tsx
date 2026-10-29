@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Menu } from "lucide-react";
 import { Button } from "../ui/Button";
@@ -13,6 +13,8 @@ import { Rail } from "./Rail";
 export function Shell({ onSignOut, nav = NAV }: { onSignOut: () => void; nav?: NavGroup[] }) {
   const { pathname } = useLocation();
   const [menu, setMenu] = useState(false);
+  // Picking a page on a narrow screen must reveal it, not leave the rail on top.
+  useEffect(() => setMenu(false), [pathname]);
   const crumbs = breadcrumbFor(nav, pathname);
 
   return (

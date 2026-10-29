@@ -7,6 +7,7 @@ import { Section } from "../components/ui/Section";
 import { AlertBar, PageHeader } from "../components/shell/Page";
 import { Loading } from "../components/shell/States";
 import { useConfirm } from "../components/ui/ConfirmDialog";
+import { useCan } from "../lib/session";
 
 export function SettingsPage() {
   const [text, setText] = useState("");
@@ -16,6 +17,7 @@ export function SettingsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
     const { confirm, dialog } = useConfirm();
+  const canApply = useCan("admin");
 
   async function refresh() {
     try {
@@ -108,7 +110,9 @@ export function SettingsPage() {
       </Section>
 
       <div className="sticky bottom-0 mt-4 flex justify-end border-t border-line bg-bg py-2">
-        <Button variant="primary" onClick={submit} disabled={!!parseError}>
+        <Button variant="primary" onClick={submit} disabled={!!parseError || !canApply}
+          title={canApply ? undefined : "Changing the configuration needs the admin role"}
+        >
           Submit as a new revision
         </Button>
       </div>

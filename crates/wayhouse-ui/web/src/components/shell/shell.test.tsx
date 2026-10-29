@@ -65,6 +65,15 @@ describe("navigation", () => {
     expect(screen.queryByRole("link", { name: "Secrets" })).not.toBeInTheDocument();
   });
 
+  it("closes the narrow-screen menu after a page is picked", async () => {
+    setup("admin");
+    const toggle = screen.getByRole("button", { name: /menu/i });
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Plugins" }));
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("builds the breadcrumb from the nav", () => {
     expect(breadcrumbFor(NAV, "/settings/network")).toEqual(["Configure", "Settings", "Network"]);
     expect(breadcrumbFor(NAV, "/fleet")).toEqual(["Operate", "Fleet"]);

@@ -7,6 +7,7 @@ import { Button } from "../components/ui/Button";
 import { PageHeader } from "../components/shell/Page";
 import { EmptyState, Loading } from "../components/shell/States";
 import { useConfirm } from "../components/ui/ConfirmDialog";
+import { useCan } from "../lib/session";
 
 export function ConfigHistoryPage() {
   const [revisions, setRevisions] = useState<RevisionSummary[]>([]);
@@ -14,6 +15,7 @@ export function ConfigHistoryPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const canWrite = useCan("admin");
   const { confirm, dialog } = useConfirm();
 
   async function refresh() {
@@ -92,7 +94,10 @@ export function ConfigHistoryPage() {
                       diff vs. current
                     </Button>
                     {!r.current && (
-                      <Button variant="danger" size="sm" onClick={() => doRollback(r.revision)} disabled={busy}>
+                      <Button variant="danger" size="sm" onClick={() => doRollback(r.revision)}
+                      disabled={busy || !canWrite}
+                      title={canWrite ? undefined : "Rolling back needs the admin role"}
+                    >
                         roll back to this
                       </Button>
                     )}

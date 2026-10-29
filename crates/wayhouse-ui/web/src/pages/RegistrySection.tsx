@@ -24,6 +24,7 @@ import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { Dialog } from "../components/ui/Dialog";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { RegistryRiskDialog } from "../components/RegistryRiskDialog";
+import { useCan } from "../lib/session";
 
 function message(err: unknown): string {
   return err instanceof ApiError || err instanceof Error ? err.message : String(err);
@@ -60,6 +61,8 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
   const [installing, setInstalling] = useState<RegistrySniffer | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
+  const canWrite = useCan("operator");
+  const needsOperator = canWrite ? undefined : "This needs the operator role";
   const { confirm, dialog } = useConfirm();
 
   const reload = useCallback(async (prefer?: string) => {
@@ -123,7 +126,9 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
     <section className="mt-8">
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-lg font-semibold">Install from a registry</h2>
-        <Button onClick={() => setAddOpen(true)}>Add registry</Button>
+        <Button onClick={() => setAddOpen(true)} disabled={!canWrite} title={needsOperator}>
+          Add registry
+        </Button>
       </div>
 
       {!persistent && (
@@ -152,7 +157,7 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
         </Select>
         {selected && <RiskBadge registry={selected} />}
         {selected && (
-          <Button variant="danger" size="sm" className="ml-auto" onClick={handleRemove} disabled={removing}>
+          <Button variant="danger" size="sm" className="ml-auto" onClick={handleRemove} disabled={removing || !canWrite} title={needsOperator}>
             {removing ? "removing…" : "remove registry"}
           </Button>
         )}
@@ -201,7 +206,7 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
                       {s.verifiable ? "verified on install" : "not verified"}
                     </TD>
                     <TD className="text-right">
-                      <Button disabled={!ok} onClick={() => setInstalling(s)}>
+                      <Button disabled={!ok || !canWrite} title={needsOperator} onClick={() => setInstalling(s)}>
                         Install
                       </Button>
                     </TD>

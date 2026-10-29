@@ -7,6 +7,7 @@ import { EmptyState, ErrorState, Loading } from "../components/shell/States";
 import { Button } from "../components/ui/Button";
 import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { useConfirm } from "../components/ui/ConfirmDialog";
+import { useCan } from "../lib/session";
 
 /** "2 min ago" / "3 h ago" / "20 d ago" from unix seconds; the exact time is the cell's tooltip. */
 function ago(unixSecs: number): string {
@@ -30,6 +31,7 @@ export function TunnelAddressesPage() {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const canWrite = useCan("admin");
   const { confirm, dialog } = useConfirm();
 
   async function refresh() {
@@ -151,7 +153,8 @@ export function TunnelAddressesPage() {
                       <TD className="text-right">
                         <Button
                           variant="danger"
-                          disabled={busy}
+                          disabled={busy || !canWrite}
+                          title={canWrite ? undefined : "Releasing an address needs the admin role"}
                           aria-label={`Release ${e.name}`}
                           onClick={() => handleRelease(e.role, e.name, e.address)}
                         >
