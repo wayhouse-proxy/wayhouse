@@ -15,6 +15,8 @@ import { AppearancePage } from "./pages/AppearancePage";
 import { LayoutPage } from "./pages/LayoutPage";
 import { SniffersPage } from "./pages/SniffersPage";
 import { PluginsPage } from "./pages/PluginsPage";
+import { PluginInstallPage } from "./pages/PluginInstallPage";
+import { PluginDetailPage } from "./pages/PluginDetailPage";
 import { ConfigHistoryPage } from "./pages/ConfigHistoryPage";
 import { TunnelAddressesPage } from "./pages/TunnelAddressesPage";
 import { CertificatesPage } from "./pages/CertificatesPage";
@@ -60,6 +62,8 @@ export function App() {
         <Route path="/settings/layout" element={<LayoutPage />} />
         <Route path="/sniffers" element={<SniffersPage />} />
         <Route path="/plugins" element={<PluginsPage />} />
+        <Route path="/plugins/new" element={<PluginInstallPage />} />
+        <Route path="/plugins/:id" element={<PluginDetailPage />} />
         <Route path="/config-history" element={<ConfigHistoryPage />} />
         <Route path="/tunnel" element={<TunnelAddressesPage />} />
         <Route path="/certificates" element={<CertificatesPage />} />

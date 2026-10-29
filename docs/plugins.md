@@ -115,8 +115,9 @@ The operator approves the effective set. For a module with placeholders `POST /p
 set with `approved` again every time the module is loaded, so editing a stored option can never
 widen what runs. The upload response carries the `manifest`; its `capabilities` list only what
 does not depend on options. `wayhouse-plugin-check <module.wasm> [config.json]` prints the
-effective set for a sample config. Editing a bound option of an existing install and the form in
-the UI are separate slices.
+effective set for a sample config. `POST /plugins` with `"dry_run": true` answers
+`{"effective": ...}` for the given `config` without installing (the UI shows that set before it
+asks for the approval). `GET /plugins/<id>` returns the install with its module's `manifest`.
 
 ## Secrets and the `http` capability
 
@@ -442,7 +443,9 @@ the `X-Actor` header the caller sent, not a verified identity (the admin token i
 
 ## The Plugins page (web UI)
 
-`wayhouse-ui` proxies the controller's `/plugins` API (`/api/plugins*`, needs `--controller-url`). Listing is viewer-level; upload, install, enable, disable and delete need the admin role. The page lists installs with their approved capabilities in plain words. "Upload plugin" sends the module (up to 8 MiB) to the controller, shows what it declares and installs it only after the operator ticks the approval box; the UI approves exactly the declared set, never an edited one. Below the installs, a "Port routes" table lists every entry port the plugins hold (entry port first, then key, protocol, backend and plugin), and a notice names the keys still waiting for a free port. A controller that does not serve plugins (off, slave) shows its reason instead of a list. Not in the page yet: registry install, secrets, config editing. The backend for them is proxied already: `PUT /api/plugins/{id}/config`, `GET /api/plugins/{id}/status` (viewer), and, admin only, `GET /api/plugins/{id}/secrets`, `PUT`/`DELETE /api/plugins/{id}/secrets/{slot}` and `POST`/`DELETE /api/plugins/{id}/webhook`. A secret value is forwarded and never logged or echoed.
+`wayhouse-ui` proxies the controller's `/plugins` API (`/api/plugins*`, needs `--controller-url`). Listing is viewer-level; installing, editing and removing need the admin role. The Plugins page lists installs with their approved capabilities in plain words, and a "Port routes" table lists every entry port the plugins hold (entry port first, then key, protocol, backend and plugin); a notice names the keys still waiting for a free port. A controller that does not serve plugins (off, slave) shows its reason instead of a list.
+
+"Install plugin" opens a wizard (`/plugins/new`): upload the module (up to 8 MiB), fill in its options (a form generated from the manifest's option schema; options marked `x-wayhouse-secret` are set under Secrets after the install), then see what the options resolve to (a `dry_run` install) and approve it in a prompt. Nothing is installed before the tick, and the UI approves exactly the set the controller resolved, never an edited one. An install's page (`/plugins/<id>`) has tabs for its options (an edit that moves the approved capabilities shows the old and the new set and needs a new tick), its secrets (write-only values, held reasons shown), its webhook (the token is shown once; enabling again rotates it) and its status and log. Not in the UI yet: registry install.
 
 ## High availability
 
