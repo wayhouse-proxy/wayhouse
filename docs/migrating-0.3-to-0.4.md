@@ -47,6 +47,8 @@ The controller now stores dashboards, custom themes, saved filters, the form lay
 deployment defaults (see [Stored UI data](ui-data.md)). Nothing to migrate. Under HA, upgrade every
 controller before the first save: a write is refused (`409`) while a member runs an older build.
 
+The web UI now opens on a **Dashboard** (a 12-column grid of widgets) instead of the Fleet page. A default dashboard shows until an operator customizes and saves one; nothing to migrate.
+
 ## Secrets
 
 Not yet filled in.

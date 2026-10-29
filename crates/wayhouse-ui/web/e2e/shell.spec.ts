@@ -10,7 +10,7 @@ async function stub(page: Page, role: string) {
 
 test("navigation moves between pages and marks the current one", async ({ page }) => {
   await stub(page, "admin");
-  await page.goto("/");
+  await page.goto("/fleet");
   const rail = page.getByRole("navigation", { name: "Main" });
   await expect(rail.getByRole("link", { name: "Fleet" })).toHaveAttribute("aria-current", "page");
   await rail.getByRole("link", { name: "Plugins" }).click();
@@ -30,7 +30,7 @@ test("a viewer cannot upload plugins; an admin can", async ({ page }) => {
 
 test("the rail is reachable by keyboard", async ({ page }) => {
   await stub(page, "admin");
-  await page.goto("/");
+  await page.goto("/fleet");
   await page.getByRole("button", { name: "Settings" }).focus();
   await page.keyboard.press("Enter");
   await page.getByRole("link", { name: "Appearance" }).focus();
