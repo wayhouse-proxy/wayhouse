@@ -7,6 +7,7 @@ describe("nameProblem", () => {
     expect(nameProblem(" ")).toMatch(/name/);
     expect(nameProblem("a/b")).toMatch(/cannot contain/);
     expect(nameProblem("x".repeat(65))).toMatch(/64/);
+    expect(nameProblem("LIGHT")).toMatch(/built-in/);
     expect(nameProblem("dark")).toMatch(/built-in/);
     expect(nameProblem("Night", ["Night"])).toMatch(/already exists/);
   });

@@ -64,6 +64,7 @@ export function LayoutPage() {
 
   async function onImport(f: File | undefined) {
     if (f) setDraft(await f.text());
+    if (file.current) file.current.value = "";
   }
 
   function onExport() {
@@ -76,7 +77,7 @@ export function LayoutPage() {
   return (
     <div className="max-w-5xl">
       {dialog}
-      <PageHeader title="Layout" summary="Reorder, group or hide form fields for every operator of this deployment." />
+      <PageHeader title="Layout" summary="Edit the form layout override stored for this deployment. The preview shows its effect; the configuration forms pick it up in a later release step." />
       {!canWrite && <AlertBar>Only admins can change the layout. You can read it and try edits in the preview.</AlertBar>}
       <Section title="Override">
         <p className="mb-2 text-sm text-ink-muted">{stored.data === null ? "No override stored: the forms use the shipped layout." : "Stored override, merged over the shipped layout."}</p>

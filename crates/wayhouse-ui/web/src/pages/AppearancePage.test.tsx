@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -59,5 +59,37 @@ describe("AppearancePage", () => {
     await userEvent.selectOptions(screen.getByLabelText("Deployment default"), "Night");
     await waitFor(() => expect(api.saveUiDefaults).toHaveBeenCalled());
     expect(api.saveUiDefaults.mock.calls[0][0]).toEqual({ theme: "Night" });
+  });
+
+  it("renaming the default theme moves the default before the old name is deleted", async () => {
+    api.getUiDefaults.mockResolvedValue({ theme: "Night" });
+    show("admin");
+    await screen.findByRole("cell", { name: "Night" });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Night" }));
+    const name = screen.getByLabelText(/^Name/);
+    await userEvent.clear(name);
+    await userEvent.type(name, "Night 2");
+    await userEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(api.deleteTheme).toHaveBeenCalled());
+    expect(api.saveUiDefaults.mock.calls[0][0]).toEqual({ theme: "Night 2" });
+    expect(api.saveUiDefaults.mock.invocationCallOrder[0]).toBeLessThan(api.deleteTheme.mock.invocationCallOrder[0]);
+  });
+
+  it("shows the controller's refusal when a theme cannot be saved", async () => {
+    api.saveTheme.mockRejectedValue(new Error("themes is full (50)"));
+    show("admin");
+    await screen.findByRole("cell", { name: "Night" });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Night" }));
+    await userEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    expect(await screen.findByText(/themes is full/)).toBeInTheDocument();
+  });
+
+  it("an imported theme with a failing contrast pair cannot be saved", async () => {
+    show("admin");
+    await screen.findByRole("cell", { name: "Night" });
+    const bad = JSON.stringify({ name: "Flat", base: "light", tokens: { ink: "#ffffff", bg: "#ffffff" } });
+    fireEvent.change(screen.getByLabelText("Import a theme file"), { target: { files: [new File([bad], "flat.json", { type: "application/json" })] } });
+    expect(await screen.findByText(/checks? failing/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Save/ })).toHaveAttribute("aria-disabled", "true");
   });
 });

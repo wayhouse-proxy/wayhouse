@@ -210,14 +210,21 @@ export function AppearancePage() {
         <ThemeEditor
           draft={draft.theme}
           onChange={(theme) => setDraft({ ...draft, theme })}
-          onCancel={() => setDraft(null)}
+          onCancel={() => {
+            setPreviewing(null);
+            setDraft(null);
+          }}
           taken={saved.map((t) => t.name).filter((n) => n !== draft.original)}
           canWrite={canWrite}
           saving={save.isPending}
           onSave={() =>
             run(async () => {
               await save.mutateAsync(draft.theme);
-              if (draft.original && draft.original !== draft.theme.name) await remove.mutateAsync(draft.original);
+              const renamed = draft.original && draft.original !== draft.theme.name;
+              // The controller resets the default when the default theme is deleted, so move it to the new name first.
+              if (renamed && defaults.data?.theme === draft.original) await saveDefaults.mutateAsync({ ...defaults.data, theme: draft.theme.name });
+              if (renamed) await remove.mutateAsync(draft.original!);
+              setPreviewing(null);
               setDraft(null);
             })
           }

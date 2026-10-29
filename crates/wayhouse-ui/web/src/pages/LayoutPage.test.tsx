@@ -57,4 +57,14 @@ describe("LayoutPage", () => {
     expect(screen.getByRole("button", { name: "Save layout" })).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByText(/Only admins/)).toBeInTheDocument();
   });
+
+  it("shows the controller's 422 under the editor", async () => {
+    api.saveLayoutOverride.mockRejectedValue(new Error("fields./a.order must be an integer"));
+    show("admin");
+    const box = await screen.findByLabelText("Layout JSON");
+    await userEvent.click(box);
+    await userEvent.paste('{"version":1,"fields":{}}');
+    await userEvent.click(screen.getByRole("button", { name: "Save layout" }));
+    expect(await screen.findByText(/must be an integer/)).toBeInTheDocument();
+  });
 });

@@ -9,7 +9,7 @@ export function nameProblem(name: string, taken: string[] = []): string | null {
   if (name.length > 64) return "A name has at most 64 characters.";
   // eslint-disable-next-line no-control-regex
   if (name.includes("/") || /[\u0000-\u001f\u007f]/.test(name)) return "A name cannot contain / or control characters.";
-  if (RESERVED.includes(name)) return `"${name}" is a built-in theme; pick another name.`;
+  if (RESERVED.includes(name.toLowerCase())) return `"${name}" is a built-in theme; pick another name.`;
   if (taken.includes(name)) return `A theme named "${name}" already exists.`;
   return null;
 }
