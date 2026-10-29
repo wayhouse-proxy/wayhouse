@@ -425,10 +425,31 @@ export function releaseTunnelAddress(
   return requestJson(`/api/tunnel/${base}/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
-// --- ACME status (proxied to wayhouse-controller, read-only) ---
+// --- ACME sites and gateways (proxied to wayhouse-controller; writes are admin-only) ---
 
 export function listAcmeSites(): Promise<{ sites: AcmeSite[] }> {
   return requestJson("/api/acme/sites");
+}
+
+/** What `PUT /acme/sites/{name}` takes (docs/acme.md); the controller refuses any other field. */
+export interface AcmeSiteInput {
+  names: string[];
+  challenge: "dns-01" | "http-01";
+  dns_plugin?: string;
+  challenge_zone?: string;
+  gateways: string[];
+  propagation_timeout_secs?: number;
+  enabled: boolean;
+}
+export function putAcmeSite(name: string, site: AcmeSiteInput): Promise<void> {
+  return requestJson(`/api/acme/sites/${encodeURIComponent(name)}`, jsonInit("PUT", site));
+}
+export function deleteAcmeSite(name: string): Promise<void> {
+  return requestJson(`/api/acme/sites/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+/** The token in the answer is shown once and is not kept anywhere else. */
+export function createAcmeGateway(name: string): Promise<{ name: string; token: string }> {
+  return requestJson("/api/acme/gateways", jsonInit("POST", { name }));
 }
 
 export function listAcmeGateways(): Promise<{ gateways: AcmeGateway[] }> {
