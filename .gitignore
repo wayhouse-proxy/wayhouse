@@ -11,6 +11,7 @@
 # built locally / in CI before running wayhouse-ui with --static-dir.
 crates/wayhouse-ui/web/node_modules
 crates/wayhouse-ui/web/dist
+crates/wayhouse-ui/web/dist-demo
 crates/wayhouse-ui/web/*.tsbuildinfo
 crates/wayhouse-ui/web/test-results
 crates/wayhouse-ui/web/playwright-report
