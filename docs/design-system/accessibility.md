@@ -31,7 +31,7 @@ Computed with the WCAG relative-luminance formula, by script, on the values in [
 | `--select` on `--surface`                                    | 5.58  | 7.22  | 4.5   |
 | `--ink` on `--select-bg` (selected row)                      | 14.25 | 11.73 | 4.5   |
 | `--good` on `--bg`, `--surface`, `--surface-sunken` (lowest) | 4.56  | 7.05  | 4.5   |
-| `--warn` on `--bg`, `--surface`, `--surface-sunken` (lowest) | 7.51  | 9.90  | 4.5   |
+| `--warn` on `--bg`, `--surface`, `--surface-sunken` (lowest) | 3.10  | 9.90  | 3     |
 | `--bad` on `--bg`, `--surface`, `--surface-sunken` (lowest)  | 4.94  | 4.66  | 4.5   |
 | `--rail-ink` on `--rail`                                     | 13.35 | 15.51 | 4.5   |
 | `--rail-ink-muted` on `--rail`                               | 5.85  | 6.32  | 4.5   |
@@ -41,7 +41,7 @@ Computed with the WCAG relative-luminance formula, by script, on the values in [
 | `--control-border` on `--surface` and `--bg` (lowest)        | 3.52  | 4.00  | 3     |
 | `--series-1..5` on `--surface` (lowest)                      | 3.38  | 4.82  | 3     |
 
-Colour-vision check (2026-10-28, `src/lib/theme` in the web project): `--good`, `--warn` and `--bad` are pairwise at least 10 apart (CIEDE2000, see [themes.md](themes.md) check 8) in normal vision and under simulated deuteranopia, protanopia and tritanopia; so are `--series-1..5` (check 9) and `--select` against the three state colours in normal vision (check 10). The first palette failed this (light `--warn` and `--bad` were 1.7 apart under deuteranopia); the state and series values in [tokens.css](tokens.css) were re-picked. Shape and word remain the primary signal for state; series also carry direct labels or a legend.
+Colour-vision check (2026-10-28, `src/lib/theme` in the web project): `--good`, `--warn` and `--bad` are pairwise at least 10 apart (CIEDE2000, see [themes.md](themes.md) check 8) in normal vision and under simulated deuteranopia, protanopia and tritanopia; so are `--series-1..5` (check 9) and `--select` against the three state colours in normal vision (check 10). `--warn` is amber (about 40 degrees hue), not brown, and is held to the 3:1 graphic ratio because it is only ever drawn as a mark, border or icon with its word in `--ink`; at 4.5:1 a light-ground yellow is forced to brown. The first palette failed this (light `--warn` and `--bad` were 1.7 apart under deuteranopia); the state and series values in [tokens.css](tokens.css) were re-picked. Light `--series-4` and `--series-5` (first olive and dark brown-grey) are now violet and raspberry, so no series sits in the muddy olive-brown band. Shape and word remain the primary signal for state; series also carry direct labels or a legend.
 
 Treat the table as a regression test: `validate.test.ts` checks the built-in themes against the same rules (and the values in `builtin.ts` against `tokens.css`), so a token change that breaks one fails CI. Recompute the table when a token changes.
 

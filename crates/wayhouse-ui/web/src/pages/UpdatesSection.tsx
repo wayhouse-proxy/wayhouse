@@ -1,3 +1,4 @@
+import { StatusMark } from "../components/ui/StatusMark";
 import { useRef, useState } from "react";
 import { ApiError, checkUpdates, listRegistrySniffers } from "../api";
 import type { RegistrySniffer, RegistryRef, UpdateCheck, UpdateCheckRow } from "../types";
@@ -194,9 +195,7 @@ function UpdateCell({
   }
   if (!row.update.compatible) {
     return (
-      <span className="text-warn">
-        {row.update.version} is out: {row.update.reason}
-      </span>
+      <StatusMark state="degraded" word={`${row.update.version} is out: ${row.update.reason}`} />
     );
   }
   return (

@@ -56,7 +56,9 @@ export function validateTheme(theme: Theme): Failure[] {
   ratio(4, "select", "surface", TEXT_RATIO);
   ratio(4, "ink", "select-bg", TEXT_RATIO);
   ratio(5, "primary-ink", "primary", TEXT_RATIO);
-  for (const s of STATES) for (const g of GROUNDS) ratio(6, s, g, TEXT_RATIO);
+  // warn is only ever drawn as a mark or border (the word beside it is ink), so the 3:1 graphic ratio
+  // applies; that lets it be a real amber, which cannot reach 4.5:1 on a light ground without turning brown.
+  for (const s of STATES) for (const g of GROUNDS) ratio(6, s, g, s === "warn" ? GRAPHIC_RATIO : TEXT_RATIO);
   for (const g of ["surface", "bg"]) ratio(7, "control-border", g, GRAPHIC_RATIO);
   for (const [a, b] of pairs(STATES)) apart(8, a, b, VISIONS);
   for (const s of SERIES) ratio(9, s, "surface", GRAPHIC_RATIO);

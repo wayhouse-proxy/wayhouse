@@ -32,7 +32,7 @@ The fleet can be deployed worldwide. Every screen is designed for about 500 node
 
 ## Foundations
 
-**Palette.** A warm grey ground (`--bg`), a lighter `--surface` for panels, tables and inputs, near-black ink, and a dark ink navigation rail in both themes (a second neutral layer that gives the shell its identity). Primary buttons are ink, not accent. Cobalt (`--select`) marks selection and keyboard focus only. State colours are `--good`, `--warn`, `--bad`. Neutrals lean warm on purpose: pure grey reads as unconsidered. Exact values and contrast are in [tokens.css](tokens.css) and [accessibility.md](accessibility.md).
+**Palette.** A warm grey ground (`--bg`), a lighter `--surface` for panels, tables and inputs, near-black ink, and a dark ink navigation rail in both themes (a second neutral layer that gives the shell its identity). Primary buttons are ink, not accent. Cobalt (`--select`) marks selection and keyboard focus only. State colours follow convention: `--good` green, `--warn` amber, `--bad` red (selection cobalt doubles as info; it never marks state). Neutrals lean warm on purpose: pure grey reads as unconsidered. Exact values and contrast are in [tokens.css](tokens.css) and [accessibility.md](accessibility.md).
 
 **Light and dark.** Both ship, follow the system by default, and can be switched by the person. Dark is designed, not inverted: surfaces step lighter with elevation, text is slightly off-white, and status colours are re-picked for contrast. The rail is dark in both.
 
