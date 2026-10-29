@@ -3,7 +3,7 @@
   { "name": "dark built-in", "theme": { "base": "dark", "tokens": {} }, "failedChecks": [] },
   { "name": "pale ink on the light ground", "theme": { "base": "light", "tokens": { "ink": "#bbbbbb" } }, "failedChecks": [1, 4] },
   { "name": "muted ink too faint", "theme": { "base": "light", "tokens": { "ink-muted": "#aaaaaa" } }, "failedChecks": [2] },
-  { "name": "rail muted ink equals rail hover", "theme": { "base": "light", "tokens": { "rail-ink-muted": "#2b2e34" } }, "failedChecks": [3] },
+  { "name": "rail muted ink equals rail hover", "theme": { "base": "light", "tokens": { "rail-ink-muted": "#dedad3" } }, "failedChecks": [3] },
   { "name": "primary text equals primary ground", "theme": { "base": "light", "tokens": { "primary-ink": "#1d1b18" } }, "failedChecks": [5] },
   { "name": "control border as faint as a hairline", "theme": { "base": "light", "tokens": { "control-border": "#dcd8d1" } }, "failedChecks": [7] },
   { "name": "warn and bad are the same colour", "theme": { "base": "light", "tokens": { "warn": "#c40e3b" } }, "failedChecks": [8] },

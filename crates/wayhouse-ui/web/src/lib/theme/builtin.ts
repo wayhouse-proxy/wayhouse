@@ -21,7 +21,7 @@ export const BUILTIN: Record<Base, Tokens> = {
   light: {
     bg: "#f3f1ee", surface: "#fbfaf8", "surface-sunken": "#ebe8e3", ink: "#1d1b18",
     "ink-muted": "#6a655d", line: "#dcd8d1", "control-border": "#857f75",
-    rail: "#1d1f23", "rail-ink": "#e9e7e2", "rail-ink-muted": "#9b9a96", "rail-hover": "#2b2e34",
+    rail: "#ebe8e3", "rail-ink": "#1d1b18", "rail-ink-muted": "#625d55", "rail-hover": "#dedad3",
     select: "#2b5cd6", "select-bg": "#e3eafb", primary: "#1d1b18", "primary-ink": "#fbfaf8",
     good: "#1b7654", warn: "#b87400", bad: "#c40e3b",
     "series-1": "#2b5ff3", "series-2": "#219a77", "series-3": "#984f85", "series-4": "#5a1fad", "series-5": "#8e0b62",

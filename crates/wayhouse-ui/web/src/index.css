@@ -16,7 +16,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Visible keyboard focus everywhere (components.md: never removed). On the dark rail the ring is the rail ink. */
+/* Visible keyboard focus everywhere (components.md: never removed). On the rail the ring is the rail ink. */
 :focus-visible {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset);

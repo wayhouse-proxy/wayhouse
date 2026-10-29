@@ -8,7 +8,7 @@ import { Rail } from "./Rail";
 import { Loading } from "./States";
 
 /**
- * Three zones: the dark rail on the left, the page in the middle, the inspector on the
+ * Three zones: the rail on the left, the page in the middle, the inspector on the
  * right (below the page under 1100 px). Under 760 px the rail becomes a top bar with a menu.
  */
 export function Shell({ onSignOut, nav = NAV, banner }: { onSignOut: () => void; nav?: NavGroup[]; banner?: React.ReactNode }) {
