@@ -37,7 +37,7 @@ test("customize, Done, and a second browser sees the saved layout", async ({ bro
   await page.getByRole("button", { name: "Remove Needs attention" }).click();
   await page.getByLabel("Add widget").selectOption("certificates.v1");
   await page.getByRole("button", { name: "Done" }).click();
-  await expect(page.getByText("Dashboard saved")).toBeVisible();
+  await expect(page.getByText("Dashboard saved", { exact: true })).toBeVisible();
 
   await page.reload();
   await expect(page.getByRole("region", { name: "Certificates" })).toBeVisible();
