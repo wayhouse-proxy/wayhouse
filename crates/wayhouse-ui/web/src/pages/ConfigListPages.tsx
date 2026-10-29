@@ -3,7 +3,9 @@ import { PoolLines, type BackendRow } from "../components/editors/PoolLines";
 import { Select } from "../components/ui/Input";
 import type { State } from "../components/ui/StatusMark";
 import type { Json } from "../lib/editors/listeners";
-import { SOURCE_TYPES, newPool, newResolver, newSource, poolFields, setPoolSource, sourceFields, tidyPool } from "../lib/editors/lists";
+import { SchemaForm } from "../components/form/SchemaForm";
+import { Input } from "../components/ui/Input";
+import { SOURCE_TYPES, newPool, newSite, setUpstreamTls, siteLabel, upstreamTls, newResolver, newSource, poolFields, setPoolSource, sourceFields, tidyPool } from "../lib/editors/lists";
 import { useFleetSocket } from "../useFleetSocket";
 import { ConfigListPage } from "./ConfigListPage";
 
@@ -36,7 +38,7 @@ export function PoolsEditorPage() {
 
   return (
     <ConfigListPage
-      listKey="pools"
+      listPath={["pools"]}
       noun="pool"
       title="Pools"
       summary="The backends a listener route sends connections to, and how one is picked."
@@ -76,7 +78,7 @@ export function PoolsEditorPage() {
 export function SourcesEditorPage() {
   return (
     <ConfigListPage
-      listKey="backend_sources"
+      listPath={["backend_sources"]}
       noun="source"
       title="Backend sources"
       summary="A named way to discover backends: a fixed list, DNS SRV, Consul, Kubernetes or a tunnel agent."
@@ -118,7 +120,7 @@ export function SourcesEditorPage() {
 export function ResolversEditorPage() {
   return (
     <ConfigListPage
-      listKey="resolvers"
+      listPath={["resolvers"]}
       noun="resolver"
       title="Resolvers"
       summary="An HTTP service the proxy asks which pool a connection goes to; a route can send traffic to one."
@@ -129,6 +131,63 @@ export function ResolversEditorPage() {
         { label: "On error", cell: (r) => dash(r.on_error ?? "reject") },
       ]}
       create={newResolver}
+    />
+  );
+}
+
+const TLS_MODES = [
+  { value: "none", label: "Plain HTTP" },
+  { value: "verify", label: "HTTPS, verify the certificate" },
+  { value: "skip", label: "HTTPS, do not verify (private certificate)" },
+  { value: "ca", label: "HTTPS, verify against a CA file" },
+] as const;
+
+/** Configure > Web sites: the sites the packaged Caddy serves (`web:`), and the gateway's own settings under them. */
+export function WebEditorPage() {
+  return (
+    <ConfigListPage
+      listPath={["web", "sites"]}
+      noun="site"
+      title="Web sites"
+      summary="Hostnames the packaged Caddy serves, and the upstreams their requests go to."
+      page="site"
+      labelOf={siteLabel}
+      columns={[
+        { label: "Upstreams", cell: (s) => count(s.upstreams), numeric: true },
+        { label: "Certificate", cell: (s) => (s.tls ? "files" : "from the controller") },
+      ]}
+      create={newSite}
+      fieldsOf={() => ["hosts", "upstreams", "tls", "health_path"]}
+      above={({ item, update, canWrite }) => {
+        const { mode, caFile } = upstreamTls(item);
+        return (
+          <div className="mb-3 flex max-w-md flex-col gap-2 text-sm">
+            <label className="flex flex-col gap-1">
+              <span className="font-semibold">How Caddy talks to the upstreams</span>
+              <Select aria-label="Upstream TLS" value={mode} disabled={!canWrite} onChange={(e) => update(setUpstreamTls(item, e.target.value as (typeof TLS_MODES)[number]["value"], caFile))}>
+                {TLS_MODES.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            {mode === "ca" && (
+              <label className="flex flex-col gap-1">
+                <span className="font-semibold">CA file (a path on the Caddy side)</span>
+                <Input mono aria-label="CA file" value={caFile} disabled={!canWrite} onChange={(e) => update(setUpstreamTls(item, "ca", e.target.value))} />
+              </label>
+            )}
+          </div>
+        );
+      }}
+      below={({ doc, layout, advanced, canWrite }) => (
+        <section aria-label="Web gateway" className="mt-6">
+          <h2 className="mb-1 text-lg font-semibold">Web gateway</h2>
+          <p className="mb-2 max-w-(--measure) text-sm text-ink-muted">Where Caddy listens and which pool carries it; these apply to every site.</p>
+          <SchemaForm schema={doc.schema!} value={doc.value} saved={doc.savedValue} onChange={doc.setValue} layout={layout} path={["web"]} page="web" only={["listen", "pool", "trusted_proxy", "internal_bind", "internal_ports"]} showAdvanced={advanced} readonly={!canWrite} />
+        </section>
+      )}
     />
   );
 }

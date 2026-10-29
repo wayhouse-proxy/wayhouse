@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
-import { ApiError, getAcmeAccount, listAcmeGateways, listAcmeSites } from "../api";
+import { ApiError, deleteAcmeSite, getAcmeAccount, listAcmeGateways, listAcmeSites } from "../api";
+import { GatewayDialog, SiteDialog } from "../components/acme/AcmeDialogs";
+import { useConfirm } from "../components/ui/ConfirmDialog";
+import { useCan } from "../lib/session";
 import type { AcmeAccount, AcmeGateway, AcmeSite } from "../types";
 import { EmptyState, ErrorState, Loading } from "../components/shell/States";
 import { PageHeader } from "../components/shell/Page";
@@ -46,9 +49,14 @@ function status(site: AcmeSite): { tone: "good" | "warn" | "bad" | "neutral"; la
   return { tone: "good", label: "valid" };
 }
 
-// Read-only view of the controller's ACME state (`GET /acme/sites`, `/acme/gateways`,
-// `/acme/account`; docs/acme.md). Sites and gateways are managed through the controller's API.
+// The controller's ACME state (`/acme/sites`, `/acme/gateways`, `/acme/account`; docs/acme.md) with, for admins,
+// adding, replacing and removing sites and registering gateways.
 export function CertificatesPage() {
+  const canWrite = useCan("admin");
+  const { confirm, dialog } = useConfirm();
+  const [editing, setEditing] = useState<AcmeSite | "new" | null>(null);
+  const [registering, setRegistering] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
   const [sites, setSites] = useState<AcmeSite[] | null>(null);
   const [gateways, setGateways] = useState<AcmeGateway[]>([]);
   const [account, setAccount] = useState<AcmeAccount | null>(null);
@@ -94,9 +102,14 @@ export function CertificatesPage() {
         title="Certificates"
         summary="Certificates the controller issues and renews, and the gateways that fetch them."
         actions={
-          <Button onClick={refresh} loading={loading}>
-            Refresh
-          </Button>
+          <>
+            <Button onClick={() => setEditing("new")} disabled={!canWrite} title={canWrite ? undefined : "Only an admin can change sites"}>
+              Add site
+            </Button>
+            <Button onClick={refresh} loading={loading}>
+              Refresh
+            </Button>
+          </>
         }
       />
 
@@ -111,6 +124,8 @@ export function CertificatesPage() {
           )}
         </ErrorState>
       )}
+
+      {failure && <ErrorState>{failure}</ErrorState>}
 
       {partial.map((msg) => (
         <ErrorState key={msg}>Could not read {msg}</ErrorState>
@@ -147,6 +162,9 @@ export function CertificatesPage() {
                     <TH>challenge</TH>
                     <TH>expires</TH>
                     <TH>status</TH>
+                    <TH>
+                      <span className="sr-only">actions</span>
+                    </TH>
                   </TR>
                 </THead>
                 <TBody>
@@ -179,6 +197,34 @@ export function CertificatesPage() {
                             <p className="mt-1 text-xs text-ink-muted">{s.certificate.held}</p>
                           )}
                         </TD>
+                        <TD className="whitespace-nowrap">
+                          <Button size="sm" disabled={!canWrite} aria-label={`Edit site ${s.name}`} onClick={() => setEditing(s)}>
+                            Edit
+                          </Button>{" "}
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            disabled={!canWrite}
+                            aria-label={`Remove site ${s.name}`}
+                            onClick={async () => {
+                              const ok = await confirm({
+                                title: `Remove site ${s.name}?`,
+                                description: "Its certificates and retry state are deleted. A gateway that still serves the names loses its certificate at the next fetch.",
+                                confirmLabel: "Remove",
+                              });
+                              if (!ok) return;
+                              try {
+                                await deleteAcmeSite(s.name);
+                                setFailure(null);
+                                refresh();
+                              } catch (e) {
+                                setFailure(`Could not remove ${s.name}: ${e instanceof Error ? e.message : e}`);
+                              }
+                            }}
+                          >
+                            Remove
+                          </Button>
+                        </TD>
                       </TR>
                     );
                   })}
@@ -187,7 +233,12 @@ export function CertificatesPage() {
             )}
           </div>
 
-          <h2 className="mb-2 text-lg font-semibold">Gateways</h2>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h2 className="text-lg font-semibold">Gateways</h2>
+            <Button size="sm" disabled={!canWrite} onClick={() => setRegistering(true)}>
+              Register gateway
+            </Button>
+          </div>
           <div>
             {gateways.length === 0 ? (
               <EmptyState>No gateways registered.</EmptyState>
@@ -218,6 +269,19 @@ export function CertificatesPage() {
           </div>
         </>
       )}
+      {editing && (
+        <SiteDialog
+          site={editing === "new" ? null : editing}
+          gateways={gateways}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            refresh();
+          }}
+        />
+      )}
+      {registering && <GatewayDialog onClose={() => setRegistering(false)} onCreated={refresh} />}
+      {dialog}
     </div>
   );
 }

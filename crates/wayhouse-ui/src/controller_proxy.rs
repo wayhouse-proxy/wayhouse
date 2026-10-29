@@ -64,6 +64,11 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/config/promote/{revision}", post(promote))
         .route("/api/config/confirm/{revision}", post(confirm_revision))
         .route("/api/config/revert", post(revert_config))
+        .route(
+            "/api/acme/sites/{name}",
+            put(put_acme_site).delete(delete_acme_site),
+        )
+        .route("/api/acme/gateways", post(create_acme_gateway))
         .route("/api/tunnel/origins/{name}", delete(release_origin))
         .route("/api/tunnel/proxies/{name}", delete(release_proxy))
         .route(
@@ -98,10 +103,78 @@ const PLUGIN_CONFIG_BODY_BYTES: usize = 80 * 1024;
 /// The controller refuses a bigger secret body (16 KiB) too.
 const PLUGIN_SECRET_BODY_BYTES: usize = 16 * 1024;
 
-/// The ACME status page is read-only: sites with their certificate and last error, the
-/// gateways that may fetch them, and the CA account. Writes stay in the controller's API.
+/// The ACME status reads: sites with their certificate and last error, the gateways that may fetch
+/// them, and the CA account. The writes below are admin-only.
 async fn acme_sites(State(state): State<AppState>) -> Response {
     proxy(&state, Method::GET, "/acme/sites".to_string(), None, None).await
+}
+
+/// `PUT /api/acme/sites/{name}`: create or replace a site (docs/acme.md); the controller checks the body.
+async fn put_acme_site(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    let Some(segment) = crate::proxy_util::path_segment(&name) else {
+        return bad_acme_name();
+    };
+    proxy_typed(
+        &state,
+        Method::PUT,
+        format!("/acme/sites/{segment}"),
+        Some(body),
+        Some("application/json"),
+        actor,
+    )
+    .await
+}
+
+/// `DELETE /api/acme/sites/{name}`: removes the site, its certificates and its retry state.
+async fn delete_acme_site(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(name): Path<String>,
+) -> Response {
+    let Some(segment) = crate::proxy_util::path_segment(&name) else {
+        return bad_acme_name();
+    };
+    proxy(
+        &state,
+        Method::DELETE,
+        format!("/acme/sites/{segment}"),
+        None,
+        actor,
+    )
+    .await
+}
+
+/// `POST /api/acme/gateways`: registers a gateway; the answer carries its token, once, and is passed
+/// through without being logged.
+async fn create_acme_gateway(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    body: Bytes,
+) -> Response {
+    proxy_typed(
+        &state,
+        Method::POST,
+        "/acme/gateways".to_string(),
+        Some(body),
+        Some("application/json"),
+        actor,
+    )
+    .await
+}
+
+fn bad_acme_name() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: "invalid site name".into(),
+        }),
+    )
+        .into_response()
 }
 
 async fn acme_gateways(State(state): State<AppState>) -> Response {
@@ -1223,6 +1296,85 @@ mod tests {
             paths,
             ["GET /acme/sites", "GET /acme/gateways", "GET /acme/account"]
         );
+    }
+
+    #[tokio::test]
+    async fn acme_site_and_gateway_writes_reach_the_controller_with_their_body() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        let site = r#"{"names":["panel.example.com"],"challenge":"http-01"}"#;
+        let put = app
+            .clone()
+            .oneshot(
+                Request::put("/api/acme/sites/panel")
+                    .header("content-type", "application/json")
+                    .body(Body::from(site))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(put.status(), StatusCode::OK);
+        let del = app
+            .clone()
+            .oneshot(
+                Request::delete("/api/acme/sites/panel")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(del.status(), StatusCode::OK);
+        let gw = app
+            .clone()
+            .oneshot(
+                Request::post("/api/acme/gateways")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"edge-1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(gw.status(), StatusCode::OK);
+        let seen = seen.lock().unwrap();
+        let calls: Vec<_> = seen
+            .iter()
+            .map(|(m, p, _, b)| (m.as_str(), p.as_str(), b.clone()))
+            .collect();
+        assert_eq!(
+            calls[0],
+            ("PUT", "/acme/sites/panel", site.as_bytes().to_vec())
+        );
+        assert_eq!(calls[1], ("DELETE", "/acme/sites/panel", Vec::new()));
+        assert_eq!(
+            calls[2],
+            ("POST", "/acme/gateways", br#"{"name":"edge-1"}"#.to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn acme_site_name_cannot_be_steered_to_another_controller_path() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        for name in ["..", "%2E%2E", "a%2Fb", "a%3Fb"] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::delete(format!("/api/acme/sites/{name}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::OK,
+                "{name}"
+            );
+        }
+        assert!(seen
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, p, _, _)| p.starts_with("/acme/sites/") && p.matches('/').count() == 3));
     }
 
     #[tokio::test]

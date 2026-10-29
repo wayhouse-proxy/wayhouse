@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_LAYOUT } from "../form/layout";
-import { SOURCE_TYPES, newPool, newResolver, newSource, poolFields, setPoolSource, sourceFields, tidyPool, usedBy } from "./lists";
+import { SOURCE_TYPES, newPool, newResolver, newSource, poolFields, setPoolSource, siteLabel, sourceFields, tidyPool, upstreamTls, setUpstreamTls, newSite, usedBy } from "./lists";
 
 describe("pool, source and resolver helpers", () => {
   it("starts each with only what names it", () => {
@@ -58,6 +58,27 @@ describe("pool, source and resolver helpers", () => {
   });
 });
 
+describe("web site helpers", () => {
+  it("starts a site with nothing to guess", () => {
+    expect(newSite()).toEqual({ hosts: [], upstreams: [] });
+  });
+
+  it("names a site by its hosts", () => {
+    expect(siteLabel({ hosts: ["a.example", "b.example"] })).toBe("a.example, b.example");
+    expect(siteLabel({ hosts: [] })).toBe("");
+  });
+
+  it("reads and writes how Caddy talks to the upstreams: absent is plain HTTP", () => {
+    expect(upstreamTls({})).toEqual({ mode: "none", caFile: "" });
+    expect(upstreamTls({ upstream_tls: "verify" })).toEqual({ mode: "verify", caFile: "" });
+    expect(upstreamTls({ upstream_tls: "skip" })).toEqual({ mode: "skip", caFile: "" });
+    expect(upstreamTls({ upstream_tls: { ca_file: "/ca.pem" } })).toEqual({ mode: "ca", caFile: "/ca.pem" });
+    expect(setUpstreamTls({ hosts: ["a"], upstream_tls: "skip" }, "none", "")).toEqual({ hosts: ["a"] });
+    expect(setUpstreamTls({ hosts: ["a"] }, "verify", "")).toEqual({ hosts: ["a"], upstream_tls: "verify" });
+    expect(setUpstreamTls({ hosts: ["a"] }, "ca", "/ca.pem")).toEqual({ hosts: ["a"], upstream_tls: { ca_file: "/ca.pem" } });
+  });
+});
+
 describe("coverage guard: every pool, source and resolver field is rendered, hand-edited or allowlisted", () => {
   const schema = JSON.parse(readFileSync(resolve(process.cwd(), "../../wayhouse-config/schema/config.schema.json"), "utf8"));
   const props = (def: string) => Object.keys(schema.$defs[def].properties);
@@ -68,10 +89,16 @@ describe("coverage guard: every pool, source and resolver field is rendered, han
         .map(([k]) => k.slice(prefix.length).split(".")[0]),
     );
   /** Hand-edited: the pool's backend source (a select over the defined sources), the source and resolver `type`. */
-  const HAND: Record<string, string[]> = { pool: ["source"], source: ["type"], resolver: ["type"] };
+  const HAND: Record<string, string[]> = { pool: ["source"], source: ["type"], resolver: ["type"], site: ["upstream_tls"], web: ["sites"] };
   const missing = (def: string, key: string, prefix: string) => props(def).filter((p) => !onPage(prefix, key).has(p) && !HAND[key].includes(p));
   it("RawPool", () => expect(missing("RawPool", "pool", "pools.*.")).toEqual([]));
   it("RawBackendSource", () => expect(missing("RawBackendSource", "source", "backend_sources.*.")).toEqual([]));
+  it("RawSite", () => expect(missing("RawSite", "site", "web.sites.*.")).toEqual([]));
+  it("RawWeb", () => expect(missing("RawWeb", "web", "web.")).toEqual([]));
+  it("nested: tls, upstreams and listen", () => {
+    const nested = (def: string, parent: string, page: string) => props(def).filter((p) => DEFAULT_LAYOUT.fields[`${parent}.${p}`]?.page !== page);
+    expect([nested("RawSiteTls", "web.sites.*.tls", "site"), nested("RawUpstream", "web.sites.*.upstreams.*", "site"), nested("RawWebListen", "web.listen", "web")]).toEqual([[], [], []]);
+  });
   it("RawResolver", () => expect(missing("RawResolver", "resolver", "resolvers.*.")).toEqual([]));
   it("nested: health_check, per_backend and cache fields", () => {
     const nested = (def: string, parent: string, page: string, prefix: string) => props(def).filter((p) => DEFAULT_LAYOUT.fields[`${prefix}${parent}.${p}`]?.page !== page);

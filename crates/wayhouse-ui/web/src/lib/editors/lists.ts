@@ -62,3 +62,24 @@ export function tidyPool(pool: Json): Json {
     ...(pool.balancer === "consistent_hash" && hash_on !== undefined ? { hash_on } : {}),
   };
 }
+
+export const newSite = (): Json => ({ hosts: [], upstreams: [] });
+
+/** A web site has no name; its hosts are what an operator knows it by. */
+export const siteLabel = (site: Json): string => (Array.isArray(site.hosts) ? site.hosts.join(", ") : "");
+
+export type UpstreamTlsMode = "none" | "verify" | "skip" | "ca";
+
+/** `upstream_tls`: absent is plain HTTP; `verify`, `skip` (no verification) or `{ ca_file }` (a path on the Caddy side). */
+export function upstreamTls(site: Json): { mode: UpstreamTlsMode; caFile: string } {
+  const v = site.upstream_tls;
+  if (v === "verify" || v === "skip") return { mode: v, caFile: "" };
+  if (v && typeof v === "object") return { mode: "ca", caFile: String(v.ca_file ?? "") };
+  return { mode: "none", caFile: "" };
+}
+
+export function setUpstreamTls(site: Json, mode: UpstreamTlsMode, caFile: string): Json {
+  const { upstream_tls: _old, ...rest } = site;
+  if (mode === "none") return rest;
+  return { ...rest, upstream_tls: mode === "ca" ? { ca_file: caFile } : mode };
+}
