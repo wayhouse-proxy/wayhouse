@@ -31,7 +31,9 @@ test("a viewer cannot upload plugins; an admin can", async ({ page }) => {
 test("the rail is reachable by keyboard", async ({ page }) => {
   await stub(page, "admin");
   await page.goto("/fleet");
-  await page.getByRole("link", { name: "Settings" }).focus();
+  await page.getByRole("button", { name: "Settings" }).focus();
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/\/settings$/);
+  await page.getByRole("link", { name: "Appearance" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/settings\/appearance$/);
 });

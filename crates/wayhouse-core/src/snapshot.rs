@@ -40,6 +40,9 @@ pub struct Snapshot {
     /// The resolved `web:` section, echoed so `GET /web` follows reloads. Never
     /// consulted by routing (its generated listeners are ordinary listeners).
     pub web: Option<wayhouse_config::WebConfig>,
+    /// The `features:` section as written (flags it leaves out take their registry default),
+    /// echoed so `GET /features` follows reloads.
+    pub features: std::collections::BTreeMap<String, bool>,
 }
 
 impl Snapshot {
@@ -112,6 +115,7 @@ impl Snapshot {
                 .collect(),
             group: cfg.group.clone(),
             web: cfg.web.clone(),
+            features: cfg.features.clone(),
         })
     }
 

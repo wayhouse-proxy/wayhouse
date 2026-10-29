@@ -28,7 +28,15 @@ export const NAV: NavGroup[] = [
   {
     label: "Configure",
     items: [
-      { to: "/settings", label: "Settings" },
+      {
+        to: "/settings",
+        label: "Settings",
+        children: [
+          { to: "/settings", label: "General" },
+          { to: "/settings/appearance", label: "Appearance" },
+          { to: "/settings/layout", label: "Layout" },
+        ],
+      },
       { to: "/sniffers", label: "Sniffers" },
       { to: "/plugins", label: "Plugins" },
       { to: "/certificates", label: "Certificates" },
