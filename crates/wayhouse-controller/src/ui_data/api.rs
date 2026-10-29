@@ -104,6 +104,32 @@ pub fn router(state: UiState) -> Router {
                 ),
         );
     }
+    r = r
+        .route("/features", get(|State(st): State<UiState>| async move { flags(&st) }))
+        .route(
+            "/features/overrides",
+            get(|State(st): State<UiState>| async move { list(&st, Kind::FeatureOverride) }),
+        )
+        .route(
+            "/features/overrides/{name}",
+            axum::routing::put(
+                |State(st): State<UiState>,
+                 OriginalUri(uri): OriginalUri,
+                 headers: HeaderMap,
+                 Path(name): Path<String>,
+                 body: Bytes| async move {
+                    put_override(&st, name, uri.path(), &headers, body).await
+                },
+            )
+            .delete(
+                |State(st): State<UiState>,
+                 OriginalUri(uri): OriginalUri,
+                 headers: HeaderMap,
+                 Path(name): Path<String>| async move {
+                    delete_one(&st, Kind::FeatureOverride, name, uri.path(), &headers).await
+                },
+            ),
+        );
     r.route_layer(middleware::from_fn_with_state(
         wayhouse_http::server::BearerAuth::new(state.auth_token.as_deref()),
         wayhouse_http::server::require_bearer,
@@ -122,6 +148,60 @@ fn list(st: &UiState, kind: Kind) -> Response {
         }
         Err(e) => internal(e),
     }
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// `GET /features`: the controller's flags with the overrides in force.
+fn flags(st: &UiState) -> Response {
+    match crate::features::active(&st.store, now()) {
+        Ok(o) => Json(json!({ "flags": crate::features::effective(&o) })).into_response(),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverrideBody {
+    value: bool,
+    reason: String,
+    expires_at: Option<u64>,
+}
+
+/// `PUT /features/overrides/{name}`: `{value, reason, expires_at?}`; the actor is the
+/// `X-Actor` header the UI backend sets, the time is the controller's.
+async fn put_override(
+    st: &UiState,
+    name: String,
+    path: &str,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Response {
+    let b: OverrideBody = match serde_json::from_slice(&body) {
+        Ok(b) => b,
+        Err(e) => return err(StatusCode::UNPROCESSABLE_ENTITY, e),
+    };
+    let set_at = now();
+    if b.expires_at.is_some_and(|e| e <= set_at) {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, "expires_at is already past");
+    }
+    if let Err(why) = wayhouse_config::features::check_override(&name, b.value, b.expires_at) {
+        return err(StatusCode::UNPROCESSABLE_ENTITY, why);
+    }
+    let mut value = json!({ "value": b.value, "reason": b.reason, "set_at": set_at });
+    if let Some(e) = b.expires_at {
+        value["expires_at"] = e.into();
+    }
+    if let Some(a) = headers.get("x-actor").and_then(|v| v.to_str().ok()) {
+        value["actor"] = a.into();
+    }
+    let reply = exported(Kind::FeatureOverride, &name, value.clone());
+    let op = UiOp::Put { kind: Kind::FeatureOverride, name, value };
+    write(st, op, Method::PUT, path, headers, body, move || Json(reply).into_response()).await
 }
 
 fn read_one(st: &UiState, kind: Kind, name: &str) -> Response {
@@ -279,6 +359,64 @@ mod tests {
 
     fn dash() -> Value {
         json!({"widgets": [{"id": "nodes", "width": 6}, {"id": "from-the-future", "width": 3}]})
+    }
+
+    fn flag<'a>(v: &'a Value, name: &str) -> &'a Value {
+        v["flags"].as_array().unwrap().iter().find(|f| f["name"] == name).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_override_turns_a_flag_off_until_it_is_deleted() {
+        let (app, _s, _d) = app(None);
+        let (_, v) = call(&app, "GET", "/features", Value::Null, None).await;
+        assert_eq!(flag(&v, "plugin_webhooks")["source"], "default");
+        let body = json!({"value": false, "reason": "webhook storm"});
+        let (st, got) = call(&app, "PUT", "/features/overrides/plugin_webhooks", body, None).await;
+        assert_eq!(st, StatusCode::OK, "{got}");
+        assert_eq!(got["reason"], "webhook storm");
+        let (_, v) = call(&app, "GET", "/features", Value::Null, None).await;
+        assert_eq!(flag(&v, "plugin_webhooks")["value"], false);
+        assert_eq!(flag(&v, "plugin_webhooks")["source"], "override");
+        let (_, list) = call(&app, "GET", "/features/overrides", Value::Null, None).await;
+        assert_eq!(list["items"][0]["name"], "plugin_webhooks");
+        let (st, _) = call(&app, "DELETE", "/features/overrides/plugin_webhooks", Value::Null, None).await;
+        assert_eq!(st, StatusCode::NO_CONTENT);
+        let (_, v) = call(&app, "GET", "/features", Value::Null, None).await;
+        assert_eq!(flag(&v, "plugin_webhooks")["value"], true);
+    }
+
+    #[tokio::test]
+    async fn an_override_the_registry_forbids_is_refused() {
+        let (app, _s, _d) = app(None);
+        let put = |n: &str, b: Value| {
+            let app = app.clone();
+            let uri = format!("/features/overrides/{n}");
+            async move { call(&app, "PUT", &uri, b, None).await }
+        };
+        let (st, _) = put("plugin_webhooks", json!({"value": true, "reason": "r"})).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "off_only refuses on");
+        let (st, _) = put("nope", json!({"value": false, "reason": "r"})).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "unknown flag");
+        let (st, _) = put("plugin_webhooks", json!({"value": false})).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "a reason is required");
+        let (st, _) = put("rate_limit", json!({"value": false, "reason": "r"})).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "protection needs an expiry");
+        let (st, _) = put("rate_limit", json!({"value": false, "reason": "r", "expires_at": 1})).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "an expiry in the past");
+        let soon = now() + 600;
+        let (st, _) = put("rate_limit", json!({"value": false, "reason": "r", "expires_at": soon})).await;
+        assert_eq!(st, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn an_expired_override_no_longer_applies_and_features_need_the_token() {
+        let (app, store, _d) = app(Some("t"));
+        let rec = json!({"value": false, "reason": "r", "set_at": 1, "expires_at": 2});
+        store.apply_local(&UiOp::Put { kind: Kind::FeatureOverride, name: "plugin_webhooks".into(), value: rec }).unwrap();
+        let (st, _) = call(&app, "GET", "/features", Value::Null, None).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        let (_, v) = call(&app, "GET", "/features", Value::Null, Some("t")).await;
+        assert_eq!(flag(&v, "plugin_webhooks")["value"], true);
     }
 
     #[tokio::test]

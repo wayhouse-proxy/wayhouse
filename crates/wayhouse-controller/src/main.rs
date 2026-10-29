@@ -259,7 +259,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let prometheus =
         wayhouse_http::metrics::install("wayhouse-controller", env!("CARGO_PKG_VERSION"))?;
-    wayhouse_controller::features::publish();
+    wayhouse_controller::features::publish(&Default::default());
     wayhouse_http::policy::check_exposure(
         "wayhouse-controller",
         args.listen,
@@ -879,6 +879,7 @@ async fn main() -> anyhow::Result<()> {
             None,
         ),
     };
+    tokio::spawn(publish_features(ui_store.clone()));
     app = app.merge(wayhouse_controller::ui_data::api::router(
         wayhouse_controller::ui_data::api::UiState {
             store: ui_store,
@@ -902,6 +903,22 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+/// Keeps `wayhouse_feature_*` in step with the stored overrides, which can change on any
+/// replica and expire without a write.
+async fn publish_features(store: wayhouse_controller::ui_data::UiStore) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+    loop {
+        tick.tick().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        match wayhouse_controller::features::active(&store, now) {
+            Ok(o) => wayhouse_controller::features::publish(&o),
+            Err(e) => tracing::warn!(error = %e, "could not read feature overrides"),
+        }
+    }
 }
 
 /// The HA handle with the replicated stores the state machine owns.

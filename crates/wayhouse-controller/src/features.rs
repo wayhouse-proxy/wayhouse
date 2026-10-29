@@ -13,13 +13,13 @@ fn available(flag: &str) -> bool {
 }
 
 /// Every controller flag with its effective value.
-pub fn effective() -> Vec<FeatureView> {
-    view(Scope::Controller, &BTreeMap::new(), available)
+pub fn effective(overrides: &BTreeMap<String, bool>) -> Vec<FeatureView> {
+    view(Scope::Controller, &BTreeMap::new(), overrides, available)
 }
 
 /// Sets `wayhouse_feature_enabled` and `wayhouse_feature_source`.
-pub fn publish() {
-    for row in effective() {
+pub fn publish(overrides: &BTreeMap<String, bool>) {
+    for row in effective(overrides) {
         metrics::gauge!("wayhouse_feature_enabled", "flag" => row.name)
             .set(f64::from(u8::from(row.value)));
         for source in Source::ALL {
@@ -29,13 +29,28 @@ pub fn publish() {
     }
 }
 
+/// The overrides in force at `now` (unix seconds): stored ones that have not expired.
+pub fn active(
+    store: &crate::ui_data::UiStore,
+    now: u64,
+) -> Result<BTreeMap<String, bool>, crate::ui_data::UiStoreError> {
+    Ok(store
+        .list(crate::ui_data::Kind::FeatureOverride)?
+        .into_iter()
+        .filter_map(|(name, v)| {
+            let live = v["expires_at"].as_u64().is_none_or(|e| e > now);
+            Some((name, v["value"].as_bool()?)).filter(|_| live)
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn every_controller_flag_starts_on_from_its_default() {
-        let rows = effective();
+        let rows = effective(&BTreeMap::new());
         assert_eq!(rows.len(), 4);
         for r in &rows {
             // A flag whose code is compiled out reports itself off, from the build.

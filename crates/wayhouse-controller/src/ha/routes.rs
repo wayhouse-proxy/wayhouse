@@ -75,9 +75,9 @@ pub struct Whoami {
     pub ui_support: u32,
 }
 
-/// The UI data replication level this build speaks (`1`: dashboards, themes, saved filters, the
+/// The UI data replication level this build speaks (`2` adds feature-flag overrides; `1`: dashboards, themes, saved filters, the
 /// form layout override and the deployment defaults).
-pub const UI_SUPPORT: u32 = 1;
+pub const UI_SUPPORT: u32 = 2;
 
 /// The ACME replication level this build speaks (`1`: sites, account, certificates; `2` adds
 /// gateways, `3` adds `challenge_zone` on sites, `4` adds HTTP-01 sites and challenge answers,

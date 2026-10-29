@@ -551,6 +551,15 @@ async fn run(
     } else {
         None
     };
+    let feature_overrides = if let ConfigSource::Controller(url, token) = &config_source {
+        Some(tokio::spawn(features::run(
+            url.clone(),
+            token.clone(),
+            handle.clone(),
+        )))
+    } else {
+        None
+    };
     let admin_reload_watch = if let ConfigSource::Controller(url, token) = &config_source {
         Some(tokio::spawn(controller_client::watch_admin_reloads(
             url.clone(),
@@ -593,6 +602,9 @@ async fn run(
     reload.abort();
     if let Some(intent) = intent {
         intent.abort();
+    }
+    if let Some(feature_overrides) = feature_overrides {
+        feature_overrides.abort();
     }
     if let Some(plugin_overlay) = plugin_overlay {
         plugin_overlay.abort();

@@ -63,7 +63,7 @@ member reports a lower level. The steps are in
 [Migrating from 0.3.0 to 0.4.0](migrating-0.3-to-0.4.md).
 
 Stored UI data (dashboards, themes, filters, see [ui-data.md](ui-data.md)) follows the same
-rule under HA: upgrade every controller before the first save.
+rule under HA: upgrade every controller before the first save or the first feature-flag override.
 
 The config schema moves to **4**: the `features:` section (feature flags, see
 [configuration](05-configuration.md)) needs `schema_version: 4`. Declare it only once every proxy

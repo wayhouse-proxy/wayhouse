@@ -201,6 +201,21 @@ pub fn lookup(name: &str) -> Option<&'static Flag> {
     REGISTRY.iter().find(|f| f.name == name)
 }
 
+/// Whether an operator may override `name` to `value`: the flag exists, an `off_only` flag is
+/// only turned off, and switching a protection flag off carries an expiry.
+pub fn check_override(name: &str, value: bool, expires_at: Option<u64>) -> Result<(), String> {
+    let f = lookup(name).ok_or_else(|| format!("unknown flag {name:?}"))?;
+    if value && f.override_mode == OverrideMode::OffOnly {
+        return Err(format!("{name} can only be turned off by an override"));
+    }
+    if !value && f.protection && expires_at.is_none() {
+        return Err(format!(
+            "turning {name} off removes protection; set expires_at so it comes back on"
+        ));
+    }
+    Ok(())
+}
+
 /// Checks a `features:` section: every name is a known proxy flag. Controller flags are
 /// refused here because the proxy does not read them; they are set by an override.
 pub(crate) fn validate(raw: BTreeMap<String, bool>) -> Result<BTreeMap<String, bool>, ConfigError> {
@@ -278,11 +293,13 @@ pub struct FeatureView {
 }
 
 /// The effective state of every flag of `scope`. `config` is the `features:` section;
+/// `overrides` holds the active (unexpired) overrides by name, which beat the config;
 /// `available` says whether this build contains the code a flag switches.
 #[must_use]
 pub fn view(
     scope: Scope,
     config: &BTreeMap<String, bool>,
+    overrides: &BTreeMap<String, bool>,
     available: impl Fn(&str) -> bool,
 ) -> Vec<FeatureView> {
     REGISTRY
@@ -291,6 +308,11 @@ pub fn view(
         .map(|f| {
             let (value, source) = if !available(f.name) {
                 (false, Source::Build)
+            } else if let Some(v) = overrides
+                .get(f.name)
+                .filter(|v| **v != f.default || f.override_mode == OverrideMode::Both)
+            {
+                (*v, Source::Override)
             } else if let Some(v) = config.get(f.name) {
                 (*v, Source::Config)
             } else {
@@ -393,7 +415,7 @@ mod tests {
     #[test]
     fn the_view_reports_source_and_build_availability() {
         let config = BTreeMap::from([("sniffers".to_string(), false)]);
-        let rows = view(Scope::Proxy, &config, |n| n != "gossip_verdicts");
+        let rows = view(Scope::Proxy, &config, &BTreeMap::new(), |n| n != "gossip_verdicts");
         let row = |n: &str| rows.iter().find(|r| r.name == n).unwrap();
         assert_eq!(
             (row("sniffers").value, row("sniffers").source),
@@ -409,13 +431,51 @@ mod tests {
             (false, Source::Build, false)
         );
         assert!(rows.iter().all(|r| r.scope == Scope::Proxy));
-        let ctl = view(Scope::Controller, &BTreeMap::new(), |_| true);
+        let ctl = view(Scope::Controller, &BTreeMap::new(), &BTreeMap::new(), |_| true);
         assert!(ctl.iter().all(|r| r.scope == Scope::Controller) && ctl.len() == 4);
     }
 
     #[test]
+    fn an_override_is_checked_against_the_registry() {
+        let some_protection = REGISTRY.iter().find(|f| f.protection).unwrap().name;
+        let off_only = REGISTRY
+            .iter()
+            .find(|f| f.override_mode == OverrideMode::OffOnly && !f.protection)
+            .unwrap()
+            .name;
+        assert!(check_override("nope", false, None).unwrap_err().contains("unknown flag"));
+        assert!(check_override(off_only, true, None).unwrap_err().contains("only be turned off"));
+        assert!(check_override(off_only, false, None).is_ok());
+        assert!(check_override(some_protection, false, None).unwrap_err().contains("expires_at"));
+        assert!(check_override(some_protection, false, Some(10)).is_ok());
+    }
+
+    #[test]
+    fn an_override_beats_the_config_and_an_off_only_flag_ignores_an_on_override() {
+        let config = BTreeMap::from([("gossip_verdicts".to_string(), false)]);
+        let overrides = BTreeMap::from([
+            ("gossip_verdicts".to_string(), true),
+            ("port_routes".to_string(), false),
+            ("sniffers".to_string(), false),
+        ]);
+        let rows = view(Scope::Proxy, &config, &overrides, |n| n != "sniffers");
+        let row = |n: &str| rows.iter().find(|r| r.name == n).unwrap();
+        let got = |n: &str| (row(n).value, row(n).source);
+        assert_eq!(got("gossip_verdicts"), (true, Source::Override));
+        assert_eq!(got("port_routes"), (false, Source::Override));
+        // Compiled out beats everything.
+        assert_eq!(got("sniffers"), (false, Source::Build));
+        // `off_only`: an override that turns it on is not obeyed (the controller refuses to
+        // store one; this is the second line of defence).
+        let on = BTreeMap::from([("port_routes".to_string(), true)]);
+        let rows = view(Scope::Proxy, &BTreeMap::new(), &on, |_| true);
+        let row = rows.iter().find(|r| r.name == "port_routes").unwrap();
+        assert_eq!((row.value, row.source), (true, Source::Default));
+    }
+
+    #[test]
     fn the_view_serialises_the_shape_the_ui_reads() {
-        let rows = view(Scope::Controller, &BTreeMap::new(), |_| true);
+        let rows = view(Scope::Controller, &BTreeMap::new(), &BTreeMap::new(), |_| true);
         let v = serde_json::to_value(&rows[0]).unwrap();
         for key in [
             "name",
