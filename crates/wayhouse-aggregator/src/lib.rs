@@ -29,6 +29,7 @@
 
 pub mod api;
 pub mod fanout;
+pub mod history;
 pub mod ingest;
 pub mod parent_push;
 pub mod skew;
