@@ -121,6 +121,10 @@ pub enum WriteRequest {
         /// the same actor, not just whichever node happened to originate
         /// the `client_write` call.
         actor: Option<String>,
+        /// The trial this revision starts (`crate::confirm`), if any. Absent in an entry from a
+        /// build that predates it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        trial: Option<crate::confirm::Trial>,
     },
     Intent(Vec<u8>),
     /// A `slave` tier's upward relay of one config revision (promoted, as
@@ -135,6 +139,18 @@ pub enum WriteRequest {
     RelayIntent {
         bytes: Vec<u8>,
         parent_revision: u64,
+    },
+    /// Ends the trial of a config revision (`crate::confirm`): answers `Revision(Some(revision))`
+    /// when it was on trial, `Revision(None)` when not.
+    ConfirmConfig {
+        revision: u64,
+    },
+    /// Brings back the revision a trial replaced (`crate::confirm`), if `revision` is still on
+    /// trial and the latest when the entry applies. Answers the new revision, or `Revision(None)`
+    /// when nothing was reverted.
+    RevertConfig {
+        revision: u64,
+        actor: Option<String>,
     },
     /// Phase 12 slice 7: flips an existing config revision's `Stage::promoted`
     /// to `true` in place — the same operation `AppState::promote_revision`

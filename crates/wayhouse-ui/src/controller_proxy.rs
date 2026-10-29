@@ -10,6 +10,9 @@
 //! release —
 //! phase 10's "full management" GUI level, `docs/10`) are `Role::Admin`.
 //!
+//! `GET /api/config/pending` (viewer) shows the revision on trial and its countdown;
+//! `POST /api/config/confirm/{revision}` and `POST /api/config/revert` (admin) end the trial.
+//!
 //! `GET /api/config/schema` (viewer) and `POST /api/config/validate` (admin) front the controller's
 //! editor endpoints; `POST /api/config?base=<rev>` passes the base-revision guard (and its `409`)
 //! through untouched.
@@ -41,9 +44,11 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/config/revisions", get(list_revisions))
         .route("/api/config/revisions/{revision}", get(get_revision))
         .route("/api/config/revisions/{revision}/diff", get(diff_revision))
+        .route("/api/config/pending", get(pending_config))
         .route("/api/tunnel/addresses", get(tunnel_addresses))
         .route("/api/plugins", get(list_plugins))
         .route("/api/plugin-routes", get(plugin_routes))
+        .route("/api/plugins/{id}", get(get_plugin))
         .route("/api/plugins/{id}/status", get(plugin_status))
         .route("/api/acme/sites", get(acme_sites))
         .route("/api/acme/gateways", get(acme_gateways))
@@ -57,6 +62,8 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/config/validate", post(validate_config))
         .route("/api/config/rollback/{revision}", post(rollback))
         .route("/api/config/promote/{revision}", post(promote))
+        .route("/api/config/confirm/{revision}", post(confirm_revision))
+        .route("/api/config/revert", post(revert_config))
         .route("/api/tunnel/origins/{name}", delete(release_origin))
         .route("/api/tunnel/proxies/{name}", delete(release_proxy))
         .route(
@@ -183,6 +190,10 @@ async fn delete_plugin(
     Path(id): Path<String>,
 ) -> Response {
     plugin_action(&state, Method::DELETE, &id, "", actor).await
+}
+
+async fn get_plugin(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    plugin_action(&state, Method::GET, &id, "", None).await
 }
 
 async fn plugin_status(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -405,6 +416,47 @@ async fn rollback(
         &state,
         Method::POST,
         format!("/config/rollback/{revision}"),
+        None,
+        actor,
+    )
+    .await
+}
+
+/// The revision on trial with its remaining time, and what counts as risky.
+async fn pending_config(State(state): State<AppState>) -> Response {
+    proxy(
+        &state,
+        Method::GET,
+        "/config/pending".to_string(),
+        None,
+        None,
+    )
+    .await
+}
+
+async fn confirm_revision(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(revision): Path<u64>,
+) -> Response {
+    proxy(
+        &state,
+        Method::POST,
+        format!("/config/confirm/{revision}"),
+        None,
+        actor,
+    )
+    .await
+}
+
+async fn revert_config(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+) -> Response {
+    proxy(
+        &state,
+        Method::POST,
+        "/config/revert".to_string(),
         None,
         actor,
     )
@@ -962,6 +1014,7 @@ mod tests {
         let (url, seen) = recording_controller(StatusCode::OK).await;
         let app = app_with_controller(url, None);
         for (method, path) in [
+            ("GET", "/api/plugins/0123abcd"),
             ("GET", "/api/plugins/0123abcd/status"),
             ("PUT", "/api/plugins/0123abcd/config"),
             ("GET", "/api/plugins/0123abcd/secrets"),
@@ -992,6 +1045,7 @@ mod tests {
         assert_eq!(
             paths,
             [
+                "GET /plugins/0123abcd",
                 "GET /plugins/0123abcd/status",
                 "PUT /plugins/0123abcd/config",
                 "GET /plugins/0123abcd/secrets",

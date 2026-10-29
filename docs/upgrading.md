@@ -67,6 +67,10 @@ Protocol 1.3 adds `region` and `tags` to the proxy's push to the aggregator (`--
 `--tag`, see [operations](06-operations-observability.md)). The change is additive: a proxy on
 0.3.0 pushes none and lists without a region or tags; upgrade the aggregator first to see them.
 
+Confirm-and-revert for config revisions (a revision on trial, see
+[operations](06-operations-observability.md)) follows the same rule under HA: upgrade every
+controller first, the leader refuses to start a window while a member reports no support.
+
 Stored UI data (dashboards, themes, filters, see [ui-data.md](ui-data.md)) follows the same
 rule under HA: upgrade every controller before the first save.
 
