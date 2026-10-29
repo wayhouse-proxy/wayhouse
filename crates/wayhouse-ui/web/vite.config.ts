@@ -2,13 +2,13 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-// Built assets are served by wayhouse-ui itself (tower-http::ServeDir) from the
-// same origin as the API, so relative asset paths and no dev-server proxy
-// config are needed for production. `server.proxy` below is only for
+// Built assets are served by wayhouse-ui itself (`static_files`) from the same
+// origin as the API, at the root: absolute asset paths keep a client route such as
+// /settings/source loading them, and no dev-server proxy config is needed for production. `server.proxy` below is only for
 // `npm run dev` against a real wayhouse-ui process during frontend development.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  base: "./",
+  base: "/",
   build: {
     outDir: "dist",
     emptyOutDir: true,

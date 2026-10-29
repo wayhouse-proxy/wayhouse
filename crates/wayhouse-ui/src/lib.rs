@@ -42,6 +42,7 @@ pub mod registry_client;
 pub mod registry_keys;
 pub mod role;
 pub mod session;
+pub mod static_files;
 pub mod ui_data_proxy;
 pub mod users;
 pub mod ws;
