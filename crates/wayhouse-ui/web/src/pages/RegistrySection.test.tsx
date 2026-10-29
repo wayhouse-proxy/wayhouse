@@ -237,9 +237,9 @@ describe("RegistrySection", () => {
     await userEvent.click(await screen.findByRole("button", { name: "remove registry" }));
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Remove" }));
     const btn = await screen.findByRole("button", { name: "removing…" });
-    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute("aria-disabled", "true");
     finish();
-    expect(await screen.findByRole("button", { name: "remove registry" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "remove registry" })).not.toHaveAttribute("aria-disabled", "true");
     expect(api.removeRegistry).toHaveBeenCalledTimes(1);
   });
 });

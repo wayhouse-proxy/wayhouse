@@ -2,17 +2,6 @@
 /* Design tokens: a copy of docs/design-system/tokens.css (a test keeps them identical). */
 @import "./tokens.css";
 
-/*
- * Old names the pages not yet ported to the design system still use. U1b ports
- * the pages and deletes this block.
- */
-@theme inline {
-  --color-accent: var(--primary);
-  --color-accent-ink: var(--primary-ink);
-  --color-surface-raised: var(--surface-sunken);
-  --color-ink-faint: var(--ink-muted);
-}
-
 html {
   font-size: 100%;
 }

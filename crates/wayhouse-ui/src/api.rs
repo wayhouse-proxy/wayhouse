@@ -424,10 +424,11 @@ async fn logout(State(state): State<AppState>, req: Request) -> Response {
 /// dedicated no-op probe.
 async fn session_status(
     axum::Extension(crate::auth::Actor(username)): axum::Extension<crate::auth::Actor>,
+    axum::Extension(crate::auth::ActorRole(role)): axum::Extension<crate::auth::ActorRole>,
 ) -> Response {
     (
         StatusCode::OK,
-        Json(serde_json::json!({ "authenticated": true, "username": username })),
+        Json(serde_json::json!({ "authenticated": true, "username": username, "role": role })),
     )
         .into_response()
 }
@@ -539,6 +540,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["role"], "admin", "a --ui-password session is an admin");
+    }
+
+    #[tokio::test]
+    async fn the_session_reports_admin_when_no_auth_is_configured() {
+        let app = router(AppState::new(None));
+        let resp = app
+            .oneshot(HttpRequest::get("/ui/session").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["role"], "admin");
     }
 
     #[tokio::test]

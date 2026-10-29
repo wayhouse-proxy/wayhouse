@@ -5,9 +5,9 @@ export type State = "up" | "degraded" | "down" | "unknown";
 const WORD: Record<State, string> = { up: "Up", degraded: "Degraded", down: "Down", unknown: "Unknown" };
 
 /** State is a shape, a colour and a word, always together (components.md, Status). */
-export function StatusMark({ state, word, className }: { state: State; word?: string; className?: string }) {
+export function StatusMark({ state, word, className }: { state: State; word?: React.ReactNode; className?: string }) {
   return (
-    <span className={cn("inline-flex items-center gap-1.5 text-sm text-ink", className)}>
+    <span data-state={state} className={cn("inline-flex items-center gap-1.5 text-sm text-ink", className)}>
       {state === "up" && <span aria-hidden className="h-[9px] w-[9px] rounded-full bg-good" />}
       {state === "degraded" && (
         <span
