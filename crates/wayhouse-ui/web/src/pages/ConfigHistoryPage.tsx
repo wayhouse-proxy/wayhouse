@@ -1,6 +1,6 @@
 import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { useEffect, useState } from "react";
-import { ApiError, diffRevision, listRevisions, rollbackTo } from "../api";
+import { ApiError, diffRevision, listRevisions, promoteRevision, rollbackTo } from "../api";
 import type { RevisionSummary } from "../types";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
@@ -60,6 +60,26 @@ export function ConfigHistoryPage() {
     }
   }
 
+  async function doPromote(rev: number) {
+    const ok = await confirm({
+      title: `Promote revision ${rev}?`,
+      description: `Makes revision ${rev} visible to every instance, not only its canary group.`,
+      confirmLabel: "Promote",
+      danger: false,
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await promoteRevision(rev);
+      setNotice(`promoted revision ${rev} to everyone`);
+      await refresh();
+    } catch (err) {
+      setNotice(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (loading) return <Loading />;
 
   return (
@@ -79,6 +99,7 @@ export function ConfigHistoryPage() {
               <TR>
                 <TH>revision</TH>
                 <TH>size</TH>
+                <TH>rollout</TH>
                 <TH></TH>
                 <TH></TH>
               </TR>
@@ -88,11 +109,20 @@ export function ConfigHistoryPage() {
                 <TR key={r.revision}>
                   <TD className="font-mono text-ink">{r.revision}</TD>
                   <TD className="text-ink-muted">{r.size_bytes} B</TD>
-                  <TD>{r.current && <Badge tone="good">current</Badge>}</TD>
+                  <TD>
+                    {r.current && <Badge tone="good">current</Badge>}{" "}
+                    {r.promoted === false && <Badge tone="warn">{`canary: ${(r.canary_groups ?? []).join(", ")}`}</Badge>}
+                  </TD>
                   <TD className="text-right">
                     <Button variant="ghost" size="sm" onClick={() => showDiff(r.revision)}>
                       diff vs. current
                     </Button>
+                    {r.promoted === false && (
+                      <Button size="sm" onClick={() => doPromote(r.revision)} disabled={busy || !canWrite}
+                        title={canWrite ? undefined : "Promoting needs the admin role"}>
+                        promote to everyone
+                      </Button>
+                    )}
                     {!r.current && (
                       <Button variant="danger" size="sm" onClick={() => doRollback(r.revision)}
                       disabled={busy || !canWrite}

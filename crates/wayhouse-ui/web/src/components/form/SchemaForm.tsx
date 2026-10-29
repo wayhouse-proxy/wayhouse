@@ -89,6 +89,7 @@ function NumberW(p: WidgetProps) {
       placeholder={p.schema["x-wayhouse-default"] !== undefined ? String(p.schema["x-wayhouse-default"]) : undefined}
       min={p.schema.minimum}
       step={p.schema.type === "integer" ? 1 : "any"}
+      disabled={p.disabled || p.readonly}
       onChange={(e) => p.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
       {...describe(p)}
     />
@@ -100,7 +101,7 @@ const Bool = (p: WidgetProps) => (
 );
 
 const Choice = (p: WidgetProps) => (
-  <Select id={p.id} value={p.value ?? ""} onChange={(e) => p.onChange(e.target.value === "" ? undefined : e.target.value)} {...describe(p)}>
+  <Select id={p.id} value={p.value ?? ""} disabled={p.disabled || p.readonly} onChange={(e) => p.onChange(e.target.value === "" ? undefined : e.target.value)} {...describe(p)}>
     {!p.required && <option value="">{p.schema["x-wayhouse-default"] !== undefined ? `Default (${String(p.schema["x-wayhouse-default"])})` : "Not set"}</option>}
     {(p.options.enumOptions ?? []).map((o) => (
       <option key={String(o.value)} value={String(o.value)}>
@@ -124,6 +125,7 @@ function Lines(p: WidgetProps) {
       id={p.id}
       rows={Math.max(3, text.split("\n").length + 1)}
       spellCheck={false}
+      disabled={p.disabled || p.readonly}
       value={text}
       onChange={(e) => {
         setText(e.target.value);
@@ -302,13 +304,15 @@ export interface SchemaFormProps {
   showAdvanced?: boolean;
   /** Only fields (and parents of fields) the layout puts on this page. */
   page?: string;
+  /** Every field is shown but cannot be changed (a role that cannot save). */
+  readonly?: boolean;
 }
 
 /**
  * Renders a part of the configuration as a form from its JSON Schema (rjsf for `$ref`, `enum` and list handling,
  * our components for everything you see). The layout groups, orders and explains; the YAML never changes meaning.
  */
-export function SchemaForm({ schema, value, saved, onChange, layout = DEFAULT_LAYOUT, path = [], showAdvanced = false, page }: SchemaFormProps) {
+export function SchemaForm({ schema, value, saved, onChange, layout = DEFAULT_LAYOUT, path = [], showAdvanced = false, page, readonly = false }: SchemaFormProps) {
   const root = useMemo(() => simplify(schema) as Record<string, any>, [schema]);
   const sub = useMemo(() => {
     const s = subschema(root, path);
@@ -334,6 +338,7 @@ export function SchemaForm({ schema, value, saved, onChange, layout = DEFAULT_LA
         ButtonTemplates: { SubmitButton: () => null },
       }}
       tagName="div"
+      readonly={readonly}
       noHtml5Validate
       omitExtraData={false}
       onChange={({ formData }) => {

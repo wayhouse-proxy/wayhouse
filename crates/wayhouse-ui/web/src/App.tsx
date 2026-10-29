@@ -11,6 +11,9 @@ import { FleetPage } from "./pages/FleetPage";
 import { DashboardPage } from "./pages/DashboardPage";
 
 import { SettingsPage } from "./pages/SettingsPage";
+import { SourcePage } from "./pages/SourcePage";
+import { SharedConfigDoc } from "./lib/config/SharedConfigDoc";
+import { TrialBar } from "./components/config/TrialBar";
 import { AppearancePage } from "./pages/AppearancePage";
 import { LayoutPage } from "./pages/LayoutPage";
 import { SniffersPage } from "./pages/SniffersPage";
@@ -50,14 +53,17 @@ export function App() {
     <QueryProvider>
     <ThemeSync />
     <Routes>
-      <Route element={<Shell onSignOut={() => logout().finally(() => setSession(null))} />}>
+      <Route element={<Shell banner={<TrialBar />} onSignOut={() => logout().finally(() => setSession(null))} />}>
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/overview" element={<OverviewPage />} />
         <Route path="/listeners" element={<ListenersPage />} />
         <Route path="/pools" element={<PoolsPage />} />
         <Route path="/fleet" element={<FleetPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
+        <Route element={<SharedConfigDoc />}>
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings/source" element={<SourcePage />} />
+        </Route>
         <Route path="/settings/appearance" element={<AppearancePage />} />
         <Route path="/settings/layout" element={<LayoutPage />} />
         <Route path="/sniffers" element={<SniffersPage />} />

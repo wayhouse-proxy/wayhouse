@@ -51,6 +51,9 @@ export interface RevisionSummary {
   revision: number;
   size_bytes: number;
   current: boolean;
+  /** False while a canary revision is visible only to `canary_groups`. */
+  promoted?: boolean;
+  canary_groups?: string[];
 }
 
 export interface SnifferInfo {

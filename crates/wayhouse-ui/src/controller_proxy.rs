@@ -449,18 +449,22 @@ async fn confirm_revision(
     .await
 }
 
+/// `?revision=N` names the trial the operator saw; only that number is forwarded.
+#[derive(serde::Deserialize)]
+struct RevertParams {
+    revision: Option<u64>,
+}
+
 async fn revert_config(
     State(state): State<AppState>,
     Extension(Actor(actor)): Extension<Actor>,
+    axum::extract::Query(params): axum::extract::Query<RevertParams>,
 ) -> Response {
-    proxy(
-        &state,
-        Method::POST,
-        "/config/revert".to_string(),
-        None,
-        actor,
-    )
-    .await
+    let suffix = match params.revision {
+        Some(revision) => format!("/config/revert?revision={revision}"),
+        None => "/config/revert".to_string(),
+    };
+    proxy(&state, Method::POST, suffix, None, actor).await
 }
 
 async fn promote(
@@ -772,6 +776,27 @@ mod tests {
             captured.lock().unwrap().clone().unwrap(),
             (1, Some("against=2".to_string()))
         );
+    }
+
+    #[tokio::test]
+    async fn revert_names_the_revision_the_operator_saw() {
+        let app = app_for(Router::new().route(
+            "/config/revert",
+            post(|RawQuery(q): RawQuery| async move {
+                assert_eq!(q.as_deref(), Some("revision=6"));
+                r#"{"revision":7}"#
+            }),
+        ))
+        .await;
+        let resp = app
+            .oneshot(
+                Request::post("/api/config/revert?revision=6&evil=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

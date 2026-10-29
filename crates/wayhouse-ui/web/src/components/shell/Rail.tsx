@@ -39,6 +39,7 @@ function Item({ item }: { item: NavItem }) {
             <NavLink
               key={c.to}
               to={c.to}
+              end
               className={({ isActive }) => cn(row, "text-rail-ink-muted", isActive && cn(current, "text-rail-ink"))}
             >
               {c.label}
