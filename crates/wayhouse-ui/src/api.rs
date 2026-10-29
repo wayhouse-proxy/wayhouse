@@ -824,7 +824,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_operator_cannot_change_a_plugin_install() {
+    async fn an_operator_cannot_change_a_plugin_install_or_the_acme_setup() {
         let app = router(users_state());
         let resp = login_as(&app, "bob", "bob-pass").await; // bob is Operator
         let cookie = cookie_header_from(&set_cookie_value(&resp));
@@ -839,6 +839,9 @@ mod tests {
             ("DELETE", "/api/plugins/abc/secrets/TOKEN"),
             ("POST", "/api/plugins/abc/webhook"),
             ("DELETE", "/api/plugins/abc/webhook"),
+            ("PUT", "/api/acme/sites/panel"),
+            ("DELETE", "/api/acme/sites/panel"),
+            ("POST", "/api/acme/gateways"),
         ] {
             let resp = app
                 .clone()

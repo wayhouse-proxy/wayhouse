@@ -219,6 +219,20 @@ describe("CertificatesPage", () => {
       expect(await within(dlg).findByText(/belongs to site web/)).toBeInTheDocument();
     });
 
+    it("shows a gateway the site names but the controller no longer has, and saving can drop it", async () => {
+      api.listAcmeSites.mockResolvedValue({ sites: [site({ name: "web", gateways: ["edge-1", "retired"] })] });
+      render(<CertificatesPage />);
+      await screen.findByText("https://ca.test/acct/1");
+      await userEvent.click(screen.getByRole("button", { name: "Edit site web" }));
+      const dlg = await screen.findByRole("dialog");
+      const stale = within(dlg).getByLabelText(/retired/);
+      expect(stale).toBeChecked();
+      expect(within(dlg).getByText(/not registered/)).toBeInTheDocument();
+      await userEvent.click(stale);
+      await userEvent.click(within(dlg).getByRole("button", { name: "Save site" }));
+      expect(api.putAcmeSite).toHaveBeenCalledWith("web", expect.objectContaining({ gateways: ["edge-1"] }));
+    });
+
     it("removing a site asks first", async () => {
       render(<CertificatesPage />);
       await screen.findByText("https://ca.test/acct/1");
@@ -237,6 +251,10 @@ describe("CertificatesPage", () => {
       await userEvent.type(within(dlg).getByLabelText("Gateway name"), "edge-2");
       await userEvent.click(within(dlg).getByRole("button", { name: "Register" }));
       expect(await within(dlg).findByLabelText("Gateway token")).toHaveValue("tok-secret-123");
+      await userEvent.keyboard("{Escape}");
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(within(dlg).getByRole("button", { name: "Done" })).toHaveAttribute("aria-disabled", "true");
+      await userEvent.click(within(dlg).getByRole("checkbox", { name: /copied the token/ }));
       await userEvent.click(within(dlg).getByRole("button", { name: "Done" }));
       expect(screen.queryByText("tok-secret-123")).toBeNull();
       expect(screen.queryByDisplayValue("tok-secret-123")).toBeNull();

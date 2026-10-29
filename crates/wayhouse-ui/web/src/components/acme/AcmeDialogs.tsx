@@ -32,6 +32,8 @@ export function SiteDialog({ site, gateways, onClose, onSaved }: { site: AcmeSit
   const [enabled, setEnabled] = useState(site?.enabled ?? true);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // A gateway the site still names but the controller no longer has stays listed: saving would send it back.
+  const stale = (site?.gateways ?? []).filter((g) => !gateways.some((x) => x.name === g));
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -89,16 +91,14 @@ export function SiteDialog({ site, gateways, onClose, onSaved }: { site: AcmeSit
         )}
         <fieldset>
           <legend className="mb-1 font-semibold">Gateways that may fetch it</legend>
-          {gateways.length === 0 ? (
-            <p className="text-ink-muted">No gateway is registered yet.</p>
-          ) : (
-            gateways.map((g) => (
-              <label key={g.name} className="flex items-center gap-2 py-0.5">
-                <input type="checkbox" checked={picked.includes(g.name)} onChange={(e) => setPicked(e.target.checked ? [...picked, g.name] : picked.filter((x) => x !== g.name))} />
-                <span className="font-mono">{g.name}</span>
-              </label>
-            ))
-          )}
+          {gateways.length === 0 && stale.length === 0 && <p className="text-ink-muted">No gateway is registered yet.</p>}
+          {[...gateways.map((g) => g.name), ...stale].map((g) => (
+            <label key={g} className="flex items-center gap-2 py-0.5">
+              <input type="checkbox" checked={picked.includes(g)} onChange={(e) => setPicked(e.target.checked ? [...picked, g] : picked.filter((x) => x !== g))} />
+              <span className="font-mono">{g}</span>
+              {stale.includes(g) && <span className="text-ink-muted">(not registered; uncheck to drop it)</span>}
+            </label>
+          ))}
         </fieldset>
         <label className="flex items-center gap-2">
           <Switch checked={enabled} onCheckedChange={setEnabled} aria-label="Enabled" />
@@ -128,6 +128,7 @@ export function GatewayDialog({ onClose, onCreated }: { onClose: () => void; onC
   const [token, setToken] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -145,15 +146,18 @@ export function GatewayDialog({ onClose, onCreated }: { onClose: () => void; onC
   }
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onClose()} title="Register gateway" description="A gateway fetches the certificates of the sites it is allowed to read.">
+    <Dialog open onOpenChange={(o) => !o && !token && onClose()} title="Register gateway" description="A gateway fetches the certificates of the sites it is allowed to read.">
       {token ? (
         <div className="flex flex-col gap-3 text-sm">
           <p>
             Token for <span className="font-mono">{name}</span>. Copy it now: it is not shown again.
           </p>
           <Input mono readOnly aria-label="Gateway token" value={token} onFocus={(e) => e.currentTarget.select()} />
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} />I have copied the token
+          </label>
           <div className="flex justify-end">
-            <Button variant="primary" onClick={onClose}>
+            <Button variant="primary" disabled={!saved} onClick={onClose}>
               Done
             </Button>
           </div>
