@@ -1,0 +1,229 @@
+/*
+ * Wayhouse UI design tokens. This file is the source of truth for the UI's look.
+ * Rules and rationale: DESIGN.md. Custom theme rules: themes.md.
+ *
+ * Layout of this file:
+ *   1. Themed semantic tokens on :root (light), redefined for dark.
+ *   2. Theme-independent tokens (type, space, radius, elevation, motion).
+ *   3. Tailwind 4 mapping (@theme inline), so utilities such as `bg-surface`
+ *      and `text-ink-muted` read the live variables.
+ *
+ * Components use semantic names only (--surface, --ink, --good), never a
+ * literal colour. A theme is a set of values for the tokens in section 1.
+ * Contrast of the built-in pairs is checked in accessibility.md.
+ */
+
+/* ---------- 1. Themed tokens ---------- */
+:root {
+  color-scheme: light;
+
+  /* Ground and text */
+  --bg: #f3f1ee; /* page ground */
+  --surface: #fbfaf8; /* panels, tables, inputs */
+  --surface-sunken: #ebe8e3; /* table headers, group rows */
+  --ink: #1d1b18; /* primary text */
+  --ink-muted: #6a655d; /* secondary text, help text */
+  --line: #dcd8d1; /* decorative separators and panel borders */
+  --control-border: #857f75; /* borders of inputs and buttons, 3:1 against surface */
+
+  /* Navigation rail: dark in both themes */
+  --rail: #1d1f23;
+  --rail-ink: #e9e7e2;
+  --rail-ink-muted: #9b9a96;
+  --rail-hover: #2b2e34;
+
+  /* Interaction. Cobalt marks selection and focus only. */
+  --select: #2b5cd6;
+  --select-bg: #e3eafb;
+  --primary: #1d1b18; /* primary button ground */
+  --primary-ink: #fbfaf8;
+
+  /* State. Always paired with a shape and a word (see DESIGN.md). */
+  --good: #1b7654;
+  --warn: #713900;
+  --bad: #c40e3b;
+
+  /* Data series. Checked for colour-vision deficiency by the theme validator
+     (src/lib/theme in the web project; themes.md). Never use state colours for series. */
+  --series-1: #2b5ff3;
+  --series-2: #219a77;
+  --series-3: #984f85;
+  --series-4: #797e2a;
+  --series-5: #504d37;
+  --series-area: color-mix(in srgb, var(--series-1) 12%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg: #16171a;
+    --surface: #1d1f23;
+    --surface-sunken: #202226;
+    --ink: #ecebe7;
+    --ink-muted: #9a968d;
+    --line: #2e3035;
+    --control-border: #7a7d85;
+    --rail: #0e0f11;
+    --rail-ink: #e9e7e2;
+    --rail-ink-muted: #96948f;
+    --rail-hover: #22252a;
+    --select: #8aa9ff;
+    --select-bg: #232b44;
+    --primary: #ecebe7;
+    --primary-ink: #16171a;
+    --good: #4bbfa6;
+    --warn: #fbc43b;
+    --bad: #e0645c;
+    --series-1: #6e8dff;
+    --series-2: #5ce1b4;
+    --series-3: #c1bedc;
+    --series-4: #d7c143;
+    --series-5: #98868e;
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #16171a;
+  --surface: #1d1f23;
+  --surface-sunken: #202226;
+  --ink: #ecebe7;
+  --ink-muted: #9a968d;
+  --line: #2e3035;
+  --control-border: #7a7d85;
+  --rail: #0e0f11;
+  --rail-ink: #e9e7e2;
+  --rail-ink-muted: #96948f;
+  --rail-hover: #22252a;
+  --select: #8aa9ff;
+  --select-bg: #232b44;
+  --primary: #ecebe7;
+  --primary-ink: #16171a;
+  --good: #4bbfa6;
+  --warn: #fbc43b;
+  --bad: #e0645c;
+  --series-1: #6e8dff;
+  --series-2: #5ce1b4;
+  --series-3: #c1bedc;
+  --series-4: #d7c143;
+  --series-5: #98868e;
+}
+
+/* ---------- 2. Theme-independent tokens ---------- */
+:root {
+  /* Type: one UI family, one machine-data family. Self-hosted (@fontsource). */
+  --font-ui: "Public Sans", system-ui, sans-serif;
+  --font-code: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* Fixed rem scale, ratio about 1.125. No fluid type in the product UI. */
+  --fs-xs: 0.75rem; /* 12px  help text, column headers, captions */
+  --fs-sm: 0.8125rem; /* 13px  body in dense views, table cells, controls */
+  --fs-md: 0.875rem; /* 14px  body in forms and prose */
+  --fs-lg: 1rem; /* 16px  panel and section titles on wide screens */
+  --fs-xl: 1.25rem; /* 20px  page title */
+  --fs-stat: 1.625rem; /* 26px  one headline number per widget */
+  --leading-tight: 1.2;
+  --leading-body: 1.4;
+  --leading-prose: 1.55;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* Space: 4px base. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  /* Density: row and control heights. */
+  --row-height: 2rem; /* 32px table row, default */
+  --control-height: 2rem; /* 32px button, input, select */
+  --hit-target-touch: 2.75rem; /* 44px, used when (pointer: coarse) */
+
+  /* Shape. Hairlines, small radius. */
+  --radius: 3px;
+  --radius-big: 6px; /* overlays only */
+  --border: 1px;
+  --focus-ring: 2px solid var(--select);
+  --focus-offset: 1px;
+
+  /* Elevation: flat in the page, a real shadow only on overlays. */
+  --elev-overlay: 0 8px 24px -4px rgb(0 0 0 / 0.18), 0 2px 6px rgb(0 0 0 / 0.12);
+
+  /* Motion: state change only, 150 to 250 ms, ease-out. */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 250ms;
+
+  /* Layout */
+  --rail-width: 13.75rem; /* 220px */
+  --inspector-width: 20rem; /* 320px */
+  --page-pad: 1.25rem;
+  --grid-gap: 0.75rem;
+  --measure: 70ch; /* prose and help text */
+}
+
+@media (pointer: coarse) {
+  :root {
+    --row-height: var(--hit-target-touch);
+    --control-height: var(--hit-target-touch);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0.001ms;
+    --dur-base: 0.001ms;
+    --dur-slow: 0.001ms;
+  }
+}
+
+/* ---------- 3. Tailwind 4 mapping ---------- */
+@theme inline {
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-code);
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-line: var(--line);
+  --color-control: var(--control-border);
+  --color-rail: var(--rail);
+  --color-rail-ink: var(--rail-ink);
+  --color-rail-ink-muted: var(--rail-ink-muted);
+  --color-rail-hover: var(--rail-hover);
+  --color-select: var(--select);
+  --color-select-bg: var(--select-bg);
+  --color-primary: var(--primary);
+  --color-primary-ink: var(--primary-ink);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --color-series-3: var(--series-3);
+  --color-series-4: var(--series-4);
+  --color-series-5: var(--series-5);
+
+  --text-xs: var(--fs-xs);
+  --text-sm: var(--fs-sm);
+  --text-base: var(--fs-md);
+  --text-lg: var(--fs-lg);
+  --text-xl: var(--fs-xl);
+
+  --radius-sm: var(--radius);
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius-big);
+
+  --shadow-overlay: var(--elev-overlay);
+}

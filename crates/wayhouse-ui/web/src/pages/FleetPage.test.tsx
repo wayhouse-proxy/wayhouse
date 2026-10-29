@@ -147,10 +147,10 @@ describe("FleetPage pending and error states", () => {
     api.undrainInstance.mockReturnValue(new Promise((_, rej) => (reject = rej)));
     render(<FleetPage />);
     await userEvent.click(screen.getByRole("button", { name: "Undrain" }));
-    expect(screen.getByRole("button", { name: "Undrain" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Drain" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Undrain" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Drain" })).toHaveAttribute("aria-disabled", "true");
     reject(new Error("aggregator unreachable"));
     expect(await screen.findByText(/undrain fra-1 failed: .*aggregator unreachable/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Undrain" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undrain" })).not.toHaveAttribute("aria-disabled", "true");
   });
 });

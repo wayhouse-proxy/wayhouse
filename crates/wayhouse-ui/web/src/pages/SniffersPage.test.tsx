@@ -316,7 +316,7 @@ describe("SniffersPage updates and rollback", () => {
     expect(await within(updates).findByText("registry down")).toBeInTheDocument();
     await userEvent.click(within(updates).getByRole("button", { name: "Update to 0.2.0" }));
     expect(within(updates).queryByText("registry down")).toBeNull();
-    expect(within(updates).getByRole("button", { name: "Update to 0.2.0" })).toBeDisabled();
+    expect(within(updates).getByRole("button", { name: "Update to 0.2.0" })).toHaveAttribute("aria-disabled", "true");
     release(installable());
     expect(await screen.findByRole("dialog")).toHaveTextContent("demo");
   });

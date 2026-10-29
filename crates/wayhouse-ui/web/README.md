@@ -90,3 +90,12 @@ and drives it in Chromium. The wayhouse-ui backend is stubbed per test with
 `page.route()` (`e2e/`), so no Rust process is needed. First run:
 `npx playwright install chromium`, or set `PW_CHROMIUM` to an existing
 Chromium binary.
+
+## Design system
+
+The look is [Switchboard](../../../docs/design-system/DESIGN.md). `src/tokens.css` is a copy of
+`docs/design-system/tokens.css` (the Docker build only sees this directory; a test keeps the two
+identical, so edit the docs file and copy it). Components live in `src/components/ui` (shadcn-style
+source on Radix, restyled to `docs/design-system/components.md`). `src/lib/theme` holds the theme
+provider and the validator for custom themes (`themes.md`); `fixtures.json` there is shared with the
+controller's Rust port.

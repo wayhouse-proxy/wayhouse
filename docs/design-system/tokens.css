@@ -39,17 +39,17 @@
   --primary-ink: #fbfaf8;
 
   /* State. Always paired with a shape and a word (see DESIGN.md). */
-  --good: #256b43;
-  --warn: #8f5700;
-  --bad: #b3261e;
+  --good: #1b7654;
+  --warn: #713900;
+  --bad: #c40e3b;
 
-  /* Data series. Provisional: validate for colour-vision deficiency before the
-     first chart ships (open item in DESIGN.md). Never use state colours for series. */
-  --series-1: #2b5cd6;
-  --series-2: #0e7c86;
-  --series-3: #7a4fa3;
-  --series-4: #8a6a1f;
-  --series-5: #5d5a54;
+  /* Data series. Checked for colour-vision deficiency by the theme validator
+     (src/lib/theme in the web project; themes.md). Never use state colours for series. */
+  --series-1: #2b5ff3;
+  --series-2: #219a77;
+  --series-3: #984f85;
+  --series-4: #797e2a;
+  --series-5: #504d37;
   --series-area: color-mix(in srgb, var(--series-1) 12%, transparent);
 }
 
@@ -71,14 +71,14 @@
     --select-bg: #232b44;
     --primary: #ecebe7;
     --primary-ink: #16171a;
-    --good: #5fc487;
-    --warn: #e0a63a;
-    --bad: #f0766d;
-    --series-1: #8aa9ff;
-    --series-2: #4cc3cf;
-    --series-3: #c0a0e6;
-    --series-4: #d6b45a;
-    --series-5: #a7a49d;
+    --good: #4bbfa6;
+    --warn: #fbc43b;
+    --bad: #e0645c;
+    --series-1: #6e8dff;
+    --series-2: #5ce1b4;
+    --series-3: #c1bedc;
+    --series-4: #d7c143;
+    --series-5: #98868e;
   }
 }
 
@@ -103,14 +103,14 @@
   --select-bg: #232b44;
   --primary: #ecebe7;
   --primary-ink: #16171a;
-  --good: #5fc487;
-  --warn: #e0a63a;
-  --bad: #f0766d;
-  --series-1: #8aa9ff;
-  --series-2: #4cc3cf;
-  --series-3: #c0a0e6;
-  --series-4: #d6b45a;
-  --series-5: #a7a49d;
+  --good: #4bbfa6;
+  --warn: #fbc43b;
+  --bad: #e0645c;
+  --series-1: #6e8dff;
+  --series-2: #5ce1b4;
+  --series-3: #c1bedc;
+  --series-4: #d7c143;
+  --series-5: #98868e;
 }
 
 /* ---------- 2. Theme-independent tokens ---------- */

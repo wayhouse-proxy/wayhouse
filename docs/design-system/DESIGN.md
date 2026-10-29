@@ -1,6 +1,6 @@
 # Wayhouse UI design system
 
-Status: design only, decided with Wueschli on 2026-10-28. Nothing here is implemented yet; the 0.4.0 UI overhaul builds on it. The look is called **Switchboard**.
+Status: decided with Wueschli on 2026-10-28; the 0.4.0 UI overhaul builds it (foundation in `crates/wayhouse-ui/web`, `src/tokens.css` is a copy of [tokens.css](tokens.css) that a test keeps identical). The look is called **Switchboard**.
 
 | File                                 | What it holds                                                                                                      |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
@@ -106,8 +106,6 @@ Breadcrumbs ("Settings / Network") sit above the page title. A page never needs 
 
 ## Open items
 
-- **Series palette.** `--series-*` values are provisional. Validate them for colour-vision deficiency and contrast in both themes before the first chart is built.
-- **Chart library.** Choose one (candidates: Recharts, uPlot, visx). Requirements: SVG or canvas with theme tokens, axes with a real scale, annotations for onset marks, keyboard-reachable data, small bundle.
-- **Fonts.** Public Sans and IBM Plex Mono are self-hosted through `@fontsource`; the existing `selfHostedFonts` test should be updated to cover Public Sans.
+- **Chart library.** Decided: Recharts through the shadcn chart pattern (E2 measures the bundle; fallback uPlot).
 - **Tags and labels on nodes**, **dashboard storage endpoints in the controller**, and **custom theme storage** need entries in the overhaul design and the controller API.
 - **Schema-form layout file.** The layout file (group, order, widget, help text) should reference the section and field patterns here.

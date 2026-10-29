@@ -30,18 +30,20 @@ Computed with the WCAG relative-luminance formula, by script, on the values in [
 | `--ink-muted` on `--surface-sunken`                          | 4.73  | 5.40  | 4.5   |
 | `--select` on `--surface`                                    | 5.58  | 7.22  | 4.5   |
 | `--ink` on `--select-bg` (selected row)                      | 14.25 | 11.73 | 4.5   |
-| `--good` on `--bg`, `--surface`, `--surface-sunken` (lowest) | 5.26  | 7.38  | 4.5   |
-| `--warn` on `--bg`, `--surface`, `--surface-sunken` (lowest) | 4.86  | 7.34  | 4.5   |
-| `--bad` on `--bg`, `--surface`, `--surface-sunken` (lowest)  | 5.34  | 5.70  | 4.5   |
+| `--good` on `--bg`, `--surface`, `--surface-sunken` (lowest) | 4.56  | 7.05  | 4.5   |
+| `--warn` on `--bg`, `--surface`, `--surface-sunken` (lowest) | 7.51  | 9.90  | 4.5   |
+| `--bad` on `--bg`, `--surface`, `--surface-sunken` (lowest)  | 4.94  | 4.66  | 4.5   |
 | `--rail-ink` on `--rail`                                     | 13.35 | 15.51 | 4.5   |
 | `--rail-ink-muted` on `--rail`                               | 5.85  | 6.32  | 4.5   |
 | `--rail-ink-muted` on `--rail-hover`                         | 4.83  | 5.07  | 4.5   |
 | `--primary-ink` on `--primary`                               | 16.47 | 15.02 | 4.5   |
 | `--select` on `--select-bg`                                  | 4.83  | 6.13  | 4.5   |
 | `--control-border` on `--surface` and `--bg` (lowest)        | 3.52  | 4.00  | 3     |
-| `--series-1..5` on `--surface` (lowest)                      | 4.74  | 6.63  | 3     |
+| `--series-1..5` on `--surface` (lowest)                      | 3.38  | 4.82  | 3     |
 
-Not claimed: distinguishability of the `--series-*` colours from each other, and of `--good`, `--warn` and `--bad` under colour-vision deficiency (shape and word carry state, but the colours should also differ). Both are open items in [DESIGN.md](DESIGN.md). Treat the table as a regression test: when a token changes, recompute it. A small script that does this from `tokens.css` should be added with the implementation.
+Colour-vision check (2026-10-28, `src/lib/theme` in the web project): `--good`, `--warn` and `--bad` are pairwise at least 10 apart (CIEDE2000, see [themes.md](themes.md) check 8) in normal vision and under simulated deuteranopia, protanopia and tritanopia; so are `--series-1..5` (check 9) and `--select` against the three state colours in normal vision (check 10). The first palette failed this (light `--warn` and `--bad` were 1.7 apart under deuteranopia); the state and series values in [tokens.css](tokens.css) were re-picked. Shape and word remain the primary signal for state; series also carry direct labels or a legend.
+
+Treat the table as a regression test: `validate.test.ts` checks the built-in themes against the same rules (and the values in `builtin.ts` against `tokens.css`), so a token change that breaks one fails CI. Recompute the table when a token changes.
 
 ## Review checklist
 
