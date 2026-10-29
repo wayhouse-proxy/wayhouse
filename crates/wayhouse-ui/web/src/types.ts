@@ -332,3 +332,29 @@ export interface AcmeAccount {
   /** Id of the cluster secret key the account credentials are sealed with. */
   key_id?: string;
 }
+
+/** One row of the controller's `GET /features` (`wayhouse_config::features::FeatureView`). */
+export interface FeatureFlag {
+  name: string;
+  value: boolean;
+  source: "default" | "config" | "override" | "build";
+  default: boolean;
+  scope: "proxy" | "controller";
+  apply: "live" | "startup";
+  override: "both" | "off_only";
+  protection: boolean;
+  wired: boolean;
+  available: boolean;
+  since: number;
+  risk: string;
+  impact: string;
+}
+
+export interface FeatureOverride {
+  name: string;
+  value: boolean;
+  reason: string;
+  actor?: string;
+  set_at: number;
+  expires_at?: number;
+}
