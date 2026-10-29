@@ -519,6 +519,114 @@
       "order": 31,
       "advanced": true,
       "page": "resolver"
+    },
+    "web.sites.*.hosts": {
+      "label": "Hosts",
+      "group": "Site",
+      "order": 1,
+      "help": "One hostname per line. Exact, or *.example.com for every subdomain.",
+      "page": "site"
+    },
+    "web.sites.*.upstreams": {
+      "label": "Upstreams",
+      "group": "Site",
+      "order": 2,
+      "help": "Where the site's requests go: an address, or a pool with a route (direct to its backends, or through the proxy).",
+      "page": "site"
+    },
+    "web.sites.*.upstreams.*.addr": {
+      "label": "Address",
+      "order": 1,
+      "help": "A host:port. Use this or a pool.",
+      "page": "site"
+    },
+    "web.sites.*.upstreams.*.pool": {
+      "label": "Pool",
+      "order": 2,
+      "help": "A pool name. Use this or an address.",
+      "page": "site"
+    },
+    "web.sites.*.upstreams.*.port": {
+      "label": "Port",
+      "order": 3,
+      "help": "Overrides the pool backends' port.",
+      "page": "site"
+    },
+    "web.sites.*.upstreams.*.via": {
+      "label": "Route",
+      "order": 4,
+      "help": "direct: Caddy connects to the backends. wayhouse: through a loopback listener that routes to the pool.",
+      "page": "site"
+    },
+    "web.sites.*.tls": {
+      "group": "Certificate",
+      "order": 11,
+      "help": "Files on the web sync host. Leave empty when the controller issues the certificate.",
+      "page": "site"
+    },
+    "web.sites.*.tls.cert": {
+      "label": "Certificate file",
+      "order": 1,
+      "page": "site"
+    },
+    "web.sites.*.tls.key": {
+      "label": "Key file",
+      "order": 2,
+      "page": "site"
+    },
+    "web.sites.*.health_path": {
+      "label": "Health path",
+      "group": "Health",
+      "order": 21,
+      "advanced": true,
+      "help": "Adds an active check, such as /healthz.",
+      "page": "site"
+    },
+    "web.listen": {
+      "group": "Listening",
+      "order": 1,
+      "page": "web"
+    },
+    "web.listen.http": {
+      "label": "HTTP address",
+      "order": 1,
+      "help": "Where the packaged Caddy listens for plain HTTP.",
+      "page": "web"
+    },
+    "web.listen.https": {
+      "label": "HTTPS address",
+      "order": 2,
+      "page": "web"
+    },
+    "web.pool": {
+      "label": "Gateway pool",
+      "group": "Listening",
+      "order": 3,
+      "help": "The pool whose backend is the packaged Caddy.",
+      "page": "web"
+    },
+    "web.trusted_proxy": {
+      "label": "Trusted proxies (CIDR)",
+      "group": "Advanced",
+      "order": 11,
+      "advanced": true,
+      "help": "Networks allowed to set the client address headers. One prefix per line.",
+      "page": "web"
+    },
+    "web.internal_bind": {
+      "label": "Internal bind address",
+      "group": "Advanced",
+      "order": 12,
+      "advanced": true,
+      "page": "web"
+    },
+    "web.internal_ports": {
+      "label": "Internal ports",
+      "group": "Advanced",
+      "order": 13,
+      "advanced": true,
+      "help": "A range such as 19000-19999.",
+      "page": "web"
     }
   }
 }

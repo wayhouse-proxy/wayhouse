@@ -64,7 +64,10 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/config/promote/{revision}", post(promote))
         .route("/api/config/confirm/{revision}", post(confirm_revision))
         .route("/api/config/revert", post(revert_config))
-        .route("/api/acme/sites/{name}", put(put_acme_site).delete(delete_acme_site))
+        .route(
+            "/api/acme/sites/{name}",
+            put(put_acme_site).delete(delete_acme_site),
+        )
         .route("/api/acme/gateways", post(create_acme_gateway))
         .route("/api/tunnel/origins/{name}", delete(release_origin))
         .route("/api/tunnel/proxies/{name}", delete(release_proxy))
@@ -136,7 +139,14 @@ async fn delete_acme_site(
     let Some(segment) = crate::proxy_util::path_segment(&name) else {
         return bad_acme_name();
     };
-    proxy(&state, Method::DELETE, format!("/acme/sites/{segment}"), None, actor).await
+    proxy(
+        &state,
+        Method::DELETE,
+        format!("/acme/sites/{segment}"),
+        None,
+        actor,
+    )
+    .await
 }
 
 /// `POST /api/acme/gateways`: registers a gateway; the answer carries its token, once, and is passed
@@ -1306,7 +1316,11 @@ mod tests {
         assert_eq!(put.status(), StatusCode::OK);
         let del = app
             .clone()
-            .oneshot(Request::delete("/api/acme/sites/panel").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::delete("/api/acme/sites/panel")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(del.status(), StatusCode::OK);
@@ -1322,10 +1336,19 @@ mod tests {
             .unwrap();
         assert_eq!(gw.status(), StatusCode::OK);
         let seen = seen.lock().unwrap();
-        let calls: Vec<_> = seen.iter().map(|(m, p, _, b)| (m.as_str(), p.as_str(), b.clone())).collect();
-        assert_eq!(calls[0], ("PUT", "/acme/sites/panel", site.as_bytes().to_vec()));
+        let calls: Vec<_> = seen
+            .iter()
+            .map(|(m, p, _, b)| (m.as_str(), p.as_str(), b.clone()))
+            .collect();
+        assert_eq!(
+            calls[0],
+            ("PUT", "/acme/sites/panel", site.as_bytes().to_vec())
+        );
         assert_eq!(calls[1], ("DELETE", "/acme/sites/panel", Vec::new()));
-        assert_eq!(calls[2], ("POST", "/acme/gateways", br#"{"name":"edge-1"}"#.to_vec()));
+        assert_eq!(
+            calls[2],
+            ("POST", "/acme/gateways", br#"{"name":"edge-1"}"#.to_vec())
+        );
     }
 
     #[tokio::test]
@@ -1335,12 +1358,23 @@ mod tests {
         for name in ["..", "%2E%2E", "a%2Fb", "a%3Fb"] {
             let resp = app
                 .clone()
-                .oneshot(Request::delete(format!("/api/acme/sites/{name}")).body(Body::empty()).unwrap())
+                .oneshot(
+                    Request::delete(format!("/api/acme/sites/{name}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap();
-            assert!(resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::OK, "{name}");
+            assert!(
+                resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::OK,
+                "{name}"
+            );
         }
-        assert!(seen.lock().unwrap().iter().all(|(_, p, _, _)| p.starts_with("/acme/sites/") && p.matches('/').count() == 3));
+        assert!(seen
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, p, _, _)| p.starts_with("/acme/sites/") && p.matches('/').count() == 3));
     }
 
     #[tokio::test]

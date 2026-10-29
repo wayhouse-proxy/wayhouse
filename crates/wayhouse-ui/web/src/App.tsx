@@ -7,7 +7,7 @@ import { Loading } from "./components/shell/States";
 import { SessionProvider } from "./lib/session";
 import { QueryProvider } from "./lib/query";
 import { ThemeSync } from "./lib/uidata";
-import { PoolsEditorPage, ResolversEditorPage, SourcesEditorPage } from "./pages/ConfigListPages";
+import { PoolsEditorPage, ResolversEditorPage, SourcesEditorPage, WebEditorPage } from "./pages/ConfigListPages";
 import { ListenersEditorPage } from "./pages/ListenersEditorPage";
 import { FleetPage } from "./pages/FleetPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -69,6 +69,7 @@ export function App() {
           <Route path="/config/pools" element={<PoolsEditorPage />} />
           <Route path="/config/sources" element={<SourcesEditorPage />} />
           <Route path="/config/resolvers" element={<ResolversEditorPage />} />
+          <Route path="/config/web" element={<WebEditorPage />} />
         </Route>
         <Route path="/settings/appearance" element={<AppearancePage />} />
         <Route path="/settings/layout" element={<LayoutPage />} />
