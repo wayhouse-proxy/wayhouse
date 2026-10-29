@@ -155,8 +155,8 @@ export function FleetPage() {
       return;
     }
     shown.current = true;
-    inspector.open(q.sel, <NodeInspector instance={q.sel} node={node} live={live} onTag={addTag} />);
-  }, [q.sel, node, live]); // eslint-disable-line react-hooks/exhaustive-deps
+    inspector.open(q.sel, <NodeInspector instance={q.sel} node={node} live={live} onTag={addTag} tagsUnavailable={data?.operatorTagsUnavailable} />);
+  }, [q.sel, node, live, data?.operatorTagsUnavailable]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => inspector.close(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groups: Group<FleetNode>[] = useMemo(() => {

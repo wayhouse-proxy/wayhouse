@@ -490,10 +490,23 @@ export function deleteLayoutOverride(): Promise<void> {
 
 // --- fleet nodes (paged on the aggregator) ---
 
-export function getFleetNodes(query: string): Promise<NodePage> {
+export async function getFleetNodes(query: string): Promise<NodePage> {
   const p = new URLSearchParams(query);
   p.set("group_by", "region");
-  return requestJson(`/api/fleet/nodes?${p}`);
+  const resp = await request(`/api/fleet/nodes?${p}`);
+  const text = await resp.text();
+  if (!resp.ok) throw new ApiError(resp.status, text || resp.statusText);
+  const page = JSON.parse(text) as NodePage;
+  // The controller did not answer, so the list carries declared tags only.
+  if (resp.headers.get("x-operator-tags") === "unavailable") page.operatorTagsUnavailable = true;
+  return page;
+}
+/** Replace the operator's tags on one node (an empty set is a DELETE). */
+export function setNodeTags(instance: string, tags: Record<string, string>): Promise<void> {
+  return requestJson(`/api/fleet/nodes/${encodeURIComponent(instance)}/tags`, jsonInit("PUT", { tags }));
+}
+export function clearNodeTags(instance: string): Promise<void> {
+  return requestJson(`/api/fleet/nodes/${encodeURIComponent(instance)}/tags`, { method: "DELETE" });
 }
 /** The instances a filter selects, so a bulk action can show the count before it runs. */
 export function resolveFleetNodes(filter: string): Promise<Resolved> {

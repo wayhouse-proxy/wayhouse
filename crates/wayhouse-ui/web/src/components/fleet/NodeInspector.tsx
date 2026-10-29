@@ -9,6 +9,7 @@ import { useConfirm } from "../ui/ConfirmDialog";
 import { Select } from "../ui/Input";
 import { useToast } from "../ui/Toast";
 import { NodeStateBadge } from "./NodeStateBadge";
+import { NodeTags } from "./NodeTags";
 
 type BackendState = "enabled" | "draining" | "disabled";
 
@@ -22,11 +23,13 @@ export function NodeInspector({
   node,
   live,
   onTag,
+  tagsUnavailable,
 }: {
   instance: string;
   node?: FleetNode;
   live?: FleetInstanceView;
   onTag: (tag: string) => void;
+  tagsUnavailable?: boolean;
 }) {
   const canOperate = useCan("operator");
   const toast = useToast();
@@ -71,22 +74,7 @@ export function NodeInspector({
         <p className="text-ink-muted">This node is not on the current page of results.</p>
       )}
 
-      <section aria-label="Tags">
-        <h3 className="mb-1 font-semibold">Tags</h3>
-        {node && Object.keys(node.tags).length > 0 ? (
-          <ul className="flex flex-wrap gap-1">
-            {Object.entries(node.tags).map(([k, v]) => (
-              <li key={k}>
-                <button type="button" title="Filter by this tag" onClick={() => onTag(`${k}=${v}`)} className="rounded-sm border border-line px-1.5 py-0.5 font-mono text-xs hover:bg-surface-sunken">
-                  {k}={v}
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-ink-muted">None. A node reports its tags itself (<code className="font-mono">--tag key=value</code>).</p>
-        )}
-      </section>
+      <NodeTags instance={instance} node={node} unavailable={tagsUnavailable} onTag={onTag} />
 
       <section aria-label="Actions" className="flex gap-2">
         <Button

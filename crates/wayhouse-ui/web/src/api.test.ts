@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  getFleetNodes,
   getSession,
+  setNodeTags,
   getCurrentConfig,
   installFromRegistry,
   login,
@@ -85,5 +87,21 @@ describe("api", () => {
     const err = await installFromRegistry("abc", "demo").catch((e) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect(err.message).toBe("registry: timed out");
+  });
+
+  it("getFleetNodes marks a list the controller's tags did not reach", async () => {
+    const page = { items: [], total: 0, page: 1, size: 25, rollup: { nodes: 0, degraded: 0, stale: 0, sessions: 0 } };
+    mockFetch(new Response(JSON.stringify(page), { status: 200, headers: { "x-operator-tags": "unavailable" } }));
+    expect((await getFleetNodes("")).operatorTagsUnavailable).toBe(true);
+    mockFetch(new Response(JSON.stringify(page), { status: 200 }));
+    expect((await getFleetNodes("")).operatorTagsUnavailable).toBeUndefined();
+  });
+
+  it("setNodeTags PUTs {tags} to the escaped instance", async () => {
+    const fn = mockFetch(new Response("", { status: 200 }));
+    await setNodeTags("a b", { rack: "r1" });
+    expect(fn.mock.calls[0][0]).toBe("/api/fleet/nodes/a%20b/tags");
+    expect(fn.mock.calls[0][1].method).toBe("PUT");
+    expect(JSON.parse(fn.mock.calls[0][1].body)).toEqual({ tags: { rack: "r1" } });
   });
 });
