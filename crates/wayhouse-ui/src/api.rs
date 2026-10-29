@@ -839,6 +839,8 @@ mod tests {
             ("DELETE", "/api/plugins/abc/secrets/TOKEN"),
             ("POST", "/api/plugins/abc/webhook"),
             ("DELETE", "/api/plugins/abc/webhook"),
+            ("PUT", "/api/features/overrides/acl"),
+            ("DELETE", "/api/features/overrides/acl"),
         ] {
             let resp = app
                 .clone()
