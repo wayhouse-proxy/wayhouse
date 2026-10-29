@@ -92,6 +92,8 @@ struct Last {
 struct Inner {
     buckets: VecDeque<Bucket>,
     last: HashMap<String, Last>,
+    /// When the newest push arrived: the open minute's data covers up to here.
+    last_record_ms: u64,
 }
 
 #[derive(Default)]
@@ -111,18 +113,22 @@ fn delta(now: u64, prev: u64) -> u64 {
 }
 
 impl Inner {
+    /// The bucket for the minute at `start_ms`, created at its sorted place if missing. `None`
+    /// when that minute is older than everything the ring still holds.
     fn bucket(&mut self, start_ms: u64) -> Option<&mut Bucket> {
-        if self.buckets.back().is_none_or(|b| b.start_ms < start_ms) {
-            self.buckets.push_back(Bucket::new(start_ms));
-            while self.buckets.len() > MAX_BUCKETS {
-                self.buckets.pop_front();
+        let at = match self.buckets.binary_search_by_key(&start_ms, |b| b.start_ms) {
+            Ok(i) => i,
+            Err(i) => {
+                self.buckets.insert(i, Bucket::new(start_ms));
+                if self.buckets.len() > MAX_BUCKETS {
+                    self.buckets.pop_front();
+                    i.checked_sub(1)?
+                } else {
+                    i
+                }
             }
-        }
-        // Older than the open minute: a late push, only fill a bucket we still hold.
-        self.buckets
-            .iter_mut()
-            .rev()
-            .find(|b| b.start_ms == start_ms)
+        };
+        self.buckets.get_mut(at)
     }
 
     /// Spreads `flow` (the increase between `from` and `to`) over the minutes
@@ -153,6 +159,7 @@ impl History {
     /// Folds one accepted push, received at `now` (aggregator clock, ms).
     pub fn record(&self, p: &IngestPayload, now: u64) {
         let mut h = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        h.last_record_ms = h.last_record_ms.max(now);
         let region = p.region.as_deref();
         let prev = h.last.remove(&p.instance);
         if let Some(prev) = prev.filter(|l| now > l.at_ms && now - l.at_ms <= MAX_SPREAD_MS) {
@@ -236,8 +243,9 @@ pub struct FleetPoint {
     pub blocked_per_sec: f64,
     pub bytes_per_sec: f64,
     pub packets_per_sec: f64,
-    pub tcp_sessions: u64,
-    pub udp_sessions: u64,
+    /// `None` for a minute no instance pushed in (only a gap spread reached it).
+    pub tcp_sessions: Option<u64>,
+    pub udp_sessions: Option<u64>,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -278,14 +286,13 @@ impl History {
     /// The last `range_sec` seconds (whole minutes, at least one) as of `now`.
     pub fn stats(&self, range_sec: u64, now: u64) -> Stats {
         let h = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let want = (range_sec / 60).clamp(1, MAX_BUCKETS as u64 - 1) as usize + 1;
-        let skip = h.buckets.len().saturating_sub(want);
-        let buckets: Vec<&Bucket> = h.buckets.iter().skip(skip).collect();
         let open = minute(now);
+        let since = open.saturating_sub(range_sec * 1000);
+        let buckets: Vec<&Bucket> = h.buckets.iter().filter(|b| b.start_ms >= since).collect();
         // Seconds of data a bucket holds: a whole minute, or the elapsed part of the open one.
         let secs = |b: &Bucket| {
             if b.start_ms >= open {
-                (now.saturating_sub(b.start_ms).max(1000)) as f64 / 1000.0
+                (h.last_record_ms.saturating_sub(b.start_ms).max(1000)) as f64 / 1000.0
             } else {
                 BUCKET_MS as f64 / 1000.0
             }
@@ -306,6 +313,7 @@ impl History {
                 let mut f = Flow::default();
                 b.listeners.values().for_each(|l| f.add(l));
                 let s = secs(b);
+                let sampled = !b.sampled.is_empty();
                 FleetPoint {
                     t_ms: b.start_ms,
                     partial: partial(b),
@@ -313,8 +321,8 @@ impl History {
                     blocked_per_sec: f.blocked / s,
                     bytes_per_sec: f.bytes() / s,
                     packets_per_sec: f.packets / s,
-                    tcp_sessions: b.sessions.0,
-                    udp_sessions: b.sessions.1,
+                    tcp_sessions: sampled.then_some(b.sessions.0),
+                    udp_sessions: sampled.then_some(b.sessions.1),
                 }
             })
             .collect();
@@ -528,8 +536,54 @@ mod tests {
             h.record(&push("a", i, 0), (10 + i) * M);
         }
         let s = h.stats(3600, 80 * M);
-        assert_eq!(s.fleet.points.len(), MAX_BUCKETS);
-        assert_eq!(s.fleet.points[0].t_ms, 19 * M);
+        // The hour ending at the open minute (80 M, which has no data yet).
+        assert_eq!(s.fleet.points.len(), MAX_BUCKETS - 1);
+        assert_eq!(s.fleet.points[0].t_ms, 20 * M);
+    }
+
+    #[test]
+    fn a_range_is_a_span_of_time_not_a_count_of_buckets() {
+        let h = History::default();
+        h.record(&push("a", 0, 0), 10 * M);
+        let s = h.stats(300, 100 * M);
+        assert!(s.fleet.points.is_empty(), "{:?}", s.fleet.points);
+        assert!(s.pools.is_empty());
+    }
+
+    #[test]
+    fn a_gap_spread_lands_in_minutes_another_instance_has_not_opened_yet() {
+        let h = History::default();
+        h.record(&push("a", 0, 0), 10 * M);
+        // A new instance opens minute 15 first; a's catch-up for 10..15 comes after.
+        let mut b = push("b", 0, 0);
+        b.listeners.clear();
+        h.record(&b, 15 * M);
+        h.record(&push("a", 300, 0), 15 * M + 1000);
+        let closed: Vec<f64> = accepted(&h, 15 * M + 1000).into_iter().take(5).collect();
+        assert_eq!(closed.len(), 5);
+        assert!(closed.iter().all(|v| (v - 60.0).abs() < 0.5), "{closed:?}");
+    }
+
+    #[test]
+    fn the_open_minute_divides_by_the_time_the_data_covers() {
+        let h = History::default();
+        h.record(&push("a", 0, 0), 10 * M);
+        h.record(&push("a", 20, 0), 10 * M + 2_000);
+        // Asked 10 s after the last push: still 20 connections in 2 s.
+        let s = h.stats(300, 10 * M + 12_000);
+        assert_eq!(s.fleet.points.last().unwrap().accepted_per_sec, 10.0);
+    }
+
+    #[test]
+    fn minutes_nobody_sampled_have_no_session_counts() {
+        let h = History::default();
+        h.record(&push("a", 0, 0), 10 * M);
+        h.record(&push("a", 300, 0), 15 * M);
+        let s = h.stats(3600, 15 * M + 1000);
+        let by_t = |t: u64| s.fleet.points.iter().find(|p| p.t_ms == t).unwrap();
+        assert_eq!(by_t(10 * M).tcp_sessions, Some(2));
+        assert_eq!(by_t(12 * M).tcp_sessions, None, "a spread-only minute");
+        assert_eq!(by_t(12 * M).udp_sessions, None);
     }
 
     #[test]
@@ -543,7 +597,7 @@ mod tests {
         let p = &s.pools[0].series.points[0];
         assert_eq!((p.healthy_backends, p.backends), (2, 4));
         let f = &s.fleet.points[0];
-        assert_eq!((f.tcp_sessions, f.udp_sessions), (4, 2));
+        assert_eq!((f.tcp_sessions, f.udp_sessions), (Some(4), Some(2)));
     }
 
     #[test]

@@ -499,7 +499,7 @@ un-namespaced names.
   counter that drops is read as a restart, a gap between pushes is spread over the
   minutes it spans. Pool backend counts and session counts are sampled once per
   instance per minute. The last point is the open minute (`partial: true`, rates
-  over the time elapsed so far). Each series carries `resolution_sec` and
+  over the time up to the newest push; its gauges are a partial sum of the instances that have pushed this minute). `range` is a span of time: minutes with no push are absent, and a minute only a gap reached has `null` session counts. Each series carries `resolution_sec` and
   `last_sample_ms` for freshness, and `generated_at_ms` is on the response.
   TCP bytes are counted, UDP is counted in packets. Not persisted: a restart or a
   replica swap starts the charts empty, and replicas each see only the pushes they
