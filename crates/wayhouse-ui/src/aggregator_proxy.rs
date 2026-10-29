@@ -107,40 +107,39 @@ async fn get_stats(State(state): State<AppState>, RawQuery(query): RawQuery) -> 
 async fn get_nodes(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
     match operator_tags(&state).await {
         Ok(Some(body)) => {
-            proxy(
-                &state,
-                Method::POST,
-                &with_query("/fleet/nodes/query", query),
-                Some(body),
-                None,
-            )
-            .await
-        }
-        Ok(None) => {
-            proxy(
-                &state,
-                Method::GET,
-                &with_query("/fleet/nodes", query),
-                None,
-                None,
-            )
-            .await
-        }
-        Err(()) => {
-            // The list matters more than the overlay: answer without it, and say so.
-            let mut resp = proxy(
-                &state,
-                Method::GET,
-                &with_query("/fleet/nodes", query),
-                None,
-                None,
-            )
-            .await;
-            resp.headers_mut()
-                .insert("x-operator-tags", HeaderValue::from_static("unavailable"));
+            let path = with_query("/fleet/nodes/query", query.clone());
+            let resp = proxy(&state, Method::POST, &path, Some(body), None).await;
+            // An aggregator older than this build has no such route: list without the overlay.
+            if matches!(
+                resp.status(),
+                StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+            ) {
+                return without_overlay(&state, query).await;
+            }
             resp
         }
+        Ok(None) => {
+            let path = with_query("/fleet/nodes", query);
+            proxy(&state, Method::GET, &path, None, None).await
+        }
+        Err(()) => without_overlay(&state, query).await,
     }
+}
+
+/// The list from declared tags only. The list matters more than the overlay: answer without it,
+/// and say so.
+async fn without_overlay(state: &AppState, query: Option<String>) -> Response {
+    let mut resp = proxy(
+        state,
+        Method::GET,
+        &with_query("/fleet/nodes", query),
+        None,
+        None,
+    )
+    .await;
+    resp.headers_mut()
+        .insert("x-operator-tags", HeaderValue::from_static("unavailable"));
+    resp
 }
 
 /// Which instances a filter selects (a read, so a viewer may ask before an operator acts). The
@@ -701,6 +700,39 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn an_older_aggregator_without_the_query_route_still_lists_nodes() {
+        let calls: Calls = Arc::default();
+        let log = calls.clone();
+        let old = Router::new().fallback(move |method: Method, uri: axum::http::Uri| {
+            let log = log.clone();
+            async move {
+                log.lock()
+                    .unwrap()
+                    .push((method.to_string(), uri.to_string(), String::new()));
+                if method == Method::GET {
+                    (StatusCode::OK, "{}")
+                } else {
+                    (StatusCode::NOT_FOUND, "")
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let agg = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, old).await.unwrap() });
+        let (ctl, _) = spawn_logging(
+            StatusCode::OK,
+            r#"{"items":[{"name":"fra-1","tags":{"env":"prod"}}]}"#,
+        )
+        .await;
+        let (app, viewer) = app_with(agg, Some(ctl), crate::role::Role::Viewer);
+        let r = send(&app, &viewer, "GET", "/api/fleet/nodes?page=2", "").await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()["x-operator-tags"], "unavailable");
+        let seen: Vec<_> = calls.lock().unwrap().iter().map(|c| c.1.clone()).collect();
+        assert_eq!(seen, ["/fleet/nodes/query?page=2", "/fleet/nodes?page=2"]);
     }
 
     #[tokio::test]
