@@ -11,7 +11,10 @@ export interface FleetNode {
   last_seen_ms_ago: number;
   region?: string;
   group?: string;
+  /** Declared tags with the operator's laid over them. */
   tags: Record<string, string>;
+  /** The operator's part of `tags`; absent from an older aggregator. */
+  operator_tags?: Record<string, string>;
   version: string;
   protocol: string;
   skew: "none" | "within-window" | "outside-window";
@@ -34,6 +37,8 @@ export interface NodePage {
   size: number;
   rollup: Rollup;
   groups?: (Rollup & { region: string | null })[];
+  /** Set by the client from `X-Operator-Tags: unavailable`. */
+  operatorTagsUnavailable?: boolean;
 }
 
 /** What the filter selects, as `POST /fleet/nodes/resolve` answers. */
