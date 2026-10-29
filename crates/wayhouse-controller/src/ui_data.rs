@@ -7,6 +7,7 @@
 //! UI's business, so an unknown widget id is accepted (the UI shows a placeholder).
 
 pub mod api;
+pub mod contrast;
 
 use std::sync::{Arc, Mutex};
 
