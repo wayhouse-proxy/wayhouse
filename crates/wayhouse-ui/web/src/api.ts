@@ -274,6 +274,11 @@ export interface CurrentConfig {
   revision: string | null;
 }
 
+/** The JSON Schema of the configuration, as the controller's binary emits it (`GET /config/schema`). */
+export function getConfigSchema(): Promise<Record<string, unknown>> {
+  return requestJson("/api/config/schema");
+}
+
 export async function getCurrentConfig(): Promise<CurrentConfig> {
   const resp = await request("/api/config");
   const text = await resp.text();
@@ -283,8 +288,14 @@ export async function getCurrentConfig(): Promise<CurrentConfig> {
   return { text, revision: resp.headers.get("x-config-revision") };
 }
 
-export function submitConfig(text: string): Promise<{ revision: number }> {
-  return requestJson("/api/config", { method: "POST", body: text });
+/** Submits a document as a new revision. With `base`, the controller answers 409 if another edit landed since you loaded it. */
+export function submitConfig(text: string, base?: number): Promise<{ revision: number }> {
+  return requestJson(`/api/config${base === undefined ? "" : `?base=${base}`}`, { method: "POST", body: text });
+}
+
+/** Runs a submission's checks and stores nothing: `{ok, schema_version}`, or a 422 whose message names the problem. */
+export function validateConfig(text: string): Promise<{ ok: true; schema_version: number }> {
+  return requestJson("/api/config/validate", { method: "POST", body: text });
 }
 
 export function listRevisions(): Promise<RevisionSummary[]> {

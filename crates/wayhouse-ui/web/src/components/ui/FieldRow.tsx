@@ -13,6 +13,7 @@ export function FieldRow({
   error,
   render,
   className,
+  id: given,
 }: {
   label: string;
   help?: string;
@@ -21,8 +22,11 @@ export function FieldRow({
   error?: string;
   render: (a: { id: string; "aria-describedby"?: string; "aria-invalid"?: true }) => React.ReactNode;
   className?: string;
+  /** Use this id for the control instead of a generated one (a renderer that creates the control itself). */
+  id?: string;
 }) {
-  const id = useId();
+  const generated = useId();
+  const id = given ?? generated;
   const described = [help && `${id}-help`, error && `${id}-error`].filter(Boolean).join(" ") || undefined;
   return (
     <div className={cn("grid gap-2 py-2 min-[760px]:grid-cols-[240px_1fr] min-[760px]:gap-4", className)}>
