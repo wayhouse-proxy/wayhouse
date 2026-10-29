@@ -154,6 +154,21 @@ async fn put_one(
             o.insert("name".into(), name.clone().into());
         }
     }
+    // The colour maths runs here, on the node that takes the request, and not when replicas
+    // apply the entry (see `contrast`). A shape error is left to the usual validation.
+    if kind == Kind::Theme && super::validate(kind, &name, &value).is_ok() {
+        if let Err(failures) = super::contrast::check_record(&value) {
+            let first = failures
+                .first()
+                .map(|f| f.message.clone())
+                .unwrap_or_default();
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({ "error": first, "failures": failures })),
+            )
+                .into_response();
+        }
+    }
     let reply = exported(kind, &name, value.clone());
     let op = UiOp::Put { kind, name, value };
     write(st, op, Method::PUT, path, headers, body, move || {
@@ -324,6 +339,34 @@ mod tests {
         );
         let (st, _) = call(&app, "PUT", "/ui/dashboards/ops", json!([1, 2]), None).await;
         assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn a_theme_that_fails_the_contrast_checks_is_a_422_naming_the_pair() {
+        let (app, store, _d) = app(None);
+        let pale = json!({"base": "light", "tokens": {"ink": "#bbbbbb"}});
+        let (st, body) = call(&app, "PUT", "/ui/themes/pale", pale, None).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("ink on bg is"),
+            "{body}"
+        );
+        let failed: Vec<_> = body["failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["check"].as_u64().unwrap())
+            .collect();
+        assert_eq!(failed, [1, 1, 1, 4]);
+        assert_eq!(body["failures"][0]["pair"], json!(["ink", "bg"]));
+        assert!(store
+            .get(super::super::Kind::Theme, "pale")
+            .unwrap()
+            .is_none());
+        // A theme that passes is saved.
+        let night = json!({"base": "dark", "tokens": {"bg": "#101216", "select": "#7fb0ff"}});
+        let (st, body) = call(&app, "PUT", "/ui/themes/night", night, None).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
     }
 
     #[tokio::test]
