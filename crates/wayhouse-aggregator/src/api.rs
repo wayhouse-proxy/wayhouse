@@ -490,6 +490,7 @@ mod tests {
             protocol: String::new(),
             protocol_mismatches: 0,
             region: None,
+            tags: Default::default(),
             listeners: vec![],
         })
         .unwrap()
@@ -639,6 +640,7 @@ mod tests {
             protocol: String::new(),
             protocol_mismatches: 0,
             region: None,
+            tags: Default::default(),
             listeners: vec![],
         }
     }
@@ -953,6 +955,7 @@ mod tests {
                     protocol: String::new(),
                     protocol_mismatches: 0,
                     region: None,
+                    tags: Default::default(),
                     listeners: vec![],
                 })
                 .unwrap(),

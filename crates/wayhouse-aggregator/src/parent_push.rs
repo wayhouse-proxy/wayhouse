@@ -117,6 +117,7 @@ mod tests {
             protocol: String::new(),
             protocol_mismatches: 0,
             region: None,
+            tags: Default::default(),
             listeners: vec![],
         }
     }
