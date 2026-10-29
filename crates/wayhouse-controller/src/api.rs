@@ -644,7 +644,6 @@ pub fn router(state: AppState) -> Router {
         .route("/config", post(submit_config).get(get_current_config))
         .route("/config/validate", post(validate_config))
         .route("/config/schema", get(config_schema))
-        .route("/features", get(features))
         .route("/config/revisions", get(list_revisions))
         .route("/config/revisions/{revision}", get(get_revision))
         .route("/config/revisions/{revision}/diff", get(diff_revision))
@@ -1142,11 +1141,6 @@ fn check_document(
         Some(rejection) => Err(Box::new(rejection)),
         None => Ok(parsed),
     }
-}
-
-/// `GET /features`: the controller's feature flags with their effective values.
-async fn features() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "flags": crate::features::effective() }))
 }
 
 /// `GET /config/schema` — the JSON Schema of a config document (static, built into the binary).
@@ -1746,42 +1740,6 @@ listeners:
     protocol: tcp
     pool: mc
 "#;
-
-    #[tokio::test]
-    async fn features_lists_the_controller_flags_with_defaults() {
-        let (state, _dir) = test_state();
-        let app = router(state);
-        let resp = app
-            .oneshot(Request::get("/features").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        let names: Vec<_> = v["flags"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|f| f["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            names,
-            [
-                "plugin_webhooks",
-                "registry_install",
-                "acme_issuance",
-                "tunnel_registration"
-            ]
-        );
-        let first = &v["flags"][0];
-        assert_eq!(
-            (&first["value"], &first["source"]),
-            (&true.into(), &"default".into())
-        );
-        assert_eq!(first["override"], "off_only");
-    }
 
     #[tokio::test]
     async fn get_config_before_any_submission_is_404() {

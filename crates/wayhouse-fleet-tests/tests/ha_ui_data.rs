@@ -159,6 +159,29 @@ async fn a_write_on_a_follower_is_readable_on_every_replica() -> Result<()> {
         "the default is reset on the other replica",
     )
     .await?;
+
+    // A feature-flag override written on a follower applies on every replica.
+    let (status, body) = send(
+        &http,
+        reqwest::Method::PUT,
+        writer,
+        "/features/overrides/plugin_webhooks",
+        Some(json!({"value": false, "reason": "fleet test"})),
+    )
+    .await?;
+    assert_eq!(status, 200, "{body}");
+    wait_until(
+        || async {
+            let (_, f) = send(&http, reqwest::Method::GET, reader, "/features", None).await?;
+            let row = f["flags"]
+                .as_array()
+                .and_then(|a| a.iter().find(|r| r["name"] == "plugin_webhooks"));
+            Ok(row.is_some_and(|r| r["value"] == false && r["source"] == "override"))
+        },
+        Duration::from_secs(10),
+        "the other replica serves the override",
+    )
+    .await?;
     drop(procs);
     Ok(())
 }

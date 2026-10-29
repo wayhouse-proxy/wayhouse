@@ -68,7 +68,7 @@ Not yet filled in.
 A registry of named flags (`gossip_verdicts`, `sniffers`, `port_routes`, and others, see
 [configuration](05-configuration.md)) with a `features:` config section and `GET /features` on the
 proxy and the controller. Nothing to migrate: every flag defaults to on. Flags are reported before
-the runtime reads them (`wired: false`); the emergency override layer follows in a later slice.
+the runtime reads them (`wired: false`); the emergency override layer (`PUT /features/overrides/{name}` on the controller) is documented in [configuration](05-configuration.md). Under HA, upgrade every controller before the first override (the UI data level is now 2).
 
 ## Deploy layout
 

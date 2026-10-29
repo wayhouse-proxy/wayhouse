@@ -147,6 +147,13 @@ impl Cluster {
 async fn start_trial(c: &Cluster, follower: usize) -> Result<()> {
     let (status, body) = c.post(follower, "/config", BASE).await?;
     ensure!(status == 200, "{body}");
+    // The follower judges the next revision against its own copy of the history.
+    wait_until(
+        || async { Ok(c.current(follower).await? == BASE) },
+        Duration::from_secs(10),
+        "the follower holds the first revision",
+    )
+    .await?;
     let risky = format!("{BASE}{MOVED_ADMIN}");
     let (status, body) = c
         .post(

@@ -25,6 +25,8 @@ pub enum Kind {
     SavedFilter,
     FormLayout,
     Defaults,
+    /// An operator's override of one feature flag (F4), named by the flag.
+    FeatureOverride,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -143,6 +145,7 @@ impl Kind {
             Kind::SavedFilter => "filters",
             Kind::FormLayout => "layout",
             Kind::Defaults => "defaults",
+            Kind::FeatureOverride => "feature_overrides",
         }
     }
 
@@ -151,7 +154,7 @@ impl Kind {
             Kind::Dashboard | Kind::FormLayout => 64 << 10,
             Kind::Theme => 8 << 10,
             Kind::SavedFilter => 4 << 10,
-            Kind::Defaults => 1 << 10,
+            Kind::Defaults | Kind::FeatureOverride => 1 << 10,
         }
     }
 
@@ -161,6 +164,7 @@ impl Kind {
             Kind::Dashboard => Some(100),
             Kind::Theme => Some(50),
             Kind::SavedFilter => Some(200),
+            Kind::FeatureOverride => Some(64),
             Kind::FormLayout | Kind::Defaults => None,
         }
     }
@@ -177,6 +181,13 @@ fn key(kind: Kind, name: &str) -> Vec<u8> {
 fn check_name(kind: Kind, name: &str) -> Result<(), String> {
     if kind.is_single() {
         return Ok(());
+    }
+    if kind == Kind::FeatureOverride
+        && !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    {
+        return Err("name must be a flag name (a-z, 0-9 and _)".into());
     }
     let n = name.chars().count();
     if n == 0 || n > MAX_NAME || name.chars().any(|c| c.is_control() || c == '/') {
@@ -305,6 +316,30 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                 }
                 if f.get("advanced").is_some_and(|v| !v.is_boolean()) {
                     return Err(format!("{at}.advanced must be true or false"));
+                }
+            }
+            Ok(())
+        }
+        Kind::FeatureOverride => {
+            only_keys(
+                obj,
+                "",
+                &["value", "reason", "actor", "set_at", "expires_at"],
+            )?;
+            if !obj.get("value").is_some_and(Value::is_boolean) {
+                return Err("value must be true or false".into());
+            }
+            string_max(obj.get("reason").unwrap_or(&Value::Null), "reason", 500)?;
+            if let Some(a) = obj.get("actor") {
+                string_max(a, "actor", 128)?;
+            }
+            let set_at = obj
+                .get("set_at")
+                .and_then(Value::as_u64)
+                .ok_or("set_at must be a unix time")?;
+            if let Some(e) = obj.get("expires_at") {
+                if !e.as_u64().is_some_and(|e| e > set_at) {
+                    return Err("expires_at must be a unix time after set_at".into());
                 }
             }
             Ok(())
@@ -580,6 +615,43 @@ mod tests {
             Applied::Invalid(why) => why,
             other => panic!("expected Invalid, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_feature_override_needs_a_reason_and_a_sane_expiry() {
+        let (s, _d) = store();
+        let ok = json!({"value": false, "reason": "noisy", "actor": "ops", "set_at": 100});
+        assert_eq!(
+            s.apply_local(&put(Kind::FeatureOverride, "sniffers", ok.clone()))
+                .unwrap(),
+            Applied::Done
+        );
+        assert_eq!(s.get(Kind::FeatureOverride, "sniffers").unwrap(), Some(ok));
+        for (bad, needle) in [
+            (json!({"value": "no", "reason": "r", "set_at": 1}), "value"),
+            (json!({"value": false, "reason": "", "set_at": 1}), "reason"),
+            (json!({"value": false, "reason": "r"}), "set_at"),
+            (
+                json!({"value": false, "reason": "r", "set_at": 5, "expires_at": 5}),
+                "expires_at",
+            ),
+            (
+                json!({"value": false, "reason": "r", "set_at": 1, "x": 1}),
+                "known key",
+            ),
+        ] {
+            let why = invalid(
+                s.apply_local(&put(Kind::FeatureOverride, "sniffers", bad))
+                    .unwrap(),
+            );
+            assert!(why.contains(needle), "{why}");
+        }
+        let ok = json!({"value": false, "reason": "r", "set_at": 1});
+        let why = invalid(
+            s.apply_local(&put(Kind::FeatureOverride, "a/b", ok))
+                .unwrap(),
+        );
+        assert!(why.contains("name"), "{why}");
     }
 
     #[test]

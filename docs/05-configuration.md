@@ -233,6 +233,16 @@
 > `available: false`). Metrics: `wayhouse_feature_enabled{flag}` and
 > `wayhouse_feature_source{flag,source}`.
 >
+> **Emergency overrides (controller):** an operator can override a flag for the whole fleet
+> without touching any config: `PUT /features/overrides/{name}` on the controller with
+> `{"value": false, "reason": "...", "expires_at": <unix seconds, optional>}` (the UI backend
+> adds `X-Actor`), `DELETE` to clear, `GET /features/overrides` to list. An override beats the
+> `features:` section and the default; a flag compiled out of a binary stays off. A flag that
+> opens new exposure is `off_only` (an override can only turn it off), and switching a
+> protection flag off needs an `expires_at`, after which it is on again. Proxies poll the
+> controller every 15 s, judge the expiry themselves and keep the last overrides when the
+> controller is unreachable. Overrides are replicated under HA like dashboards.
+>
 > **Web sites (schema 3):** the optional top-level `web:` section describes HTTP(S) sites
 > published through a Caddy that sits behind a Wayhouse pool (design: issue #297, spec
 > `docs/superpowers/specs/2026-10-15-web-routing-design.md`). It is validated and resolved
