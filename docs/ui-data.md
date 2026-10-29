@@ -38,6 +38,8 @@ A `PUT` replaces the record. The name in the path wins over a `name` in the body
 
 Names are 1 to 64 characters without `/` or control characters. A dashboard holds at most 100 widgets, each `width` 1 to 12 (the grid has 12 columns). A theme may not be named `light`, `dark` or `system` (the built-ins); `defaults.theme` may be one of those or a saved theme. Deleting the dashboard or theme that is the default clears that default on every replica.
 
+A theme is also held to the ten contrast checks of `docs/design-system/themes.md`. A theme that fails any answers `422` with `error` (the first failure in words, for example `ink on bg is 1.60:1, needs 4.5:1.`) and `failures`, a list of `{check, pair, value, needed, message}` for every failed check. The checks run on the node that takes the request (a follower refuses a failing theme itself, and the leader checks again before it proposes the write); replicas do not repeat them when they apply the entry. The Rust port in `ui_data/contrast.rs` and the web validator both pass the cases in `crates/wayhouse-ui/web/src/lib/theme/fixtures.json`.
+
 ## Form layout format (version 1)
 
 The override is merged over the layout the UI ships. Paths are JSON Pointers into the config document.

@@ -1266,6 +1266,15 @@
       },
       "type": "array"
     },
+    "features": {
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "default": {},
+      "description": "Feature flags by name (`features.rs`). Config schema 4.",
+      "type": "object",
+      "x-wayhouse-since": 4
+    },
     "listeners": {
       "items": {
         "$ref": "#/$defs/RawListener"

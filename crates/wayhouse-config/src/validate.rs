@@ -1106,6 +1106,8 @@ pub(crate) fn validate(
         raw.settings.shutdown_grace_sec,
     )?;
 
+    let features = crate::features::validate(raw.features)?;
+
     Ok(Config {
         schema_version,
         schema_declared,
@@ -1124,6 +1126,7 @@ pub(crate) fn validate(
         gossip,
         group,
         web,
+        features,
     })
 }
 

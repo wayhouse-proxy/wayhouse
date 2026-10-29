@@ -34,6 +34,9 @@ pub(crate) struct RawConfig {
     /// Sites published through the packaged Caddy (`web.rs`). Config schema 3.
     #[serde(default)]
     pub(crate) web: Option<crate::web::RawWeb>,
+    /// Feature flags by name (`features.rs`). Config schema 4.
+    #[serde(default)]
+    pub(crate) features: std::collections::BTreeMap<String, bool>,
 }
 
 #[derive(Debug, Deserialize)]

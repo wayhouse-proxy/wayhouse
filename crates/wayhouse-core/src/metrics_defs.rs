@@ -94,6 +94,13 @@ pub const CONFIG_RELOAD: &str = "wayhouse_config_reload_total";
 /// retries.
 pub const LISTENER_BIND_FAILURES: &str = "wayhouse_listener_bind_failures_total";
 
+/// Gauge. Label: `flag`. 1 when the feature flag is on, 0 when off (or not in this build).
+pub const FEATURE_ENABLED: &str = "wayhouse_feature_enabled";
+
+/// Gauge. Labels: `flag`, `source` (`default` | `config` | `override` | `build`). 1 for the
+/// source the flag's value comes from, 0 for the others.
+pub const FEATURE_SOURCE: &str = "wayhouse_feature_source";
+
 /// Gauge: unix timestamp of the last successfully applied config.
 pub const CONFIG_VERSION: &str = "wayhouse_config_version";
 

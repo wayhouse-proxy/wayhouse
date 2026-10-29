@@ -34,7 +34,7 @@ A theme may **not** change: type families and scale, spacing, row and control he
 
 ## Validation
 
-A theme can be previewed freely but is saved only if it passes these checks, run in the browser and again by the controller on save. Failures name the token pair and the ratio (or the colour difference). The implementation is `src/lib/theme/validate.ts` in the web project; the controller's Rust port must give the same result on `src/lib/theme/fixtures.json`.
+A theme can be previewed freely but is saved only if it passes these checks, run in the browser and again by the controller on save. Failures name the token pair and the ratio (or the colour difference). The implementation is `src/lib/theme/validate.ts` in the web project; the controller's Rust port (`crates/wayhouse-controller/src/ui_data/contrast.rs`) gives the same result on `src/lib/theme/fixtures.json`.
 
 1. `ink` on `bg`, `surface` and `surface-sunken`: at least 4.5:1.
 2. `ink-muted` on `bg`, `surface` and `surface-sunken`: at least 4.5:1.

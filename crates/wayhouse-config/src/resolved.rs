@@ -249,6 +249,9 @@ pub struct Config {
     pub group: Option<String>,
     /// The `web:` section, if any. Never consulted by routing.
     pub web: Option<WebConfig>,
+    /// The `features:` section: flags the document sets explicitly (the rest take their
+    /// registry default). See [`crate::features`].
+    pub features: std::collections::BTreeMap<String, bool>,
 }
 
 /// A pool behind a handshake-only sniffer should keep a session at least this long

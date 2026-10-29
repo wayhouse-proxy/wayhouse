@@ -9,7 +9,9 @@ rules for any upgrade (compatibility window, order of operations, draining a pro
 
 ## Config schema
 
-Not yet filled in.
+The config schema is now 4. Nothing changes for a document that does not use the new `features:`
+section. To use it, set `schema_version: 4`, but only after every proxy that will receive the
+document runs 0.4.0 (an older proxy refuses it).
 
 ## Plugin ABI 0.2 rebuilds
 
@@ -61,7 +63,10 @@ Not yet filled in.
 
 ## Feature flags
 
-Not yet filled in.
+A registry of named flags (`gossip_verdicts`, `sniffers`, `port_routes`, and others, see
+[configuration](05-configuration.md)) with a `features:` config section and `GET /features` on the
+proxy and the controller. Nothing to migrate: every flag defaults to on. Flags are reported before
+the runtime reads them (`wired: false`); the emergency override layer follows in a later slice.
 
 ## Deploy layout
 
