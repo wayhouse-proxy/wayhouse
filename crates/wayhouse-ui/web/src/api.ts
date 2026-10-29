@@ -21,6 +21,7 @@ import type {
   UpdateCheck,
   TunnelAddresses,
 } from "./types";
+import type { FleetStats, Range } from "./lib/stats";
 
 export class ApiError extends Error {
   status: number;
@@ -391,4 +392,10 @@ export function saveLayoutOverride(text: string): Promise<unknown> {
 }
 export function deleteLayoutOverride(): Promise<void> {
   return requestJson("/api/ui/layout", { method: "DELETE" });
+}
+
+// --- fleet stats (proxied to wayhouse-aggregator) ---
+
+export function getFleetStats(range: Range): Promise<FleetStats> {
+  return requestJson(`/api/fleet/stats?range=${range}`);
 }

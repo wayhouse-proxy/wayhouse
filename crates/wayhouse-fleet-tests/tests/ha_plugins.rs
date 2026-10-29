@@ -184,6 +184,36 @@ async fn plugins_replicate_through_a_follower_and_the_new_leader_keeps_ticking()
     )
     .await?;
 
+    // A config edit through the follower is forwarded to the leader and replicated.
+    let edited = http
+        .put(format!("{}/plugins/{id}/config", bases[follower]))
+        .bearer_auth(AUTH_TOKEN)
+        .json(&json!({"config": {"note": "v2"}}))
+        .send()
+        .await?;
+    ensure!(
+        edited.status() == 200,
+        "config via follower: {}",
+        edited.status()
+    );
+    for base in &bases {
+        wait_until(
+            || async {
+                let v: Value = http
+                    .get(format!("{base}/plugins/{id}"))
+                    .bearer_auth(AUTH_TOKEN)
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                Ok(v["config"]["note"] == "v2")
+            },
+            Duration::from_secs(15),
+            "the new config is on every replica",
+        )
+        .await?;
+    }
+
     // Kill the leader: a new one is elected and starts ticking the replicated install.
     // The module was pushed to a quorum before the install was recorded and the other
     // replica fetches it, so whichever node wins runs it: the tick succeeds.
