@@ -16,8 +16,9 @@ async function stubBackend(page: Page, opts: { stale?: boolean; trialMs?: number
   await page.route("**/api/config/schema", (r) => r.fulfill({ json: SCHEMA }));
   await page.route("**/api/ui/layout", (r) => r.fulfill({ status: 404, body: "" }));
   await page.route("**/api/config/validate", (r) => r.fulfill({ json: { ok: true, schema_version: 3 } }));
-  await page.route("**/api/config/revert", (r) => {
-    reverted = true;
+  await page.route("**/api/config/revert?*", (r) => {
+    // The trial the operator saw, not whatever is on trial by now.
+    reverted = new URL(r.request().url()).searchParams.get("revision") === "4";
     pendingUntil = 0;
     return r.fulfill({ status: 200, body: "" });
   });
