@@ -34,7 +34,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{ConnectInfo, Extension, State};
+use axum::extract::{ConnectInfo, Extension, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -168,6 +168,7 @@ pub fn router(state: AppState) -> Router {
         .route("/fleet/pools", get(fleet_pools))
         .route("/fleet/sessions", get(fleet_sessions))
         .route("/fleet/healthz", get(fleet_healthz))
+        .route("/fleet/stats", get(fleet_stats))
         .route("/fleet/subscribe", get(subscribe_fleet))
         .merge(crate::fanout::router())
         .route_layer(axum::middleware::from_fn_with_state(
@@ -324,6 +325,36 @@ async fn fleet_healthz(State(state): State<AppState>) -> Response {
     (StatusCode::OK, Json(out)).into_response()
 }
 
+#[derive(serde::Deserialize)]
+struct StatsQuery {
+    range: Option<String>,
+}
+
+/// `GET /fleet/stats?range=5m|15m|1h` (default `15m`) — fleet-wide rates and
+/// gauges per minute from the rolling history ([`crate::history`]); aggregates
+/// only, never a per-instance series.
+async fn fleet_stats(State(state): State<AppState>, Query(q): Query<StatsQuery>) -> Response {
+    let range_sec = match q.range.as_deref() {
+        None | Some("15m") => 900,
+        Some("5m") => 300,
+        Some("1h") => 3600,
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "range must be 5m, 15m or 1h".into(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    (
+        StatusCode::OK,
+        Json(state.store.history().stats(range_sec, unix_ms())),
+    )
+        .into_response()
+}
+
 #[derive(Serialize)]
 struct FleetInstanceView {
     instance: String,
@@ -458,8 +489,43 @@ mod tests {
             version: String::new(),
             protocol: String::new(),
             protocol_mismatches: 0,
+            region: None,
+            listeners: vec![],
         })
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stats_serves_aggregates_and_rejects_an_unknown_range() {
+        let state = test_state();
+        let store = state.store.clone();
+        store.ingest(serde_json::from_str(&payload_json("proxy-1")).unwrap());
+        let app = router(state);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/fleet/stats?range=5m")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(body["range_sec"], 300);
+        assert_eq!(body["fleet"]["resolution_sec"], 60);
+        assert_eq!(body["fleet"]["points"][0]["tcp_sessions"], 3);
+
+        let resp = app
+            .oneshot(
+                Request::get("/fleet/stats?range=2d")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -572,6 +638,8 @@ mod tests {
             version: String::new(),
             protocol: String::new(),
             protocol_mismatches: 0,
+            region: None,
+            listeners: vec![],
         }
     }
 
@@ -884,6 +952,8 @@ mod tests {
                     version: String::new(),
                     protocol: String::new(),
                     protocol_mismatches: 0,
+                    region: None,
+                    listeners: vec![],
                 })
                 .unwrap(),
             ))

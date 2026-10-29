@@ -500,7 +500,7 @@ async fn run(
         cfg.admin_listen,
         admin_tls.map(|cert| (cert, admin::handshake_limits(cfg.admin_tls.as_ref()))),
         handle.clone(),
-        prometheus,
+        prometheus.clone(),
         cfg.admin_auth_token.clone(),
         cfg.sniffers.as_ref().map(|sc| PathBuf::from(&sc.dir)),
         sniffers.clone(),
@@ -514,7 +514,11 @@ async fn run(
             interval_sec = push_cfg.interval.as_secs(),
             "pushing fleet-state summaries to aggregator"
         );
-        tokio::spawn(aggregator_client::run(push_cfg, handle.clone()))
+        tokio::spawn(aggregator_client::run(
+            push_cfg,
+            handle.clone(),
+            prometheus.clone(),
+        ))
     });
     // The intent log (phase 12 slice 3) lives on the same controller
     // instance as structural config, so it only makes sense to subscribe

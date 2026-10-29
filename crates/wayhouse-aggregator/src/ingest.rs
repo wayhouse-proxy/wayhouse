@@ -53,6 +53,34 @@ pub struct IngestPayload {
     /// the store notes when this rises (see [`InstanceState::mismatch_rose_at_ms`]).
     #[serde(default)]
     pub protocol_mismatches: u64,
+    /// Self-reported region, a label for the fleet roll-ups; `None` from a build
+    /// that predates the field (or an instance that sets none).
+    #[serde(default)]
+    pub region: Option<String>,
+    /// Cumulative per-listener counters since the instance started; the
+    /// aggregator derives rates from the difference between pushes
+    /// ([`crate::history`]). Empty from a build that predates the field.
+    #[serde(default)]
+    pub listeners: Vec<ListenerStats>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ListenerStats {
+    pub name: String,
+    /// TCP connections accepted (UDP listeners report none).
+    #[serde(default)]
+    pub accepted: u64,
+    /// Connections and new UDP sessions dropped by the pre-routing filters.
+    #[serde(default)]
+    pub blocked: u64,
+    /// TCP bytes relayed per direction (UDP is counted in `packets` instead).
+    #[serde(default)]
+    pub bytes_c2s: u64,
+    #[serde(default)]
+    pub bytes_s2c: u64,
+    /// UDP datagrams forwarded, both directions.
+    #[serde(default)]
+    pub packets: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -104,6 +132,7 @@ const MAX_FIELD_BYTES: usize = 1024;
 /// Most pools one push may carry, and most backends per pool.
 const MAX_POOLS: usize = 1024;
 const MAX_BACKENDS_PER_POOL: usize = 4096;
+const MAX_LISTENERS: usize = 1024;
 
 /// A push the store will not take.
 #[derive(Debug, PartialEq, Eq)]
@@ -122,11 +151,18 @@ impl IngestPayload {
             || long(&self.version)
             || long(&self.protocol)
             || self.group.as_deref().is_some_and(long)
+            || self.region.as_deref().is_some_and(long)
         {
             return Err(format!("a field is longer than {MAX_FIELD_BYTES} bytes"));
         }
         if self.pools.len() > MAX_POOLS {
             return Err(format!("more than {MAX_POOLS} pools"));
+        }
+        if self.listeners.len() > MAX_LISTENERS {
+            return Err(format!("more than {MAX_LISTENERS} listeners"));
+        }
+        if self.listeners.iter().any(|l| long(&l.name)) {
+            return Err(format!("a field is longer than {MAX_FIELD_BYTES} bytes"));
         }
         for p in &self.pools {
             if long(&p.name) || long(&p.balancer) {
@@ -153,6 +189,7 @@ impl IngestPayload {
 pub struct IngestStore {
     instances: RwLock<HashMap<String, InstanceState>>,
     max_instances: usize,
+    history: crate::history::History,
 }
 
 impl Default for IngestStore {
@@ -170,7 +207,13 @@ impl IngestStore {
         IngestStore {
             instances: RwLock::default(),
             max_instances,
+            history: crate::history::History::default(),
         }
+    }
+
+    /// The rolling stats the pushes feed (`GET /fleet/stats`).
+    pub fn history(&self) -> &crate::history::History {
+        &self.history
     }
 
     /// Records `payload` as the latest state for its `instance`, overwriting
@@ -204,6 +247,7 @@ impl IngestStore {
             Some(p) => p.mismatch_rose_at_ms,
             None => None,
         };
+        self.history.record(&payload, now);
         let state = InstanceState {
             payload,
             received_at_ms: now,
@@ -264,6 +308,8 @@ mod tests {
             version: String::new(),
             protocol: String::new(),
             protocol_mismatches: 0,
+            region: None,
+            listeners: vec![],
         }
     }
 
@@ -342,6 +388,29 @@ mod tests {
             ),
             ("", "", 0)
         );
+    }
+
+    #[test]
+    fn an_old_proxy_payload_without_stats_fields_still_ingests() {
+        let json =
+            r#"{"instance":"old","admin_url":"http://127.0.0.1:0","pools":[],"version":"0.3.0"}"#;
+        let store = IngestStore::new();
+        store.ingest(serde_json::from_str(json).unwrap());
+        let state = store.get("old").unwrap();
+        assert!(state.payload.region.is_none() && state.payload.listeners.is_empty());
+        assert!(store.history().stats(300, unix_ms()).listeners.is_empty());
+    }
+
+    #[test]
+    fn a_payload_with_too_many_listeners_is_rejected() {
+        let mut p = payload("l");
+        p.listeners = (0..=MAX_LISTENERS)
+            .map(|i| ListenerStats {
+                name: format!("l{i}"),
+                ..Default::default()
+            })
+            .collect();
+        assert!(p.check_bounds().is_err());
     }
 
     #[test]

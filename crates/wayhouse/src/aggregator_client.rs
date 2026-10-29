@@ -22,7 +22,9 @@
 
 use std::time::Duration;
 
+use metrics_exporter_prometheus::PrometheusHandle;
 use serde::Serialize;
+use wayhouse_core::metrics_defs as m;
 use wayhouse_core::{Proto, RuntimeHandle};
 
 #[derive(Serialize)]
@@ -44,6 +46,18 @@ struct IngestPayload {
     /// Requests refused for an incompatible protocol so far; the aggregator
     /// notes when it rises.
     protocol_mismatches: u64,
+    /// Cumulative per-listener counters; the aggregator derives rates (#461).
+    listeners: Vec<ListenerStats>,
+}
+
+#[derive(Serialize, Default, Debug, PartialEq)]
+struct ListenerStats {
+    name: String,
+    accepted: u64,
+    blocked: u64,
+    bytes_c2s: u64,
+    bytes_s2c: u64,
+    packets: u64,
 }
 
 #[derive(Serialize)]
@@ -88,7 +102,7 @@ pub struct PushConfig {
 
 /// Runs forever, pushing one summary per `cfg.interval`. `tokio::spawn`ed
 /// from `main.rs`; never returns under normal operation.
-pub async fn run(cfg: PushConfig, handle: RuntimeHandle) {
+pub async fn run(cfg: PushConfig, handle: RuntimeHandle, prometheus: PrometheusHandle) {
     let PushConfig {
         base_url,
         instance,
@@ -105,7 +119,7 @@ pub async fn run(cfg: PushConfig, handle: RuntimeHandle) {
 
     loop {
         ticker.tick().await;
-        let payload = build_payload(&instance, &admin_url, &handle);
+        let payload = build_payload(&instance, &admin_url, &handle, &prometheus);
         let mut req = client.post(&url).json(&payload);
         if let Some(token) = &token {
             req = req.bearer_auth(token);
@@ -126,7 +140,53 @@ pub async fn run(cfg: PushConfig, handle: RuntimeHandle) {
     }
 }
 
-fn build_payload(instance: &str, admin_url: &str, handle: &RuntimeHandle) -> IngestPayload {
+/// Per-listener totals read back from the recorder's own exposition text. The
+/// `metrics` crate has no typed read API, and the counters are the one source of
+/// truth the `/metrics` endpoint already serves.
+/// shortcut: text parsing costs one registry render per push, move to a typed
+/// recorder if the interval ever drops well below seconds.
+fn listener_stats(exposition: &str) -> Vec<ListenerStats> {
+    let mut by_name = std::collections::BTreeMap::<String, ListenerStats>::default();
+    for line in exposition.lines() {
+        let Some((series, value)) = line.rsplit_once(' ') else {
+            continue;
+        };
+        let Some((metric, labels)) = series.split_once('{') else {
+            continue;
+        };
+        let label = |key: &str| {
+            let pat = format!("{key}=\"");
+            let rest = &labels[labels.find(&pat)? + pat.len()..];
+            Some(&rest[..rest.find('"')?])
+        };
+        let (Some(name), Ok(v)) = (label("listener"), value.parse::<f64>()) else {
+            continue;
+        };
+        let v = v as u64;
+        let l = by_name
+            .entry(name.to_string())
+            .or_insert_with(|| ListenerStats {
+                name: name.to_string(),
+                ..Default::default()
+            });
+        match (metric, label("result"), label("dir")) {
+            (m::LISTENER_CONNECTIONS, Some("accepted"), _) => l.accepted += v,
+            (m::FILTER_BLOCKED, ..) => l.blocked += v,
+            (m::BYTES, _, Some("c2s")) => l.bytes_c2s += v,
+            (m::BYTES, _, Some("s2c")) => l.bytes_s2c += v,
+            (m::PACKETS, _, _) => l.packets += v,
+            _ => {}
+        }
+    }
+    by_name.into_values().collect()
+}
+
+fn build_payload(
+    instance: &str,
+    admin_url: &str,
+    handle: &RuntimeHandle,
+    prometheus: &PrometheusHandle,
+) -> IngestPayload {
     let snapshot = handle.snapshot();
     let pools = snapshot
         .pools
@@ -160,6 +220,7 @@ fn build_payload(instance: &str, admin_url: &str, handle: &RuntimeHandle) -> Ing
         version: env!("CARGO_PKG_VERSION").to_string(),
         protocol: wayhouse_http::protocol::ProtocolVersion::current().to_string(),
         protocol_mismatches: wayhouse_http::protocol::mismatches_total(),
+        listeners: listener_stats(&prometheus.render()),
     }
 }
 
@@ -186,7 +247,15 @@ listeners:
         let cfg = wayhouse_config::parse_str(YAML).unwrap();
         let runtime = Runtime::start(Snapshot::from_config(&cfg), std::sync::Arc::default(), 1);
 
-        let payload = build_payload("test-instance", "http://127.0.0.1:9900", &runtime.handle());
+        let prometheus = metrics_exporter_prometheus::PrometheusBuilder::new()
+            .build_recorder()
+            .handle();
+        let payload = build_payload(
+            "test-instance",
+            "http://127.0.0.1:9900",
+            &runtime.handle(),
+            &prometheus,
+        );
 
         assert_eq!(payload.instance, "test-instance");
         assert_eq!(payload.admin_url, "http://127.0.0.1:9900");
@@ -205,6 +274,41 @@ listeners:
         assert_eq!(
             payload.protocol,
             wayhouse_http::protocol::ProtocolVersion::CURRENT.to_string()
+        );
+    }
+
+    #[test]
+    fn listener_stats_sum_the_counters_per_listener() {
+        let text = r#"
+# TYPE wayhouse_listener_connections_total counter
+wayhouse_listener_connections_total{listener="main",result="accepted"} 12
+wayhouse_listener_connections_total{listener="main",result="no_route"} 3
+wayhouse_filter_blocked_total{listener="main",filter="acl"} 2
+wayhouse_filter_blocked_total{listener="main",filter="geo"} 1
+wayhouse_bytes_total{listener="main",dir="c2s"} 100
+wayhouse_bytes_total{listener="main",dir="s2c"} 900
+wayhouse_packets_total{listener="game",dir="c2s"} 5
+wayhouse_packets_total{listener="game",dir="s2c"} 7
+wayhouse_active_connections{listener="main"} 4
+wayhouse_fd_open 31
+"#;
+        assert_eq!(
+            listener_stats(text),
+            vec![
+                ListenerStats {
+                    name: "game".into(),
+                    packets: 12,
+                    ..Default::default()
+                },
+                ListenerStats {
+                    name: "main".into(),
+                    accepted: 12,
+                    blocked: 3,
+                    bytes_c2s: 100,
+                    bytes_s2c: 900,
+                    packets: 0,
+                },
+            ]
         );
     }
 }
