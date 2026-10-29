@@ -115,9 +115,10 @@ CMD ["--data-dir", "/data"]
 # (#355) used built-in modules only, so this is stock Caddy; we only rebuild it ourselves
 # because the official image's Go toolchain lags the Go security releases (the 2.11.7 image
 # is built with Go 1.26.8; Trivy flags crypto/x509, crypto/tls and net/http, fixed in Go
-# 1.26.9 and 1.26.10, and golang.org/x/net/http2). The build stage below compiles the pinned
-# Caddy with a patched Go and golang.org/x/net and the final stage swaps that binary in.
-# Bump: change CADDY_VERSION and XCADDY_VERSION / GOLANG_X_NET_VERSION (Dependabot does not track
+# 1.26.9 and 1.26.10, and golang.org/x/net/http2; Caddy 2.11.7 also pins go-jose/v4 4.1.5,
+# affected by the JWK-parsing DoS fixed in 4.1.6). The build stage below compiles the pinned
+# Caddy with a patched Go, golang.org/x/net and go-jose and the final stage swaps that binary in.
+# Bump: change CADDY_VERSION and XCADDY_VERSION / GOLANG_X_NET_VERSION / GO_JOSE_VERSION (Dependabot does not track
 # these ARGs), the golang tag/digest (`docker manifest inspect golang:<ver>-alpine`)
 # and the `FROM caddy:<ver>@sha256:…` line (index digest of `docker manifest inspect caddy:<ver>`);
 # deploy/check-caddy-image.sh then checks the image reports that version. Drop the build stage
@@ -129,10 +130,12 @@ ARG TARGETARCH
 ARG CADDY_VERSION=2.11.7
 ARG XCADDY_VERSION=0.4.7
 ARG GOLANG_X_NET_VERSION=0.61.0
+ARG GO_JOSE_VERSION=4.1.6
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@v${XCADDY_VERSION}
 RUN GOOS=$TARGETOS GOARCH=$TARGETARCH xcaddy build v${CADDY_VERSION} \
       --replace golang.org/x/net=golang.org/x/net@v${GOLANG_X_NET_VERSION} \
+      --replace github.com/go-jose/go-jose/v4=github.com/go-jose/go-jose/v4@v${GO_JOSE_VERSION} \
       --output /out/caddy
 FROM caddy:2.11.7@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b0e2960525 AS wayhouse-caddy
 # The base image grants /usr/bin/caddy cap_net_bind_service as a file capability. We listen
@@ -140,6 +143,9 @@ FROM caddy:2.11.7@sha256:3095ad245c353e3bdb27a38f22a095c1cfa9e295ab21c0214c3e72b
 # deployment drops all capabilities (a common k8s hardening). COPY --from replaces the file
 # with our build, which carries no file capability.
 COPY --from=caddy-build --chmod=0755 /out/caddy /usr/bin/caddy
+# Caddy is a static Go binary and never runs curl, so drop the base image's curl and the
+# libcurl/brotli-libs it pulls in (Trivy flags both; nothing here needs them).
+RUN apk del --no-cache curl libcurl brotli-libs
 COPY deploy/caddy/base.json /etc/caddy/base.json
 # Caddy is Apache-2.0: ship the text and the attribution.
 COPY LICENSE-APACHE deploy/caddy/NOTICE /licenses/
