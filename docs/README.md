@@ -29,6 +29,7 @@ chapter disagree, the chapter wins and the code (or the chapter) gets fixed.
 | [11 Backend transport](11-backend-transport.md)                   | WireGuard transport and `wayhouse-agent` for origins on other networks                                |
 | [12 Deployment](12-deployment.md)                                 | Container images, many-port proxies under Docker and Kubernetes                                       |
 | [ACME certificates](acme.md)                                      | Controller-issued certificates (DNS-01), sites, renewal, metrics                                      |
+| [Stored UI data](ui-data.md)                                      | Dashboards, themes, saved filters, form layout override and defaults kept in the controller           |
 
 ## Feature specs and plans
 

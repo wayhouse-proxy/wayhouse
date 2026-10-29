@@ -38,6 +38,12 @@ options and capability bindings in a `wayhouse.plugin-manifest` section; see
 official plugins (Pelican, `acme-dns-cloudflare`, `selftest`) are rebuilt in the plugins
 repository.
 
+## Stored UI data
+
+The controller now stores dashboards, custom themes, saved filters, the form layout override and the
+deployment defaults (see [Stored UI data](ui-data.md)). Nothing to migrate. Under HA, upgrade every
+controller before the first save: a write is refused (`409`) while a member runs an older build.
+
 ## Secrets
 
 Not yet filled in.

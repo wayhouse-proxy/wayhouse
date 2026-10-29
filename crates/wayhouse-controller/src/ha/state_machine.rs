@@ -99,6 +99,9 @@ pub struct SnapshotContent {
     /// ACME sites, account, certificates (keys sealed) and retry state.
     #[serde(default)]
     pub acme: crate::acme::AcmeSnapshot,
+    /// UI records (dashboards, themes, filters, layout, defaults).
+    #[serde(default)]
+    pub ui: crate::ui_data::UiSnapshot,
 }
 
 /// Parses a received snapshot. One in an older format (a section missing)
@@ -150,6 +153,8 @@ pub struct StateMachineStore {
     plugins: PluginStore,
     /// Replicated ACME state, applied on every replica.
     acme: crate::acme::AcmeStore,
+    /// Replicated UI records, applied on every replica.
+    ui: crate::ui_data::UiStore,
     /// `Some((node id, data dir))` to warn about unimported pre-HA data.
     pre_ha_notice: Option<(NodeId, std::path::PathBuf)>,
     meta: crate::kv::Tree,
@@ -183,6 +188,7 @@ impl StateMachineStore {
             cluster: Arc::new(ClusterState::open(db)?),
             plugins: PluginStore::open(db)?,
             acme: crate::acme::AcmeStore::open(db)?,
+            ui: crate::ui_data::UiStore::open(db)?,
             pre_ha_notice: None,
             meta: db.open_tree("raft_sm_meta")?,
             snapshots: db.open_tree("raft_snapshot")?,
@@ -225,6 +231,11 @@ impl StateMachineStore {
     /// The replicated ACME state.
     pub fn acme(&self) -> &crate::acme::AcmeStore {
         &self.acme
+    }
+
+    /// The replicated UI records.
+    pub fn ui(&self) -> &crate::ui_data::UiStore {
+        &self.ui
     }
 
     /// The replicated cluster state (the recorded tunnel network).
@@ -336,6 +347,10 @@ impl StateMachineStore {
                     .map_err(|e| StorageIOError::read_state_machine(&e))?,
                 acme: self
                     .acme
+                    .snapshot()
+                    .map_err(|e| StorageIOError::read_state_machine(&e))?,
+                ui: self
+                    .ui
                     .snapshot()
                     .map_err(|e| StorageIOError::read_state_machine(&e))?,
             },
@@ -457,6 +472,9 @@ impl StateMachineStore {
             .map_err(|e| StorageIOError::write_state_machine(&e))?;
         self.acme
             .replace(&content.acme)
+            .map_err(|e| StorageIOError::write_state_machine(&e))?;
+        self.ui
+            .replace(&content.ui)
             .map_err(|e| StorageIOError::write_state_machine(&e))?;
 
         // Wake live subscribers so they re-read from the replaced store.
@@ -811,6 +829,16 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                                 tracing::warn!(index, %why, "refused a malformed acme entry");
                             }
                             WriteResponse::AcmeResult(applied)
+                        }
+                        WriteRequest::Ui(op) => {
+                            let applied = self
+                                .ui
+                                .apply_at(index, &op)
+                                .map_err(|e| StorageIOError::write_state_machine(&e))?;
+                            if let crate::ui_data::Applied::Invalid(why) = &applied {
+                                tracing::warn!(index, %why, "refused a malformed ui entry");
+                            }
+                            WriteResponse::UiResult(applied)
                         }
                         WriteRequest::Import(content) => {
                             let response = import::apply_import(
@@ -2349,6 +2377,64 @@ mod tests {
             .unwrap();
         assert_eq!(c.acme().snapshot().unwrap(), a.acme().snapshot().unwrap());
         assert!(c.acme().site("old").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn ui_entries_apply_on_every_replica_and_a_snapshot_catches_up() {
+        use crate::ui_data::{Applied, Kind, UiOp};
+        let dash = serde_json::json!({"widgets": [{"id": "nodes", "width": 6}]});
+        let put = |name: &str, value: serde_json::Value| {
+            WriteRequest::Ui(UiOp::Put {
+                kind: Kind::Dashboard,
+                name: name.into(),
+                value,
+            })
+        };
+        let (mut a, _a) = test_sm();
+        let (mut b, _b) = test_sm();
+        let log = [
+            put("ops", dash.clone()),
+            put("bad", serde_json::json!({"widgets": 3})),
+            WriteRequest::Ui(UiOp::Delete {
+                kind: Kind::Dashboard,
+                name: "nope".into(),
+            }),
+        ];
+        for (i, req) in log.iter().enumerate() {
+            let index = i as u64 + 1;
+            let on_a = apply_one(&mut a, index, req.clone()).await;
+            assert_eq!(on_a, apply_one(&mut b, index, req.clone()).await);
+            match (i, on_a) {
+                (0, WriteResponse::UiResult(Applied::Done)) => {}
+                (1, WriteResponse::UiResult(Applied::Invalid(_))) => {}
+                (2, WriteResponse::UiResult(Applied::NotFound)) => {}
+                (_, other) => panic!("entry {index}: {other:?}"),
+            }
+        }
+        assert_eq!(a.ui().snapshot().unwrap(), b.ui().snapshot().unwrap());
+
+        let snapshot = a
+            .get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
+        let (mut c, _c) = test_sm();
+        apply_one(&mut c, 1, put("old", dash)).await;
+        c.install_snapshot(&snapshot.meta, snapshot.snapshot)
+            .await
+            .unwrap();
+        assert_eq!(c.ui().snapshot().unwrap(), a.ui().snapshot().unwrap());
+        assert!(c.ui().get(Kind::Dashboard, "old").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_snapshot_without_a_ui_section_decodes_as_no_ui_data() {
+        let (sm, _d) = test_sm();
+        let mut json = serde_json::to_value(&sm.copy().unwrap().content).unwrap();
+        json.as_object_mut().unwrap().remove("ui");
+        let content = decode_snapshot(&serde_json::to_vec(&json).unwrap()).unwrap();
+        assert_eq!(content.ui, crate::ui_data::UiSnapshot::default());
     }
 
     #[test]
