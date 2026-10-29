@@ -438,7 +438,7 @@ mod tests {
             protocol: String::new(),
             protocol_mismatches: 0,
             region: Some("eu".into()),
-            tags: Default::default(),
+            tags: std::collections::BTreeMap::default(),
             listeners: vec![ListenerStats {
                 name: "main".into(),
                 accepted,

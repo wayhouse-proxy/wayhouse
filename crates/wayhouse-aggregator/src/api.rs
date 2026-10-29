@@ -524,7 +524,7 @@ mod tests {
             protocol: String::new(),
             protocol_mismatches: 0,
             region: None,
-            tags: Default::default(),
+            tags: std::collections::BTreeMap::default(),
             listeners: vec![],
         })
         .unwrap()
@@ -674,7 +674,7 @@ mod tests {
             protocol: String::new(),
             protocol_mismatches: 0,
             region: None,
-            tags: Default::default(),
+            tags: std::collections::BTreeMap::default(),
             listeners: vec![],
         }
     }
@@ -989,7 +989,7 @@ mod tests {
                     protocol: String::new(),
                     protocol_mismatches: 0,
                     region: None,
-                    tags: Default::default(),
+                    tags: std::collections::BTreeMap::default(),
                     listeners: vec![],
                 })
                 .unwrap(),
