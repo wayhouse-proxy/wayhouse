@@ -254,6 +254,271 @@
       "label": "Plugin routes sniffer",
       "help": "The sniffer name when the type is sniffer.",
       "page": "listener"
+    },
+    "pools.*.name": {
+      "label": "Name",
+      "group": "Pool",
+      "order": 1,
+      "help": "Listeners and routes refer to the pool by this name. Unique.",
+      "page": "pool"
+    },
+    "pools.*.targets": {
+      "label": "Backends",
+      "group": "Pool",
+      "order": 2,
+      "help": "One address per line, such as 10.0.0.5:7777. Use this or a backend source, not both.",
+      "page": "pool"
+    },
+    "pools.*.balancer": {
+      "label": "Balancer",
+      "group": "Balancing",
+      "order": 11,
+      "help": "How a backend is picked. Weighted uses the weights below; consistent hash keeps a client on the same backend.",
+      "page": "pool"
+    },
+    "pools.*.hash_on": {
+      "label": "Hash on",
+      "group": "Balancing",
+      "order": 12,
+      "help": "Consistent hash only: what a UDP client key is made of.",
+      "page": "pool"
+    },
+    "pools.*.weights": {
+      "label": "Weights",
+      "group": "Balancing",
+      "order": 13,
+      "help": "Weighted only: address to weight. A backend that is not listed weighs 1.",
+      "page": "pool"
+    },
+    "pools.*.health_check": {
+      "group": "Health check",
+      "order": 21,
+      "page": "pool"
+    },
+    "pools.*.health_check.type": {
+      "label": "Check type",
+      "help": "tcp_connect (the default), udp_probe or none.",
+      "page": "pool"
+    },
+    "pools.*.health_check.interval_sec": {
+      "label": "Interval",
+      "order": 1,
+      "page": "pool"
+    },
+    "pools.*.health_check.timeout_ms": {
+      "label": "Timeout",
+      "order": 2,
+      "page": "pool"
+    },
+    "pools.*.health_check.rise": {
+      "label": "Successes to come up",
+      "order": 3,
+      "page": "pool"
+    },
+    "pools.*.health_check.fall": {
+      "label": "Failures to go down",
+      "order": 4,
+      "page": "pool"
+    },
+    "pools.*.health_check.send_hex": {
+      "label": "Probe payload (hex)",
+      "advanced": true,
+      "help": "udp_probe only.",
+      "page": "pool"
+    },
+    "pools.*.health_check.expect_hex_prefix": {
+      "label": "Expected reply prefix (hex)",
+      "advanced": true,
+      "help": "udp_probe only.",
+      "page": "pool"
+    },
+    "pools.*.connect_timeout_ms": {
+      "label": "Connect timeout",
+      "group": "Timeouts and limits",
+      "order": 31,
+      "page": "pool"
+    },
+    "pools.*.idle_timeout_sec": {
+      "label": "Idle timeout",
+      "group": "Timeouts and limits",
+      "order": 32,
+      "page": "pool"
+    },
+    "pools.*.per_backend": {
+      "group": "Timeouts and limits",
+      "order": 33,
+      "page": "pool"
+    },
+    "pools.*.per_backend.max_sessions": {
+      "label": "Sessions per backend",
+      "unit": "sessions",
+      "help": "Empty means no limit.",
+      "page": "pool"
+    },
+    "pools.*.proxy_protocol": {
+      "label": "PROXY protocol",
+      "group": "Transport",
+      "order": 41,
+      "advanced": true,
+      "help": "Send a PROXY header so the backend sees the real client address.",
+      "page": "pool"
+    },
+    "backend_sources.*.name": {
+      "label": "Name",
+      "group": "Source",
+      "order": 1,
+      "help": "A pool refers to the source by this name. Unique.",
+      "page": "source"
+    },
+    "backend_sources.*.refresh_interval_sec": {
+      "label": "Refresh interval",
+      "group": "Source",
+      "order": 3,
+      "page": "source"
+    },
+    "backend_sources.*.targets": {
+      "label": "Addresses",
+      "group": "Source",
+      "order": 4,
+      "help": "One address per line.",
+      "page": "source"
+    },
+    "backend_sources.*.record": {
+      "label": "DNS SRV record",
+      "group": "Source",
+      "order": 4,
+      "help": "Such as _game._tcp.example.com.",
+      "page": "source"
+    },
+    "backend_sources.*.service": {
+      "label": "Service",
+      "group": "Source",
+      "order": 4,
+      "page": "source"
+    },
+    "backend_sources.*.tag": {
+      "label": "Tag",
+      "group": "Source",
+      "order": 5,
+      "help": "Only instances with this tag.",
+      "page": "source"
+    },
+    "backend_sources.*.consul_addr": {
+      "label": "Consul address",
+      "group": "Source",
+      "order": 6,
+      "advanced": true,
+      "help": "Default http://127.0.0.1:8500.",
+      "page": "source"
+    },
+    "backend_sources.*.consul_token_file": {
+      "label": "Consul token file",
+      "group": "Source",
+      "order": 7,
+      "advanced": true,
+      "help": "A path; the token itself never goes in the file.",
+      "page": "source"
+    },
+    "backend_sources.*.namespace": {
+      "label": "Namespace",
+      "group": "Source",
+      "order": 5,
+      "help": "Default is default.",
+      "page": "source"
+    },
+    "backend_sources.*.port_name": {
+      "label": "Port name",
+      "group": "Source",
+      "order": 6,
+      "help": "Empty means the first port.",
+      "page": "source"
+    },
+    "backend_sources.*.api": {
+      "label": "API address",
+      "group": "Source",
+      "order": 7,
+      "advanced": true,
+      "help": "Default is the in-cluster API server.",
+      "page": "source"
+    },
+    "backend_sources.*.pubkey": {
+      "label": "Tunnel public key",
+      "group": "Source",
+      "order": 4,
+      "help": "Base64 WireGuard public key of the tunnel agent.",
+      "page": "source"
+    },
+    "resolvers.*.name": {
+      "label": "Name",
+      "group": "Resolver",
+      "order": 1,
+      "help": "A route refers to the resolver by this name. Unique.",
+      "page": "resolver"
+    },
+    "resolvers.*.endpoint": {
+      "label": "Endpoint",
+      "group": "Resolver",
+      "order": 2,
+      "help": "The URL the proxy asks which pool a connection goes to.",
+      "page": "resolver"
+    },
+    "resolvers.*.timeout_ms": {
+      "label": "Timeout",
+      "group": "Resolver",
+      "order": 3,
+      "page": "resolver"
+    },
+    "resolvers.*.on_error": {
+      "label": "On error",
+      "group": "Resolver",
+      "order": 4,
+      "help": "What happens when the call fails: reject, continue with the next route, or serve a stale answer.",
+      "page": "resolver"
+    },
+    "resolvers.*.cache": {
+      "group": "Cache",
+      "order": 11,
+      "page": "resolver"
+    },
+    "resolvers.*.cache.key": {
+      "label": "Cache key",
+      "order": 1,
+      "help": "Parts joined into the key: src_ip, src_ip_port, sni, routing_key or first_bytes:<a>:<b>.",
+      "page": "resolver"
+    },
+    "resolvers.*.cache.max_entries": {
+      "label": "Entries",
+      "order": 2,
+      "page": "resolver"
+    },
+    "resolvers.*.cache.positive_ttl_sec": {
+      "label": "Answer lifetime",
+      "order": 3,
+      "page": "resolver"
+    },
+    "resolvers.*.cache.negative_ttl_sec": {
+      "label": "No-answer lifetime",
+      "order": 4,
+      "page": "resolver"
+    },
+    "resolvers.*.target_connect_timeout_ms": {
+      "label": "Backend connect timeout",
+      "group": "Timeouts",
+      "order": 21,
+      "page": "resolver"
+    },
+    "resolvers.*.target_idle_timeout_sec": {
+      "label": "Backend idle timeout",
+      "group": "Timeouts",
+      "order": 22,
+      "page": "resolver"
+    },
+    "resolvers.*.proxy_protocol": {
+      "label": "PROXY protocol",
+      "group": "Transport",
+      "order": 31,
+      "advanced": true,
+      "page": "resolver"
     }
   }
 }
