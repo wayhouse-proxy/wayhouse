@@ -18,6 +18,7 @@ export const NAV: NavGroup[] = [
   {
     label: "Operate",
     items: [
+      { to: "/dashboard", label: "Dashboard" },
       { to: "/overview", label: "Overview" },
       { to: "/fleet", label: "Fleet" },
       { to: "/listeners", label: "Listeners" },

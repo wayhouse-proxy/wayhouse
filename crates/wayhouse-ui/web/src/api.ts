@@ -36,7 +36,7 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   return resp;
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await request(path, init);
   const text = await resp.text();
   if (!resp.ok) {

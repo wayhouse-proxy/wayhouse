@@ -7,6 +7,7 @@ import { Loading } from "./components/shell/States";
 import { SessionProvider } from "./lib/session";
 import { QueryProvider } from "./lib/query";
 import { FleetPage } from "./pages/FleetPage";
+import { DashboardPage } from "./pages/DashboardPage";
 
 import { SettingsPage } from "./pages/SettingsPage";
 import { SniffersPage } from "./pages/SniffersPage";
@@ -44,7 +45,8 @@ export function App() {
     <QueryProvider>
     <Routes>
       <Route element={<Shell onSignOut={() => logout().finally(() => setSession(null))} />}>
-        <Route index element={<Navigate to="/fleet" replace />} />
+        <Route index element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/overview" element={<OverviewPage />} />
         <Route path="/listeners" element={<ListenersPage />} />
         <Route path="/pools" element={<PoolsPage />} />
@@ -55,7 +57,7 @@ export function App() {
         <Route path="/config-history" element={<ConfigHistoryPage />} />
         <Route path="/tunnel" element={<TunnelAddressesPage />} />
         <Route path="/certificates" element={<CertificatesPage />} />
-        <Route path="*" element={<Navigate to="/fleet" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>
     </QueryProvider>
