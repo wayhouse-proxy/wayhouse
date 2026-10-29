@@ -89,6 +89,7 @@ describe("Features page", () => {
   });
 
   it("an override wins over the config value and shows its reason, who set it and when it ends", async () => {
+    api.getCurrentConfig.mockResolvedValue({ text: "features:\n  sniffers: false\n", revision: "3" });
     api.listFeatureOverrides.mockResolvedValue({ items: [{ name: "sniffers", value: true, reason: "sniffer bug fixed", actor: "bob", set_at: NOW - 60, expires_at: NOW + 7200 }] });
     api.getFeatures.mockResolvedValue({
       flags: [],
@@ -142,6 +143,18 @@ describe("Features page", () => {
     await userEvent.click(screen.getByRole("button", { name: "Clear override of port_routes" }));
     await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Clear override" }));
     expect(api.clearFeatureOverride).toHaveBeenCalledWith("port_routes");
+  });
+
+  it("offers Clear for a flag the controller says is overridden even when the overrides list cannot be read", async () => {
+    api.listFeatureOverrides.mockRejectedValue(new ApiError(500, "down"));
+    api.getFeatures.mockResolvedValue({
+      flags: [],
+      proxy_flags: [flag("port_routes", { override: "off_only", value: false, source: "override" })],
+    });
+    page();
+    await screen.findByText("port_routes", { selector: "td" });
+    expect(screen.getByRole("button", { name: "Clear override of port_routes" })).toBeInTheDocument();
+    expect(screen.getByText(/overrides could not be read/)).toBeInTheDocument();
   });
 
   it("warns at the top while a protection flag is off", async () => {

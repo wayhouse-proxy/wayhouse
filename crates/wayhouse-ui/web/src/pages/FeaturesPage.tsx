@@ -127,6 +127,7 @@ export function FeaturesPage() {
   const [rows, setRows] = useState<FeatureFlag[] | null>(null);
   const [overrides, setOverrides] = useState<Record<string, FeatureOverride>>({});
   const [configRead, setConfigRead] = useState(true);
+  const [overridesRead, setOverridesRead] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [editing, setEditing] = useState<FeatureFlag | null>(null);
 
@@ -139,6 +140,7 @@ export function FeaturesPage() {
     setError(null);
     const config = c.status === "fulfilled" ? configFlags(c.value.text) : null;
     setConfigRead(config !== null);
+    setOverridesRead(o.status === "fulfilled");
     const now = Math.floor(Date.now() / 1000);
     setOverrides(Object.fromEntries((o.status === "fulfilled" ? o.value.items : []).filter((x) => !x.expires_at || x.expires_at > now).map((x) => [x.name, x])));
     setRows(merge(f.value.flags, f.value.proxy_flags, config));
@@ -180,6 +182,7 @@ export function FeaturesPage() {
         </AlertBar>
       )}
       {!configRead && <p className="mb-3 text-sm text-ink-muted">The config could not be read, so config values are not shown; flags set there look like their default.</p>}
+      {!overridesRead && <p className="mb-3 text-sm text-ink-muted">The overrides could not be read, so their reasons and end times are not shown.</p>}
       {rows && (
         <>
           {visible.length === 0 ? (
@@ -218,7 +221,7 @@ export function FeaturesPage() {
                         )}
                       </TD>
                       <TD className="whitespace-nowrap text-right">
-                        {o && (
+                        {f.source === "override" && (
                           <Button size="sm" disabled={!admin} aria-label={`Clear override of ${f.name}`} onClick={() => clear(f)}>
                             Clear override
                           </Button>
