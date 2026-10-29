@@ -308,7 +308,7 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
   if (path === "/api/ui/defaults") { if (method === "PUT") defaults = await json(); return ok(defaults); }
   if (path === "/api/ui/layout") {
     if (method === "GET") return layout ? ok(layout) : err(404, "no layout stored");
-    if (method === "PUT") { try { layout = JSON.parse(await text()); } catch (e) { return err(422, String(e)); } return ok(layout as object); }
+    if (method === "PUT") { try { layout = JSON.parse(await text()); } catch { return err(422, "The layout is not valid JSON."); } return ok(layout as object); }
     layout = null; return ok("");
   }
   if ((r = m(/^\/api\/ui\/(filters|themes|dashboards)\/(.+)$/))) {
@@ -332,7 +332,7 @@ export function installMock() {
     const url = new URL(req.url);
     if (url.origin !== new URL(document.baseURI).origin || !(url.pathname.startsWith("/api/") || url.pathname.startsWith("/ui/"))) return real(input, init);
     await new Promise((res) => setTimeout(res, 40 + Math.random() * 120)); // a little latency so loading states are visible
-    try { return await route(req.method, url, req); } catch (e) { return err(500, String(e)); }
+    try { return await route(req.method, url, req); } catch (e) { console.error(e); return err(500, "The demo backend failed; see the browser console."); }
   };
 
   // /ws/fleet: a fake socket that pushes the fleet view now and every few seconds.
