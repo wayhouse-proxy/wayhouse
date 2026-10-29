@@ -21,7 +21,7 @@ The web UI draws configuration forms from the JSON Schema that `GET /config/sche
 }
 ```
 
-`fields` is keyed by the dotted path of a field in the configuration. `*` stands for any list index (`pools.*.targets`). An override replaces keys field by field over the default: a field you do not mention keeps its default layout.
+The shipped default is keyed by the dotted path of a field (`pools.*.targets`, `*` for any list index). An **override** is keyed by JSON Pointer, as the controller stores it (`/pools/0/targets`; a number or `*` in the pointer matches any index), and carries only `help`, `group`, `order`, `widget`, `advanced` and `page`. `label` and `unit` are default-only: the controller rejects them with a 422. An override replaces keys field by field over the default: a field you do not mention keeps its default layout.
 
 | Key        | Type    | Meaning                                                                                                                        |
 | ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -39,6 +39,7 @@ The web UI draws configuration forms from the JSON Schema that `GET /config/sche
 - A path that is not a field of the configuration is ignored with a warning. It is never an error that stops editing.
 - An unknown key or a value of the wrong type in one field is ignored with a warning; the rest of the layout applies.
 - A layout that is not JSON, has no `"version": 1` or has no `fields` object is not used at all: the forms use the default layout and show a notice saying why.
+- Settings > Layout (admins write, everyone reads) edits the override as JSON with a live preview on one real form, import, export and Reset to default.
 - The override is limited to 64 KiB. Export and import use the same JSON, so a layout is a file as well as a setting.
 
 ## Related
