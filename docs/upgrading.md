@@ -69,6 +69,10 @@ The config schema moves to **4**: the `features:` section (feature flags, see
 [configuration](05-configuration.md)) needs `schema_version: 4`. Declare it only once every proxy
 that will receive the document runs 0.4.0; an older proxy refuses the document.
 
+The config schema moves to **4**: the `features:` section (feature flags, see
+[configuration](05-configuration.md)) needs `schema_version: 4`. Declare it only once every proxy
+that will receive the document runs 0.4.0; an older proxy refuses the document.
+
 ## Upgrading from 0.2.0 to 0.3.0
 
 0.3.0 replaces the controller's embedded database (`sled` to `redb`) **without a

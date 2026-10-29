@@ -15,11 +15,27 @@ export interface NavGroup {
 }
 
 export const NAV: NavGroup[] = [
-  { label: "Operate", items: [{ to: "/fleet", label: "Fleet" }] },
+  {
+    label: "Operate",
+    items: [
+      { to: "/overview", label: "Overview" },
+      { to: "/fleet", label: "Fleet" },
+      { to: "/listeners", label: "Listeners" },
+      { to: "/pools", label: "Pools" },
+    ],
+  },
   {
     label: "Configure",
     items: [
-      { to: "/settings", label: "Settings" },
+      {
+        to: "/settings",
+        label: "Settings",
+        children: [
+          { to: "/settings", label: "General" },
+          { to: "/settings/appearance", label: "Appearance" },
+          { to: "/settings/layout", label: "Layout" },
+        ],
+      },
       { to: "/sniffers", label: "Sniffers" },
       { to: "/plugins", label: "Plugins" },
       { to: "/certificates", label: "Certificates" },
