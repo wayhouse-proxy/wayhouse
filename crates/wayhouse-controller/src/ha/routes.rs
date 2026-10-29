@@ -69,7 +69,15 @@ pub struct Whoami {
     /// predates them.
     #[serde(default)]
     pub acme_support: u32,
+    /// Whether this build decodes UI data entries ([`UI_SUPPORT`]); `0` for a build that
+    /// predates them.
+    #[serde(default)]
+    pub ui_support: u32,
 }
+
+/// The UI data replication level this build speaks (`1`: dashboards, themes, saved filters, the
+/// form layout override and the deployment defaults).
+pub const UI_SUPPORT: u32 = 1;
 
 /// The ACME replication level this build speaks (`1`: sites, account, certificates; `2` adds
 /// gateways, `3` adds `challenge_zone` on sites, `4` adds HTTP-01 sites and challenge answers,
@@ -81,8 +89,8 @@ pub const ACME_SUPPORT: u32 = 5;
 /// member): `1` replicated installs and state, `2`
 /// adds module blob replication (`/raft/plugin-blob`), `3` adds webhooks
 /// (`PluginSetWebhook`, `/raft/plugin-hook`), `4` adds port routes (`PluginState.port_routes` and the clock that
-/// quarantine counts from), `5` adds the plugin manifest and capability bindings (ABI 0.2). A leader proposes a new plugin install, or a
-/// webhook change, only when every member reports at least this.
+/// quarantine counts from), `5` adds the plugin manifest and capability bindings (ABI 0.2) and `PluginSetConfig`. A leader proposes a new plugin install, a
+/// config edit or a webhook change, only when every member reports at least this.
 pub const PLUGIN_SUPPORT: u32 = 5;
 
 async fn whoami(State(ha): State<Arc<HaHandle>>) -> impl IntoResponse {
@@ -97,6 +105,7 @@ async fn whoami(State(ha): State<Arc<HaHandle>>) -> impl IntoResponse {
         },
         secret_key_ids: ha.secret_keys.current().key_ids(),
         acme_support: ACME_SUPPORT,
+        ui_support: UI_SUPPORT,
     })
 }
 

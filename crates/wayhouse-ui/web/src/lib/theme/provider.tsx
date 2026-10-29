@@ -6,13 +6,17 @@ export type ThemeChoice = string;
 
 const KEY = "wayhouse.theme";
 
-function stored(): ThemeChoice {
+function stored(): ThemeChoice | null {
   try {
-    return localStorage.getItem(KEY) ?? "system";
+    return localStorage.getItem(KEY);
   } catch {
-    return "system";
+    return null;
   }
 }
+
+/** The deployment default as a choice: a built-in or system by name, otherwise a saved theme. */
+const asChoice = (name: string | undefined, themes: Theme[]): ThemeChoice =>
+  !name ? "system" : ["system", "light", "dark"].includes(name) ? name : themes.some((t) => t.name === name) ? `custom:${name}` : "system";
 
 /**
  * Applies a choice to the root element: system removes `data-theme`, light and dark set it,
@@ -35,33 +39,49 @@ export function applyTheme(root: HTMLElement, choice: ThemeChoice, themes: Theme
 }
 
 interface Ctx {
+  /** What is applied now: this browser's own choice, else the deployment default, else the system setting. */
   choice: ThemeChoice;
-  setChoice: (c: ThemeChoice) => void;
+  /** Whether the browser has its own choice (otherwise the deployment default applies). */
+  own: boolean;
+  /** Remember a choice in this browser; null forgets it, so the deployment default applies again. */
+  setChoice: (c: ThemeChoice | null) => void;
+  /** The saved themes and the deployment default, as the controller stores them. */
+  themes: Theme[];
+  defaultTheme?: string;
+  setSaved: (themes: Theme[], defaultTheme?: string) => void;
   /** Applies a theme for this session only, without remembering it. Pass null to stop previewing. */
   preview: (t: Theme | null) => void;
 }
 
-const ThemeCtx = createContext<Ctx>({ choice: "system", setChoice: () => {}, preview: () => {} });
+const ThemeCtx = createContext<Ctx>({ choice: "system", own: false, setChoice: () => {}, themes: [], setSaved: () => {}, preview: () => {} });
 export const useTheme = () => useContext(ThemeCtx);
 
-export function ThemeProvider({ themes = [], children }: { themes?: Theme[]; children: React.ReactNode }) {
-  const [choice, setChoiceState] = useState(stored);
+export function ThemeProvider({ themes: initial = [], children }: { themes?: Theme[]; children: React.ReactNode }) {
+  const [own, setOwn] = useState(stored);
+  const [saved, setSavedState] = useState<{ themes: Theme[]; defaultTheme?: string }>({ themes: initial });
   const [previewing, preview] = useState<Theme | null>(null);
+  const { themes, defaultTheme } = saved;
+  const choice = own ?? asChoice(defaultTheme, themes);
 
   useEffect(() => {
     if (previewing) applyTheme(document.documentElement, "custom:preview", [{ ...previewing, name: "preview" }]);
     else applyTheme(document.documentElement, choice, themes);
   }, [choice, themes, previewing]);
 
-  const setChoice = useCallback((c: ThemeChoice) => {
-    setChoiceState(c);
+  const setChoice = useCallback((c: ThemeChoice | null) => {
+    setOwn(c);
     try {
-      localStorage.setItem(KEY, c);
+      if (c === null) localStorage.removeItem(KEY);
+      else localStorage.setItem(KEY, c);
     } catch {
       /* private window or blocked storage: the choice lasts for this page view */
     }
   }, []);
 
-  const value = useMemo(() => ({ choice, setChoice, preview }), [choice, setChoice]);
+  const setSaved = useCallback((t: Theme[], d?: string) => setSavedState({ themes: t, defaultTheme: d }), []);
+  const value = useMemo(
+    () => ({ choice, own: own !== null, setChoice, themes, defaultTheme, setSaved, preview }),
+    [choice, own, setChoice, themes, defaultTheme, setSaved],
+  );
   return <ThemeCtx.Provider value={value}>{children}</ThemeCtx.Provider>;
 }

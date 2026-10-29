@@ -849,7 +849,7 @@ mod tests {
     }
 
     fn install(store: &PluginStore, id: &str, module: &[u8]) {
-        let sha = format!("sha-{id}");
+        let sha = format!("{id:0>64}");
         store.put_blob(&sha, module).unwrap();
         store
             .create(&InstallRecord {
@@ -1609,7 +1609,7 @@ mod tests {
     }
 
     fn bound_install(store: &PluginStore, id: &str, module: &[u8], approved_pat: &str, pat: &str) {
-        let sha = format!("sha-{id}");
+        let sha = format!("{id:0>64}");
         store.put_blob(&sha, module).unwrap();
         store
             .create(&InstallRecord {
@@ -1668,5 +1668,35 @@ mod tests {
                 .is_some_and(|e| e.contains("not approved")),
             "{st:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_config_edit_is_picked_up_on_the_next_tick() {
+        let (r, store, _d) = fixture(1, 4);
+        bound_install(
+            &store,
+            "00000000000000aa",
+            &bound_counter(),
+            "a.mc.example.com",
+            "*.mc.example.com",
+        );
+        let t0 = Instant::now();
+        r.run_due(t0).await;
+        r.run_due(secs(t0, 30)).await;
+        assert_eq!(r.status("00000000000000aa").unwrap().last_ok, Some(false));
+        let approved = store.get("00000000000000aa").unwrap().unwrap().approved;
+        let applied = store
+            .set_config(
+                "00000000000000aa",
+                &serde_json::json!({"pat": "a.mc.example.com"}),
+                &approved,
+                &approved,
+            )
+            .unwrap();
+        assert_eq!(applied, crate::plugins::Applied::Done(None));
+        r.run_due(secs(t0, 600)).await;
+        r.run_due(secs(t0, 700)).await;
+        let st = r.status("00000000000000aa").unwrap();
+        assert_eq!(st.last_ok, Some(true), "{st:?}");
     }
 }

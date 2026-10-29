@@ -259,6 +259,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
     let prometheus =
         wayhouse_http::metrics::install("wayhouse-controller", env!("CARGO_PKG_VERSION"))?;
+    wayhouse_controller::features::publish();
     wayhouse_http::policy::check_exposure(
         "wayhouse-controller",
         args.listen,
@@ -441,12 +442,7 @@ async fn main() -> anyhow::Result<()> {
     // module doc. `None` (no `--ha-peers`, the default `replicas: 1` shape)
     // leaves every write on the exact same direct-to-`Store` path phase
     // 10+11 shipped.
-    let ha_handle: Option<(
-        Arc<HaHandle>,
-        Arc<ha::cluster_state::ClusterState>,
-        wayhouse_controller::plugins::PluginStore,
-        wayhouse_controller::acme::AcmeStore,
-    )> = if !ha_enabled {
+    let ha_handle: Option<HaParts> = if !ha_enabled {
         None
     } else {
         let node_id = args.ha_node_id.expect("checked above");
@@ -485,6 +481,7 @@ async fn main() -> anyhow::Result<()> {
         let cluster = state_machine.cluster().clone();
         let plugin_store = state_machine.plugins().clone();
         let acme_store = state_machine.acme().clone();
+        let ui_store = state_machine.ui().clone();
         let network = ha::network::Network::new(ha_token.clone());
         let raft_config = Arc::new(
             ha::raft_config(args.ha_snapshot_after)
@@ -555,12 +552,12 @@ async fn main() -> anyhow::Result<()> {
         } else {
             tracing::info!(node_id, peers = ?peers.keys().collect::<Vec<_>>(), "intra-tier HA enabled");
         }
-        Some((handle, cluster, plugin_store, acme_store))
+        Some((handle, cluster, plugin_store, acme_store, ui_store))
     };
 
     // Under HA the registries propose through Raft instead of writing: the
     // state machine's own copies (handed to it above) stay the writers.
-    if let Some((handle, cluster, _, _)) = &ha_handle {
+    if let Some((handle, cluster, _, _, _)) = &ha_handle {
         let registry_ha = wayhouse_controller::registry::RegistryHa {
             handle: handle.clone(),
             cluster: cluster.clone(),
@@ -582,7 +579,7 @@ async fn main() -> anyhow::Result<()> {
     let schema_source = proxy_peers_state.clone();
     config_state =
         config_state.with_schema_floor(Arc::new(move || schema_source.min_live_config_schema()));
-    let leader_handle = ha_handle.as_ref().map(|(h, _, _, _)| h.clone());
+    let leader_handle = ha_handle.as_ref().map(|(h, _, _, _, _)| h.clone());
     let lease_leader = leader_handle.clone();
     tokio::spawn(wayhouse_controller::lease::lease_loop(
         book.clone(),
@@ -692,7 +689,7 @@ async fn main() -> anyhow::Result<()> {
                 // Under HA the state machine's store is the one every replica applies
                 // into; otherwise the plugin trees sit next to the config revisions.
                 let (store, ha) = match &ha_handle {
-                    Some((handle, _, store, _)) => (store.clone(), Some(handle.clone())),
+                    Some((handle, _, store, _, _)) => (store.clone(), Some(handle.clone())),
                     None => (
                         wayhouse_controller::plugins::PluginStore::open(state.store.db())?,
                         None,
@@ -804,7 +801,7 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!(e))?;
             let keyring = plugin_keys.clone();
             let (store, ha) = match &ha_handle {
-                Some((handle, _, _, store)) => (store.clone(), Some(handle.clone())),
+                Some((handle, _, _, store, _)) => (store.clone(), Some(handle.clone())),
                 None => (
                     wayhouse_controller::acme::AcmeStore::open(state.store.db())?,
                     None,
@@ -875,7 +872,21 @@ async fn main() -> anyhow::Result<()> {
             "ACME is not enabled on this controller (start it with --acme)",
         )
     });
-    if let Some((handle, _, _, _)) = ha_handle {
+    let (ui_store, ui_ha) = match &ha_handle {
+        Some((handle, _, _, _, store)) => (store.clone(), Some(handle.clone())),
+        None => (
+            wayhouse_controller::ui_data::UiStore::open(state.store.db())?,
+            None,
+        ),
+    };
+    app = app.merge(wayhouse_controller::ui_data::api::router(
+        wayhouse_controller::ui_data::api::UiState {
+            store: ui_store,
+            auth_token: admin_token.clone(),
+            ha: ui_ha,
+        },
+    ));
+    if let Some((handle, _, _, _, _)) = ha_handle {
         app = app
             .merge(ha::members::router(handle.clone(), admin_token))
             .merge(ha::routes::router(handle));
@@ -892,6 +903,15 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// The HA handle with the replicated stores the state machine owns.
+type HaParts = (
+    Arc<HaHandle>,
+    Arc<ha::cluster_state::ClusterState>,
+    wayhouse_controller::plugins::PluginStore,
+    wayhouse_controller::acme::AcmeStore,
+    wayhouse_controller::ui_data::UiStore,
+);
 
 #[cfg(test)]
 mod tests {

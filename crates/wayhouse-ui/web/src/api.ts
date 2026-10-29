@@ -21,6 +21,7 @@ import type {
   UpdateCheck,
   TunnelAddresses,
 } from "./types";
+import type { FleetStats, Range } from "./lib/stats";
 
 export class ApiError extends Error {
   status: number;
@@ -274,6 +275,11 @@ export interface CurrentConfig {
   revision: string | null;
 }
 
+/** The JSON Schema of the configuration, as the controller's binary emits it (`GET /config/schema`). */
+export function getConfigSchema(): Promise<Record<string, unknown>> {
+  return requestJson("/api/config/schema");
+}
+
 export async function getCurrentConfig(): Promise<CurrentConfig> {
   const resp = await request("/api/config");
   const text = await resp.text();
@@ -283,8 +289,14 @@ export async function getCurrentConfig(): Promise<CurrentConfig> {
   return { text, revision: resp.headers.get("x-config-revision") };
 }
 
-export function submitConfig(text: string): Promise<{ revision: number }> {
-  return requestJson("/api/config", { method: "POST", body: text });
+/** Submits a document as a new revision. With `base`, the controller answers 409 if another edit landed since you loaded it. */
+export function submitConfig(text: string, base?: number): Promise<{ revision: number }> {
+  return requestJson(`/api/config${base === undefined ? "" : `?base=${base}`}`, { method: "POST", body: text });
+}
+
+/** Runs a submission's checks and stores nothing: `{ok, schema_version}`, or a 422 whose message names the problem. */
+export function validateConfig(text: string): Promise<{ ok: true; schema_version: number }> {
+  return requestJson("/api/config/validate", { method: "POST", body: text });
 }
 
 export function listRevisions(): Promise<RevisionSummary[]> {
@@ -331,4 +343,59 @@ export function listAcmeGateways(): Promise<{ gateways: AcmeGateway[] }> {
 
 export function getAcmeAccount(): Promise<AcmeAccount> {
   return requestJson("/api/acme/account");
+}
+
+// --- stored UI data (proxied to wayhouse-controller; docs/ui-data.md) ---
+
+export interface StoredTheme {
+  name: string;
+  base: "light" | "dark";
+  tokens: Record<string, string>;
+}
+export interface UiDefaults {
+  dashboard?: string;
+  theme?: string;
+}
+
+const json = (body: unknown): RequestInit => ({
+  method: "PUT",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+export async function listThemes(): Promise<StoredTheme[]> {
+  return (await requestJson<{ items: StoredTheme[] }>("/api/ui/themes")).items;
+}
+export function saveTheme(t: StoredTheme): Promise<StoredTheme> {
+  return requestJson(`/api/ui/themes/${encodeURIComponent(t.name)}`, json(t));
+}
+export function deleteTheme(name: string): Promise<void> {
+  return requestJson(`/api/ui/themes/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+export function getUiDefaults(): Promise<UiDefaults> {
+  return requestJson("/api/ui/defaults");
+}
+export function saveUiDefaults(d: UiDefaults): Promise<UiDefaults> {
+  return requestJson("/api/ui/defaults", json(d));
+}
+/** The stored form layout override as text, or null when none is stored (the shipped default applies). */
+export async function getLayoutOverride(): Promise<string | null> {
+  try {
+    return JSON.stringify(await requestJson<unknown>("/api/ui/layout"), null, 2);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return null;
+    throw e;
+  }
+}
+export function saveLayoutOverride(text: string): Promise<unknown> {
+  return requestJson("/api/ui/layout", { method: "PUT", headers: { "Content-Type": "application/json" }, body: text });
+}
+export function deleteLayoutOverride(): Promise<void> {
+  return requestJson("/api/ui/layout", { method: "DELETE" });
+}
+
+// --- fleet stats (proxied to wayhouse-aggregator) ---
+
+export function getFleetStats(range: Range): Promise<FleetStats> {
+  return requestJson(`/api/fleet/stats?range=${range}`);
 }

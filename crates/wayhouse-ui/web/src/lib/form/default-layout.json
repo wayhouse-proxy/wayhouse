@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "fields": {
+    "settings.workers": {
+      "label": "Worker tasks per listener",
+      "group": "General",
+      "order": 1,
+      "page": "global",
+      "unit": "tasks"
+    },
+    "settings.shutdown_grace_sec": {
+      "label": "Shutdown grace",
+      "group": "General",
+      "order": 2,
+      "page": "global"
+    },
+    "settings.group": {
+      "label": "Fleet group",
+      "group": "General",
+      "order": 3,
+      "page": "global"
+    },
+    "settings.geo_db": {
+      "label": "GeoIP database",
+      "group": "General",
+      "order": 4,
+      "page": "global",
+      "advanced": true
+    },
+    "settings.admin.listen": {
+      "label": "Admin API address",
+      "order": 1
+    },
+    "settings.admin.auth_token": {
+      "label": "Admin API token",
+      "order": 2,
+      "widget": "secret"
+    },
+    "settings.admin.tls": {
+      "label": "Admin API TLS",
+      "group": "Admin API",
+      "order": 3,
+      "page": "global",
+      "advanced": true
+    },
+    "settings.limits.max_connections": {
+      "label": "Connections",
+      "order": 1,
+      "unit": "connections"
+    },
+    "settings.limits.max_udp_sessions": {
+      "label": "UDP sessions",
+      "order": 2,
+      "unit": "sessions"
+    },
+    "settings.limits.max_new_sessions_per_sec": {
+      "label": "New sessions",
+      "order": 3
+    },
+    "settings.sniffers": {
+      "label": "Sniffers",
+      "group": "Sniffers",
+      "page": "global"
+    },
+    "settings.failure_domain": {
+      "label": "Failure domain",
+      "group": "Regional health",
+      "order": 1,
+      "page": "global",
+      "advanced": true
+    },
+    "settings.gossip": {
+      "label": "Gossip mesh",
+      "group": "Regional health",
+      "order": 2,
+      "page": "global",
+      "advanced": true
+    },
+    "settings.gossip.psk": {
+      "label": "Gossip key",
+      "widget": "secret"
+    },
+    "settings.admin": {
+      "group": "Admin API",
+      "order": 2,
+      "page": "global"
+    },
+    "settings.limits": {
+      "group": "Limits",
+      "order": 3,
+      "page": "global"
+    }
+  }
+}

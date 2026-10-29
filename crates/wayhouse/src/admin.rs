@@ -63,6 +63,7 @@ fn router(state: AdminState) -> Router {
         )
         .route("/config", get(config))
         .route("/web", get(web))
+        .route("/features", get(features))
         .route("/sessions", get(sessions))
         .route("/admin/drain", post(drain))
         .route("/admin/undrain", post(undrain))
@@ -188,6 +189,12 @@ async fn web(State(s): State<AdminState>) -> Response {
         Some(w) => axum::Json(w.view()).into_response(),
         None => (StatusCode::NOT_FOUND, "no web section configured\n").into_response(),
     }
+}
+
+/// `GET /features`: every proxy feature flag with its effective value and where it comes from.
+async fn features(State(s): State<AdminState>) -> Response {
+    let rows = crate::features::effective(&s.runtime.snapshot().features);
+    axum::Json(serde_json::json!({ "flags": rows })).into_response()
 }
 
 /// `GET /config` — a plaintext view of the active snapshot (listeners + pools).
@@ -1885,6 +1892,48 @@ mod tests {
         assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
         runtime
             .shutdown_with_grace(std::time::Duration::from_millis(100))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn features_lists_the_proxy_flags_with_their_source() {
+        let yaml = "schema_version: 4\npools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\n\
+                    listeners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    routes:\n\
+                    \x20     - match: { type: always }\n        action: { pool: p }\n\
+                    features:\n  port_routes: false\n";
+        let (base, runtime) = spawn_admin_with_token(yaml, Some("tok")).await;
+        let http = reqwest::Client::new();
+        let r = http.get(format!("{base}/features")).send().await.unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let v: serde_json::Value = http
+            .get(format!("{base}/features"))
+            .bearer_auth("tok")
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let flag = |n: &str| {
+            v["flags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["name"] == n)
+                .unwrap_or_else(|| panic!("{n}"))
+                .clone()
+        };
+        assert_eq!(flag("port_routes")["value"], false);
+        assert_eq!(flag("port_routes")["source"], "config");
+        assert_eq!(flag("admin_write.backends")["source"], "default");
+        assert_eq!(flag("admin_write.backends")["available"], true);
+        assert!(v["flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["scope"] == "proxy"));
+        runtime
+            .shutdown_with_grace(Duration::from_millis(100))
             .await;
     }
 }

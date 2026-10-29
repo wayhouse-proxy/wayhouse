@@ -86,6 +86,9 @@
 
 ### Proxy internals
 - `wayhouse_config_reload_total{result}` / `wayhouse_config_version` (gauge, timestamp)
+- `wayhouse_feature_enabled{flag}` (1 on, 0 off or not in this build) and
+  `wayhouse_feature_source{flag,source}` (1 for the source the value comes from); on the proxy and
+  the controller
 - `wayhouse_listener_bind_failures_total{listener}` – a reload could not (re)bind the
   listener (port taken by another process, no permission, bad address). The previous
   listener, if any, keeps running; every later reload retries (even of an unchanged
@@ -225,6 +228,10 @@ carried in the PROXY v2 TLV if the backend should correlate it.
 - `GET /config` – plaintext view of the active snapshot (listeners + pools +
   `draining` / `active_conns`). Implemented (phase 5). `GET /pools` – per-pool
   backend list with health / `state=` / active count.
+- `GET /features` – every feature flag of this proxy as `{"flags": [...]}`: `name`, `value`,
+  `source` (`default` | `config` | `override` | `build`), `default`, `scope`, `apply`, `override`
+  (`both` | `off_only`), `protection`, `wired`, `available`, `since`, `risk`, `impact`. The controller
+  serves the same shape for its own flags.
 - `GET /web` – the resolved `web:` section as JSON for `wayhouse-web-sync`: `pool`,
   `listen.{http,https}`, `trusted_proxy`, `internal_bind`, and per site its `hosts` and
   `upstreams` in final form (`{addr}`, `{pool, via: "direct"}`, or `{pool, via: "wayhouse",

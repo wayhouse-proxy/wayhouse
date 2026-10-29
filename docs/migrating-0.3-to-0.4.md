@@ -9,7 +9,9 @@ rules for any upgrade (compatibility window, order of operations, draining a pro
 
 ## Config schema
 
-Not yet filled in.
+The config schema is now 4. Nothing changes for a document that does not use the new `features:`
+section. To use it, set `schema_version: 4`, but only after every proxy that will receive the
+document runs 0.4.0 (an older proxy refuses it).
 
 ## Plugin ABI 0.2 rebuilds
 
@@ -25,7 +27,8 @@ the plugin declares ABI 0.1, this host speaks 0.2
 2. Upload the rebuilt module and approve it again: approvals are recorded against the module's
    sha256, so a rebuilt module is a new module.
 3. Under HA, upgrade every controller before installing: the leader refuses plugin installs while
-   a member reports a plugin support level below 5.
+   a member reports a plugin support level below 5. The same holds for editing an install's
+   config (`PUT /plugins/{id}/config`).
 
 Plugins that are already installed keep their stored 0.1 module, which no longer loads: the
 install stays listed, its status shows the ABI error as `last_error`, and it does not run. That
@@ -38,13 +41,22 @@ options and capability bindings in a `wayhouse.plugin-manifest` section; see
 official plugins (Pelican, `acme-dns-cloudflare`, `selftest`) are rebuilt in the plugins
 repository.
 
+## Stored UI data
+
+The controller now stores dashboards, custom themes, saved filters, the form layout override and the
+deployment defaults (see [Stored UI data](ui-data.md)). Nothing to migrate. Under HA, upgrade every
+controller before the first save: a write is refused (`409`) while a member runs an older build.
+
 ## Secrets
 
 Not yet filled in.
 
 ## Feature flags
 
-Not yet filled in.
+A registry of named flags (`gossip_verdicts`, `sniffers`, `port_routes`, and others, see
+[configuration](05-configuration.md)) with a `features:` config section and `GET /features` on the
+proxy and the controller. Nothing to migrate: every flag defaults to on. Flags are reported before
+the runtime reads them (`wired: false`); the emergency override layer follows in a later slice.
 
 ## Deploy layout
 
