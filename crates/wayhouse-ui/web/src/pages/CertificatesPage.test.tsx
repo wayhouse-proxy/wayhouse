@@ -109,8 +109,8 @@ describe("CertificatesPage", () => {
   it("makes a failing renewal urgent only when the certificate is close to expiry", async () => {
     render(<CertificatesPage />);
     await screen.findByText("https://ca.test/acct/1");
-    expect(within(row("late")).getByText("renewal failing")).toHaveClass("text-warn");
-    expect(within(row("shop")).getByText("renewal failing")).toHaveClass("text-bad");
+    expect(within(row("late")).getByText("renewal failing").closest("[data-state]")).toHaveAttribute("data-state", "degraded");
+    expect(within(row("shop")).getByText("renewal failing").closest("[data-state]")).toHaveAttribute("data-state", "down");
   });
 
   it("shows the last error and when the next attempt is", async () => {

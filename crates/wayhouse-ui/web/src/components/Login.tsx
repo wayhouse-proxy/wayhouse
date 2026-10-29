@@ -1,3 +1,4 @@
+import { ErrorState } from "./shell/States";
 import { useState } from "react";
 import { ApiError, login } from "../api";
 import { Button, Input } from "./ui/Button";
@@ -22,16 +23,16 @@ export function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
   }
 
   return (
-    <div className="flex h-screen items-center justify-center">
+    <div className="flex h-screen items-center justify-center bg-bg">
       <form
-        className="flex w-full max-w-xs flex-col gap-4 rounded border border-line bg-surface p-6"
+        className="flex w-full max-w-xs flex-col gap-4 rounded-sm border border-line bg-surface p-6"
         onSubmit={submit}
       >
         <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-accent" />
-          <span className="font-mono text-sm font-semibold text-ink">wayhouse fleet</span>
+          <span aria-hidden className="h-2 w-2 bg-ink" />
+          <h1 className="text-lg font-semibold">wayhouse</h1>
         </div>
-        <label className="flex flex-col gap-1 text-sm text-ink-muted">
+        <label className="flex flex-col gap-1 text-sm font-medium">
           Password
           <Input
             type="password"
@@ -40,9 +41,9 @@ export function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
             autoFocus
           />
         </label>
-        {error && <p className="text-sm text-bad">{error}</p>}
-        <Button type="submit" variant="primary" disabled={busy}>
-          {busy ? "Signing in…" : "Sign in"}
+        {error && <ErrorState>{error}</ErrorState>}
+        <Button type="submit" variant="primary" loading={busy}>
+          Sign in
         </Button>
       </form>
     </div>

@@ -1,3 +1,6 @@
+import { EmptyState, ErrorState, Loading } from "../components/shell/States";
+import { AlertBar } from "../components/shell/Page";
+import { Select } from "../components/ui/Input";
 import { useCallback, useEffect, useState } from "react";
 import {
   ApiError,
@@ -17,9 +20,11 @@ import type {
 } from "../types";
 import { Badge } from "../components/ui/Badge";
 import { Button, Input } from "../components/ui/Button";
+import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { Dialog } from "../components/ui/Dialog";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { RegistryRiskDialog } from "../components/RegistryRiskDialog";
+import { useCan } from "../lib/session";
 
 function message(err: unknown): string {
   return err instanceof ApiError || err instanceof Error ? err.message : String(err);
@@ -56,6 +61,8 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
   const [installing, setInstalling] = useState<RegistrySniffer | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
+  const canWrite = useCan("operator");
+  const needsOperator = canWrite ? undefined : "This needs the operator role";
   const { confirm, dialog } = useConfirm();
 
   const reload = useCallback(async (prefer?: string) => {
@@ -118,104 +125,100 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
   return (
     <section className="mt-8">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-base font-semibold text-ink">Install from a registry</h2>
-        <Button onClick={() => setAddOpen(true)}>Add registry</Button>
+        <h2 className="text-lg font-semibold">Install from a registry</h2>
+        <Button onClick={() => setAddOpen(true)} disabled={!canWrite} title={needsOperator}>
+          Add registry
+        </Button>
       </div>
 
       {!persistent && (
-        <p className="mb-3 rounded border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-ink">
+        <AlertBar>
           Registries added here are lost on restart: wayhouse-ui runs without <code>--registries-file</code>.
-        </p>
+        </AlertBar>
       )}
       {notice && (
-        <p className="mb-3 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">{notice}</p>
+        <p role="status" className="mb-3 text-sm text-ink-muted">{notice}</p>
       )}
 
       <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
         <label htmlFor="registry-select" className="text-ink-muted">
           Registry
         </label>
-        <select
-          id="registry-select"
+        <Select id="registry-select"
           value={selectedId ?? ""}
           onChange={(e) => setSelectedId(e.target.value)}
-          className="rounded border border-line bg-surface px-2 py-1 text-ink"
-        >
+          >
           {registries?.length === 0 && <option value="">no registries</option>}
           {registries?.map((r) => (
             <option key={r.id} value={r.id}>
               {r.official ? r.name : `${r.name} (external)`}
             </option>
           ))}
-        </select>
+        </Select>
         {selected && <RiskBadge registry={selected} />}
         {selected && (
-          <button
-            onClick={handleRemove}
-            disabled={removing}
-            className="ml-auto text-bad hover:underline disabled:opacity-50"
-          >
+          <Button variant="danger" size="sm" className="ml-auto" onClick={handleRemove} disabled={removing || !canWrite} title={needsOperator}>
             {removing ? "removing…" : "remove registry"}
-          </button>
+          </Button>
         )}
       </div>
 
-      {selected && <p className="mb-3 break-all font-mono text-xs text-ink-faint">{selected.url}</p>}
+      {selected && <p className="mb-3 break-all font-mono text-xs text-ink-muted">{selected.url}</p>}
 
-      <div className="rounded border border-line bg-surface">
-        {error && <p className="px-4 py-3 text-sm text-ink-muted">{error}</p>}
+      <div>
+        {error && <ErrorState>{error}</ErrorState>}
         {!error && registries?.length === 0 && (
-          <p className="px-4 py-3 text-sm text-ink-muted">No registries yet. Add one by its index URL.</p>
+          <EmptyState>No registries yet. Add one by its index URL.</EmptyState>
         )}
-        {!error && selected && !listing && <p className="px-4 py-3 text-sm text-ink-muted">Loading…</p>}
+        {!error && selected && !listing && <Loading />}
         {!error && listing && listing.sniffers.length === 0 && (
-          <p className="px-4 py-3 text-sm text-ink-muted">This registry lists no sniffers.</p>
+          <EmptyState>This registry lists no sniffers.</EmptyState>
         )}
         {!error && listing && listing.sniffers.length > 0 && (
-          <table className="w-full text-sm">
-            <thead className="text-ink-faint">
-              <tr className="text-left">
-                <th className="px-4 py-2 font-medium">name</th>
-                <th className="px-4 py-2 font-medium">description</th>
-                <th className="px-4 py-2 font-medium">version</th>
-                <th className="px-4 py-2 font-medium">signature</th>
-                <th className="px-4 py-2"></th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table>
+            <THead>
+              <TR>
+                <TH>name</TH>
+                <TH>description</TH>
+                <TH>version</TH>
+                <TH>signature</TH>
+                <TH></TH>
+              </TR>
+            </THead>
+            <TBody>
               {listing.sniffers.map((s) => {
                 const ok = "version" in s.compatible;
                 return (
-                  <tr key={s.name} className="border-t border-line align-top">
-                    <td className="px-4 py-2 font-mono text-ink">{s.name}</td>
-                    <td className="px-4 py-2 text-ink-muted">
+                  <TR key={s.name} className="align-top">
+                    <TD className="font-mono text-ink">{s.name}</TD>
+                    <TD className="text-ink-muted">
                       {s.description}
-                      <span className="ml-2 text-xs text-ink-faint">{s.license}</span>
-                    </td>
-                    <td className="px-4 py-2 text-ink-muted">
+                      <span className="ml-2 text-xs text-ink-muted">{s.license}</span>
+                    </TD>
+                    <TD className="text-ink-muted">
                       {"version" in s.compatible ? (
                         s.compatible.version
                       ) : (
                         <span className="text-warn">{s.compatible.reason}</span>
                       )}
-                    </td>
-                    <td className="px-4 py-2 text-ink-muted">
+                    </TD>
+                    <TD className="text-ink-muted">
                       {s.verifiable ? "verified on install" : "not verified"}
-                    </td>
-                    <td className="px-4 py-2 text-right">
-                      <Button disabled={!ok} onClick={() => setInstalling(s)}>
+                    </TD>
+                    <TD className="text-right">
+                      <Button disabled={!ok || !canWrite} title={needsOperator} onClick={() => setInstalling(s)}>
                         Install
                       </Button>
-                    </td>
-                  </tr>
+                    </TD>
+                  </TR>
                 );
               })}
-            </tbody>
-          </table>
+            </TBody>
+          </Table>
         )}
       </div>
       {listing && !listing.min_proxy_checked && (
-        <p className="mt-2 text-xs text-ink-faint">
+        <p className="mt-2 text-xs text-ink-muted">
           Compatibility is checked against sniffer ABI {listing.host_abi}. Each sniffer&apos;s minimum proxy version
           could not be checked against every proxy: the aggregator is unreachable, no proxy is registered, or one
           runs a build that reports no version.
@@ -298,19 +301,19 @@ function AddRegistryDialog({
 function VersionDetails({ version }: { version: RegistryVersion }) {
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-      <dt className="text-ink-faint">Version</dt>
+      <dt className="text-ink-muted">Version</dt>
       <dd className="text-ink">{version.version}</dd>
-      <dt className="text-ink-faint">Size</dt>
+      <dt className="text-ink-muted">Size</dt>
       <dd className="text-ink">{formatBytes(version.size)}</dd>
-      <dt className="text-ink-faint">Memory limit</dt>
+      <dt className="text-ink-muted">Memory limit</dt>
       <dd className="text-ink">{formatBytes(version.limits.max_memory_bytes)} per call</dd>
-      <dt className="text-ink-faint">Time limit</dt>
+      <dt className="text-ink-muted">Time limit</dt>
       <dd className="text-ink">{version.limits.call_timeout_ms} ms per call</dd>
-      <dt className="text-ink-faint">Signature</dt>
+      <dt className="text-ink-muted">Signature</dt>
       <dd className="text-ink">{!version.signature_url ? "none listed" : version.verifiable ? "listed, verified on install" : "listed, not verified"}</dd>
       {version.config && (
         <>
-          <dt className="text-ink-faint">Config</dt>
+          <dt className="text-ink-muted">Config</dt>
           <dd className="text-ink-muted">{version.config}</dd>
         </>
       )}
@@ -371,7 +374,7 @@ export function InstallDialog({
       <p className="text-sm text-ink-muted">
         Installs on every instance, from <span className="font-mono">{registry.name}</span>.
       </p>
-      {error && <p className="text-sm text-bad">{error}</p>}
+      {error && <ErrorState>{error}</ErrorState>}
     </>
   );
 
@@ -425,7 +428,7 @@ function InstallOutcome({ outcome, onClose }: { outcome: InstallResponse; onClos
       <p className="text-ink-muted">
         Installed on {ok} of {outcome.results.length} instances.
       </p>
-      <ul className="divide-y divide-line rounded border border-line">
+      <ul className="divide-y divide-line rounded-sm border border-line">
         {outcome.results.map((r) => (
           <li key={r.instance} className="flex items-start justify-between gap-3 px-3 py-2">
             <span className="font-mono text-ink">{r.instance}</span>
@@ -465,7 +468,7 @@ function PinSnippet({ pin }: { pin: { name: string; sha256: string } }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="flex items-start gap-2">
-      <pre className="flex-1 overflow-x-auto rounded border border-line bg-surface-raised px-3 py-2 font-mono text-xs text-ink">
+      <pre className="flex-1 overflow-x-auto rounded-sm border border-line bg-surface-sunken px-3 py-2 font-mono text-xs text-ink">
         {text}
       </pre>
       <Button

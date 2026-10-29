@@ -2,8 +2,12 @@ import { useEffect, useState } from "react";
 import { ApiError, getTunnelAddresses, releaseTunnelAddress } from "../api";
 import type { TunnelAddresses } from "../types";
 import { Badge } from "../components/ui/Badge";
+import { PageHeader, AlertBar } from "../components/shell/Page";
+import { EmptyState, ErrorState, Loading } from "../components/shell/States";
 import { Button } from "../components/ui/Button";
+import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { useConfirm } from "../components/ui/ConfirmDialog";
+import { useCan } from "../lib/session";
 
 /** "2 min ago" / "3 h ago" / "20 d ago" from unix seconds; the exact time is the cell's tooltip. */
 function ago(unixSecs: number): string {
@@ -27,6 +31,7 @@ export function TunnelAddressesPage() {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const canWrite = useCan("admin");
   const { confirm, dialog } = useConfirm();
 
   async function refresh() {
@@ -69,22 +74,25 @@ export function TunnelAddressesPage() {
 
   return (
     <div className="max-w-4xl">
-      <div className="mb-5 flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-ink">Tunnel addresses</h1>
-        <Button onClick={refresh} disabled={loading}>
-          Refresh
-        </Button>
-      </div>
+      <PageHeader
+        title="Tunnel addresses"
+        summary="Addresses the controller assigned to origins and proxies on the WireGuard network."
+        actions={
+          <Button onClick={refresh} loading={loading}>
+            Refresh
+          </Button>
+        }
+      />
 
       {notice && (
-        <p className="mb-4 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">{notice}</p>
+        <p role="status" className="mb-4 text-sm text-ink-muted">{notice}</p>
       )}
 
       {error && (
-        <p className="mb-4 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">{error}</p>
+        <ErrorState>{error}</ErrorState>
       )}
 
-      {table === null && loading && !error && <p className="text-sm text-ink-muted">Loading…</p>}
+      {table === null && loading && !error && <Loading />}
 
       {table && (
         <>
@@ -104,58 +112,59 @@ export function TunnelAddressesPage() {
           </p>
 
           {staleCount > 0 && (
-            <p className="mb-4 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">
+            <AlertBar>
               A stale owner has not re-registered for longer than the controller's{" "}
               <span className="font-mono">--tunnel-stale-after</span>. Nothing is freed automatically: release
               its address here once you know the owner is gone.
-            </p>
+            </AlertBar>
           )}
 
-          <div className="rounded border border-line bg-surface">
+          <div>
             {table.entries.length === 0 ? (
-              <p className="px-4 py-3 text-sm text-ink-muted">No tunnel addresses assigned yet.</p>
+              <EmptyState>No tunnel addresses assigned yet.</EmptyState>
             ) : (
-              <table className="w-full text-sm">
-                <thead className="text-ink-faint">
-                  <tr className="text-left">
-                    <th className="px-4 py-2 font-medium">address</th>
-                    <th className="px-4 py-2 font-medium">role</th>
-                    <th className="px-4 py-2 font-medium">name</th>
-                    <th className="px-4 py-2 font-medium">first seen</th>
-                    <th className="px-4 py-2 font-medium">last seen</th>
-                    <th className="px-4 py-2 font-medium">status</th>
-                    <th className="px-4 py-2" />
-                  </tr>
-                </thead>
-                <tbody>
+              <Table>
+                <THead>
+                  <TR>
+                    <TH>address</TH>
+                    <TH>role</TH>
+                    <TH>name</TH>
+                    <TH>first seen</TH>
+                    <TH>last seen</TH>
+                    <TH>status</TH>
+                    <TH />
+                  </TR>
+                </THead>
+                <TBody>
                   {table.entries.map((e) => (
-                    <tr key={`${e.role}/${e.name}`} className="border-t border-line">
-                      <td className="px-4 py-2 font-mono text-ink">{e.address}</td>
-                      <td className="px-4 py-2 text-ink-muted">{e.role}</td>
-                      <td className="px-4 py-2 font-mono text-ink">{e.name}</td>
-                      <td className="px-4 py-2 text-ink-muted" title={exact(e.first_seen)}>
+                    <TR key={`${e.role}/${e.name}`}>
+                      <TD className="font-mono text-ink">{e.address}</TD>
+                      <TD className="text-ink-muted">{e.role}</TD>
+                      <TD className="font-mono text-ink">{e.name}</TD>
+                      <TD className="text-ink-muted" title={exact(e.first_seen)}>
                         {ago(e.first_seen)}
-                      </td>
-                      <td className="px-4 py-2 text-ink-muted" title={exact(e.last_seen)}>
+                      </TD>
+                      <TD className="text-ink-muted" title={exact(e.last_seen)}>
                         {ago(e.last_seen)}
-                      </td>
-                      <td className="px-4 py-2">
+                      </TD>
+                      <TD>
                         {e.stale ? <Badge tone="warn">stale</Badge> : <Badge tone="good">active</Badge>}
-                      </td>
-                      <td className="px-4 py-2 text-right">
+                      </TD>
+                      <TD className="text-right">
                         <Button
                           variant="danger"
-                          disabled={busy}
+                          disabled={busy || !canWrite}
+                          title={canWrite ? undefined : "Releasing an address needs the admin role"}
                           aria-label={`Release ${e.name}`}
                           onClick={() => handleRelease(e.role, e.name, e.address)}
                         >
                           Release
                         </Button>
-                      </td>
-                    </tr>
+                      </TD>
+                    </TR>
                   ))}
-                </tbody>
-              </table>
+                </TBody>
+              </Table>
             )}
           </div>
         </>
