@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
 
 import { ConfigHistoryPage } from "./ConfigHistoryPage";
+import { SessionProvider } from "../lib/session";
 
 beforeEach(() => {
   api.listRevisions.mockReset().mockResolvedValue([
@@ -36,5 +37,14 @@ describe("ConfigHistoryPage rollback", () => {
     await userEvent.click(await screen.findByRole("button", { name: "roll back to this" }));
     await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(api.rollbackTo).not.toHaveBeenCalled();
+  });
+
+  it("disables rollback for a role below admin", async () => {
+    render(
+      <SessionProvider value={{ username: "ana", role: "operator" }}>
+        <ConfigHistoryPage />
+      </SessionProvider>,
+    );
+    expect(await screen.findByRole("button", { name: "roll back to this" })).toHaveAttribute("aria-disabled", "true");
   });
 });

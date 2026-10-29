@@ -28,6 +28,11 @@ use crate::role::Role;
 #[derive(Debug, Clone, Default)]
 pub struct Actor(pub Option<String>);
 
+/// The acting role, inserted beside [`Actor`]; `GET /ui/session` reports it so the
+/// frontend can hide what the session may not do (the gates here stay the authority).
+#[derive(Debug, Clone, Copy)]
+pub struct ActorRole(pub Role);
+
 /// Gate requiring a session whose role is at least `min`. With no auth
 /// configured at all (`state.auth_configured()` false — the default), every
 /// request is treated as an anonymous `Role::Admin`, open exactly like every
@@ -35,6 +40,7 @@ pub struct Actor(pub Option<String>);
 pub async fn check_role(state: AppState, mut req: Request, next: Next, min: Role) -> Response {
     if !state.auth_configured() {
         req.extensions_mut().insert(Actor(None));
+        req.extensions_mut().insert(ActorRole(Role::Admin));
         return next.run(req).await;
     }
 
@@ -48,6 +54,7 @@ pub async fn check_role(state: AppState, mut req: Request, next: Next, min: Role
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }
 
+    req.extensions_mut().insert(ActorRole(session.role));
     req.extensions_mut().insert(Actor(session.username));
     next.run(req).await
 }

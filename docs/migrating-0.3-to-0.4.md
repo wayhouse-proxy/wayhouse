@@ -48,6 +48,12 @@ that makes such a change on purpose passes `confirm_within=0` (no window) or con
 controller first: a request that would start a window answers `409` while a member runs an older
 build.
 
+## Stored UI data
+
+The controller now stores dashboards, custom themes, saved filters, the form layout override and the
+deployment defaults (see [Stored UI data](ui-data.md)). Nothing to migrate. Under HA, upgrade every
+controller before the first save: a write is refused (`409`) while a member runs an older build.
+
 ## Secrets
 
 Not yet filled in.

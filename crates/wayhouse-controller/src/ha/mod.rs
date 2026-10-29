@@ -257,6 +257,8 @@ pub enum WriteRequest {
     /// A controller-managed ACME write (sites, account, certificates, retry state). Keys
     /// inside are already sealed by the proposing leader.
     Acme(crate::acme::AcmeOp),
+    /// A UI record write (dashboards, themes, saved filters, form layout, defaults).
+    Ui(crate::ui_data::UiOp),
 }
 
 /// Why a plugin entry changed nothing. Deterministic: every replica gives the
@@ -317,6 +319,8 @@ pub enum WriteResponse {
     PluginRejected(PluginReject),
     /// What an ACME entry did.
     AcmeResult(crate::acme::Applied),
+    /// What a UI data entry did.
+    UiResult(crate::ui_data::Applied),
 }
 
 openraft::declare_raft_types!(

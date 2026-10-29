@@ -79,9 +79,17 @@ export async function logout(): Promise<void> {
   await requestText("/ui/logout", { method: "POST" });
 }
 
-export async function checkSession(): Promise<boolean> {
+export interface SessionInfo {
+  username: string | null;
+  role: "viewer" | "operator" | "admin";
+}
+
+/** The signed-in session, or null when there is none. An older server that omits the role is treated as admin, as it was before roles were reported. */
+export async function getSession(): Promise<SessionInfo | null> {
   const resp = await request("/ui/session");
-  return resp.ok;
+  if (!resp.ok) return null;
+  const body = await resp.json().catch(() => ({}));
+  return { username: body.username ?? null, role: body.role ?? "admin" };
 }
 
 // --- fleet (proxied to wayhouse-aggregator) ---

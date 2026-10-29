@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { AlertBar } from "./shell/Page";
 import { Button } from "./ui/Button";
 import { Dialog } from "./ui/Dialog";
 
@@ -37,7 +38,7 @@ export function RegistryRiskDialog({
     <Dialog open={open} onOpenChange={onOpenChange} title={title}>
       <div className="flex flex-col gap-3 text-sm">
         {children}
-        <p className="rounded border border-warn/40 bg-warn/10 px-3 py-2 text-ink">{EXTERNAL_RISK_TEXT}</p>
+        <AlertBar>{EXTERNAL_RISK_TEXT}</AlertBar>
         <label className="flex items-start gap-2 text-ink-muted">
           <input type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} className="mt-1" />I
           understand and accept this risk

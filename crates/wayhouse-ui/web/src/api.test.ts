@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
-  checkSession,
+  getSession,
   getCurrentConfig,
   installFromRegistry,
   login,
@@ -59,8 +59,17 @@ describe("api", () => {
 
   it("always sends the session cookie and nothing else", async () => {
     const fn = mockFetch(new Response("", { status: 200 }));
-    await checkSession();
+    await getSession();
     expect(fn).toHaveBeenCalledWith("/ui/session", { credentials: "same-origin" });
+  });
+
+  it("getSession reads the role, treats a missing one as admin and a 401 as signed out", async () => {
+    mockFetch(new Response(JSON.stringify({ authenticated: true, username: "ana", role: "viewer" }), { status: 200 }));
+    await expect(getSession()).resolves.toEqual({ username: "ana", role: "viewer" });
+    mockFetch(new Response("{}", { status: 200 }));
+    await expect(getSession()).resolves.toEqual({ username: null, role: "admin" });
+    mockFetch(new Response("unauthorized", { status: 401 }));
+    await expect(getSession()).resolves.toBeNull();
   });
 
   it("installFromRegistry returns the per-instance body of a 502 (nothing accepted) instead of throwing", async () => {

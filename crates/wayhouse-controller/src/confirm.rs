@@ -274,6 +274,7 @@ mod tests {
             secret_key_ids: Vec::new(),
             acme_support: 0,
             confirm_support,
+            ui_support: 0,
         };
         let current = crate::ha::routes::CONFIRM_SUPPORT;
         assert!(
@@ -537,6 +538,7 @@ mod tests {
             secret_key_ids: Vec::new(),
             acme_support: 0,
             confirm_support,
+            ui_support: 0,
         };
         let current = crate::ha::routes::CONFIRM_SUPPORT;
         // A member that is down may be old, but a revert must not wait for it.

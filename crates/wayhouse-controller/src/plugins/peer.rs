@@ -534,6 +534,7 @@ mod tests {
             secret_key_ids: Vec::new(),
             acme_support: 0,
             confirm_support: 0,
+            ui_support: 0,
         }
     }
 
@@ -636,6 +637,7 @@ mod tests {
             secret_key_ids: ids.iter().map(|s| (*s).to_string()).collect(),
             acme_support: 0,
             confirm_support: 0,
+            ui_support: 0,
             ..who(PLUGIN_SUPPORT)
         };
         assert!(

@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import { ApiError, getAcmeAccount, listAcmeGateways, listAcmeSites } from "../api";
 import type { AcmeAccount, AcmeGateway, AcmeSite } from "../types";
+import { EmptyState, ErrorState, Loading } from "../components/shell/States";
+import { PageHeader } from "../components/shell/Page";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
+import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 
 const DAY = 86_400;
 /** Under this many days left, a certificate is "expires soon" and a failing renewal is urgent. */
@@ -87,15 +90,18 @@ export function CertificatesPage() {
 
   return (
     <div className="max-w-5xl">
-      <div className="mb-5 flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-ink">Certificates</h1>
-        <Button onClick={refresh} disabled={loading}>
-          Refresh
-        </Button>
-      </div>
+      <PageHeader
+        title="Certificates"
+        summary="Certificates the controller issues and renews, and the gateways that fetch them."
+        actions={
+          <Button onClick={refresh} loading={loading}>
+            Refresh
+          </Button>
+        }
+      />
 
       {error && (
-        <p className="mb-4 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">
+        <ErrorState>
           {error.message}
           {error instanceof ApiError && error.status === 501 && (
             <>
@@ -103,16 +109,14 @@ export function CertificatesPage() {
               (start the controller with <span className="font-mono">--acme</span>)
             </>
           )}
-        </p>
+        </ErrorState>
       )}
 
       {partial.map((msg) => (
-        <p key={msg} className="mb-4 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">
-          Could not read {msg}
-        </p>
+        <ErrorState key={msg}>Could not read {msg}</ErrorState>
       ))}
 
-      {sites === null && loading && !error && <p className="text-sm text-ink-muted">Loading…</p>}
+      {sites === null && loading && !error && <Loading />}
 
       {account && (
         <p className="mb-4 text-sm text-ink-muted">
@@ -130,39 +134,39 @@ export function CertificatesPage() {
 
       {sites && (
         <>
-          <h2 className="mb-2 text-sm font-semibold text-ink">Sites</h2>
-          <div className="mb-6 rounded border border-line bg-surface">
+          <h2 className="mb-2 text-lg font-semibold">Sites</h2>
+          <div className="mb-6">
             {sites.length === 0 ? (
-              <p className="px-4 py-3 text-sm text-ink-muted">No ACME sites configured.</p>
+              <EmptyState>No ACME sites configured.</EmptyState>
             ) : (
-              <table className="w-full text-sm">
-                <thead className="text-ink-faint">
-                  <tr className="text-left">
-                    <th className="px-4 py-2 font-medium">site</th>
-                    <th className="px-4 py-2 font-medium">names</th>
-                    <th className="px-4 py-2 font-medium">challenge</th>
-                    <th className="px-4 py-2 font-medium">expires</th>
-                    <th className="px-4 py-2 font-medium">status</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <Table>
+                <THead>
+                  <TR>
+                    <TH>site</TH>
+                    <TH>names</TH>
+                    <TH>challenge</TH>
+                    <TH>expires</TH>
+                    <TH>status</TH>
+                  </TR>
+                </THead>
+                <TBody>
                   {sites.map((s) => {
                     const st = status(s);
                     return (
-                      <tr key={s.name} className="border-t border-line align-top">
-                        <td className="px-4 py-2 font-mono text-ink">{s.name}</td>
-                        <td className="px-4 py-2 font-mono text-ink-muted">{s.names.join(", ")}</td>
-                        <td className="px-4 py-2 text-ink-muted">
+                      <TR key={s.name} className="align-top">
+                        <TD className="font-mono text-ink">{s.name}</TD>
+                        <TD className="font-mono text-ink-muted">{s.names.join(", ")}</TD>
+                        <TD className="text-ink-muted">
                           {s.challenge}
                           {s.challenge_zone && ` via ${s.challenge_zone}`}
-                        </td>
-                        <td
-                          className="px-4 py-2 text-ink-muted"
+                        </TD>
+                        <TD
+                          className="text-ink-muted"
                           title={s.certificate ? exact(s.certificate.not_after) : undefined}
                         >
                           {s.certificate ? relative(s.certificate.not_after) : "–"}
-                        </td>
-                        <td className="px-4 py-2">
+                        </TD>
+                        <TD>
                           <Badge tone={st.tone}>{st.label}</Badge>
                           {s.attempt?.last_error && (
                             <p className="mt-1 max-w-sm break-words text-xs text-ink-muted">
@@ -174,42 +178,42 @@ export function CertificatesPage() {
                           {s.certificate?.held && (
                             <p className="mt-1 text-xs text-ink-muted">{s.certificate.held}</p>
                           )}
-                        </td>
-                      </tr>
+                        </TD>
+                      </TR>
                     );
                   })}
-                </tbody>
-              </table>
+                </TBody>
+              </Table>
             )}
           </div>
 
-          <h2 className="mb-2 text-sm font-semibold text-ink">Gateways</h2>
-          <div className="rounded border border-line bg-surface">
+          <h2 className="mb-2 text-lg font-semibold">Gateways</h2>
+          <div>
             {gateways.length === 0 ? (
-              <p className="px-4 py-3 text-sm text-ink-muted">No gateways registered.</p>
+              <EmptyState>No gateways registered.</EmptyState>
             ) : (
-              <table className="w-full text-sm">
-                <thead className="text-ink-faint">
-                  <tr className="text-left">
-                    <th className="px-4 py-2 font-medium">gateway</th>
-                    <th className="px-4 py-2 font-medium">created</th>
-                    <th className="px-4 py-2 font-medium">may fetch</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <Table>
+                <THead>
+                  <TR>
+                    <TH>gateway</TH>
+                    <TH>created</TH>
+                    <TH>may fetch</TH>
+                  </TR>
+                </THead>
+                <TBody>
                   {gateways.map((g) => (
-                    <tr key={g.name} className="border-t border-line">
-                      <td className="px-4 py-2 font-mono text-ink">{g.name}</td>
-                      <td className="px-4 py-2 text-ink-muted" title={exact(g.created_at)}>
+                    <TR key={g.name}>
+                      <TD className="font-mono text-ink">{g.name}</TD>
+                      <TD className="text-ink-muted" title={exact(g.created_at)}>
                         {relative(g.created_at)}
-                      </td>
-                      <td className="px-4 py-2 font-mono text-ink-muted">
+                      </TD>
+                      <TD className="font-mono text-ink-muted">
                         {g.sites.length > 0 ? g.sites.join(", ") : "no site"}
-                      </td>
-                    </tr>
+                      </TD>
+                    </TR>
                   ))}
-                </tbody>
-              </table>
+                </TBody>
+              </Table>
             )}
           </div>
         </>

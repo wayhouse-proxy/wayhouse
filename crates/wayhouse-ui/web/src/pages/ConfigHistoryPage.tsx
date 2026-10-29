@@ -1,8 +1,13 @@
+import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { useEffect, useState } from "react";
 import { ApiError, diffRevision, listRevisions, rollbackTo } from "../api";
 import type { RevisionSummary } from "../types";
 import { Badge } from "../components/ui/Badge";
+import { Button } from "../components/ui/Button";
+import { PageHeader } from "../components/shell/Page";
+import { EmptyState, Loading } from "../components/shell/States";
 import { useConfirm } from "../components/ui/ConfirmDialog";
+import { useCan } from "../lib/session";
 
 export function ConfigHistoryPage() {
   const [revisions, setRevisions] = useState<RevisionSummary[]>([]);
@@ -10,6 +15,7 @@ export function ConfigHistoryPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const canWrite = useCan("admin");
   const { confirm, dialog } = useConfirm();
 
   async function refresh() {
@@ -54,60 +60,59 @@ export function ConfigHistoryPage() {
     }
   }
 
-  if (loading) return <p className="text-sm text-ink-muted">Loading…</p>;
+  if (loading) return <Loading />;
 
   return (
     <div className="max-w-3xl">
-      <h1 className="mb-5 text-lg font-semibold text-ink">Config history</h1>
+      <PageHeader title="Config history" summary="Every submitted configuration is a revision. Compare one with the current revision or roll back to it." />
 
       {notice && (
-        <p className="mb-4 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">{notice}</p>
+        <p role="status" className="mb-4 text-sm text-ink-muted">{notice}</p>
       )}
 
-      <div className="rounded border border-line bg-surface">
+      <div>
         {revisions.length === 0 ? (
-          <p className="px-4 py-3 text-sm text-ink-muted">No revisions submitted yet.</p>
+          <EmptyState>No revisions submitted yet.</EmptyState>
         ) : (
-          <table className="w-full text-sm">
-            <thead className="text-ink-faint">
-              <tr className="text-left">
-                <th className="px-4 py-2 font-medium">revision</th>
-                <th className="px-4 py-2 font-medium">size</th>
-                <th className="px-4 py-2 font-medium"></th>
-                <th className="px-4 py-2"></th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table>
+            <THead>
+              <TR>
+                <TH>revision</TH>
+                <TH>size</TH>
+                <TH></TH>
+                <TH></TH>
+              </TR>
+            </THead>
+            <TBody>
               {revisions.map((r) => (
-                <tr key={r.revision} className="border-t border-line">
-                  <td className="px-4 py-2 font-mono text-ink">{r.revision}</td>
-                  <td className="px-4 py-2 text-ink-muted">{r.size_bytes} B</td>
-                  <td className="px-4 py-2">{r.current && <Badge tone="good">current</Badge>}</td>
-                  <td className="px-4 py-2 text-right">
-                    <button onClick={() => showDiff(r.revision)} className="mr-3 text-accent hover:underline">
+                <TR key={r.revision}>
+                  <TD className="font-mono text-ink">{r.revision}</TD>
+                  <TD className="text-ink-muted">{r.size_bytes} B</TD>
+                  <TD>{r.current && <Badge tone="good">current</Badge>}</TD>
+                  <TD className="text-right">
+                    <Button variant="ghost" size="sm" onClick={() => showDiff(r.revision)}>
                       diff vs. current
-                    </button>
+                    </Button>
                     {!r.current && (
-                      <button
-                        onClick={() => doRollback(r.revision)}
-                        disabled={busy}
-                        className="text-warn hover:underline disabled:opacity-50"
-                      >
+                      <Button variant="danger" size="sm" onClick={() => doRollback(r.revision)}
+                      disabled={busy || !canWrite}
+                      title={canWrite ? undefined : "Rolling back needs the admin role"}
+                    >
                         roll back to this
-                      </button>
+                      </Button>
                     )}
-                  </td>
-                </tr>
+                  </TD>
+                </TR>
               ))}
-            </tbody>
-          </table>
+            </TBody>
+          </Table>
         )}
       </div>
 
       {diff !== null && (
-        <section className="mt-4 rounded border border-line bg-surface p-4">
-          <h3 className="mb-2 text-sm font-medium text-ink">Diff</h3>
-          <pre className="overflow-x-auto rounded bg-bg p-3 font-mono text-xs text-ink-muted">{diff}</pre>
+        <section className="mt-4">
+          <h2 className="mb-2 text-lg font-semibold">Diff</h2>
+          <pre className="overflow-x-auto border border-line bg-surface-sunken p-3 font-mono text-xs">{diff}</pre>
         </section>
       )}
       {dialog}

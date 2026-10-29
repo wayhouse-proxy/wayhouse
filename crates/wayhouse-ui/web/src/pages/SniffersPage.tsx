@@ -2,14 +2,20 @@ import { useEffect, useState } from "react";
 import { useFleetSocket } from "../useFleetSocket";
 import { ApiError, deleteSniffer, listInstanceSniffers, rollbackSniffer, uploadSniffer } from "../api";
 import type { SnifferInfo } from "../types";
+import { Select } from "../components/ui/Input";
+import { useCan } from "../lib/session";
+import { PageHeader } from "../components/shell/Page";
+import { EmptyState, ErrorState } from "../components/shell/States";
 import { Badge } from "../components/ui/Badge";
 import { Button, Input } from "../components/ui/Button";
+import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { Dialog } from "../components/ui/Dialog";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { RegistrySection } from "./RegistrySection";
 import { UpdatesSection } from "./UpdatesSection";
 
 export function SniffersPage() {
+  const canWrite = useCan("operator");
   const { instances } = useFleetSocket();
   const [selected, setSelected] = useState<string | null>(null);
   const [modules, setModules] = useState<SnifferInfo[] | null>(null);
@@ -83,56 +89,60 @@ export function SniffersPage() {
 
   return (
     <div className="max-w-3xl">
-      <div className="mb-5 flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-ink">Sniffers</h1>
-        <Button variant="primary" onClick={() => setUploadOpen(true)}>
-          Upload module
-        </Button>
-      </div>
+      <PageHeader
+        title="Sniffers"
+        summary="WASM modules that recognise a game protocol or hostname on a connection."
+        actions={
+          <Button
+            variant="primary"
+            disabled={!canWrite}
+            title={canWrite ? undefined : "Uploading modules needs the operator role"}
+            onClick={() => setUploadOpen(true)}
+          >
+            Upload module
+          </Button>
+        }
+      />
 
       <div className="mb-4 flex items-center gap-2 text-sm">
-        <label className="text-ink-muted">Instance</label>
-        <select
-          value={instanceName ?? ""}
-          onChange={(e) => setSelected(e.target.value)}
-          className="rounded border border-line bg-surface px-2 py-1 text-ink"
-        >
+        <label htmlFor="sniffer-instance" className="text-ink-muted">Instance</label>
+        <Select id="sniffer-instance" value={instanceName ?? ""} onChange={(e) => setSelected(e.target.value)}>
           {instances.length === 0 && <option>no instances known yet</option>}
           {instances.map((i) => (
             <option key={i.instance} value={i.instance}>
               {i.instance}
             </option>
           ))}
-        </select>
+        </Select>
       </div>
 
       {notice && (
-        <p className="mb-4 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">{notice}</p>
+        <p role="status" className="mb-4 text-sm text-ink-muted">{notice}</p>
       )}
 
-      <div className="rounded border border-line bg-surface">
-        {error && <p className="px-4 py-3 text-sm text-ink-muted">{error}</p>}
+      <div>
+        {error && <ErrorState>{error}</ErrorState>}
         {!error && modules?.length === 0 && (
-          <p className="px-4 py-3 text-sm text-ink-muted">No modules in this instance's sniffers.dir.</p>
+          <EmptyState>No modules in this instance's sniffers.dir. Upload one to add it.</EmptyState>
         )}
         {!error && modules && modules.length > 0 && (
-          <table className="w-full text-sm">
-            <thead className="text-ink-faint">
-              <tr className="text-left">
-                <th className="px-4 py-2 font-medium">name</th>
-                <th className="px-4 py-2 font-medium">sha256</th>
-                <th className="px-4 py-2 font-medium">size</th>
-                <th className="px-4 py-2 font-medium">status</th>
-                <th className="px-4 py-2"></th>
-              </tr>
-            </thead>
-            <tbody>
+          <Table>
+            <THead>
+              <TR>
+                <TH>name</TH>
+                <TH>sha256</TH>
+                <TH>size</TH>
+                <TH>status</TH>
+                <TH></TH>
+              </TR>
+            </THead>
+            <TBody>
               {modules.map((m) => (
-                <tr key={m.name} className="border-t border-line">
-                  <td className="px-4 py-2 font-mono text-ink">{m.name}</td>
-                  <td className="px-4 py-2 font-mono text-xs text-ink-faint">{m.sha256.slice(0, 12)}…</td>
-                  <td className="px-4 py-2 text-ink-muted">{m.size_bytes} B</td>
-                  <td className="px-4 py-2">
+                <TR key={m.name}>
+                  <TD className="font-mono text-ink">{m.name}</TD>
+                  <TD className="font-mono text-xs text-ink-muted">{m.sha256.slice(0, 12)}…</TD>
+                  <TD className="text-ink-muted">{m.size_bytes} B</TD>
+                  <TD>
                     {m.loaded ? <Badge tone="good">loaded</Badge> : <Badge tone="warn">not loaded</Badge>}
                     {m.fallback && (
                       <span
@@ -142,29 +152,21 @@ export function SniffersPage() {
                         <Badge tone="warn">fallback active</Badge>
                       </span>
                     )}
-                  </td>
-                  <td className="px-4 py-2 text-right">
+                  </TD>
+                  <TD className="text-right">
                     {m.has_previous && (
-                      <button
-                        onClick={() => handleRollback(m.name)}
-                        disabled={busy}
-                        className="mr-3 text-ink-muted hover:underline disabled:opacity-50"
-                      >
+                      <Button size="sm" onClick={() => handleRollback(m.name)} disabled={busy || !canWrite}>
                         roll back
-                      </button>
+                      </Button>
                     )}
-                    <button
-                      onClick={() => handleDelete(m.name)}
-                      disabled={busy}
-                      className="text-bad hover:underline disabled:opacity-50"
-                    >
+                    <Button variant="danger" size="sm" onClick={() => handleDelete(m.name)} disabled={busy || !canWrite}>
                       remove
-                    </button>
-                  </td>
-                </tr>
+                    </Button>
+                  </TD>
+                </TR>
               ))}
-            </tbody>
-          </table>
+            </TBody>
+          </Table>
         )}
       </div>
 
@@ -235,7 +237,7 @@ function UploadDialog({
             className="text-sm text-ink"
           />
         </label>
-        {error && <p className="text-sm text-bad">{error}</p>}
+        {error && <ErrorState>{error}</ErrorState>}
         <div className="mt-2 flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel

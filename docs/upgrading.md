@@ -66,6 +66,9 @@ Confirm-and-revert for config revisions (a revision on trial, see
 [operations](06-operations-observability.md)) follows the same rule under HA: upgrade every
 controller first, the leader refuses to start a window while a member reports no support.
 
+Stored UI data (dashboards, themes, filters, see [ui-data.md](ui-data.md)) follows the same
+rule under HA: upgrade every controller before the first save.
+
 ## Upgrading from 0.2.0 to 0.3.0
 
 0.3.0 replaces the controller's embedded database (`sled` to `redb`) **without a

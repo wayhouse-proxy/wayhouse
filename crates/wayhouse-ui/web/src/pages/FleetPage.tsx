@@ -17,7 +17,14 @@ import {
     type GroupNode,
 } from "../lib/groupTree";
 import { Badge } from "../components/ui/Badge";
+import { StatusMark } from "../components/ui/StatusMark";
+import { Select } from "../components/ui/Input";
+import { ChevronRight } from "lucide-react";
+import { useCan } from "../lib/session";
+import { PageHeader } from "../components/shell/Page";
+import { EmptyState } from "../components/shell/States";
 import { Button, Input } from "../components/ui/Button";
+import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { useConfirm, type ConfirmOptions } from "../components/ui/ConfirmDialog";
 
 /** What every row/form needs to act: run a request, ask first, and know if one is in flight. */
@@ -60,33 +67,42 @@ export function FleetPage() {
             .finally(() => setBusy(false));
     }
 
-    const actions: Actions = { report, confirm, busy };
+    // A viewer can read the fleet but not run its verbs; the server refuses them too.
+    const canOperate = useCan("operator");
+    const actions: Actions = { report, confirm, busy: busy || !canOperate };
     const tree = buildGroupTree(instances);
 
     return (
         <div className="max-w-4xl">
-            <div className="mb-5 flex items-center justify-between">
-                <h1 className="text-lg font-semibold text-ink">Fleet</h1>
-                <span className="flex items-center gap-1.5 text-xs text-ink-muted">
-                    <span
-                        className={`h-1.5 w-1.5 rounded-full ${connected ? "bg-good" : "bg-bad"}`}
+            <PageHeader
+                title="Fleet"
+                summary="Instances that report to the aggregator, grouped by their fleet group."
+                actions={
+                    <StatusMark
+                        state={connected ? "up" : "down"}
+                        word={connected ? "live" : "reconnecting…"}
                     />
-                    {connected ? "live" : "reconnecting…"}
-                </span>
-            </div>
+                }
+            />
+
+            {!canOperate && (
+                <p className="mb-4 text-sm text-ink-muted">
+                    Your role can view the fleet but not change it.
+                </p>
+            )}
 
             {notice && (
-                <p className="mb-4 rounded border border-line bg-surface px-3 py-2 text-sm text-ink-muted">
+                <p role="status" className="mb-4 text-sm text-ink-muted">
                     {notice}
                 </p>
             )}
 
             {instances.length === 0 ? (
-                <p className="text-sm text-ink-muted">
+                <EmptyState>
                     No instances have pushed a fleet-state summary yet.
-                </p>
+                </EmptyState>
             ) : (
-                <div className="rounded border border-line bg-surface">
+                <div className="border border-line bg-surface">
                     {tree.children.map((child) => (
                         <GroupRow
                             key={child.path}
@@ -129,14 +145,12 @@ function GroupRow({
         <div className="border-b border-line last:border-b-0">
             <button
                 onClick={() => setOpen((o) => !o)}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-raised"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-sunken"
                 style={{ paddingLeft: `${depth * 1.25 + 0.75}rem` }}
             >
-                <span className="w-3 shrink-0 text-ink-faint">
-                    {open ? "▾" : "▸"}
-                </span>
+                <ChevronRight aria-hidden size={16} strokeWidth={1.5} className={`shrink-0 text-ink-muted transition-transform duration-(--dur-fast) ${open ? "rotate-90" : ""}`} />
                 <span className="font-mono text-ink">{node.segment}/</span>
-                <span className="text-ink-faint">
+                <span className="text-ink-muted">
                     {count} instance{count === 1 ? "" : "s"}
                 </span>
                 {unhealthy > 0 && (
@@ -187,14 +201,12 @@ function InstanceBlock({
         <div className="border-b border-line last:border-b-0">
             <button
                 onClick={() => setOpen((o) => !o)}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-raised"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-surface-sunken"
                 style={{ paddingLeft: `${depth * 1.25 + 0.75}rem` }}
             >
-                <span className="w-3 shrink-0 text-ink-faint">
-                    {open ? "▾" : "▸"}
-                </span>
+                <ChevronRight aria-hidden size={16} strokeWidth={1.5} className={`shrink-0 text-ink-muted transition-transform duration-(--dur-fast) ${open ? "rotate-90" : ""}`} />
                 <span
-                    className={`font-mono ${inst.stale ? "text-ink-faint" : "text-ink"}`}
+                    className={`font-mono ${inst.stale ? "text-ink-muted" : "text-ink"}`}
                 >
                     {inst.instance}
                 </span>
@@ -215,7 +227,7 @@ function InstanceBlock({
                 ) : (
                     <Badge tone="good">healthy</Badge>
                 )}
-                <span className="ml-auto text-xs text-ink-faint">
+                <span className="ml-auto text-xs text-ink-muted">
                     {(inst.last_seen_ms_ago / 1000).toFixed(1)}s ago ·{" "}
                     {inst.sessions.tcp + inst.sessions.udp} sessions
                 </span>
@@ -259,51 +271,51 @@ function InstanceBlock({
                         </Button>
                     </div>
                     {rows.length === 0 ? (
-                        <p className="text-xs text-ink-faint">
+                        <p className="text-xs text-ink-muted">
                             No pools reported.
                         </p>
                     ) : (
                         <>
-                            <p className="mb-1.5 text-xs text-ink-faint">
+                            <p className="mb-1.5 text-xs text-ink-muted">
                                 Backend state and remove apply fleet-wide: every
                                 instance with a matching pool/address applies
                                 the change, others report 404 — see the result
                                 notice above after acting.
                             </p>
-                            <table className="w-full max-w-2xl text-xs">
-                                <thead className="text-ink-faint">
-                                    <tr className="text-left">
-                                        <th className="py-1 font-medium">
+                            <Table>
+                                <THead>
+                                    <TR>
+                                        <TH>
                                             pool
-                                        </th>
-                                        <th className="py-1 font-medium">
+                                        </TH>
+                                        <TH>
                                             backend
-                                        </th>
-                                        <th className="py-1 font-medium">
+                                        </TH>
+                                        <TH>
                                             health
-                                        </th>
-                                        <th className="py-1 font-medium">
+                                        </TH>
+                                        <TH>
                                             state
-                                        </th>
-                                        <th className="py-1 font-medium">
+                                        </TH>
+                                        <TH>
                                             active
-                                        </th>
-                                        <th className="py-1"></th>
-                                    </tr>
-                                </thead>
-                                <tbody>
+                                        </TH>
+                                        <TH></TH>
+                                    </TR>
+                                </THead>
+                                <TBody>
                                     {rows.map(({ pool, b }) => (
-                                        <tr
+                                        <TR
                                             key={`${pool.name}-${b.addr}`}
                                             className="border-t border-line/60"
                                         >
-                                            <td className="py-1.5 text-ink-muted">
+                                            <TD className="text-ink-muted">
                                                 {pool.name}
-                                            </td>
-                                            <td className="py-1.5 font-mono text-ink">
+                                            </TD>
+                                            <TD className="font-mono text-ink">
                                                 {b.addr}
-                                            </td>
-                                            <td className="py-1.5">
+                                            </TD>
+                                            <TD>
                                                 {b.healthy ? (
                                                     <Badge tone="good">
                                                         healthy
@@ -313,9 +325,9 @@ function InstanceBlock({
                                                         unhealthy
                                                     </Badge>
                                                 )}
-                                            </td>
-                                            <td className="py-1.5">
-                                                <select
+                                            </TD>
+                                            <TD>
+                                                <Select
                                                     value={b.state}
                                                     disabled={busy}
                                                     onChange={async (e) => {
@@ -347,8 +359,7 @@ function InstanceBlock({
                                                             ),
                                                         );
                                                     }}
-                                                    className="rounded border border-line bg-surface px-1.5 py-0.5 text-ink"
-                                                >
+                                                    >
                                                     <option value="enabled">
                                                         enabled
                                                     </option>
@@ -358,13 +369,15 @@ function InstanceBlock({
                                                     <option value="disabled">
                                                         disabled
                                                     </option>
-                                                </select>
-                                            </td>
-                                            <td className="py-1.5 text-ink-muted">
+                                                </Select>
+                                            </TD>
+                                            <TD className="text-ink-muted">
                                                 {b.active}
-                                            </td>
-                                            <td className="py-1.5">
-                                                <button
+                                            </TD>
+                                            <TD>
+                                                <Button
+                                                    variant="danger"
+                                                    size="sm"
                                                     disabled={busy}
                                                     onClick={async () => {
                                                         const ok = await confirm({
@@ -381,15 +394,14 @@ function InstanceBlock({
                                                                 ),
                                                             );
                                                     }}
-                                                    className="text-bad hover:underline disabled:opacity-50"
                                                 >
                                                     remove
-                                                </button>
-                                            </td>
-                                        </tr>
+                                                </Button>
+                                            </TD>
+                                        </TR>
                                     ))}
-                                </tbody>
-                            </table>
+                                </TBody>
+                            </Table>
                         </>
                     )}
                 </div>
@@ -407,9 +419,9 @@ function BroadcastForms({ actions }: { actions: Actions }) {
     const [hintTtl, setHintTtl] = useState(30);
 
     return (
-        <div className="mt-6 grid grid-cols-2 gap-4">
-            <section className="rounded border border-line bg-surface p-4">
-                <h3 className="mb-3 text-sm font-medium text-ink">
+        <div className="mt-6 grid gap-4 min-[760px]:grid-cols-2">
+            <section className="border border-line bg-surface p-4">
+                <h3 className="mb-3 text-lg font-semibold">
                     Add a backend (every instance)
                 </h3>
                 <form
@@ -438,8 +450,8 @@ function BroadcastForms({ actions }: { actions: Actions }) {
                 </form>
             </section>
 
-            <section className="rounded border border-line bg-surface p-4">
-                <h3 className="mb-3 text-sm font-medium text-ink">
+            <section className="border border-line bg-surface p-4">
+                <h3 className="mb-3 text-lg font-semibold">
                     Route hint (every instance)
                 </h3>
                 <form

@@ -247,6 +247,7 @@ mod tests {
             secret_key_ids: Vec::new(),
             acme_support,
             confirm_support: 0,
+            ui_support: 0,
         };
         assert!(
             check_support_answers(&[]).is_ok(),
