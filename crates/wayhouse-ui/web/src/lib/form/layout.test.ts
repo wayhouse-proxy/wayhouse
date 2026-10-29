@@ -17,10 +17,10 @@ describe("layout", () => {
   });
 
   it("an override ignores unknown paths and keys with a warning, never an error", () => {
-    const r = parseOverride(JSON.stringify({ version: 1, fields: { "settings.workers": { label: "Threads", color: "red" }, "settings.nope": { label: "x" } } }), KNOWN);
+    const r = parseOverride(JSON.stringify({ version: 1, fields: { "/settings/workers": { help: "Tasks", color: "red", label: "Threads" }, "/settings/nope": { help: "x" } } }), KNOWN);
     expect(r.error).toBeUndefined();
-    expect(r.layout.fields).toEqual({ "settings.workers": { label: "Threads" } });
-    expect(r.warnings).toHaveLength(2);
+    expect(r.layout.fields).toEqual({ "settings.workers": { help: "Tasks" } });
+    expect(r.warnings).toHaveLength(3);
   });
 
   it.each([["{", /not valid JSON/], ['{"version":2,"fields":{}}', /must be an object/], ['{"version":1}', /must be an object/]])(
@@ -78,8 +78,8 @@ describe("useLayout", () => {
     const bad = renderHook(() => useLayout(raw, "{nope")).result.current;
     expect(bad.layout).toBe(DEFAULT_LAYOUT);
     expect(bad.notice).toMatch(/not used/);
-    const warn = renderHook(() => useLayout(raw, '{"version":1,"fields":{"settings.workers":{"label":"T"},"x.y":{}}}')).result.current;
-    expect(warn.layout.fields["settings.workers"].label).toBe("T");
-    expect(warn.notice).toMatch(/x\.y/);
+    const warn = renderHook(() => useLayout(raw, '{"version":1,"fields":{"/settings/workers":{"help":"T"},"/x/y":{}}}')).result.current;
+    expect(warn.layout.fields["settings.workers"].help).toBe("T");
+    expect(warn.notice).toMatch(/\/x\/y/);
   });
 });

@@ -30,8 +30,20 @@ export const DEFAULT_LAYOUT = defaultLayout as Layout;
 /** `listeners.0.bind` is looked up as `listeners.*.bind`. */
 export const patternOf = (path: (string | number)[]) => path.map((p) => (typeof p === "number" ? "*" : p)).join(".");
 
-const FIELD_KEYS = new Set(["label", "help", "group", "order", "widget", "unit", "advanced", "page"]);
+/** What an override may set. The controller stores exactly these (docs/ui-data.md); `label` and `unit` belong to the shipped default only. */
+const FIELD_KEYS = new Set(["help", "group", "order", "widget", "advanced", "page"]);
 const WIDGETS = new Set(["secret", "lines", "select", "switch", "number", "text"]);
+
+/** An override key is a JSON Pointer into the config document (`/pools/0/targets`; a number or a star stands for any list item); the dotted form of the shipped default is accepted too. */
+export function patternFromKey(key: string): string {
+  if (!key.startsWith("/")) return key;
+  return key
+    .slice(1)
+    .split("/")
+    .map((s) => s.replace(/~1/g, "/").replace(/~0/g, "~"))
+    .map((s) => (/^\d+$/.test(s) ? "*" : s))
+    .join(".");
+}
 
 export interface LayoutResult {
   layout: Layout;
@@ -54,8 +66,9 @@ export function parseOverride(text: string, knownPaths: Set<string>): LayoutResu
     return { layout: { version: 1, fields: {} }, warnings: [], error: 'The layout must be an object like {"version": 1, "fields": {...}}.' };
   const fields: Record<string, FieldLayout> = {};
   const warnings: string[] = [];
-  for (const [path, f] of Object.entries<any>(raw.fields)) {
-    if (!knownPaths.has(path)) {
+  for (const [key, f] of Object.entries<any>(raw.fields)) {
+    const path = key;
+    if (!knownPaths.has(patternFromKey(key))) {
       warnings.push(`"${path}" is not a field of the configuration; ignored.`);
       continue;
     }
@@ -71,7 +84,7 @@ export function parseOverride(text: string, knownPaths: Set<string>): LayoutResu
         warnings.push(`"${path}": "${k}" has the wrong type; ignored.`);
       else clean[k] = v;
     }
-    fields[path] = clean as FieldLayout;
+    fields[patternFromKey(key)] = clean as FieldLayout;
   }
   return { layout: { version: 1, fields }, warnings };
 }
