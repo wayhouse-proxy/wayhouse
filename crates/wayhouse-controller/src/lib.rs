@@ -27,6 +27,7 @@ pub mod acme;
 pub mod addresses;
 pub mod adopt;
 pub mod api;
+pub mod confirm;
 pub mod ha;
 pub mod intent;
 pub mod kv;

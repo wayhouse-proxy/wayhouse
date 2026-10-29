@@ -69,7 +69,15 @@ pub struct Whoami {
     /// predates them.
     #[serde(default)]
     pub acme_support: u32,
+    /// Whether this build decodes config trials ([`CONFIRM_SUPPORT`]); `0` for a build that
+    /// predates them.
+    #[serde(default)]
+    pub confirm_support: u32,
 }
+
+/// The config trial replication level this build speaks (`1`: `Config.trial` and
+/// `ConfirmConfig`).
+pub const CONFIRM_SUPPORT: u32 = 1;
 
 /// The ACME replication level this build speaks (`1`: sites, account, certificates; `2` adds
 /// gateways, `3` adds `challenge_zone` on sites, `4` adds HTTP-01 sites and challenge answers,
@@ -97,6 +105,7 @@ async fn whoami(State(ha): State<Arc<HaHandle>>) -> impl IntoResponse {
         },
         secret_key_ids: ha.secret_keys.current().key_ids(),
         acme_support: ACME_SUPPORT,
+        confirm_support: CONFIRM_SUPPORT,
     })
 }
 

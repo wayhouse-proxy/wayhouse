@@ -10,6 +10,9 @@
 //! release —
 //! phase 10's "full management" GUI level, `docs/10`) are `Role::Admin`.
 //!
+//! `GET /api/config/pending` (viewer) shows the revision on trial and its countdown;
+//! `POST /api/config/confirm/{revision}` and `POST /api/config/revert` (admin) end the trial.
+//!
 //! `GET /api/config/schema` (viewer) and `POST /api/config/validate` (admin) front the controller's
 //! editor endpoints; `POST /api/config?base=<rev>` passes the base-revision guard (and its `409`)
 //! through untouched.
@@ -41,6 +44,7 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/config/revisions", get(list_revisions))
         .route("/api/config/revisions/{revision}", get(get_revision))
         .route("/api/config/revisions/{revision}/diff", get(diff_revision))
+        .route("/api/config/pending", get(pending_config))
         .route("/api/tunnel/addresses", get(tunnel_addresses))
         .route("/api/plugins", get(list_plugins))
         .route("/api/plugin-routes", get(plugin_routes))
@@ -56,6 +60,8 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/config/validate", post(validate_config))
         .route("/api/config/rollback/{revision}", post(rollback))
         .route("/api/config/promote/{revision}", post(promote))
+        .route("/api/config/confirm/{revision}", post(confirm_revision))
+        .route("/api/config/revert", post(revert_config))
         .route("/api/tunnel/origins/{name}", delete(release_origin))
         .route("/api/tunnel/proxies/{name}", delete(release_proxy))
         .route(
@@ -284,6 +290,47 @@ async fn rollback(
         &state,
         Method::POST,
         format!("/config/rollback/{revision}"),
+        None,
+        actor,
+    )
+    .await
+}
+
+/// The revision on trial with its remaining time, and what counts as risky.
+async fn pending_config(State(state): State<AppState>) -> Response {
+    proxy(
+        &state,
+        Method::GET,
+        "/config/pending".to_string(),
+        None,
+        None,
+    )
+    .await
+}
+
+async fn confirm_revision(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(revision): Path<u64>,
+) -> Response {
+    proxy(
+        &state,
+        Method::POST,
+        format!("/config/confirm/{revision}"),
+        None,
+        actor,
+    )
+    .await
+}
+
+async fn revert_config(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+) -> Response {
+    proxy(
+        &state,
+        Method::POST,
+        "/config/revert".to_string(),
         None,
         actor,
     )

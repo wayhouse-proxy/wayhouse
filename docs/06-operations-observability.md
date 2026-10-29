@@ -373,6 +373,32 @@ store that never forgets a revision (ADR 20):
 - `POST /config/rollback/{revision}` — re-submits that revision's exact bytes
   through the same validate-then-store path `POST /config` uses; rollback
   never rewrites history, it creates a new revision with old content.
+- `POST /config[?confirm_within=<secs>]`, `GET /config/pending`,
+  `POST /config/confirm/{revision}`, `POST /config/revert` — **confirm and
+  revert**, the guard against locking yourself out. A revision submitted with
+  `confirm_within` (10 to 600 seconds) is applied on trial: the controller
+  records the revision to fall back to and a deadline, and unless
+  `POST /config/confirm/{revision}` arrives first it re-submits the previous
+  revision's bytes as a new revision (history is kept; the actor of that
+  revision is `auto-revert`). Without `confirm_within` a window of 60 seconds
+  starts by itself when the diff changes `settings.admin.listen`,
+  `settings.admin.auth_token`, `settings.admin.tls`, `settings.gossip`, or a
+  listener on the admin port; `confirm_within=0` opts out whatever the diff (for
+  automation that moves those settings on purpose). The first revision, a
+  canary revision and a revert never start a window. `GET /config/pending`
+  answers `{pending, now_ms, auto_confirm_secs, risks}`: `pending` is `null` or
+  `{revision, revert_to, deadline_ms, reasons, remaining_ms}`, `reasons` are ids
+  from `risks` (the list of what counts as risky, with text), and `now_ms` is
+  the controller's clock, so every operator's page shows the same countdown and a
+  closed browser tab changes nothing. `POST /config/revert` ends the trial
+  at once; both it and confirm answer `409` when nothing (or another revision)
+  is on trial. A newer revision retires the trial without reverting. The
+  revert runs on the leader under HA and picks up a window the previous
+  leader opened; a restarted controller resumes from the stored deadline and
+  reverts at once when it passed while the controller was down. The deadline is
+  the proposing controller's clock, so HA controllers need clocks within a
+  second or so of each other. A listener on the UI port is not detected (the
+  controller does not know it): pass `confirm_within`.
 
 A `wayhouse` instance opts in with `--controller <url>` (+ `--controller-token` if
 the controller requires one) **instead of** `--config <file>` — the two are

@@ -100,6 +100,7 @@ mod header_contract {
         ("GET", "/api/config/revisions"),
         ("GET", "/api/config/revisions/1"),
         ("GET", "/api/config/revisions/1/diff?against=2"),
+        ("GET", "/api/config/pending"),
         ("GET", "/api/tunnel/addresses"),
         ("GET", "/api/acme/sites"),
         ("GET", "/api/acme/gateways"),
@@ -109,6 +110,8 @@ mod header_contract {
         ("POST", "/api/config/validate"),
         ("POST", "/api/config/rollback/1"),
         ("POST", "/api/config/promote/1"),
+        ("POST", "/api/config/confirm/1"),
+        ("POST", "/api/config/revert"),
     ];
 
     /// An upstream that answers *every* method and path the same way: a

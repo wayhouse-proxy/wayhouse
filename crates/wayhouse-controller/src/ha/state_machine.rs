@@ -84,6 +84,9 @@ pub struct SnapshotContent {
     pub config: Vec<RevisionSnap>,
     pub intent: Vec<(u64, Vec<u8>)>,
     pub config_applied: Option<u64>,
+    /// The config revision on trial, if any (`crate::confirm`).
+    #[serde(default)]
+    pub config_pending: Option<crate::confirm::Pending>,
     pub intent_applied: Option<u64>,
     /// Each log's upward relay cursor (`slave` tiers; `0` otherwise).
     pub config_relay_cursor: u64,
@@ -301,6 +304,10 @@ impl StateMachineStore {
                 config_applied: config_store
                     .applied_index()
                     .map_err(|e| StorageIOError::read_state_machine(&e))?,
+                config_pending: self
+                    .config
+                    .pending()
+                    .map_err(|e| StorageIOError::read_state_machine(&e))?,
                 intent_applied: intent_store
                     .applied_index()
                     .map_err(|e| StorageIOError::read_state_machine(&e))?,
@@ -422,12 +429,24 @@ impl StateMachineStore {
             }
         }
         siblings.push(config.relay.write(content.config_relay_cursor));
+        if let Some(pending) = &content.config_pending {
+            siblings.push(SiblingWrite {
+                tree: &config.pending,
+                key: crate::confirm::PENDING_KEY.to_vec(),
+                value: Some(serde_json::to_vec(pending).expect("Pending always serializes")),
+            });
+        }
         config
             .store
             .replace_all_with(
                 &revisions,
                 content.config_applied,
-                &[&config.stage, &config.actors, config.relay.tree()],
+                &[
+                    &config.stage,
+                    &config.actors,
+                    &config.pending,
+                    config.relay.tree(),
+                ],
                 siblings,
             )
             .map_err(|e| StorageIOError::write_state_machine(&e))?;
@@ -578,9 +597,10 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                             bytes,
                             stage,
                             actor,
+                            trial,
                         } => WriteResponse::Revision(
                             self.config
-                                .apply_entry(index, bytes, stage, actor.as_deref())
+                                .apply_entry(index, bytes, stage, actor.as_deref(), trial.as_ref())
                                 .map_err(|e| StorageIOError::write_state_machine(&e))?,
                         ),
                         WriteRequest::Intent(bytes) => WriteResponse::Revision(
@@ -603,6 +623,12 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                             self.intent
                                 .apply_relayed_entry(index, bytes, parent_revision)
                                 .map_err(|e| StorageIOError::write_state_machine(&e))?,
+                        ),
+                        WriteRequest::ConfirmConfig { revision } => WriteResponse::Revision(
+                            self.config
+                                .confirm_entry(index, revision)
+                                .map_err(|e| StorageIOError::write_state_machine(&e))?
+                                .then_some(revision),
                         ),
                         WriteRequest::Promote(revision) => {
                             // A promote of a revision this replica doesn't
@@ -1002,6 +1028,7 @@ mod tests {
                 bytes: b"pools: []".to_vec(),
                 stage: crate::api::Stage::promoted(),
                 actor: None,
+                trial: None,
             },
         )];
         let responses = sm.apply(entries).await.unwrap();
@@ -1060,6 +1087,7 @@ mod tests {
                 bytes: b"pools: []".to_vec(),
                 stage: crate::api::Stage::promoted(),
                 actor: None,
+                trial: None,
             },
         )])
         .await
@@ -1101,6 +1129,7 @@ mod tests {
                 bytes: b"pools: []".to_vec(),
                 stage: crate::api::Stage::promoted(),
                 actor: None,
+                trial: None,
             },
         )])
         .await
@@ -1114,6 +1143,7 @@ mod tests {
                 1,
                 b"pools: []".to_vec(),
                 crate::api::Stage::promoted(),
+                None,
                 None,
             )
             .unwrap();
@@ -1144,6 +1174,7 @@ mod tests {
                 b"pools: []".to_vec(),
                 crate::api::Stage::promoted(),
                 Some("alice"),
+                None,
             )
             .unwrap();
         assert_eq!(revision, Some(1));
@@ -1165,6 +1196,7 @@ mod tests {
                         canary_groups: vec!["g".into()],
                     },
                     actor: None,
+                    trial: None,
                 },
             ),
             normal_entry(2, WriteRequest::Promote(1)),
@@ -1198,6 +1230,7 @@ mod tests {
                 bytes: bytes.to_vec(),
                 stage: crate::api::Stage::promoted(),
                 actor: None,
+                trial: None,
             },
         )
     }
@@ -1296,6 +1329,7 @@ mod tests {
                     bytes: b"a".to_vec(),
                     stage: canary.clone(),
                     actor: Some("bob".into()),
+                    trial: None,
                 },
             )])
             .await
@@ -2349,6 +2383,88 @@ mod tests {
             .unwrap();
         assert_eq!(c.acme().snapshot().unwrap(), a.acme().snapshot().unwrap());
         assert!(c.acme().site("old").unwrap().is_none());
+    }
+
+    fn trial_config(index_bytes: &[u8], trial: Option<crate::confirm::Trial>) -> WriteRequest {
+        WriteRequest::Config {
+            bytes: index_bytes.to_vec(),
+            stage: crate::api::Stage::promoted(),
+            actor: None,
+            trial,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_trial_is_replicated_confirmed_and_carried_in_the_snapshot() {
+        let trial = crate::confirm::Trial {
+            revert_to: 1,
+            deadline_ms: 9_000,
+            reasons: vec!["admin_listen".into()],
+        };
+        let (mut a, _a) = test_sm();
+        let (mut b, _b) = test_sm();
+        for sm in [&mut a, &mut b] {
+            apply_one(sm, 1, trial_config(b"pools: []", None)).await;
+            apply_one(sm, 2, trial_config(b"pools: [] ", Some(trial.clone()))).await;
+        }
+        let want = crate::confirm::Pending {
+            revision: 2,
+            trial: trial.clone(),
+        };
+        assert_eq!(a.config.pending().unwrap(), Some(want.clone()));
+        assert_eq!(b.config.pending().unwrap(), Some(want.clone()));
+
+        // A replica that catches up by snapshot gets the trial too, and loses a stale one.
+        let snapshot = a
+            .get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
+        let (mut c, _c) = test_sm();
+        apply_one(&mut c, 1, trial_config(b"x", None)).await;
+        apply_one(&mut c, 2, trial_config(b"y", Some(trial.clone()))).await;
+        apply_one(&mut c, 3, trial_config(b"z", None)).await;
+        c.install_snapshot(&snapshot.meta, snapshot.snapshot)
+            .await
+            .unwrap();
+        assert_eq!(c.config.pending().unwrap(), Some(want));
+
+        // Confirming ends it on every replica; a replay changes nothing.
+        let confirm = WriteRequest::ConfirmConfig { revision: 2 };
+        assert_eq!(
+            apply_one(&mut a, 3, confirm.clone()).await,
+            WriteResponse::Revision(Some(2))
+        );
+        assert_eq!(a.config.pending().unwrap(), None);
+        // A confirm for a revision that is not on trial answers no revision.
+        assert_eq!(
+            apply_one(&mut a, 4, confirm).await,
+            WriteResponse::Revision(None)
+        );
+        let snapshot = a
+            .get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
+        c.install_snapshot(&snapshot.meta, snapshot.snapshot)
+            .await
+            .unwrap();
+        assert_eq!(
+            c.config.pending().unwrap(),
+            None,
+            "the snapshot clears a stale trial"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_without_a_trial_section_decodes_as_no_trial() {
+        let (sm, _d) = test_sm();
+        let mut json = serde_json::to_value(&sm.copy().unwrap().content).unwrap();
+        json.as_object_mut().unwrap().remove("config_pending");
+        let content = decode_snapshot(&serde_json::to_vec(&json).unwrap()).unwrap();
+        assert_eq!(content.config_pending, None);
     }
 
     #[test]
