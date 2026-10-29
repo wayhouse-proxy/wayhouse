@@ -89,6 +89,171 @@
       "group": "Limits",
       "order": 3,
       "page": "global"
+    },
+    "listeners.*.name": {
+      "label": "Name",
+      "group": "Listener",
+      "order": 1,
+      "help": "Referenced by metrics and logs. Unique.",
+      "page": "listener"
+    },
+    "listeners.*.bind": {
+      "label": "Bind address",
+      "group": "Listener",
+      "order": 2,
+      "help": "Address and port to listen on, such as 0.0.0.0:25565.",
+      "page": "listener"
+    },
+    "listeners.*.protocol": {
+      "label": "Protocol",
+      "group": "Listener",
+      "order": 3,
+      "page": "listener"
+    },
+    "listeners.*.pool": {
+      "label": "Pool",
+      "group": "Listener",
+      "order": 4,
+      "help": "Shorthand for one route that sends everything to this pool. Leave empty when the listener has routes.",
+      "page": "listener"
+    },
+    "listeners.*.allow": {
+      "label": "Allow (CIDR)",
+      "group": "Access",
+      "order": 11,
+      "help": "Only these source networks are admitted when the list is not empty. One prefix per line.",
+      "page": "listener"
+    },
+    "listeners.*.deny": {
+      "label": "Deny (CIDR)",
+      "group": "Access",
+      "order": 12,
+      "help": "Drop these source networks. Deny wins over allow.",
+      "page": "listener"
+    },
+    "listeners.*.geo": {
+      "group": "Access",
+      "order": 13,
+      "page": "listener"
+    },
+    "listeners.*.geo.allow": {
+      "label": "Allow countries",
+      "help": "Needs a GeoIP database in the general settings. A non-empty list is default-deny.",
+      "page": "listener"
+    },
+    "listeners.*.geo.deny": {
+      "label": "Deny countries",
+      "page": "listener"
+    },
+    "listeners.*.per_source": {
+      "group": "Limits",
+      "order": 21,
+      "page": "listener"
+    },
+    "listeners.*.per_source.max_per_ip": {
+      "label": "Connections per client IP",
+      "unit": "connections",
+      "page": "listener"
+    },
+    "listeners.*.per_source.max_per_net": {
+      "label": "Connections per client network",
+      "unit": "connections",
+      "help": "Per /24 (IPv4) or /64 (IPv6).",
+      "page": "listener"
+    },
+    "listeners.*.rate_limit": {
+      "group": "Limits",
+      "order": 22,
+      "page": "listener"
+    },
+    "listeners.*.rate_limit.per_ip": {
+      "label": "New sessions per client IP",
+      "page": "listener"
+    },
+    "listeners.*.rate_limit.per_ip.rate": {
+      "label": "Rate per client IP",
+      "unit": "per second",
+      "page": "listener",
+      "order": 1
+    },
+    "listeners.*.rate_limit.per_ip.burst": {
+      "label": "Burst per client IP",
+      "unit": "sessions",
+      "help": "Defaults to the rate.",
+      "page": "listener",
+      "order": 2
+    },
+    "listeners.*.rate_limit.per_net": {
+      "label": "New sessions per client network",
+      "page": "listener"
+    },
+    "listeners.*.rate_limit.per_net.rate": {
+      "label": "Rate per client network",
+      "unit": "per second",
+      "page": "listener",
+      "order": 1
+    },
+    "listeners.*.rate_limit.per_net.burst": {
+      "label": "Burst per client network",
+      "unit": "sessions",
+      "help": "Defaults to the rate.",
+      "page": "listener",
+      "order": 2
+    },
+    "listeners.*.prefix": {
+      "label": "UDP wildcard prefix",
+      "group": "Transport",
+      "order": 31,
+      "advanced": true,
+      "help": "UDP only: serve a whole routed prefix on one wildcard socket. The bind address must be a wildcard.",
+      "page": "listener"
+    },
+    "listeners.*.freebind": {
+      "label": "Free bind",
+      "group": "Transport",
+      "order": 32,
+      "advanced": true,
+      "help": "TCP only: bind an address that is not yet on an interface.",
+      "page": "listener"
+    },
+    "listeners.*.transparent": {
+      "label": "Transparent (TPROXY)",
+      "group": "Transport",
+      "order": 33,
+      "advanced": true,
+      "help": "TCP only, Linux: accept connections redirected by TPROXY.",
+      "page": "listener"
+    },
+    "listeners.*.route_hint": {
+      "label": "Honour route hints",
+      "group": "Transport",
+      "order": 34,
+      "advanced": true,
+      "page": "listener"
+    },
+    "listeners.*.first_packet_gate": {
+      "label": "First-packet gate",
+      "group": "Transport",
+      "order": 35,
+      "advanced": true,
+      "help": "UDP only: create a session only when the first datagram is recognised. Needs a first_bytes route or a sniffer.",
+      "page": "listener"
+    },
+    "listeners.*.plugin_routes": {
+      "group": "Transport",
+      "order": 36,
+      "advanced": true,
+      "page": "listener"
+    },
+    "listeners.*.plugin_routes.type": {
+      "label": "Plugin routes read",
+      "help": "sni or sniffer.",
+      "page": "listener"
+    },
+    "listeners.*.plugin_routes.sniffer": {
+      "label": "Plugin routes sniffer",
+      "help": "The sniffer name when the type is sniffer.",
+      "page": "listener"
     }
   }
 }
