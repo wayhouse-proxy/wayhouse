@@ -12,6 +12,8 @@ export type ChartRow = { t: number; partial?: boolean } & Record<string, number 
 
 /** Series colours in order (tokens.css), never state colours. */
 const COLOUR = [1, 2, 3, 4, 5].map((i) => `var(--series-${i})`);
+/** Series also differ by dash (solid first), so they can be told apart without colour; the legend draws the same dash. */
+const DASH = [undefined, "5 3", "2 2", "8 3 2 3", "1 3"];
 
 /**
  * A line chart that follows components.md "Charts": a zero baseline and real tick labels, a 1 px grid, series
@@ -50,7 +52,7 @@ export function TimeSeriesChart({
     <figure className="mb-6">
       <div className="mb-1 flex items-center justify-between gap-3">
         <figcaption className="text-sm font-semibold">{title}</figcaption>
-        <Button size="sm" variant="ghost" aria-pressed={asTable} aria-controls={id} onClick={() => setAsTable(!asTable)}>
+        <Button size="sm" variant="ghost" aria-controls={id} onClick={() => setAsTable(!asTable)}>
           {asTable ? "View as chart" : "View as table"}
         </Button>
       </div>
@@ -103,7 +105,7 @@ export function TimeSeriesChart({
                   <ReferenceLine x={onsetAt} stroke="var(--ink-muted)" strokeDasharray="4 3" label={{ value: onsetLabel, fontSize: 12, fill: "var(--ink-muted)", position: "insideTopLeft" }} />
                 )}
                 {series.map((s, i) => (
-                  <Line key={s.key} dataKey={s.key} name={s.label} type="linear" stroke={COLOUR[i % COLOUR.length]} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                  <Line key={s.key} dataKey={s.key} name={s.label} type="linear" stroke={COLOUR[i % COLOUR.length]} strokeDasharray={DASH[i % DASH.length]} strokeWidth={1.5} dot={false} isAnimationActive={false} />
                 ))}
                 {series.map((s, i) =>
                   value(last, s.key) === undefined ? null : (
@@ -119,7 +121,9 @@ export function TimeSeriesChart({
         <ul className="mt-1 flex flex-wrap gap-x-4 text-xs text-ink-muted" aria-hidden>
           {series.map((s, i) => (
             <li key={s.key} className="flex items-center gap-1.5">
-              <span className="inline-block h-0.5 w-4" style={{ background: COLOUR[i % COLOUR.length] }} />
+              <svg width="20" height="4" aria-hidden>
+                <line x1="0" y1="2" x2="20" y2="2" stroke={COLOUR[i % COLOUR.length]} strokeWidth="1.5" strokeDasharray={DASH[i % DASH.length]} />
+              </svg>
               {s.label}
             </li>
           ))}

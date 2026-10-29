@@ -8,7 +8,6 @@ import { SessionProvider } from "./lib/session";
 import { QueryProvider } from "./lib/query";
 import { FleetPage } from "./pages/FleetPage";
 
-
 import { SettingsPage } from "./pages/SettingsPage";
 import { SniffersPage } from "./pages/SniffersPage";
 import { PluginsPage } from "./pages/PluginsPage";

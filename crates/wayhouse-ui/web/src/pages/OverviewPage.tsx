@@ -22,7 +22,7 @@ export function OverviewPage() {
       {q.isPending && <Loading rows={4} />}
       {q.error && <ErrorState onRetry={() => q.refetch()}>{(q.error as Error).message}. The aggregator may not be configured for this controller.</ErrorState>}
       {stats && stats.fleet.last_sample_ms === null && (
-        <EmptyState>No instance has reported yet. Charts appear after the first push from a proxy.</EmptyState>
+        <EmptyState>No instance has reported in this range. Charts appear after a proxy pushes its first stats.</EmptyState>
       )}
       {stats && stats.fleet.last_sample_ms !== null && (
         <>

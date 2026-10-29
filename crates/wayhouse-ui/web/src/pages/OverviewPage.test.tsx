@@ -64,7 +64,7 @@ describe("Overview", () => {
   it("says so when no instance has reported", async () => {
     api.getFleetStats.mockResolvedValue({ ...stats, fleet: { resolution_sec: 60, last_sample_ms: null, points: [] }, listeners: [], pools: [] });
     show(<OverviewPage />);
-    expect(await screen.findByText(/No instance has reported yet/)).toBeInTheDocument();
+    expect(await screen.findByText(/Charts appear after a proxy pushes/)).toBeInTheDocument();
   });
 
   it("shows the error and a retry when the aggregator is unreachable", async () => {
@@ -106,5 +106,15 @@ describe("stats helpers", () => {
     expect(fmtRate(0)).toBe("0/s");
     expect(fmtRate(12.34)).toBe("12.3/s");
     expect(fmtBytes(1_500_000)).toBe("1.5 MB/s");
+  });
+});
+
+describe("chart without colour", () => {
+  it("every series after the first is dashed, and the legend shows the same dash", async () => {
+    const { container } = show(<OverviewPage />);
+    await screen.findByRole("img", { name: /^Connections/ });
+    const legend = container.querySelectorAll("ul svg line");
+    expect(legend[0]).not.toHaveAttribute("stroke-dasharray");
+    expect(legend[1]).toHaveAttribute("stroke-dasharray", "5 3");
   });
 });
