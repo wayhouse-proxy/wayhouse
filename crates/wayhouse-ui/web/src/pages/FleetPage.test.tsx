@@ -124,6 +124,16 @@ describe("Fleet page with 500 nodes", () => {
     // The page is region-ordered, so the first region on it carries its own rollup from the server.
     expect(screen.getByRole("button", { name: /^ap/ })).toHaveTextContent("166 nodes");
     expect(screen.getAllByRole("row").length).toBeLessThan(40);
+    // Streaming numbers are not a live region; only the pager's "Showing" line is.
+    expect(screen.getByText(/Fleet: 500 nodes/)).not.toHaveAttribute("role");
+  });
+
+  it("changing the sort goes back to page 1", async () => {
+    show("admin", "/fleet?page=3");
+    await screen.findByText("Showing 51 to 75 of 500");
+    await userEvent.selectOptions(screen.getByLabelText("Sort by"), "sessions");
+    expect(await screen.findByText("Showing 1 to 25 of 500")).toBeInTheDocument();
+    expect(where().get("page")).toBeNull();
   });
 
   it("pages on the server and keeps the page in the URL", async () => {
@@ -234,11 +244,11 @@ describe("Fleet page inspector", () => {
     expect(await screen.findByRole("heading", { name: "n001" })).toBeInTheDocument();
   });
 
-  it("a tag in the inspector becomes a filter", async () => {
-    show("admin", "/fleet?q=n00");
+  it("a tag in the inspector becomes a filter and keeps the tags already there", async () => {
+    show("admin", "/fleet?q=n00&tag=env");
     await userEvent.click(await row());
     await userEvent.click(await screen.findByRole("button", { name: "env=prod" }));
-    await waitFor(() => expect(where().getAll("tag")).toEqual(["env=prod"]));
+    await waitFor(() => expect(where().getAll("tag")).toEqual(["env", "env=prod"]));
   });
 
   it("Drain does not call the API until confirmed; Undrain is restorative", async () => {
@@ -316,23 +326,81 @@ describe("Fleet page bulk actions", () => {
   it("cancelling touches nothing, and an unfiltered bulk says it is the whole fleet", async () => {
     show();
     await screen.findByText("Showing 1 to 25 of 500");
-    await userEvent.click(screen.getByRole("button", { name: "Undrain all matching…" }));
+    await userEvent.click(screen.getByRole("button", { name: "Undrain whole fleet…" }));
     const dlg = await screen.findByRole("dialog");
     expect(dlg).toHaveTextContent("500 nodes match the current filter (the whole fleet)");
     await userEvent.click(within(dlg).getByRole("button", { name: "Cancel" }));
     expect(api.undrainInstance).not.toHaveBeenCalled();
   });
 
-  it("reports how many of the nodes failed", async () => {
+  it("names the nodes that failed, so they can be retried", async () => {
     api.drainInstance.mockImplementation(async (i: string) => {
-      if (i === "n099") throw new Error("boom");
+      if (i === "n099" || i === "n299") throw new Error("boom");
       return "ok";
     });
     show("admin", "/fleet?state=stale");
     await screen.findByText(/Matching: 5 nodes/);
     await userEvent.click(screen.getByRole("button", { name: "Drain all matching…" }));
     await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Drain 5" }));
-    expect(await screen.findByText("drain: 4 of 5 done, 1 failed")).toBeInTheDocument();
+    expect(await screen.findByText(/drain: 3 of 5 done, 2 failed \(n099, n299\)/)).toBeInTheDocument();
+  });
+
+  it("lists every failure with its reason and retries only those", async () => {
+    let down = true;
+    api.drainInstance.mockImplementation(async (i: string) => {
+      if (down && i === "n099") throw new Error("aggregator: 502");
+      return "ok";
+    });
+    show("admin", "/fleet?state=stale");
+    await screen.findByText(/Matching: 5 nodes/);
+    await userEvent.click(screen.getByRole("button", { name: "Drain all matching…" }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Drain 5" }));
+    const block = await screen.findByRole("region", { name: "Failed nodes" });
+    expect(block).toHaveTextContent("n099: aggregator: 502");
+    expect(block).not.toHaveTextContent("n199");
+    api.drainInstance.mockClear();
+    down = false;
+    await userEvent.click(within(block).getByRole("button", { name: "Retry failed" }));
+    await waitFor(() => expect(api.drainInstance.mock.calls.map((c) => c[0])).toEqual(["n099"]));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Failed nodes" })).toBeNull());
+  });
+
+  it("caps the failed names at five", async () => {
+    api.drainInstance.mockRejectedValue(new Error("boom"));
+    show("admin", "/fleet?state=degraded");
+    await screen.findByText(/Matching: 20 nodes/);
+    await userEvent.click(screen.getByRole("button", { name: "Drain all matching…" }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Drain 20" }));
+    expect(await screen.findByText(/20 failed \(.*and 15 more\)/)).toBeInTheDocument();
+  });
+
+  it("runs ten at a time and keeps both bulk buttons off until it is done", async () => {
+    let running = 0;
+    let peak = 0;
+    const release: (() => void)[] = [];
+    api.drainInstance.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          running++;
+          peak = Math.max(peak, running);
+          release.push(() => (running--, resolve("ok")));
+        }),
+    );
+    show("admin", "/fleet?state=degraded");
+    await screen.findByText(/Matching: 20 nodes/);
+    await userEvent.click(screen.getByRole("button", { name: "Drain all matching…" }));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Drain 20" }));
+    await waitFor(() => expect(release.length).toBe(10));
+    expect(screen.getByText("Draining 0 of 20…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Drain all matching…" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Undrain all matching…" })).toHaveAttribute("aria-disabled", "true");
+    while (release.length) release.shift()!();
+    await waitFor(() => expect(api.drainInstance).toHaveBeenCalledTimes(20));
+    while (release.length < 10) await new Promise((r) => setTimeout(r, 5));
+    while (release.length) release.shift()!();
+    expect(await screen.findByText("drain: 20 nodes done")).toBeInTheDocument();
+    expect(peak).toBeLessThanOrEqual(10);
+    expect(screen.getByRole("button", { name: "Drain all matching…" })).not.toHaveAttribute("aria-disabled", "true");
   });
 
   it("a viewer has no bulk actions", async () => {

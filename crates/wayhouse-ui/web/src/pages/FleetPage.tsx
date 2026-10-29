@@ -40,6 +40,20 @@ const SHOWN_TAGS = 3;
 const rollupText = (r: Rollup) =>
   [`${r.nodes} node${r.nodes === 1 ? "" : "s"}`, r.degraded && `${r.degraded} degraded`, r.stale && `${r.stale} stale`, `${r.sessions} sessions`].filter(Boolean).join(" · ");
 
+type Update = (change: Partial<NodeQuery> | ((cur: NodeQuery) => Partial<NodeQuery>)) => void;
+
+/** Requests in flight at once during a bulk action. */
+const BULK_POOL = 10;
+const NAMED_FAILURES = 5;
+
+interface Run {
+  kind: "drain" | "undrain";
+  total: number;
+  done: number;
+  running: boolean;
+  failed: { instance: string; reason: string }[];
+}
+
 const hasFilter = (f: Filter) => !!(f.q || f.state || f.region || f.tags.length);
 
 function columns(): ColumnDef<FleetNode>[] {
@@ -87,13 +101,14 @@ export function FleetPage() {
   const { instances, connected } = useFleetSocket();
 
   /** Change the URL state. A filter change goes back to page 1; the stable setter keeps inspector callbacks current. */
-  const update = (patch: Partial<NodeQuery>) =>
+  const update: Update = (change) =>
     setParams(
       (prev) => {
         const cur = parseNodeQuery(prev);
+        const patch = typeof change === "function" ? change(cur) : change;
         const next = { ...cur, ...patch };
-        const filterChanged = filterQuery(cur) !== filterQuery(next);
-        if (filterChanged && patch.page === undefined) next.page = 1;
+        const reorder = next.sort !== cur.sort || next.dir !== cur.dir;
+        if ((filterQuery(cur) !== filterQuery(next) || reorder) && patch.page === undefined) next.page = 1;
         return new URLSearchParams(nodeQuery(next));
       },
       { replace: true },
@@ -126,7 +141,7 @@ export function FleetPage() {
   const node = data?.items.find((n) => n.instance === q.sel);
   const live = instances.find((i) => i.instance === q.sel);
   const shown = useRef(false);
-  const addTag = (tag: string) => update({ tags: [...new Set([...parseNodeQuery(new URLSearchParams(window.location.search)).tags, tag])] });
+  const addTag = (tag: string) => update((cur) => ({ tags: [...new Set([...cur.tags, tag])] }));
   useEffect(() => {
     if (shown.current && !inspector.current && q.sel) {
       shown.current = false;
@@ -161,7 +176,36 @@ export function FleetPage() {
   }, [data]);
   const cols = useMemo(columns, []);
 
-  async function bulk(kind: "drain" | "undrain") {
+  const [run, setRun] = useState<Run | null>(null);
+
+  /** Runs `kind` on `instances` ten at a time; the run block shows progress and, afterwards, who failed and why. */
+  async function execute(kind: Run["kind"], instances: string[]) {
+    const act = kind === "drain" ? drainInstance : undrainInstance;
+    const failed: Run["failed"] = [];
+    let done = 0;
+    setRun({ kind, total: instances.length, done, running: true, failed });
+    const queue = [...instances];
+    await Promise.all(
+      Array.from({ length: Math.min(BULK_POOL, queue.length) }, async () => {
+        for (let i = queue.shift(); i !== undefined; i = queue.shift()) {
+          try {
+            await act(i);
+          } catch (e) {
+            failed.push({ instance: i, reason: e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e) });
+          }
+          done++;
+          setRun({ kind, total: instances.length, done, running: true, failed: [...failed] });
+        }
+      }),
+    );
+    setRun({ kind, total: instances.length, done, running: false, failed });
+    const names = failed.slice(0, NAMED_FAILURES).map((f) => f.instance).join(", ");
+    const s = instances.length === 1 ? "" : "s";
+    if (failed.length) toast(`${kind}: ${instances.length - failed.length} of ${instances.length} done, ${failed.length} failed (${names}${failed.length > NAMED_FAILURES ? ` and ${failed.length - NAMED_FAILURES} more` : ""})`, "down");
+    else toast(`${kind}: ${instances.length} node${s} done`);
+  }
+
+  async function bulk(kind: Run["kind"]) {
     let found;
     try {
       found = await resolveFleetNodes(filterQuery(q));
@@ -179,12 +223,7 @@ export function FleetPage() {
       confirmLabel: `${kind === "drain" ? "Drain" : "Undrain"} ${found.count}`,
       danger: kind === "drain",
     });
-    if (!ok) return;
-    const act = kind === "drain" ? drainInstance : undrainInstance;
-    const results = await Promise.allSettled(found.instances.map((i) => act(i)));
-    const failed = results.filter((r) => r.status === "rejected").length;
-    if (failed) toast(`${kind}: ${found.count - failed} of ${found.count} done, ${failed} failed`, "down");
-    else toast(`${kind}: ${found.count} node${s} done`);
+    if (ok) await execute(kind, found.instances);
   }
 
   return (
@@ -210,17 +249,40 @@ export function FleetPage() {
       ) : data ? (
         <>
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <p role="status" className="text-sm text-ink-muted tabular-nums">
-              {hasFilter(q) ? "Matching: " : "Fleet: "}
-              {rollupText(data.rollup)}
+            <p className="text-sm text-ink-muted tabular-nums">
+              {run?.running ? `${run.kind === "drain" ? "Draining" : "Undraining"} ${run.done} of ${run.total}…` : <>{hasFilter(q) ? "Matching: " : "Fleet: "}{rollupText(data.rollup)}</>}
             </p>
             {canOperate && (
               <span className="flex gap-2">
-                <Button onClick={() => bulk("drain")}>Drain all matching…</Button>
-                <Button onClick={() => bulk("undrain")}>Undrain all matching…</Button>
+                <Button disabled={!!run?.running} onClick={() => bulk("drain")}>
+                  {hasFilter(q) ? "Drain all matching…" : "Drain whole fleet…"}
+                </Button>
+                <Button disabled={!!run?.running} onClick={() => bulk("undrain")}>
+                  {hasFilter(q) ? "Undrain all matching…" : "Undrain whole fleet…"}
+                </Button>
               </span>
             )}
           </div>
+          {run && !run.running && run.failed.length > 0 && (
+            <section aria-label="Failed nodes" className="mb-2 border border-bad bg-surface p-3 text-sm">
+              <p className="font-semibold">
+                {run.kind} failed on {run.failed.length} of {run.total} nodes. The rest are done.
+              </p>
+              <ul className="mt-1 max-h-40 overflow-y-auto font-mono text-xs">
+                {run.failed.map((f) => (
+                  <li key={f.instance}>
+                    {f.instance}: {f.reason}
+                  </li>
+                ))}
+              </ul>
+              <span className="mt-2 flex gap-2">
+                <Button onClick={() => execute(run.kind, run.failed.map((f) => f.instance))}>Retry failed</Button>
+                <Button variant="ghost" onClick={() => setRun(null)}>
+                  Dismiss
+                </Button>
+              </span>
+            </section>
+          )}
           <DataTable columns={cols} data={data.items} groups={groups} getRowId={(n) => n.instance} selectedId={q.sel || null} onOpen={(n) => update({ sel: n.instance })} />
           <Pager page={data.page} size={data.size} total={data.total} onPage={(page) => update({ page })} onSize={(size) => update({ size, page: 1 })} />
         </>
@@ -233,7 +295,7 @@ export function FleetPage() {
   );
 }
 
-function FilterBar({ q, text, onText, update }: { q: NodeQuery; text: string; onText: (s: string) => void; update: (p: Partial<NodeQuery>) => void }) {
+function FilterBar({ q, text, onText, update }: { q: NodeQuery; text: string; onText: (s: string) => void; update: Update }) {
   const [tagDraft, setTagDraft] = useState("");
   return (
     <section aria-label="Filters" className="mb-3 flex flex-col gap-2">
@@ -300,7 +362,7 @@ function FilterBar({ q, text, onText, update }: { q: NodeQuery; text: string; on
   );
 }
 
-function SavedFilters({ q, update }: { q: NodeQuery; update: (p: Partial<NodeQuery>) => void }) {
+function SavedFilters({ q, update }: { q: NodeQuery; update: Update }) {
   const canWrite = useCan("operator");
   const saved = useFilters();
   const save = useSaveFilter();
