@@ -90,7 +90,7 @@ describe("SchemaForm on the real schema", () => {
 
   it("an enum is a select, and choosing sets it", async () => {
     render(<Harness path={["pools"]} />);
-    const balancer = screen.getByLabelText("balancer");
+    const balancer = screen.getByLabelText(/^Balancer/);
     expect(balancer.tagName).toBe("SELECT");
     await userEvent.selectOptions(balancer, "least_conn");
     expect(yaml()).toContain("balancer: least_conn");
@@ -98,7 +98,7 @@ describe("SchemaForm on the real schema", () => {
 
   it("a list of strings is one per line", async () => {
     render(<Harness path={["pools"]} />);
-    const targets = screen.getByLabelText("targets");
+    const targets = screen.getByLabelText(/^Backends/);
     expect(targets).toHaveValue("10.0.0.1:25565");
     await userEvent.type(targets, "{Enter}10.0.0.2:25565");
     expect(parseText(yaml()).value).toMatchObject({ pools: [{ targets: ["10.0.0.1:25565", "10.0.0.2:25565"] }] });

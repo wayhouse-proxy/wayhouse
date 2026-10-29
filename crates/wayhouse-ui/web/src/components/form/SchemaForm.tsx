@@ -33,6 +33,7 @@ interface Ctx {
   root: Path;
   showAdvanced: boolean;
   page?: string;
+  only?: string[];
 }
 
 const lay = (ctx: Ctx, path: Path): FieldLayout | undefined => ctx.layout.fields[patternOf([...ctx.root, ...path])];
@@ -42,6 +43,7 @@ const helpOf = (text?: string) => text?.split("\n\n")[0].replace(/\s+/g, " ").tr
 
 /** Whether a field, or anything under it, is on `page` in the layout. */
 function onPage(ctx: Ctx, path: Path): boolean {
+  if (ctx.only && path.length > 0 && !ctx.only.includes(String(path[0]))) return false;
   if (!ctx.page) return true;
   const prefix = patternOf(absolute(ctx, path));
   return Object.entries(ctx.layout.fields).some(([k, f]) => f.page === ctx.page && (k === prefix || k.startsWith(`${prefix}.`)));
@@ -306,13 +308,15 @@ export interface SchemaFormProps {
   page?: string;
   /** Every field is shown but cannot be changed (a role that cannot save). */
   readonly?: boolean;
+  /** Only these top-level fields of the rendered object (a source type takes some fields and not others). */
+  only?: string[];
 }
 
 /**
  * Renders a part of the configuration as a form from its JSON Schema (rjsf for `$ref`, `enum` and list handling,
  * our components for everything you see). The layout groups, orders and explains; the YAML never changes meaning.
  */
-export function SchemaForm({ schema, value, saved, onChange, layout = DEFAULT_LAYOUT, path = [], showAdvanced = false, page, readonly = false }: SchemaFormProps) {
+export function SchemaForm({ schema, value, saved, onChange, layout = DEFAULT_LAYOUT, path = [], showAdvanced = false, page, readonly = false, only }: SchemaFormProps) {
   const root = useMemo(() => simplify(schema) as Record<string, any>, [schema]);
   const sub = useMemo(() => {
     const s = subschema(root, path);
@@ -321,7 +325,7 @@ export function SchemaForm({ schema, value, saved, onChange, layout = DEFAULT_LA
   const ui = useMemo(() => (sub ? uiFor(root, sub, path, layout) : {}), [root, sub, layout, path.join("\u0000")]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!sub) return <p role="alert" className="text-sm text-bad">The schema has no part at {path.join(".") || "the root"}.</p>;
 
-  const ctx: Ctx = { layout, saved: saved ?? value, current: value, root: path, showAdvanced, page };
+  const ctx: Ctx = { layout, saved: saved ?? value, current: value, root: path, showAdvanced, page, only };
   return (
     <Form
       schema={sub}
