@@ -363,7 +363,7 @@ async fn proxy(
 }
 
 /// [`proxy`] with a content type for the forwarded body.
-async fn proxy_typed(
+pub(crate) async fn proxy_typed(
     state: &AppState,
     method: Method,
     path_suffix: String,

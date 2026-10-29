@@ -62,6 +62,9 @@ HA, upgrade every controller before installing a plugin: the leader refuses inst
 member reports a lower level. The steps are in
 [Migrating from 0.3.0 to 0.4.0](migrating-0.3-to-0.4.md).
 
+Stored UI data (dashboards, themes, filters, see [ui-data.md](ui-data.md)) follows the same
+rule under HA: upgrade every controller before the first save.
+
 ## Upgrading from 0.2.0 to 0.3.0
 
 0.3.0 replaces the controller's embedded database (`sled` to `redb`) **without a
