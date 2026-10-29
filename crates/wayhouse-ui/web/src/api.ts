@@ -25,6 +25,7 @@ import type {
   TunnelAddresses,
 } from "./types";
 import type { FleetStats, Range } from "./lib/stats";
+import type { NodePage, Resolved, SavedFilter } from "./lib/fleet/nodes";
 
 export class ApiError extends Error {
   status: number;
@@ -485,6 +486,28 @@ export function saveLayoutOverride(text: string): Promise<unknown> {
 }
 export function deleteLayoutOverride(): Promise<void> {
   return requestJson("/api/ui/layout", { method: "DELETE" });
+}
+
+// --- fleet nodes (paged on the aggregator) ---
+
+export function getFleetNodes(query: string): Promise<NodePage> {
+  const p = new URLSearchParams(query);
+  p.set("group_by", "region");
+  return requestJson(`/api/fleet/nodes?${p}`);
+}
+/** The instances a filter selects, so a bulk action can show the count before it runs. */
+export function resolveFleetNodes(filter: string): Promise<Resolved> {
+  return requestJson(`/api/fleet/nodes/resolve${filter ? `?${filter}` : ""}`, { method: "POST" });
+}
+
+export async function listFilters(): Promise<SavedFilter[]> {
+  return (await requestJson<{ items: SavedFilter[] }>("/api/ui/filters")).items;
+}
+export function saveFilter(f: SavedFilter): Promise<SavedFilter> {
+  return requestJson(`/api/ui/filters/${encodeURIComponent(f.name)}`, json(f));
+}
+export function deleteFilter(name: string): Promise<void> {
+  return requestJson(`/api/ui/filters/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
 // --- fleet stats (proxied to wayhouse-aggregator) ---

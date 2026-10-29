@@ -72,10 +72,12 @@ runs Vite's dev server with hot reload, proxying `/ui`, `/api`, `/ws`, and
 - `src/useFleetSocket.ts` — the `GET /ws/fleet` client: keeps the latest
   fleet view in React state, reconnects on disconnect.
 - `src/components/Login.tsx` — the session-cookie login form.
-- `src/components/FleetView.tsx` — the fleet dashboard: per-instance /
-  per-pool / per-backend table (live over the WebSocket), drain/undrain,
-  add/patch/remove a backend, and the route-hint form — phase 10's
-  "operational" GUI capability level.
+- `src/pages/FleetPage.tsx` — the fleet page: a server-paged, filtered list of nodes grouped by
+  region (`GET /api/fleet/nodes`, polled), with all of its state in the URL (filters, page, sort,
+  selected node), named saved filters (stored in the controller), a node inspector (details, tags,
+  drain/undrain, backend state and remove from the live socket) and bulk drain/undrain on a filter
+  result that states the node count first (`POST /api/fleet/nodes/resolve`). The add-backend and
+  route-hint forms stay at the bottom. Tags are read-only here until the aggregator can store them.
 - `src/components/ConfigView.tsx` — the config editor + revision
   history/diff/rollback — phase 10's "full management" GUI level.
 
