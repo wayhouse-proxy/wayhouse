@@ -53,6 +53,7 @@ pub fn router(state: UiState) -> Router {
         ("/ui/dashboards", Kind::Dashboard),
         ("/ui/themes", Kind::Theme),
         ("/ui/filters", Kind::SavedFilter),
+        ("/ui/node-tags", Kind::NodeTags),
     ] {
         r = r
             .route(
@@ -430,6 +431,36 @@ mod tests {
         assert_eq!(st, StatusCode::NO_CONTENT);
         let (_, v) = call(&app, "GET", "/features", Value::Null, None).await;
         assert_eq!(flag(&v, "plugin_webhooks")["value"], true);
+    }
+
+    #[tokio::test]
+    async fn operator_tags_are_stored_per_node_and_listed() {
+        let (app, _s, _d) = app(None);
+        let tags = json!({"tags": {"env": "prod"}});
+        let (st, got) = call(&app, "PUT", "/ui/node-tags/fra-1", tags.clone(), None).await;
+        assert_eq!(
+            (st, &got["name"]),
+            (StatusCode::OK, &json!("fra-1")),
+            "{got}"
+        );
+        let (st, _) = call(
+            &app,
+            "PUT",
+            "/ui/node-tags/x",
+            json!({"tags": {"Env": "p"}}),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        let (_, list) = call(&app, "GET", "/ui/node-tags", Value::Null, None).await;
+        assert_eq!(
+            list["items"],
+            json!([{"name": "fra-1", "tags": {"env": "prod"}}])
+        );
+        let (st, _) = call(&app, "DELETE", "/ui/node-tags/fra-1", Value::Null, None).await;
+        assert_eq!(st, StatusCode::NO_CONTENT);
+        let (st, _) = call(&app, "DELETE", "/ui/node-tags/fra-1", Value::Null, None).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

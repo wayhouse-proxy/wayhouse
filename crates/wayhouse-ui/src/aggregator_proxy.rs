@@ -19,9 +19,9 @@
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Extension, Path, Query, RawQuery, State};
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use serde::Serialize;
 
@@ -62,6 +62,10 @@ pub fn operator_router() -> Router<AppState> {
         )
         .route("/api/fleet/route-hint", post(route_hint))
         .route(
+            "/api/fleet/nodes/{instance}/tags",
+            put(put_node_tags).delete(delete_node_tags),
+        )
+        .route(
             "/api/fleet/sniffers",
             post(upload_sniffer).layer(DefaultBodyLimit::max(
                 wayhouse_http::MAX_SNIFFER_MODULE_BYTES,
@@ -98,26 +102,152 @@ async fn get_stats(State(state): State<AppState>, RawQuery(query): RawQuery) -> 
     proxy(&state, Method::GET, &path, None, None).await
 }
 
-/// The paged node list: every filter, sort and page key rides along unchanged.
+/// The paged node list: every filter, sort and page key rides along unchanged, and the tags
+/// operators set (kept in the controller) are laid over what the nodes declared.
 async fn get_nodes(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
+    match operator_tags(&state).await {
+        Ok(Some(body)) => {
+            proxy(
+                &state,
+                Method::POST,
+                &with_query("/fleet/nodes/query", query),
+                Some(body),
+                None,
+            )
+            .await
+        }
+        Ok(None) => {
+            proxy(
+                &state,
+                Method::GET,
+                &with_query("/fleet/nodes", query),
+                None,
+                None,
+            )
+            .await
+        }
+        Err(()) => {
+            // The list matters more than the overlay: answer without it, and say so.
+            let mut resp = proxy(
+                &state,
+                Method::GET,
+                &with_query("/fleet/nodes", query),
+                None,
+                None,
+            )
+            .await;
+            resp.headers_mut()
+                .insert("x-operator-tags", HeaderValue::from_static("unavailable"));
+            resp
+        }
+    }
+}
+
+/// Which instances a filter selects (a read, so a viewer may ask before an operator acts). The
+/// operator's tags count, so the filter selects what the list showed.
+async fn resolve_nodes(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
+    // A bulk action must not act on a different set than the list showed, so no fallback here.
+    let Ok(body) = operator_tags(&state).await else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: "operator tags unavailable (controller)".into(),
+            }),
+        )
+            .into_response();
+    };
     proxy(
         &state,
-        Method::GET,
-        &with_query("/fleet/nodes", query),
-        None,
+        Method::POST,
+        &with_query("/fleet/nodes/resolve", query),
+        body,
         None,
     )
     .await
 }
 
-/// Which instances a filter selects (a read, so a viewer may ask before an operator acts).
-async fn resolve_nodes(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
-    proxy(
-        &state,
-        Method::POST,
-        &with_query("/fleet/nodes/resolve", query),
+/// The query body that carries the controller's operator tags to the aggregator. `Ok(None)`: no
+/// controller configured, or nothing tagged. `Err`: the controller did not answer sensibly.
+async fn operator_tags(state: &AppState) -> Result<Option<Bytes>, ()> {
+    #[derive(serde::Deserialize)]
+    struct List {
+        items: Vec<Item>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Item {
+        name: String,
+        tags: serde_json::Map<String, serde_json::Value>,
+    }
+    if state.controller.is_none() {
+        return Ok(None);
+    }
+    let resp = crate::controller_proxy::proxy_typed(
+        state,
+        Method::GET,
+        "/ui/node-tags".to_string(),
         None,
         None,
+        None,
+    )
+    .await;
+    if !resp.status().is_success() {
+        return Err(());
+    }
+    let bytes = axum::body::to_bytes(resp.into_body(), crate::proxy_util::MAX_UPSTREAM_BODY)
+        .await
+        .map_err(|_| ())?;
+    let list: List = serde_json::from_slice(&bytes).map_err(|_| ())?;
+    if list.items.is_empty() {
+        return Ok(None);
+    }
+    let by_node: serde_json::Map<_, _> = list
+        .items
+        .into_iter()
+        .map(|i| (i.name, i.tags.into()))
+        .collect();
+    serde_json::to_vec(&serde_json::json!({ "operator_tags": by_node }))
+        .map(|b| Some(b.into()))
+        .map_err(|_| ())
+}
+
+/// `PUT /api/fleet/nodes/{instance}/tags` `{"tags": {...}}`: replaces the operator's tags for one
+/// node. They live in the controller (replicated under HA), not in the aggregator, which keeps
+/// nothing of its own; the controller checks the tags.
+async fn put_node_tags(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(instance): Path<String>,
+    body: Bytes,
+) -> Response {
+    node_tags(&state, Method::PUT, &instance, Some(body), actor).await
+}
+
+/// `DELETE /api/fleet/nodes/{instance}/tags`: drops the operator's tags for one node.
+async fn delete_node_tags(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(instance): Path<String>,
+) -> Response {
+    node_tags(&state, Method::DELETE, &instance, None, actor).await
+}
+
+async fn node_tags(
+    state: &AppState,
+    method: Method,
+    instance: &str,
+    body: Option<Bytes>,
+    actor: Option<String>,
+) -> Response {
+    let Some(segment) = crate::proxy_util::path_segment(instance) else {
+        return bad_segment();
+    };
+    crate::controller_proxy::proxy_typed(
+        state,
+        method,
+        format!("/ui/node-tags/{segment}"),
+        body,
+        Some("application/json"),
+        actor,
     )
     .await
 }
@@ -440,6 +570,168 @@ mod tests {
 
     fn cookie(session_id: &str) -> String {
         format!("{}={session_id}", crate::api::SESSION_COOKIE)
+    }
+
+    type Calls = Arc<Mutex<Vec<(String, String, String)>>>;
+
+    /// A server that logs `(method, path and query, body)` of each call and answers `reply`.
+    async fn spawn_logging(status: StatusCode, reply: &'static str) -> (String, Calls) {
+        let calls: Calls = Arc::default();
+        let log = calls.clone();
+        let app =
+            Router::new().fallback(move |method: Method, uri: axum::http::Uri, body: Bytes| {
+                let log = log.clone();
+                async move {
+                    log.lock().unwrap().push((
+                        method.to_string(),
+                        uri.to_string(),
+                        String::from_utf8_lossy(&body).into_owned(),
+                    ));
+                    (status, reply)
+                }
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, calls)
+    }
+
+    fn app_with(
+        aggregator: String,
+        controller: Option<String>,
+        role: crate::role::Role,
+    ) -> (Router, String) {
+        let mut state =
+            crate::api::AppState::new(Some("secret".into())).with_aggregator(aggregator, None);
+        if let Some(c) = controller {
+            state = state.with_controller(c, None);
+        }
+        let id = state.sessions.create(crate::session::Session {
+            role,
+            username: Some("olly".into()),
+        });
+        (crate::api::router(state), cookie(&id))
+    }
+
+    async fn send(app: &Router, cookie: &str, method: &str, uri: &str, body: &str) -> Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header(header::COOKIE, cookie)
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn operators_edit_node_tags_in_the_controller_and_viewers_cannot() {
+        let (agg, _) = spawn_logging(StatusCode::OK, "{}").await;
+        let (ctl, calls) = spawn_logging(StatusCode::OK, "{}").await;
+        let tags = r#"{"tags":{"env":"prod"}}"#;
+        let (app, viewer) = app_with(agg.clone(), Some(ctl.clone()), crate::role::Role::Viewer);
+        for method in ["PUT", "DELETE"] {
+            let r = send(&app, &viewer, method, "/api/fleet/nodes/fra-1/tags", tags).await;
+            assert_eq!(r.status(), StatusCode::FORBIDDEN, "viewer {method}");
+        }
+        let (app, operator) = app_with(agg.clone(), Some(ctl), crate::role::Role::Operator);
+        let r = send(&app, &operator, "PUT", "/api/fleet/nodes/fra-1/tags", tags).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let r = send(&app, &operator, "DELETE", "/api/fleet/nodes/a%2Fb/tags", "").await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let r = send(&app, &operator, "PUT", "/api/fleet/nodes/../tags", tags).await;
+        assert_ne!(r.status(), StatusCode::OK, "a dot segment is not a node");
+        assert_eq!(
+            *calls.lock().unwrap(),
+            [
+                ("PUT".into(), "/ui/node-tags/fra-1".into(), tags.into()),
+                ("DELETE".into(), "/ui/node-tags/a%2Fb".into(), String::new()),
+            ]
+        );
+        // Without a controller there is nowhere to keep them.
+        let (app, operator) = app_with(agg, None, crate::role::Role::Operator);
+        let r = send(&app, &operator, "PUT", "/api/fleet/nodes/fra-1/tags", tags).await;
+        assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn the_node_list_and_resolve_carry_the_controllers_tags_to_the_aggregator() {
+        let (agg, agg_calls) = spawn_logging(StatusCode::OK, "{}").await;
+        let (ctl, _) = spawn_logging(
+            StatusCode::OK,
+            r#"{"items":[{"name":"fra-1","tags":{"env":"prod"}}]}"#,
+        )
+        .await;
+        let (app, viewer) = app_with(agg, Some(ctl), crate::role::Role::Viewer);
+        let r = send(
+            &app,
+            &viewer,
+            "GET",
+            "/api/fleet/nodes?tag=env%3Dprod&size=5",
+            "",
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(r.headers().get("x-operator-tags").is_none());
+        let r = send(
+            &app,
+            &viewer,
+            "POST",
+            "/api/fleet/nodes/resolve?region=eu",
+            "",
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let want = r#"{"operator_tags":{"fra-1":{"env":"prod"}}}"#;
+        assert_eq!(
+            *agg_calls.lock().unwrap(),
+            [
+                (
+                    "POST".into(),
+                    "/fleet/nodes/query?tag=env%3Dprod&size=5".into(),
+                    want.into()
+                ),
+                (
+                    "POST".into(),
+                    "/fleet/nodes/resolve?region=eu".into(),
+                    want.into()
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_node_list_still_answers_when_the_controller_does_not_and_says_so() {
+        let (agg, agg_calls) = spawn_logging(StatusCode::OK, "{}").await;
+        let (ctl, _) = spawn_logging(StatusCode::INTERNAL_SERVER_ERROR, "{}").await;
+        let (app, viewer) = app_with(agg.clone(), Some(ctl), crate::role::Role::Viewer);
+        let r = send(&app, &viewer, "GET", "/api/fleet/nodes?page=2", "").await;
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()["x-operator-tags"], "unavailable");
+        let r = send(
+            &app,
+            &viewer,
+            "POST",
+            "/api/fleet/nodes/resolve?region=eu",
+            "",
+        )
+        .await;
+        assert_eq!(
+            r.status(),
+            StatusCode::BAD_GATEWAY,
+            "a bulk target is never a guess"
+        );
+        assert_eq!(
+            *agg_calls.lock().unwrap(),
+            [("GET".into(), "/fleet/nodes?page=2".into(), String::new())]
+        );
+        // No controller configured at all is not an outage: the plain list, no warning.
+        let (app, viewer) = app_with(agg, None, crate::role::Role::Viewer);
+        let r = send(&app, &viewer, "GET", "/api/fleet/nodes", "").await;
+        assert!(r.headers().get("x-operator-tags").is_none());
     }
 
     #[tokio::test]

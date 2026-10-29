@@ -27,6 +27,8 @@ pub enum Kind {
     Defaults,
     /// An operator's override of one feature flag (F4), named by the flag.
     FeatureOverride,
+    /// An operator's tags for one node, named by its instance id.
+    NodeTags,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -146,6 +148,7 @@ impl Kind {
             Kind::FormLayout => "layout",
             Kind::Defaults => "defaults",
             Kind::FeatureOverride => "feature_overrides",
+            Kind::NodeTags => "node_tags",
         }
     }
 
@@ -153,6 +156,7 @@ impl Kind {
         match self {
             Kind::Dashboard | Kind::FormLayout => 64 << 10,
             Kind::Theme => 8 << 10,
+            Kind::NodeTags => 4 << 10,
             Kind::SavedFilter => 4 << 10,
             Kind::Defaults | Kind::FeatureOverride => 1 << 10,
         }
@@ -165,6 +169,8 @@ impl Kind {
             Kind::Theme => Some(50),
             Kind::SavedFilter => Some(200),
             Kind::FeatureOverride => Some(64),
+            // Sized for a fleet of about 500 nodes with room to spare.
+            Kind::NodeTags => Some(1000),
             Kind::FormLayout | Kind::Defaults => None,
         }
     }
@@ -343,6 +349,17 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                 }
             }
             Ok(())
+        }
+        Kind::NodeTags => {
+            only_keys(obj, "", &["name", "tags"])?;
+            let tags = object(obj.get("tags").unwrap_or(&Value::Null), "tags")?
+                .iter()
+                .map(|(k, v)| match v.as_str() {
+                    Some(v) => Ok((k.clone(), v.to_string())),
+                    None => Err(format!("tags.{k} must be a string")),
+                })
+                .collect::<Result<_, _>>()?;
+            wayhouse_http::labels::check_labels(None, &tags)
         }
         Kind::Defaults => {
             only_keys(obj, "", &["dashboard", "theme"])?;
@@ -652,6 +669,46 @@ mod tests {
                 .unwrap(),
         );
         assert!(why.contains("name"), "{why}");
+    }
+
+    #[test]
+    fn operator_tags_follow_the_node_label_rules_and_the_record_cap() {
+        let (s, _d) = store();
+        let ok = json!({"tags": {"env": "prod", "rack": "r12"}});
+        assert_eq!(
+            s.apply_local(&put(Kind::NodeTags, "fra-1", ok.clone()))
+                .unwrap(),
+            Applied::Done
+        );
+        assert_eq!(s.get(Kind::NodeTags, "fra-1").unwrap(), Some(ok));
+        let many: serde_json::Map<String, Value> =
+            (0..17).map(|i| (format!("k{i}"), json!("v"))).collect();
+        for (bad, needle) in [
+            (json!({"tags": {"Env": "prod"}}), "tag key"),
+            (json!({"tags": {"env": "pr od"}}), "value of tag"),
+            (json!({"tags": many}), "more than 16"),
+            (json!({"tags": ["env"]}), "tags must be an object"),
+            (json!({"tags": {"env": 1}}), "string"),
+            (json!({"tags": {}, "region": "eu"}), "known key"),
+        ] {
+            let why = invalid(s.apply_local(&put(Kind::NodeTags, "fra-1", bad)).unwrap());
+            assert!(why.contains(needle), "{needle}: {why}");
+        }
+        let one = json!({"tags": {"a": "b"}});
+        for i in 1..1000 {
+            s.apply_local(&put(Kind::NodeTags, &format!("n{i}"), one.clone()))
+                .unwrap();
+        }
+        // "fra-1" plus 999 others fill the collection; a new node is refused, an edit is not.
+        assert_eq!(
+            s.apply_local(&put(Kind::NodeTags, "one-more", one.clone()))
+                .unwrap(),
+            Applied::Full(1000)
+        );
+        assert_eq!(
+            s.apply_local(&put(Kind::NodeTags, "fra-1", one)).unwrap(),
+            Applied::Done
+        );
     }
 
     #[test]

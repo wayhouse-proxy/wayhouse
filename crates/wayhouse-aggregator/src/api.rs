@@ -34,7 +34,8 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{ConnectInfo, Extension, Query, RawQuery, State};
+use axum::body::Bytes;
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Extension, Query, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -171,7 +172,14 @@ pub fn router(state: AppState) -> Router {
         .route("/fleet/healthz", get(fleet_healthz))
         .route("/fleet/stats", get(fleet_stats))
         .route("/fleet/nodes", get(fleet_nodes))
-        .route("/fleet/nodes/resolve", post(resolve_nodes))
+        .route(
+            "/fleet/nodes/query",
+            post(fleet_nodes_with_tags).layer(DefaultBodyLimit::max(NODE_TAGS_BODY_LIMIT)),
+        )
+        .route(
+            "/fleet/nodes/resolve",
+            post(resolve_nodes).layer(DefaultBodyLimit::max(NODE_TAGS_BODY_LIMIT)),
+        )
         .route("/fleet/subscribe", get(subscribe_fleet))
         .merge(crate::fanout::router())
         .route_layer(axum::middleware::from_fn_with_state(
@@ -365,23 +373,54 @@ fn bad_request(error: String) -> Response {
 /// `GET /fleet/nodes?page=&size=&sort=&dir=&q=&state=&region=&tag=&group_by=region` — the
 /// filtered, sorted and paged node list with rollups ([`crate::nodes`]).
 async fn fleet_nodes(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
-    let q = match nodes::Query::parse(query.as_deref().unwrap_or_default()) {
+    node_page(&state, query.as_deref(), &[])
+}
+
+/// Largest body of a query that carries operator tags: about 1000 nodes of 16 tags each.
+const NODE_TAGS_BODY_LIMIT: usize = 4 << 20;
+
+/// `POST /fleet/nodes/query?<same query as the list>` with `{"operator_tags": {...}}`: the list
+/// with the operator's tags laid over what the instances declared (see [`nodes::parse_operator`]).
+/// A POST only because the tags do not fit a URL.
+async fn fleet_nodes_with_tags(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Response {
+    node_page(&state, query.as_deref(), &body)
+}
+
+fn node_page(state: &AppState, query: Option<&str>, body: &[u8]) -> Response {
+    let q = match nodes::Query::parse(query.unwrap_or_default()) {
         Ok(q) => q,
         Err(e) => return bad_request(e),
     };
-    let all = nodes::nodes(&state.store.snapshot(), unix_ms(), STALE_AFTER_MS);
+    let mut all = nodes::nodes(&state.store.snapshot(), unix_ms(), STALE_AFTER_MS);
+    match nodes::parse_operator(body) {
+        Ok(op) => nodes::overlay(&mut all, &op),
+        Err(e) => return bad_request(e),
+    }
     (StatusCode::OK, Json(nodes::page(all, &q))).into_response()
 }
 
 /// `POST /fleet/nodes/resolve?<filter>` — the instances a filter selects and how many, for a bulk
 /// action to show the count before the operator confirms. Takes the query a list view sent
-/// (paging keys are ignored); reads, changes nothing.
-async fn resolve_nodes(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
+/// (paging keys are ignored) and, like [`fleet_nodes_with_tags`], the operator's tags; reads,
+/// changes nothing.
+async fn resolve_nodes(
+    State(state): State<AppState>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Response {
     let filter = match nodes::Filter::parse(query.as_deref().unwrap_or_default()) {
         Ok(f) => f,
         Err(e) => return bad_request(e),
     };
-    let all = nodes::nodes(&state.store.snapshot(), unix_ms(), STALE_AFTER_MS);
+    let mut all = nodes::nodes(&state.store.snapshot(), unix_ms(), STALE_AFTER_MS);
+    match nodes::parse_operator(&body) {
+        Ok(op) => nodes::overlay(&mut all, &op),
+        Err(e) => return bad_request(e),
+    }
     let instances: Vec<String> = nodes::select(all, &filter)
         .into_iter()
         .map(|n| n.instance)
@@ -1247,6 +1286,59 @@ mod tests {
                     .body(Body::empty())
                     .unwrap(),
             )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn the_query_and_resolve_routes_take_the_operators_tags_in_the_body() {
+        let state = test_state();
+        state
+            .store
+            .ingest(labelled("a", Some("eu"), &[("env", "prod")]));
+        state
+            .store
+            .ingest(labelled("b", Some("eu"), &[("env", "prod")]));
+        let app = router(state);
+        let body = r#"{"operator_tags": {"a": {"env": "stage"}}}"#;
+        let post = |uri: &str, body: &str| {
+            Request::post(uri)
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+
+        let resp = app
+            .clone()
+            .oneshot(post("/fleet/nodes/query?tag=env%3Dstage", body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["items"][0]["instance"], "a");
+        assert_eq!(v["items"][0]["operator_tags"]["env"], "stage");
+
+        let resp = app
+            .clone()
+            .oneshot(post("/fleet/nodes/resolve?tag=env%3Dprod", body))
+            .await
+            .unwrap();
+        let v = body_json(resp).await;
+        assert_eq!(v["instances"], serde_json::json!(["b"]));
+
+        // No body is the plain list; a bad body is a 400, not a silent plain list.
+        let resp = app
+            .clone()
+            .oneshot(post("/fleet/nodes/query", ""))
+            .await
+            .unwrap();
+        assert_eq!(body_json(resp).await["total"], 2);
+        let resp = app
+            .oneshot(post(
+                "/fleet/nodes/query",
+                r#"{"operator_tags": {"a": {"Env": "x"}}}"#,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

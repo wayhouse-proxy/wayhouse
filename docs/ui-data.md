@@ -12,6 +12,7 @@ The controller checks only its bearer token. The UI backend (`/api/ui/*`) holds 
 | -------------------------------------- | ------ | -------- |
 | dashboards, saved filters              | viewer | operator |
 | themes, form layout override, defaults | viewer | admin    |
+| operator node tags                     | viewer | operator |
 
 ## Controller API
 
@@ -21,6 +22,7 @@ The controller checks only its bearer token. The UI backend (`/api/ui/*`) holds 
 | `GET`/`PUT`/`DELETE /ui/dashboards/{name}`        | One dashboard. The export shape is `{"name", "widgets": [{"id", "width", "settings"?}]}`. |
 | `GET`/`PUT`/`DELETE /ui/themes/{name}`            | One theme: `{"name", "base": "light"\|"dark", "tokens": {"bg": "#101216", ...}}`.         |
 | `GET`/`PUT`/`DELETE /ui/filters/{name}`           | One saved fleet filter (a JSON object).                                                   |
+| `GET /ui/node-tags`, `GET`/`PUT`/`DELETE /ui/node-tags/{instance}` | An operator's tags for one node: `{"name", "tags": {"rack": "r12"}}`, the rules of declared tags ([operations](06-operations-observability.md)). The UI backend serves them as `/api/fleet/nodes/{instance}/tags`. |
 | `GET`/`PUT`/`DELETE /ui/layout`                   | The form layout override. `404` means "use the shipped default".                          |
 | `GET`/`PUT /ui/defaults`                          | `{"dashboard"?, "theme"?}`; an empty object when nothing is set.                          |
 
@@ -35,6 +37,7 @@ A `PUT` replaces the record. The name in the path wins over a `name` in the body
 | saved filter | 4 KiB   | 200          |
 | form layout  | 64 KiB  | 1            |
 | defaults     | 1 KiB   | 1            |
+| node tags    | 4 KiB   | 1000         |
 
 Names are 1 to 64 characters without `/` or control characters. A dashboard holds at most 100 widgets, each `width` 1 to 12 (the grid has 12 columns). A theme may not be named `light`, `dark` or `system` (the built-ins); `defaults.theme` may be one of those or a saved theme. Deleting the dashboard or theme that is the default clears that default on every replica.
 
