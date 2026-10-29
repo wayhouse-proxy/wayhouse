@@ -19,13 +19,14 @@ test("navigation moves between pages and marks the current one", async ({ page }
   await expect(page.getByRole("navigation", { name: "Breadcrumb" })).toHaveText("Configure / Plugins");
 });
 
-test("a viewer cannot upload plugins; an admin can", async ({ page }) => {
+test("a viewer cannot install plugins; an admin can", async ({ page }) => {
   await stub(page, "viewer");
   await page.goto("/plugins");
-  await expect(page.getByRole("button", { name: "Upload plugin" })).toHaveAttribute("aria-disabled", "true");
+  await expect(page.getByRole("heading", { level: 1, name: "Plugins" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Install plugin" })).toHaveCount(0);
   await stub(page, "admin");
   await page.reload();
-  await expect(page.getByRole("button", { name: "Upload plugin" })).not.toHaveAttribute("aria-disabled", "true");
+  await expect(page.getByRole("link", { name: "Install plugin" })).toBeVisible();
 });
 
 test("the rail is reachable by keyboard", async ({ page }) => {
