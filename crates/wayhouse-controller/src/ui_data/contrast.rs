@@ -68,8 +68,8 @@ const LIGHT: [(&str, &str); 23] = [
     ("series-1", "#2b5ff3"),
     ("series-2", "#219a77"),
     ("series-3", "#984f85"),
-    ("series-4", "#797e2a"),
-    ("series-5", "#504d37"),
+    ("series-4", "#5a1fad"),
+    ("series-5", "#8e0b62"),
 ];
 const DARK: [(&str, &str); 23] = [
     ("bg", "#16171a"),

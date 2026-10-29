@@ -48,6 +48,17 @@ describe("built-in themes", () => {
     expect(l).toBeGreaterThanOrEqual(0.33);
   });
 
+  // No chart series in the muddy olive/brown band (hue 20-100 degrees at low lightness or saturation).
+  it.each(["light", "dark"] as const)("%s series avoid muddy olive and brown", (base) => {
+    for (const n of ["series-1", "series-2", "series-3", "series-4", "series-5"]) {
+      const [r, g, b] = parseHex(BUILTIN[base][n])!;
+      const [max, min] = [Math.max(r, g, b), Math.min(r, g, b)];
+      const h = max === min ? 0 : (60 * (max === r ? ((g - b) / (max - min)) % 6 : max === g ? (b - r) / (max - min) + 2 : (r - g) / (max - min) + 4) + 360) % 360;
+      const l = (max + min) / 2;
+      expect(h >= 20 && h <= 100 && l < 0.5 && base === "light", `${n} ${BUILTIN[base][n]}`).toBe(false);
+    }
+  });
+
   it("the media-query dark block equals the data-theme dark block", () => {
     const grab = (re: RegExp) => [...re.exec(tokensCss)![1].matchAll(/--[\w-]+:\s*#[0-9a-f]{6}/gi)].map((m) => m[0]);
     expect(grab(/:root:not\(\[data-theme\]\) \{([\s\S]*?)\n  \}/)).toEqual(grab(/:root\[data-theme="dark"\] \{([\s\S]*?)\n\}/));
