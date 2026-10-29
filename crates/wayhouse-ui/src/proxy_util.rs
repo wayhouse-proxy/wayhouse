@@ -83,6 +83,8 @@ mod header_contract {
         ("GET", "/api/fleet/pools"),
         ("GET", "/api/fleet/sessions"),
         ("GET", "/api/fleet/healthz"),
+        ("GET", "/api/fleet/nodes?page=2&tag=env%3Dprod"),
+        ("POST", "/api/fleet/nodes/resolve?region=eu"),
         ("GET", "/api/fleet/instances/fra-1/sniffers"),
         // aggregator_proxy: operator verbs
         ("POST", "/api/fleet/instances/fra-1/drain"),

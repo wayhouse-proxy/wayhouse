@@ -28,6 +28,7 @@ pub const MAX_SNIFFER_MODULE_BYTES: usize = 8 * 1024 * 1024;
 /// is compiled into each of them (`deploy/check-image-commit.sh` looks for it).
 pub const LONG_VERSION: &str = env!("WAYHOUSE_LONG_VERSION");
 
+pub mod labels;
 #[cfg(feature = "server")]
 pub mod metrics;
 pub mod peers;

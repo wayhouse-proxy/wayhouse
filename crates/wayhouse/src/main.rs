@@ -111,6 +111,16 @@ struct Args {
     #[arg(long)]
     aggregator_instance: Option<String>,
 
+    /// Region this instance reports to the aggregator, for the fleet list's grouping and filters
+    /// (letters, digits and `. _ - : / @ +`, at most 64).
+    #[arg(long)]
+    region: Option<String>,
+
+    /// A `key=value` label this instance reports to the aggregator (repeatable, at most 16; keys
+    /// are lowercase letters, digits, `. _ -`). The fleet list filters by them.
+    #[arg(long = "tag", value_name = "KEY=VALUE")]
+    tags: Vec<String>,
+
     /// Seconds between pushes to `--aggregator`.
     #[arg(long, default_value = "10")]
     aggregator_interval_sec: u64,
@@ -353,6 +363,8 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let labels = aggregator_client::Labels::from_args(args.region, &args.tags)
+        .map_err(|e| anyhow::anyhow!(e))?;
     let aggregator_push = args
         .aggregator
         .map(|base_url| aggregator_client::PushConfig {
@@ -363,6 +375,7 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
             admin_url,
             interval: Duration::from_secs(args.aggregator_interval_sec),
             token: args.aggregator_token,
+            labels,
         });
 
     run(

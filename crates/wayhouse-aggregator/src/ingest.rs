@@ -57,6 +57,10 @@ pub struct IngestPayload {
     /// that predates the field (or an instance that sets none).
     #[serde(default)]
     pub region: Option<String>,
+    /// Self-reported `key=value` labels (`--tag`), for filtering the node list.
+    /// Empty from a build that predates the field.
+    #[serde(default)]
+    pub tags: std::collections::BTreeMap<String, String>,
     /// Cumulative per-listener counters since the instance started; the
     /// aggregator derives rates from the difference between pushes
     /// ([`crate::history`]). Empty from a build that predates the field.
@@ -155,6 +159,7 @@ impl IngestPayload {
         {
             return Err(format!("a field is longer than {MAX_FIELD_BYTES} bytes"));
         }
+        wayhouse_http::labels::check_labels(self.region.as_deref(), &self.tags)?;
         if self.pools.len() > MAX_POOLS {
             return Err(format!("more than {MAX_POOLS} pools"));
         }
@@ -309,6 +314,7 @@ mod tests {
             protocol: String::new(),
             protocol_mismatches: 0,
             region: None,
+            tags: std::collections::BTreeMap::default(),
             listeners: vec![],
         }
     }

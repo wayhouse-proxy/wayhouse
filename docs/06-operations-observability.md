@@ -524,6 +524,27 @@ un-namespaced names.
   default 10s push interval) and the product `version` each instance runs (empty from
   a build that predates the field). The UI backend checks a registry sniffer's
   `min_proxy` against these versions on install and update.
+- `GET /fleet/nodes` — the node list, filtered, sorted, grouped and paged on the
+  server so a large fleet never travels whole. Query: `page` (from 1), `size`
+  (1 to 200, default 25), `sort` (`instance`, `state`, `region`, `sessions`,
+  `version`; ties break by instance), `dir` (`asc`, `desc`), `group_by=region`,
+  and the filters `q` (case-insensitive text over instance, region, group,
+  version and `key=value` tags), `state` (`ok`, `degraded`, `stale`), `region`
+  and `tag` (`key` or `key=value`, repeatable, all must match). Answers
+  `{items, total, page, size, rollup, groups?}`: `total` and `rollup` (`nodes`,
+  `degraded`, `stale`, `sessions`) cover the whole selection, not the page;
+  with `group_by=region` the list is ordered by region (regionless nodes last)
+  and `groups` carries one rollup per region. A node is `stale` after 30 s of
+  silence, `degraded` while any backend is unhealthy. Sorting by `state` puts the
+  worst first. `POST /fleet/nodes/resolve` takes the same filters (paging keys
+  are ignored) and answers `{count, instances}`, so a bulk action can show how many
+  nodes it will touch before the operator confirms. Read-only.
+- Region and tags are what an instance reports: `wayhouse --region eu-west --tag
+  env=prod --tag gpu=a100` (at most 16 tags; keys are lowercase letters, digits,
+  `.`, `_`, `-`; values and the region use letters, digits and `. _ - : / @ +`, at
+  most 64 characters). An invalid label stops the proxy at startup, and the
+  aggregator refuses a push that carries one. The aggregator keeps nothing of its
+  own, so a replica swap loses nothing that the next push does not bring back.
 - `GET /fleet/stats?range=5m|15m|1h` (default `15m`) — fleet rates and gauges
   from a rolling in-memory history: one-minute points, an hour deep, aggregates
   only (fleet, per listener, per pool, per region; never per node). Proxies push
