@@ -10,25 +10,33 @@ export function FieldRow({
   help,
   yamlKey,
   changed,
+  required,
   error,
   render,
   className,
+  id: given,
 }: {
   label: string;
   help?: string;
   yamlKey?: string;
   changed?: boolean;
+  /** Said in words, not by colour or an asterisk alone. */
+  required?: boolean;
   error?: string;
   render: (a: { id: string; "aria-describedby"?: string; "aria-invalid"?: true }) => React.ReactNode;
   className?: string;
+  /** Use this id for the control instead of a generated one (a renderer that creates the control itself). */
+  id?: string;
 }) {
-  const id = useId();
+  const generated = useId();
+  const id = given ?? generated;
   const described = [help && `${id}-help`, error && `${id}-error`].filter(Boolean).join(" ") || undefined;
   return (
     <div className={cn("grid gap-2 py-2 min-[760px]:grid-cols-[240px_1fr] min-[760px]:gap-4", className)}>
       <div>
         <label htmlFor={id} className="font-medium text-sm text-ink">
           {label}
+          {required && <span className="ml-1 text-xs font-normal text-ink-muted">(required)</span>}
           {changed && (
             <span
               aria-hidden

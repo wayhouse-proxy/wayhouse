@@ -108,6 +108,10 @@ pub fn router(state: PluginsState) -> Router {
         .route("/plugins/{id}", get(get_one).delete(remove))
         .route("/plugins/{id}/status", get(status))
         .route(
+            "/plugins/{id}/config",
+            put(put_config).layer(DefaultBodyLimit::max(MAX_CONFIG_BYTES + 16 * 1024)),
+        )
+        .route(
             "/plugins/{id}/webhook",
             post(enable_webhook).delete(revoke_webhook),
         )
@@ -575,6 +579,188 @@ async fn disable(
     Path(id): Path<String>,
 ) -> Response {
     set_enabled(&st, &headers, id, false).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigRequest {
+    config: serde_json::Value,
+    /// Required when the new config changes what the options resolve to, and then exactly
+    /// that set; otherwise absent or equal to the current one.
+    approved: Option<Capabilities>,
+}
+
+/// Replaces an install's config. A module whose options are bound to capabilities is
+/// approved as the set the options resolve to, so an edit that moves that set is refused
+/// with both sets (`409`) until the same call carries the new one as `approved`.
+async fn put_config(
+    State(st): State<PluginsState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Response {
+    if !valid_id(&id) {
+        return err(StatusCode::NOT_FOUND, "no such install");
+    }
+    match put_config_inner(&st, &headers, &id, body).await {
+        Ok(r) | Err(r) => r,
+    }
+}
+
+async fn put_config_inner(
+    st: &PluginsState,
+    headers: &HeaderMap,
+    id: &str,
+    body: Bytes,
+) -> Result<Response, Response> {
+    if let Some(forwarded) = st
+        .to_leader(
+            Method::PUT,
+            &format!("/plugins/{id}/config"),
+            headers,
+            body.clone(),
+        )
+        .await
+    {
+        return Err(forwarded);
+    }
+    let req: ConfigRequest = serde_json::from_slice(&body).map_err(|e| {
+        err(
+            if e.is_data() {
+                StatusCode::UNPROCESSABLE_ENTITY
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            e,
+        )
+    })?;
+    let config = if req.config.is_null() {
+        serde_json::json!({})
+    } else {
+        req.config
+    };
+    if serde_json::to_vec(&config).map_or(true, |b| b.len() > MAX_CONFIG_BYTES) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("config is over {MAX_CONFIG_BYTES} bytes"),
+        ));
+    }
+    let record = st
+        .store
+        .get(id)
+        .map_err(internal)?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such install"))?;
+    let Some(bytes) = st.store.get_blob(&record.sha256).map_err(internal)? else {
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the module for this install is not stored on this node",
+        ));
+    };
+    let info = inspect(&bytes).map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    let effective = info
+        .effective_caps(&config)
+        .map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    let approved = if info.declared.has_placeholders() {
+        match &req.approved {
+            Some(given) if *given != effective => {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "approved must be exactly what the options resolve to: {}",
+                        serde_json::to_string(&effective).expect("capabilities serialize")
+                    ),
+                ))
+            }
+            None if effective != record.approved => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": "the new options change the approved capabilities; send them as `approved` to confirm",
+                        "approved": record.approved,
+                        "effective": effective,
+                    })),
+                )
+                    .into_response())
+            }
+            _ => effective,
+        }
+    } else if req.approved.as_ref().is_some_and(|a| *a != record.approved) {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "this module has no bound options: its approval cannot change",
+        ));
+    } else {
+        record.approved.clone()
+    };
+    if let Some(ha) = &st.ha {
+        super::peer::check_support(ha)
+            .await
+            .map_err(|e| err(StatusCode::SERVICE_UNAVAILABLE, e))?;
+    }
+    let pool = st.pool.clone();
+    let (approved_for_load, config_for_load) = (approved.clone(), config.clone());
+    tokio::task::spawn_blocking(move || {
+        pool.load_with_config(bytes, approved_for_load, config_for_load)
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "compile task failed"))?
+    .map_err(pool_error)?;
+    let changed = approved != record.approved;
+    let applied = match &st.ha {
+        // Proposed here, not forwarded: this request already ran on the leader, which
+        // holds the module the new options were checked against.
+        Some(ha) => match ha
+            .raft
+            .client_write(WriteRequest::PluginSetConfig {
+                id: id.to_string(),
+                config,
+                expected_approved: record.approved,
+                approved,
+            })
+            .await
+        {
+            Ok(done) => match done.data {
+                WriteResponse::PluginApplied(_) => Applied::Done(None),
+                WriteResponse::PluginRejected(PluginReject::NoSuchInstall) => {
+                    Applied::NoSuchInstall
+                }
+                WriteResponse::PluginRejected(PluginReject::Stale) => Applied::Stale,
+                WriteResponse::PluginRejected(_) => Applied::Invalid(String::new()),
+                other => return Err(unexpected(&other)),
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "could not propose a plugin config change");
+                return Err(err(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "leadership changed while the config was saved; retry shortly",
+                ));
+            }
+        },
+        None => st
+            .store
+            .set_config(id, &config, &record.approved, &approved)
+            .map_err(internal)?,
+    };
+    match applied {
+        Applied::Done(_) => {
+            tracing::info!(
+                target: "wayhouse_controller::plugins::audit",
+                what = "config changed", install = %id, approval_changed = changed,
+                actor = actor(headers).as_deref(), "plugin config changed"
+            );
+            match st.store.get(id) {
+                Ok(Some(updated)) => Ok(Json(updated).into_response()),
+                Ok(None) => Err(err(StatusCode::NOT_FOUND, "no such install")),
+                Err(e) => Err(internal(e)),
+            }
+        }
+        Applied::NoSuchInstall => Err(err(StatusCode::NOT_FOUND, "no such install")),
+        Applied::Stale => Err(err(
+            StatusCode::CONFLICT,
+            "the install changed while you edited it; reload and try again",
+        )),
+        _ => Err(err(StatusCode::BAD_REQUEST, "the config was refused")),
+    }
 }
 
 async fn remove(
@@ -1199,6 +1385,105 @@ mod tests {
     }
 
     const PANEL_CAPS: &str = r#"{"log":true,"http":{"hosts":[{"host":"p.example"}]}}"#;
+
+    async fn install_bound(app: &Router, config: &str) -> String {
+        let sha = upload(app, &bound_module()).await;
+        let (status, rec) = call(
+            app,
+            "POST",
+            "/plugins",
+            bound_install(&sha, PANEL_CAPS, config),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{rec}");
+        rec["id"].as_str().unwrap().to_string()
+    }
+
+    async fn put_config(app: &Router, id: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        let uri = format!("/plugins/{id}/config");
+        call(app, "PUT", &uri, body.as_bytes().to_vec(), None).await
+    }
+
+    #[tokio::test]
+    async fn a_config_edit_that_leaves_the_caps_alone_applies_without_approval() {
+        let (st, _d) = state(None);
+        let app = router(st.clone());
+        let id = install_bound(&app, r#"{"panel":"p.example"}"#).await;
+        let (status, rec) =
+            put_config(&app, &id, r#"{"config":{"panel":"p.example","label":"x"}}"#).await;
+        assert_eq!(status, StatusCode::OK, "{rec}");
+        assert_eq!(rec["config"]["label"], "x");
+        let stored = st.store.get(&id).unwrap().unwrap();
+        assert_eq!(stored.config["label"], "x");
+        assert_eq!(
+            stored.approved.http.as_ref().unwrap().hosts[0].host,
+            "p.example"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bound_edit_needs_the_new_approval_and_shows_both_sets() {
+        let (st, _d) = state(None);
+        let app = router(st.clone());
+        let id = install_bound(&app, r#"{"panel":"p.example"}"#).await;
+        let (status, needs) = put_config(&app, &id, r#"{"config":{"panel":"q.example"}}"#).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{needs}");
+        assert_eq!(needs["approved"]["http"]["hosts"][0]["host"], "p.example");
+        assert_eq!(needs["effective"]["http"]["hosts"][0]["host"], "q.example");
+        assert_eq!(
+            st.store.get(&id).unwrap().unwrap().config["panel"],
+            "p.example",
+            "nothing changed"
+        );
+        // An approval that is not exactly the resolved set is refused.
+        let wrong = r#"{"config":{"panel":"q.example"},"approved":{"log":true}}"#;
+        let (status, v) = put_config(&app, &id, wrong).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        let ok = format!(
+            r#"{{"config":{{"panel":"q.example"}},"approved":{}}}"#,
+            needs["effective"]
+        );
+        let (status, rec) = put_config(&app, &id, &ok).await;
+        assert_eq!(status, StatusCode::OK, "{rec}");
+        let stored = st.store.get(&id).unwrap().unwrap();
+        assert_eq!(stored.config["panel"], "q.example");
+        assert_eq!(
+            stored.approved.http.as_ref().unwrap().hosts[0].host,
+            "q.example"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_config_edit_is_checked_against_the_options_and_the_install() {
+        let (st, _d) = state(None);
+        let app = router(st);
+        let id = install_bound(&app, r#"{"panel":"p.example"}"#).await;
+        let (status, _) = put_config(&app, &id, r#"{"config":{}}"#).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "missing option");
+        let (status, _) = put_config(&app, &id, r#"{"config":{"panel":"p.example"},"x":1}"#).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "unknown field");
+        let (status, _) = put_config(&app, &id, "not json").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = put_config(&app, "0000000000000000", r#"{"config":{}}"#).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = put_config(&app, "zz", r#"{"config":{}}"#).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_plain_module_takes_any_config_but_cannot_change_its_approval() {
+        let (st, _d) = state(None);
+        let app = router(st);
+        let sha = upload(&app, &module(CAPS)).await;
+        let (_, rec) = call(&app, "POST", "/plugins", install_body(&sha, CAPS), None).await;
+        let id = rec["id"].as_str().unwrap();
+        let (status, rec) = put_config(&app, id, r#"{"config":{"anything":[1,2]}}"#).await;
+        assert_eq!(status, StatusCode::OK, "{rec}");
+        let widened = r#"{"config":{},"approved":{"log":true,"state":{"max_bytes":8}}}"#;
+        let (status, v) = put_config(&app, id, widened).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    }
 
     #[tokio::test]
     async fn upload_shows_the_manifest_and_only_the_option_independent_caps() {

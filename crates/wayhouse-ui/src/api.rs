@@ -824,7 +824,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_operator_cannot_install_or_upload_a_plugin() {
+    async fn an_operator_cannot_change_a_plugin_install() {
         let app = router(users_state());
         let resp = login_as(&app, "bob", "bob-pass").await; // bob is Operator
         let cookie = cookie_header_from(&set_cookie_value(&resp));
@@ -833,6 +833,12 @@ mod tests {
             ("POST", "/api/plugins/modules"),
             ("POST", "/api/plugins/abc/enable"),
             ("DELETE", "/api/plugins/abc"),
+            ("PUT", "/api/plugins/abc/config"),
+            ("GET", "/api/plugins/abc/secrets"),
+            ("PUT", "/api/plugins/abc/secrets/TOKEN"),
+            ("DELETE", "/api/plugins/abc/secrets/TOKEN"),
+            ("POST", "/api/plugins/abc/webhook"),
+            ("DELETE", "/api/plugins/abc/webhook"),
         ] {
             let resp = app
                 .clone()

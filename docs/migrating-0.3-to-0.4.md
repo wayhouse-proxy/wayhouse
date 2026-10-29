@@ -25,7 +25,8 @@ the plugin declares ABI 0.1, this host speaks 0.2
 2. Upload the rebuilt module and approve it again: approvals are recorded against the module's
    sha256, so a rebuilt module is a new module.
 3. Under HA, upgrade every controller before installing: the leader refuses plugin installs while
-   a member reports a plugin support level below 5.
+   a member reports a plugin support level below 5. The same holds for editing an install's
+   config (`PUT /plugins/{id}/config`).
 
 Plugins that are already installed keep their stored 0.1 module, which no longer loads: the
 install stays listed, its status shows the ABI error as `last_error`, and it does not run. That
