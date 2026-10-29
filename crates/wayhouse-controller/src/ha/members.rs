@@ -563,6 +563,7 @@ mod tests {
                     plugin_support: 0,
                     secret_key_ids: Vec::new(),
                     acme_support: 0,
+                    confirm_support: 0,
                     ui_support: 0,
                 })
             }),
