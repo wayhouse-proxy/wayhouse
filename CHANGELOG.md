@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.4.0](https://github.com/wayhouse-proxy/wayhouse/compare/v0.3.0...v0.4.0) (2026-10-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **plugins:** plugin ABI 0.2 with manifest options and capability bindings ([#486](https://github.com/wayhouse-proxy/wayhouse/issues/486))
+
+### Features
+
+* **aggregator:** paged, filtered node list with region and tags ([#502](https://github.com/wayhouse-proxy/wayhouse/issues/502)) ([ef00c32](https://github.com/wayhouse-proxy/wayhouse/commit/ef00c324a723c5df34738e777529e60e3ebef79f))
+* **aggregator:** rolling fleet stats and GET /fleet/stats ([#492](https://github.com/wayhouse-proxy/wayhouse/issues/492)) ([11fdf87](https://github.com/wayhouse-proxy/wayhouse/commit/11fdf875862284093deaf0904e107e4baea01049))
+* **config:** feature-flag registry, features: section and GET /features ([#512](https://github.com/wayhouse-proxy/wayhouse/issues/512)) ([ed95b9b](https://github.com/wayhouse-proxy/wayhouse/commit/ed95b9bf48632fe52cfdd1352100097b1f2fc30c))
+* **controller:** config validate endpoint, base-revision guard and schema endpoint ([#485](https://github.com/wayhouse-proxy/wayhouse/issues/485)) ([469ad0d](https://github.com/wayhouse-proxy/wayhouse/commit/469ad0d8116e370d949b324a124e0a7217303bf2))
+* **controller:** confirm-and-revert for risky config revisions ([#500](https://github.com/wayhouse-proxy/wayhouse/issues/500)) ([4d17d58](https://github.com/wayhouse-proxy/wayhouse/commit/4d17d585bd3c6edd285c24b9278510b135040896))
+* **controller:** emergency feature-flag overrides ([#517](https://github.com/wayhouse-proxy/wayhouse/issues/517)) ([85bf370](https://github.com/wayhouse-proxy/wayhouse/commit/85bf370d7cce5319714b91e08b86a38e33c147b6))
+* **controller:** stored UI data (dashboards, themes, filters, layout, defaults) ([#497](https://github.com/wayhouse-proxy/wayhouse/issues/497)) ([2e42b4d](https://github.com/wayhouse-proxy/wayhouse/commit/2e42b4d36a4a14d88ac783432e74a9dd76f59ff9))
+* **controller:** theme contrast checks on save ([#508](https://github.com/wayhouse-proxy/wayhouse/issues/508)) ([d7e4225](https://github.com/wayhouse-proxy/wayhouse/commit/d7e42259eb0421dc3863bd6482cc295bdfd39036))
+* **deploy:** Grafana dashboard and Prometheus alert rules ([#451](https://github.com/wayhouse-proxy/wayhouse/issues/451)) ([aa0b9ef](https://github.com/wayhouse-proxy/wayhouse/commit/aa0b9ef4b024ff8f7a773f6807859ab982433f75))
+* **deploy:** Kustomize overlays for Kubernetes (single, ha, web-gateway) ([#453](https://github.com/wayhouse-proxy/wayhouse/issues/453)) ([94dd5dc](https://github.com/wayhouse-proxy/wayhouse/commit/94dd5dc076f0fc4535e4c7d7d060385108300599))
+* **fleet:** operator-edited node tags (PUT/DELETE /api/fleet/nodes/{id}/tags) ([#524](https://github.com/wayhouse-proxy/wayhouse/issues/524)) ([12f5367](https://github.com/wayhouse-proxy/wayhouse/commit/12f53670dd7dcd15101d743b48f7ec088fbac371))
+* **plugins:** config edit API and UI proxies for secrets, webhook, status ([#506](https://github.com/wayhouse-proxy/wayhouse/issues/506)) ([248b5b9](https://github.com/wayhouse-proxy/wayhouse/commit/248b5b9278c500aa6ed15da304099b04a92f61fb))
+* **plugins:** plugin ABI 0.2 with manifest options and capability bindings ([#486](https://github.com/wayhouse-proxy/wayhouse/issues/486)) ([10201de](https://github.com/wayhouse-proxy/wayhouse/commit/10201de6bdf0ae7a8ada5a1ca9e7a416fbc9766f))
+* **ui:** config editing with confirm-and-revert, canary and source editor (A3b) ([#526](https://github.com/wayhouse-proxy/wayhouse/issues/526)) ([5d4ff63](https://github.com/wayhouse-proxy/wayhouse/commit/5d4ff639e2146ca5afbb2e80d1330c9fb52b7739))
+* **ui:** dashboard page and widget system (W1) ([#514](https://github.com/wayhouse-proxy/wayhouse/issues/514)) ([1921af3](https://github.com/wayhouse-proxy/wayhouse/commit/1921af3b2fa85f720ade02f57eefff17091dcdfe))
+* **ui:** design-system foundation (U1a) ([#490](https://github.com/wayhouse-proxy/wayhouse/issues/490)) ([37d375e](https://github.com/wayhouse-proxy/wayhouse/commit/37d375e5e25fcb943f66ba778c2ffca6fd44bb42))
+* **ui:** edit a node's operator tags in the fleet inspector ([#531](https://github.com/wayhouse-proxy/wayhouse/issues/531)) ([d82546e](https://github.com/wayhouse-proxy/wayhouse/commit/d82546e1fb44e3b100994cef6a5d666015e00d4a))
+* **ui:** features page with source badges and emergency overrides (F6) ([#540](https://github.com/wayhouse-proxy/wayhouse/issues/540)) ([3a7d7be](https://github.com/wayhouse-proxy/wayhouse/commit/3a7d7bed4695d0678c3fa6a14b0ac5f07777eb6f))
+* **ui:** fleet page for 500 nodes (FL1) ([#527](https://github.com/wayhouse-proxy/wayhouse/issues/527)) ([8b47b86](https://github.com/wayhouse-proxy/wayhouse/commit/8b47b861bcab3b0a28a064ca3ea76bbb449c372f))
+* **ui:** interactive demo with an in-browser mock backend ([#547](https://github.com/wayhouse-proxy/wayhouse/issues/547)) ([712c07c](https://github.com/wayhouse-proxy/wayhouse/commit/712c07ce99997aa3276fbb5acd37258323a0cbe0))
+* **ui:** light navigation rail in the light theme ([#545](https://github.com/wayhouse-proxy/wayhouse/issues/545)) ([3bc3c57](https://github.com/wayhouse-proxy/wayhouse/commit/3bc3c5734ba28c21dbe161fec7133177a9952b9c))
+* **ui:** listeners and routes editor with patch-line diagram (A5a) ([#529](https://github.com/wayhouse-proxy/wayhouse/issues/529)) ([13f49a2](https://github.com/wayhouse-proxy/wayhouse/commit/13f49a21f12591cbdcb22107321ae726a3619e4f))
+* **ui:** plugin install wizard and install pages (P4) ([#518](https://github.com/wayhouse-proxy/wayhouse/issues/518)) ([424bd36](https://github.com/wayhouse-proxy/wayhouse/commit/424bd36dd7d7c7d334e256b0b8babed54990b9d0))
+* **ui:** pools, backend sources and resolvers editors (A5b) ([#534](https://github.com/wayhouse-proxy/wayhouse/issues/534)) ([5e98cfb](https://github.com/wayhouse-proxy/wayhouse/commit/5e98cfbf79f7445a43dce666af9bff5dadcc54ec))
+* **ui:** schema-driven config form and comment-preserving YAML patch layer (A3a) ([#495](https://github.com/wayhouse-proxy/wayhouse/issues/495)) ([22f7148](https://github.com/wayhouse-proxy/wayhouse/commit/22f7148915e86f071df98fa4d9a606be57431648))
+* **ui:** Settings &gt; Appearance and Layout (stored themes and form layout) ([#510](https://github.com/wayhouse-proxy/wayhouse/issues/510)) ([c0d1304](https://github.com/wayhouse-proxy/wayhouse/commit/c0d13045720b1b431b5f02d0ed29326590303984))
+* **ui:** shell, session role and the existing pages on the design system (U1b) ([#494](https://github.com/wayhouse-proxy/wayhouse/issues/494)) ([89aa4d2](https://github.com/wayhouse-proxy/wayhouse/commit/89aa4d26e1be60ddbdd5b5cb273507c22a6a903a))
+* **ui:** stats charts and Overview, Listeners and Pools pages (E2) ([#504](https://github.com/wayhouse-proxy/wayhouse/issues/504)) ([1a3422b](https://github.com/wayhouse-proxy/wayhouse/commit/1a3422bb97c06fb4892da4333fa95f4b418ba446))
+* **ui:** web sites editor and ACME site writes (A5c) ([#538](https://github.com/wayhouse-proxy/wayhouse/issues/538)) ([4a3994b](https://github.com/wayhouse-proxy/wayhouse/commit/4a3994bdb585c509e645a5b9319371685521b0c8))
+
+
+### Bug Fixes
+
+* **deps:** bump wasmtime to 48.0.7 for CVE-2026-115893 ([#445](https://github.com/wayhouse-proxy/wayhouse/issues/445)) ([f258efa](https://github.com/wayhouse-proxy/wayhouse/commit/f258efab25b68ce4b7a430d41c21516316afbfc5))
+* **security:** bump undici, patch go-jose, drop curl from Caddy image ([#530](https://github.com/wayhouse-proxy/wayhouse/issues/530)) ([588fb2d](https://github.com/wayhouse-proxy/wayhouse/commit/588fb2da793918f1a1368b60c0d424b8d3a6b0d9))
+* **ui:** make light-mode warn amber instead of brown ([#536](https://github.com/wayhouse-proxy/wayhouse/issues/536)) ([deb8805](https://github.com/wayhouse-proxy/wayhouse/commit/deb8805ee2edcee26dff754f4cbea389e5f35ac6))
+* **ui:** open client routes from their URL ([#522](https://github.com/wayhouse-proxy/wayhouse/issues/522)) ([be91409](https://github.com/wayhouse-proxy/wayhouse/commit/be914097eeee05e3daa366ada6c4e153d056ca2e))
+
 ## [0.3.0](https://github.com/wayhouse-proxy/wayhouse/compare/v0.2.0...v0.3.0) (2026-10-23)
 
 
