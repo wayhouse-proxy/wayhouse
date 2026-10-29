@@ -70,6 +70,8 @@ so; if it becomes leader nothing is issued until the key is there.
 
 All routes need the admin bearer token like the rest of the controller API.
 
+The web UI's Certificates page reads these routes for every role and, for an admin, adds, replaces and removes sites and registers gateways (the token is shown once, in the dialog that registers it). Its backend passes `PUT` and `DELETE /api/acme/sites/{name}` and `POST /api/acme/gateways` to the controller unchanged, so every rule below is the controller's.
+
 | Route                       | Does                                                                                                                  |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `PUT /acme/sites/{name}`    | Create or replace a site. Body: `names`, `dns_plugin`, optional `challenge`, `gateways`, `challenge_zone`, `enabled`. |
