@@ -97,6 +97,20 @@ describe("Pools editor", () => {
     expect(await screen.findByRole("img", { name: /Backend 1: 10.0.0.5:7777, degraded. Backend 2: 10.0.0.6:7777, down/ })).toBeInTheDocument();
   });
 
+  it("an address the instances report but a static pool does not list is marked 'reported, not in config'", async () => {
+    live.instances = [{ pools: [{ name: "lobby", backends: [{ addr: "10.0.0.5:7777", healthy: true }, { addr: "10.0.0.9:7777", healthy: true }] }] }];
+    pools();
+    const img = await screen.findByRole("img", { name: /Backend 3: 10.0.0.9:7777, up \(reported, not in config\)/ });
+    expect(img).not.toHaveAccessibleName(/10.0.0.5:7777, up \(reported/);
+    expect(screen.getAllByText(/up, reported, not in config/).length).toBeGreaterThan(0); // the table says it too
+  });
+
+  it("a source's discovered backends are not called unlisted", async () => {
+    live.instances = [{ pools: [{ name: "eu", backends: [{ addr: "10.1.1.1:7777", healthy: true }] }] }];
+    pools("admin", "/config/pools?i=1");
+    await screen.findByRole("img", { name: /Backend 1: 10.1.1.1:7777, up$/ });
+  });
+
   it("a field edit is a patch: comments and the other pool survive", async () => {
     pools();
     const timeout = await screen.findByLabelText(/^Connect timeout/);

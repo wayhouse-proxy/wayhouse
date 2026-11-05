@@ -28,11 +28,13 @@ export function PoolsEditorPage() {
   }, [instances]);
   const rowsOf = (pool: Json): BackendRow[] => {
     const seen = live.get(String(pool.name)) ?? new Map<string, boolean[]>();
-    const addrs = [...new Set([...(Array.isArray(pool.targets) ? pool.targets.map(String) : []), ...seen.keys()])];
+    const listed = Array.isArray(pool.targets) ? pool.targets.map(String) : [];
+    const addrs = [...new Set([...listed, ...seen.keys()])];
     return addrs.map((addr) => {
       const h = seen.get(addr);
       const state: State = !h?.length ? "unknown" : h.every(Boolean) ? "up" : h.some(Boolean) ? "degraded" : "down";
-      return { addr, state };
+      // A pool with a source discovers its backends; a fixed list is the whole truth, so a reported extra is stale or removed.
+      return !pool.source && !listed.includes(addr) ? { addr, state, note: "reported, not in config" } : { addr, state };
     });
   };
 
