@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ApiError, deleteAcmeSite, getAcmeAccount, listAcmeGateways, listAcmeSites } from "../api";
+import { ApiError, deleteAcmeSite, revokeAcmeGateway, getAcmeAccount, listAcmeGateways, listAcmeSites } from "../api";
 import { GatewayDialog, SiteDialog } from "../components/acme/AcmeDialogs";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { useCan } from "../lib/session";
@@ -249,6 +249,9 @@ export function CertificatesPage() {
                     <TH>gateway</TH>
                     <TH>created</TH>
                     <TH>may fetch</TH>
+                    <TH>
+                      <span className="sr-only">actions</span>
+                    </TH>
                   </TR>
                 </THead>
                 <TBody>
@@ -260,6 +263,31 @@ export function CertificatesPage() {
                       </TD>
                       <TD className="font-mono text-ink-muted">
                         {g.sites.length > 0 ? g.sites.join(", ") : "no site"}
+                      </TD>
+                      <TD className="whitespace-nowrap">
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          disabled={!canWrite}
+                          aria-label={`Revoke gateway ${g.name}`}
+                          onClick={async () => {
+                            const ok = await confirm({
+                              title: `Revoke gateway ${g.name}?`,
+                              description: "Its token stops working at once, on every controller replica. The node keeps the certificate files it already fetched until they expire. Register it again for a new token.",
+                              confirmLabel: "Revoke",
+                            });
+                            if (!ok) return;
+                            try {
+                              await revokeAcmeGateway(g.name);
+                              setFailure(null);
+                              refresh();
+                            } catch (e) {
+                              setFailure(`Could not revoke ${g.name}: ${e instanceof Error ? e.message : e}`);
+                            }
+                          }}
+                        >
+                          Revoke
+                        </Button>
                       </TD>
                     </TR>
                   ))}

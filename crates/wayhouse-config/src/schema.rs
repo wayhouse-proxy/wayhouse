@@ -182,6 +182,10 @@ pub(crate) struct RawLimits {
     pub(crate) max_new_sessions_per_sec: Option<u32>,
 }
 
+pub(crate) fn default_true() -> bool {
+    true
+}
+
 pub(crate) fn default_shutdown_grace_sec() -> u64 {
     30
 }
@@ -297,6 +301,9 @@ pub(crate) fn default_idle_timeout_sec() -> u64 {
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawBackendSource {
+    /// `false` parks the item: it is still validated, but not used (schema 4).
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
     pub(crate) name: String,
     #[serde(rename = "type")]
     pub(crate) kind: String,
@@ -408,6 +415,9 @@ pub(crate) struct RawPerBackend {
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawListener {
+    /// `false` parks the item: it is still validated, but not used (schema 4).
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
     pub(crate) name: String,
     pub(crate) bind: String,
     #[serde(default)]
@@ -552,6 +562,9 @@ pub(crate) struct RawAction {
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawResolver {
+    /// `false` parks the item: it is still validated, but not used (schema 4).
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
     pub(crate) name: String,
     #[serde(rename = "type", default = "default_resolver_type")]
     pub(crate) kind: String,
@@ -618,6 +631,9 @@ pub(crate) fn default_target_idle_timeout_sec() -> u64 {
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawGeo {
+    /// `false` parks the item: it is still validated, but not used (schema 4).
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
     #[serde(default)]
     pub(crate) allow: Vec<String>,
     #[serde(default)]
@@ -628,6 +644,9 @@ pub(crate) struct RawGeo {
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawPerSource {
+    /// `false` parks the item: it is still validated, but not used (schema 4).
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
     /// Max concurrent connections / UDP sessions from one client IP.
     #[serde(default)]
     pub(crate) max_per_ip: Option<usize>,
@@ -640,6 +659,9 @@ pub(crate) struct RawPerSource {
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawRateLimit {
+    /// `false` parks the item: it is still validated, but not used (schema 4).
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
     /// Token bucket per client source IP.
     #[serde(default)]
     pub(crate) per_ip: Option<RawBucket>,

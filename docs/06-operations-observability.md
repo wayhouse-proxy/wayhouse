@@ -560,7 +560,14 @@ un-namespaced names.
   operator did not see. With no controller configured there are no operator tags and the PUT
   answers `503`. The PUT replaces the whole set and the API has no merge, so the UI builds each
   one from a fresh read of the node right before sending: a tag another operator added a moment
-  earlier is kept, while two saves in the same instant are still last-write-wins.
+  earlier is kept, while two saves in the same instant are still last-write-wins. Tags of nodes that went away stay until an operator removes them:
+  `POST /api/fleet/node-tags/prune` lists the tagged nodes the aggregator does not list; sent again
+  with `{"names": [...]}` from that list it deletes those (see [stored UI data](ui-data.md)).
+- `GET /fleet/features` — how each feature flag stands across the fleet, from the flags every
+  proxy reports in its push: per flag the number of nodes with it on, off or not in their build,
+  and the (first 50) node names that run it off or by override. `reporting` of `total` nodes is how
+  many reported at all (an older build reports none). Each instance in the `GET /fleet/subscribe` feed also carries
+  `config_revision`, the controller revision it applies (absent for a proxy that reads a file).
 - `GET /fleet/stats?range=5m|15m|1h` (default `15m`) — fleet rates and gauges
   from a rolling in-memory history: one-minute points, an hour deep, aggregates
   only (fleet, per listener, per pool, per region; never per node). Proxies push

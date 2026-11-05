@@ -29,6 +29,7 @@
 
 pub mod api;
 pub mod fanout;
+pub mod features;
 pub mod history;
 pub mod ingest;
 pub mod nodes;

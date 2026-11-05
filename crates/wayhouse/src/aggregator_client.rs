@@ -54,6 +54,19 @@ struct IngestPayload {
     region: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     tags: BTreeMap<String, String>,
+    /// The controller revision in force (absent for a file-backed proxy).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_revision: Option<u64>,
+    /// Effective feature flags, so the fleet can count nodes per flag (#515).
+    features: Vec<FeatureReport>,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+struct FeatureReport {
+    name: &'static str,
+    value: bool,
+    source: &'static str,
+    available: bool,
 }
 
 /// What this instance reports about itself besides its state (`--region`, `--tag`), already
@@ -177,6 +190,30 @@ pub async fn run(cfg: PushConfig, handle: RuntimeHandle, prometheus: PrometheusH
 /// truth the `/metrics` endpoint already serves.
 /// shortcut: text parsing costs one registry render per push, move to a typed
 /// recorder if the interval ever drops well below seconds.
+/// The value of label `key` in the text between `{` and `}`: matched at a label boundary (the
+/// start or after a `,`), so `src_listener="x"` is not `listener`; `\"` and `\\` are unescaped.
+fn label_value(labels: &str, key: &str) -> Option<String> {
+    let pat = format!("{key}=\"");
+    let mut from = 0;
+    let start = loop {
+        let at = from + labels[from..].find(&pat)?;
+        if at == 0 || labels.as_bytes()[at - 1] == b',' {
+            break at + pat.len();
+        }
+        from = at + 1;
+    };
+    let mut out = String::new();
+    let mut chars = labels[start..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => out.push(chars.next()?),
+            c => out.push(c),
+        }
+    }
+    None
+}
+
 fn listener_stats(exposition: &str) -> Vec<ListenerStats> {
     let mut by_name = std::collections::BTreeMap::<String, ListenerStats>::default();
     for line in exposition.lines() {
@@ -186,22 +223,18 @@ fn listener_stats(exposition: &str) -> Vec<ListenerStats> {
         let Some((metric, labels)) = series.split_once('{') else {
             continue;
         };
-        let label = |key: &str| {
-            let pat = format!("{key}=\"");
-            let rest = &labels[labels.find(&pat)? + pat.len()..];
-            Some(&rest[..rest.find('"')?])
-        };
+        let label = |key: &str| label_value(labels, key);
         let (Some(name), Ok(v)) = (label("listener"), value.parse::<f64>()) else {
             continue;
         };
         let v = v as u64;
         let l = by_name
-            .entry(name.to_string())
+            .entry(name.clone())
             .or_insert_with(|| ListenerStats {
-                name: name.to_string(),
+                name,
                 ..Default::default()
             });
-        match (metric, label("result"), label("dir")) {
+        match (metric, label("result").as_deref(), label("dir").as_deref()) {
             (m::LISTENER_CONNECTIONS, Some("accepted"), _) => l.accepted += v,
             (m::FILTER_BLOCKED, ..) => l.blocked += v,
             (m::BYTES, _, Some("c2s")) => l.bytes_c2s += v,
@@ -256,6 +289,16 @@ fn build_payload(
         listeners: listener_stats(&prometheus.render()),
         region: labels.region.clone(),
         tags: labels.tags.clone(),
+        config_revision: crate::controller_client::applied_revision(),
+        features: crate::features::effective(&snapshot.features)
+            .into_iter()
+            .map(|f| FeatureReport {
+                name: f.name,
+                value: f.value,
+                source: f.source.as_str(),
+                available: f.available,
+            })
+            .collect(),
     }
 }
 
@@ -314,6 +357,15 @@ listeners:
         assert_eq!(payload.sessions.udp, 0);
         assert_eq!(payload.group.as_deref(), Some("eu/frankfurt"));
         assert_eq!(payload.version, env!("CARGO_PKG_VERSION"));
+        let flags = wayhouse_config::features::REGISTRY
+            .iter()
+            .filter(|f| f.scope == wayhouse_config::features::Scope::Proxy)
+            .count();
+        assert_eq!(payload.features.len(), flags);
+        assert!(payload
+            .features
+            .iter()
+            .all(|f| f.source == "default" || f.source == "build"));
         assert_eq!(
             payload.protocol,
             wayhouse_http::protocol::ProtocolVersion::CURRENT.to_string()
@@ -334,6 +386,15 @@ listeners:
         assert!(Labels::from_args(Some("a b".into()), &[]).is_err());
         let seventeen: Vec<String> = (0..17).map(|i| format!("k{i}=v")).collect();
         assert!(Labels::from_args(None, &seventeen).is_err());
+    }
+
+    #[test]
+    fn a_label_is_matched_at_its_boundary_and_unescaped() {
+        let text = "wayhouse_packets_total{src_listener=\"x\",listener=\"main\",dir=\"c2s\"} 4\n\
+                    wayhouse_packets_total{listener=\"a\\\"b\",dir=\"c2s\"} 1\n";
+        let got = listener_stats(text);
+        let names: Vec<_> = got.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["a\"b", "main"]);
     }
 
     #[test]

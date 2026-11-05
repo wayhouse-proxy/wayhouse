@@ -65,6 +65,7 @@ pub fn operator_router() -> Router<AppState> {
             "/api/fleet/nodes/{instance}/tags",
             put(put_node_tags).delete(delete_node_tags),
         )
+        .route("/api/fleet/node-tags/prune", post(prune_node_tags))
         .route(
             "/api/fleet/sniffers",
             post(upload_sniffer).layer(DefaultBodyLimit::max(
@@ -249,6 +250,167 @@ async fn node_tags(
         actor,
     )
     .await
+}
+
+#[derive(serde::Deserialize, Default)]
+struct Confirm {
+    #[serde(default)]
+    names: Vec<String>,
+}
+
+/// `POST /api/fleet/node-tags/prune[?dry_run=true|false]`, body `{"names": [...]}` (optional):
+/// removes operator tags of nodes the aggregator does not list (#525).
+///
+/// Nothing is deleted unless the body names what to delete, as the operator saw it in the
+/// answer to a call without names: the aggregator keeps nothing across a restart, so right after
+/// one it lists only the few nodes that pushed so far, and "unlisted" is not yet "retired". Only
+/// names that are confirmed *and* still unlisted go. An empty aggregator list refuses (`409`).
+/// `dry_run` is `true` or `false`, anything else is `400`. Answers
+/// `{"unlisted": [...], "removed": [...]}`; a failed delete answers `502` with `removed` so far.
+async fn prune_node_tags(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    RawQuery(query): RawQuery,
+    body: Bytes,
+) -> Response {
+    let mut dry_run = false;
+    for pair in query.as_deref().unwrap_or_default().split('&') {
+        match pair.split_once('=').unwrap_or((pair, "")) {
+            ("dry_run", "true") => dry_run = true,
+            ("dry_run", "false") | ("", "") => {}
+            ("dry_run", _) => {
+                return prune_error(StatusCode::BAD_REQUEST, "dry_run is true or false")
+            }
+            _ => {}
+        }
+    }
+    let confirm: Confirm = if body.iter().all(u8::is_ascii_whitespace) {
+        Confirm::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(c) => c,
+            Err(_) => return prune_error(StatusCode::BAD_REQUEST, "body is {\"names\": [...]}"),
+        }
+    };
+    let unlisted = match prune_plan(&state).await {
+        Ok(u) => u,
+        Err(resp) => return resp,
+    };
+    let mut removed = Vec::new();
+    if !dry_run {
+        for name in unlisted.iter().filter(|n| confirm.names.contains(n)) {
+            let Some(segment) = crate::proxy_util::path_segment(name) else {
+                continue;
+            };
+            let resp = crate::controller_proxy::proxy_typed(
+                &state,
+                Method::DELETE,
+                format!("/ui/node-tags/{segment}"),
+                None,
+                None,
+                actor.clone(),
+            )
+            .await;
+            if resp.status().is_success() || resp.status() == StatusCode::NOT_FOUND {
+                removed.push(name.clone());
+            } else {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(serde_json::json!({
+                        "error": format!("deleting the tags of {name:?} failed ({})", resp.status()),
+                        "removed": removed,
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
+    Json(serde_json::json!({ "unlisted": unlisted, "removed": removed })).into_response()
+}
+
+fn prune_error(status: StatusCode, error: &str) -> Response {
+    (
+        status,
+        Json(ErrorResponse {
+            error: error.into(),
+        }),
+    )
+        .into_response()
+}
+
+/// The tagged names the aggregator does not list. The `Err` is the response to send as it is.
+#[allow(clippy::result_large_err)]
+async fn prune_plan(state: &AppState) -> Result<Vec<String>, Response> {
+    #[derive(serde::Deserialize)]
+    struct Tagged {
+        items: Vec<Name>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Name {
+        name: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Known {
+        instances: Vec<String>,
+    }
+    #[allow(clippy::result_large_err)]
+    async fn read<T: serde::de::DeserializeOwned>(resp: Response) -> Result<T, Response> {
+        if !resp.status().is_success() {
+            return Err(resp);
+        }
+        let bytes = axum::body::to_bytes(resp.into_body(), crate::proxy_util::MAX_UPSTREAM_BODY)
+            .await
+            .map_err(|_| bad_upstream())?;
+        serde_json::from_slice(&bytes).map_err(|_| bad_upstream())
+    }
+    fn bad_upstream() -> Response {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: "unexpected answer from the controller or aggregator".into(),
+            }),
+        )
+            .into_response()
+    }
+    let tagged: Tagged = read(
+        crate::controller_proxy::proxy_typed(
+            state,
+            Method::GET,
+            "/ui/node-tags".to_string(),
+            None,
+            None,
+            None,
+        )
+        .await,
+    )
+    .await?;
+    let known: Known = read(
+        proxy(
+            state,
+            Method::POST,
+            "/fleet/nodes/resolve",
+            Some(Bytes::new()),
+            None,
+        )
+        .await,
+    )
+    .await?;
+    if known.instances.is_empty() {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                error: "the aggregator lists no nodes (restarted?); nothing is pruned".into(),
+            }),
+        )
+            .into_response());
+    }
+    let known: std::collections::HashSet<_> = known.instances.into_iter().collect();
+    Ok(tagged
+        .items
+        .into_iter()
+        .map(|i| i.name)
+        .filter(|n| !known.contains(n))
+        .collect())
 }
 
 fn with_query(path: &str, query: Option<String>) -> String {
@@ -654,6 +816,98 @@ mod tests {
         let (app, operator) = app_with(agg, None, crate::role::Role::Operator);
         let r = send(&app, &operator, "PUT", "/api/fleet/nodes/fra-1/tags", tags).await;
         assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A controller that holds tags for `fra-1`, `gone` and `late` and logs each delete.
+    async fn tag_controller() -> (String, Calls) {
+        let deleted: Calls = Arc::default();
+        let log = deleted.clone();
+        let ctl = Router::new()
+            .route(
+                "/ui/node-tags",
+                axum::routing::get(|| async {
+                    r#"{"items":[{"name":"fra-1","tags":{"a":"b"}},{"name":"gone","tags":{"a":"b"}},{"name":"late","tags":{"a":"b"}}]}"#
+                }),
+            )
+            .route(
+                "/ui/node-tags/{name}",
+                axum::routing::delete(move |Path(n): Path<String>| {
+                    let log = log.clone();
+                    async move {
+                        log.lock().unwrap().push((n, String::new(), String::new()));
+                        StatusCode::NO_CONTENT
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, ctl).await.unwrap() });
+        (url, deleted)
+    }
+
+    async fn json_of(r: Response) -> serde_json::Value {
+        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn pruning_lists_first_and_deletes_only_the_names_the_operator_confirms() {
+        let (agg, _) = spawn_logging(StatusCode::OK, r#"{"count":1,"instances":["fra-1"]}"#).await;
+        let (ctl, deleted) = tag_controller().await;
+        let (app, op) = app_with(agg, Some(ctl), crate::role::Role::Operator);
+        let uri = "/api/fleet/node-tags/prune";
+        // Without names nothing is deleted, whatever the aggregator lists (it may just have restarted).
+        let r = send(&app, &op, "POST", uri, "").await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let v = json_of(r).await;
+        assert_eq!(v["unlisted"], serde_json::json!(["gone", "late"]));
+        assert_eq!(v["removed"], serde_json::json!([]));
+        assert!(deleted.lock().unwrap().is_empty());
+        // Only a name that is both confirmed and still unlisted goes.
+        let body = r#"{"names":["gone","fra-1","never-tagged"]}"#;
+        let r = send(&app, &op, "POST", uri, body).await;
+        assert_eq!(json_of(r).await["removed"], serde_json::json!(["gone"]));
+        let calls = deleted.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "gone");
+    }
+
+    #[tokio::test]
+    async fn pruning_refuses_when_the_aggregator_lists_nothing_and_a_typo_never_deletes() {
+        let (empty, _) = spawn_logging(StatusCode::OK, r#"{"count":0,"instances":[]}"#).await;
+        let (ctl, deleted) = tag_controller().await;
+        let (app, op) = app_with(empty, Some(ctl), crate::role::Role::Operator);
+        let uri = "/api/fleet/node-tags/prune";
+        let r = send(&app, &op, "POST", uri, r#"{"names":["gone"]}"#).await;
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        let (agg, _) = spawn_logging(StatusCode::OK, r#"{"count":1,"instances":["fra-1"]}"#).await;
+        let (app, op) = app_with(
+            agg,
+            Some(tag_controller().await.0),
+            crate::role::Role::Operator,
+        );
+        for q in ["dry_run=1", "dry_run=True", "dry_run=yes", "dry_run="] {
+            let r = send(
+                &app,
+                &op,
+                "POST",
+                &format!("{uri}?{q}"),
+                r#"{"names":["gone"]}"#,
+            )
+            .await;
+            assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{q}");
+        }
+        // `dry_run=true` lists even when names are sent.
+        let r = send(
+            &app,
+            &op,
+            "POST",
+            &format!("{uri}?dry_run=true"),
+            r#"{"names":["gone"]}"#,
+        )
+        .await;
+        assert_eq!(json_of(r).await["removed"], serde_json::json!([]));
+        assert!(deleted.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

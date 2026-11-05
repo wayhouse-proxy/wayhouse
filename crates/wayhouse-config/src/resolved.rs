@@ -400,6 +400,8 @@ pub struct SourceConfig {
     pub kind: SourceKind,
     /// Control-plane refresh cadence.
     pub refresh_interval: Duration,
+    /// `false` (`enabled: false`): no refresh task runs; the pool keeps its last known set.
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

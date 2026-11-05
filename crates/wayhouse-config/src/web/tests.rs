@@ -738,3 +738,15 @@ fn internal_ports_may_not_cover_caddys_own_listen_ports() {
     ));
     assert!(m.contains("pinned port 8443"), "{m}");
 }
+
+#[test]
+fn a_disabled_site_is_parked_and_frees_its_hosts() {
+    let two = "  sites:\n    - hosts: [panel.example.com]\n      enabled: false\n      upstreams:\n        - addr: 10.0.0.9:8080\n    - hosts: [panel.example.com]\n      upstreams:\n        - addr: 10.0.0.10:8080\n";
+    let cfg = parse_str(&doc_with("schema_version: 4\n", two)).unwrap();
+    let sites = &cfg.web.as_ref().unwrap().sites;
+    assert_eq!(sites.len(), 1);
+    assert_eq!(
+        sites[0].upstreams,
+        vec![WebUpstream::Addr("10.0.0.10:8080".parse().unwrap())]
+    );
+}

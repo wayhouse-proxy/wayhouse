@@ -605,7 +605,13 @@ async fn run(
         ConfigSource::Controller(url, token) => tokio::spawn(controller_client::run(
             url,
             token,
-            initial_revision.unwrap_or(0),
+            {
+                // The first revision is already live (it built the first snapshot).
+                if let Some(r) = initial_revision {
+                    controller_client::note_applied(r);
+                }
+                initial_revision.unwrap_or(0)
+            },
             handle,
             resolvers,
             sniffer_loader,

@@ -222,6 +222,19 @@
 >   gossip_verdicts: false # ignore gossip verdicts, judge backends by own health checks
 > ```
 >
+> **Parking one item (schema 4):** `listeners[]`, `backend_sources[]`, `resolvers[]` and
+> `web.sites[]` accept `enabled: false`, and so do the `rate_limit`, `geo` and `per_source`
+> blocks of a listener. The item stays in the document, so switching it back on is one edit,
+> and it is still validated (a `web.sites[]` entry is the exception: it is not checked until
+> enabled). A parked listener is not run and does not take its bind (another listener may use
+> it); a parked filter does not run; a parked resolver is not built and routes that name it are
+> skipped, so the walk falls to the next route (a listener whose every route names a parked
+> resolver is refused at load, since it would answer nothing); a parked backend source stops
+> refreshing and its pool keeps the last backend set it discovered (a restart still does the one
+> startup fetch, so the pool is not empty; a static source never refreshes anyway); a
+> parked web site is not rendered. All take effect on reload and add nothing to the data path:
+> the resolved configuration simply does not contain what is parked.
+>
 > The proxy flags are `gossip_verdicts`, `sniffers`, `port_routes`, `admin_write.backends`,
 > `admin_write.sniffer_upload`, `admin_write.route_hint`, and the protection flags
 > `sniffers`, `rate_limit`, `per_source`, `acl`, `geo` (turning those off removes protection; a
@@ -770,6 +783,7 @@ The schema is generated from the raw config types and checked in as
 | Route changed/added | applies to new connections/sessions |
 | `resolvers:` changed | live — the reload task rebuilds the resolver clients and swaps the whole set in atomically when (and only when) `resolvers:` actually differs; an in-flight resolver call finishes against the old client, new calls use the new one. A rebuild resets each resolver's LRU result cache, so expect a brief cache-cold window. A bad endpoint keeps the previous set (logged). |
 | `backend_sources:` changed | live — the reload task reconciles the discovery refresh tasks (`SourceManager`): a `backend_sources[]` entry added / removed / re-parameterised (or a `pools[].source` re-pointed) starts / stops / restarts its task. A restarted task does an immediate first fetch, so the stale-set window is one round-trip. A pool that loses its `source` drops its cached discovered set (it now serves its file `targets`). A source that fails to rebuild is logged and skipped — the pool keeps its last-known-good set. |
+| `enabled: false` set or cleared on a listener, resolver, backend source, web site or filter | the same as removing or adding that item (see "Parking one item") |
 | Listener added / removed / changed | reconciled by name at runtime — added spawned, removed stopped, changed (bind / protocol / routes / …) stopped and re-spawned. `SO_REUSEPORT` means a same-bind rebind has no gap; new sockets bind before the old ones are torn down. |
 | `settings.shutdown_grace_sec` changed | live (read per shutdown) |
 | `settings.workers` changed | requires a restart (documented) |

@@ -218,6 +218,12 @@
             "null"
           ]
         },
+        "enabled": {
+          "default": true,
+          "description": "`false` parks the item: it is still validated, but not used (schema 4).",
+          "type": "boolean",
+          "x-wayhouse-since": 4
+        },
         "name": {
           "type": "string"
         },
@@ -369,6 +375,12 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "enabled": {
+          "default": true,
+          "description": "`false` parks the item: it is still validated, but not used (schema 4).",
+          "type": "boolean",
+          "x-wayhouse-since": 4
         }
       },
       "type": "object"
@@ -535,6 +547,12 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "enabled": {
+          "default": true,
+          "description": "`false` parks the item: it is still validated, but not used (schema 4).",
+          "type": "boolean",
+          "x-wayhouse-since": 4
         },
         "first_packet_gate": {
           "default": false,
@@ -726,6 +744,12 @@
     "RawPerSource": {
       "additionalProperties": false,
       "properties": {
+        "enabled": {
+          "default": true,
+          "description": "`false` parks the item: it is still validated, but not used (schema 4).",
+          "type": "boolean",
+          "x-wayhouse-since": 4
+        },
         "max_per_ip": {
           "default": null,
           "description": "Max concurrent connections / UDP sessions from one client IP.",
@@ -860,6 +884,12 @@
     "RawRateLimit": {
       "additionalProperties": false,
       "properties": {
+        "enabled": {
+          "default": true,
+          "description": "`false` parks the item: it is still validated, but not used (schema 4).",
+          "type": "boolean",
+          "x-wayhouse-since": 4
+        },
         "per_ip": {
           "anyOf": [
             {
@@ -897,6 +927,12 @@
               "type": "null"
             }
           ]
+        },
+        "enabled": {
+          "default": true,
+          "description": "`false` parks the item: it is still validated, but not used (schema 4).",
+          "type": "boolean",
+          "x-wayhouse-since": 4
         },
         "endpoint": {
           "type": "string"
@@ -1033,6 +1069,12 @@
     "RawSite": {
       "additionalProperties": false,
       "properties": {
+        "enabled": {
+          "default": true,
+          "description": "`false` parks the site: validated, not rendered (schema 4).",
+          "type": "boolean",
+          "x-wayhouse-since": 4
+        },
         "health_path": {
           "default": null,
           "description": "Path Caddy probes on each upstream; unset means passive checks only.",
