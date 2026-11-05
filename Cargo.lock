@@ -4967,6 +4967,7 @@ dependencies = [
  "wat",
  "wayhouse-config",
  "wayhouse-http",
+ "wayhouse-plugin-abi",
  "wayhouse-registry",
  "wayhouse-sniffer-abi",
 ]

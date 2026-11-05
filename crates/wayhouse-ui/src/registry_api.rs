@@ -189,7 +189,11 @@ async fn list_sniffers(
     Extension(Actor(actor)): Extension<Actor>,
     Path(id): Path<String>,
 ) -> Response {
-    let Some(reg) = state.registries.get(&id) else {
+    let Some(reg) = state
+        .registries
+        .get(&id)
+        .filter(|r| r.kind == crate::registries::RegistryKind::Sniffer)
+    else {
         return error(StatusCode::NOT_FOUND, "no such registry");
     };
     let index: std::sync::Arc<Index> = match state.registry_client.fetch_index(&reg.url).await {
@@ -260,7 +264,7 @@ impl FanOutResult {
 /// the flag is read fresh on every install; a controller that cannot answer refuses the
 /// install, so a kill switch cannot be sidestepped by making the controller unreachable.
 #[allow(clippy::result_large_err)] // the Err is the ready-made refusal the handler returns as is
-async fn installs_allowed(state: &AppState) -> Result<(), Response> {
+pub(crate) async fn installs_allowed(state: &AppState) -> Result<(), Response> {
     let Some(controller) = &state.controller else {
         return Ok(());
     };
@@ -310,7 +314,11 @@ async fn install(
     if let Err(refused) = installs_allowed(&state).await {
         return refused;
     }
-    let Some(reg) = state.registries.get(&id) else {
+    let Some(reg) = state
+        .registries
+        .get(&id)
+        .filter(|r| r.kind == crate::registries::RegistryKind::Sniffer)
+    else {
         return error(StatusCode::NOT_FOUND, "no such registry");
     };
     let index = match state.registry_client.fetch_index(&reg.url).await {
