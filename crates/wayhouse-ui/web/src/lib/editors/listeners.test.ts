@@ -62,7 +62,9 @@ describe("coverage guard: every listener, route and match field is rendered, han
     );
   /** Fields only a hand editor covers: the routes list. Nothing is allowlisted today; add here with the reason if a field must stay YAML-only. */
   const HAND = { listener: ["routes"], route: ["match", "action"], match: [...Object.values(MATCH_TYPES).flatMap((t) => t.fields as string[]), "type"], action: ["pool", "resolver"] } as const;
-  const ALLOWLIST: Record<string, string[]> = { listener: [], route: [], match: [], action: [] };
+  /** `enabled` (F2, a parked item) has no switch in the editors yet; the UI half of F2 places it. */
+  const NOT_YET = ["enabled"];
+  const ALLOWLIST: Record<string, string[]> = { listener: NOT_YET, route: [], match: [], action: [] };
 
   const missing = (def: string, key: keyof typeof HAND, formFields: Set<string>) =>
     props(def).filter((p) => !formFields.has(p) && !(HAND[key] as readonly string[]).includes(p) && !ALLOWLIST[key].includes(p));
@@ -72,7 +74,7 @@ describe("coverage guard: every listener, route and match field is rendered, han
   it("RawMatch", () => expect(missing("RawMatch", "match", new Set())).toEqual([]));
   it("RawAction", () => expect(missing("RawAction", "action", new Set())).toEqual([]));
   it("nested listener objects: every field of geo, per_source, rate_limit and plugin_routes is on the listener page", () => {
-    const f = (name: string, def: string) => props(def).filter((p) => !(DEFAULT_LAYOUT.fields[`listeners.*.${name}.${p}`]?.page === "listener" || Object.keys(DEFAULT_LAYOUT.fields).some((k) => k.startsWith(`listeners.*.${name}.${p}.`) && DEFAULT_LAYOUT.fields[k].page === "listener")));
+    const f = (name: string, def: string) => props(def).filter((p) => !NOT_YET.includes(p) && !(DEFAULT_LAYOUT.fields[`listeners.*.${name}.${p}`]?.page === "listener" || Object.keys(DEFAULT_LAYOUT.fields).some((k) => k.startsWith(`listeners.*.${name}.${p}.`) && DEFAULT_LAYOUT.fields[k].page === "listener")));
     expect([f("geo", "RawGeo"), f("per_source", "RawPerSource"), f("rate_limit", "RawRateLimit"), f("plugin_routes", "RawPluginRoutes")]).toEqual([[], [], [], []]);
   });
 });

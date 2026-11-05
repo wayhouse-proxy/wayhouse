@@ -70,6 +70,9 @@ impl Default for RawWebListen {
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawSite {
+    /// `false` parks the site: validated, not rendered (schema 4).
+    #[serde(default = "crate::schema::default_true")]
+    pub(crate) enabled: bool,
     #[serde(default)]
     pub(crate) hosts: Vec<String>,
     #[serde(default)]
@@ -367,6 +370,11 @@ pub(crate) fn validate_web(
     let mut sites = Vec::with_capacity(raw.sites.len());
     let mut wayhouse_pools: BTreeSet<&str> = BTreeSet::new();
     for (i, s) in raw.sites.iter().enumerate() {
+        // A parked site is not checked until it is switched on: its hosts, upstream pins and
+        // loopback listeners would otherwise take part in every later check.
+        if !s.enabled {
+            continue;
+        }
         let at = |m: &str| invalid(format!("web.sites[{i}]: {m}"));
         if s.hosts.is_empty() {
             return Err(at("needs at least one host"));

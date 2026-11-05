@@ -2,8 +2,9 @@
 //!
 //! A `SIGHUP` or a change to the config file rebuilds the snapshot and swaps it
 //! in atomically. Pool membership, balancer, health-check and capacity changes
-//! take effect live; changes to a listener's bind / protocol / pool mapping
-//! need a restart and are logged as a warning.
+//! take effect live, and so do listeners (reconciled by name: added, removed or
+//! re-spawned), resolvers and backend sources. Only the startup-only settings
+//! (`workers`, `limits`, `geo_db`, `admin`, sniffer engine limits) need a restart.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

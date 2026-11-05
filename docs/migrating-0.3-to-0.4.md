@@ -70,6 +70,13 @@ A registry of named flags (`gossip_verdicts`, `sniffers`, `port_routes`, and oth
 proxy and the controller. Nothing to migrate: every flag defaults to on. Flags are reported before
 the runtime reads them (`wired: false`); the emergency override layer (`PUT /features/overrides/{name}` on the controller) is documented in [configuration](05-configuration.md). Under HA, upgrade every controller before the first override (the UI data level is now 3, which also carries operator node tags).
 
+## Parking items with `enabled: false`
+
+Listeners, backend sources, resolvers, web sites and a listener's `rate_limit`, `geo` and
+`per_source` blocks take `enabled: false` (config schema 4). The default is on, so nothing
+changes for an existing file. Details in [configuration](05-configuration.md) ("Parking one
+item"). Declare `schema_version: 4` only once every proxy that receives the document runs 0.4.0.
+
 ## Deploy layout
 
 Not yet filled in.

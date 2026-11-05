@@ -23,8 +23,18 @@ pub const CONFIG_SCHEMA_VERSION: u32 = 4;
 /// `(dotted path, schema version that introduced it)`. Paths walk mappings by key
 /// and pass through sequences transparently (`listeners.foo` matches `foo` in
 /// every listener).
-pub const FIELD_SINCE: &[(&str, u32)] =
-    &[("listeners.plugin_routes", 2), ("web", 3), ("features", 4)];
+pub const FIELD_SINCE: &[(&str, u32)] = &[
+    ("listeners.plugin_routes", 2),
+    ("web", 3),
+    ("features", 4),
+    ("listeners.enabled", 4),
+    ("listeners.rate_limit.enabled", 4),
+    ("listeners.per_source.enabled", 4),
+    ("listeners.geo.enabled", 4),
+    ("backend_sources.enabled", 4),
+    ("resolvers.enabled", 4),
+    ("web.sites.enabled", 4),
+];
 
 /// The effective declared version of a document: `raw` is its `schema_version`
 /// value, if any. Refuses non-integers, `0`, and anything above

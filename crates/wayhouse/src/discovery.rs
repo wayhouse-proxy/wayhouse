@@ -31,7 +31,7 @@ use wayhouse_core::{BackendSource, SourceError, SourceFactory};
 const K8S_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 const K8S_CA_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
 
-/// Build one [`BackendSource`] per pool that declares a dynamic `source`.
+/// Build one [`BackendSource`] per pool that declares a dynamic `source` (parked ones too).
 /// Used at startup for the best-effort initial fetch; the live [`SourceManager`]
 /// rebuilds sources through [`DiscoveryFactory`] on reload.
 pub fn build_sources(
@@ -41,6 +41,8 @@ pub fn build_sources(
     let kube_auth = KubeAuth::from_pod();
     let mut out: Vec<Arc<dyn BackendSource>> = Vec::new();
     for p in &cfg.pools {
+        // A parked source is included on purpose: the one startup fetch seeds its pool, so a
+        // restart does not leave a pool with no backends. Only the refresh task is skipped.
         let Some(sc) = &p.source else { continue };
         out.push(build_one(&p.name, sc, &kube_auth, tunnel_registry)?);
     }
@@ -998,6 +1000,17 @@ async fn resolve_host_port(host: &str, port: u16) -> Result<Vec<SocketAddr>, Sou
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A parked source is not polled, but the startup fetch still seeds its pool: a restart
+    /// must not leave a pool with a `source` and no backends.
+    #[test]
+    fn a_parked_source_still_gets_its_one_startup_fetch() {
+        let cfg = wayhouse_config::parse_str(
+            "schema_version: 4\nbackend_sources:\n  - name: dns\n    type: consul\n    service: game\n    enabled: false\npools:\n  - name: p\n    source: dns\nlisteners:\n  - name: l\n    bind: \"0.0.0.0:7777\"\n    pool: p\n",
+        )
+        .unwrap();
+        assert_eq!(build_sources(&cfg, None).unwrap().len(), 1);
+    }
     #[cfg(feature = "tunnel")]
     use crate::tunnel_source::TunnelSource;
 
