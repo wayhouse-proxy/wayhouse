@@ -4965,6 +4965,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wat",
+ "wayhouse-config",
  "wayhouse-http",
  "wayhouse-registry",
  "wayhouse-sniffer-abi",

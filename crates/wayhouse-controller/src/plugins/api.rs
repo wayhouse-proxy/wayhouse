@@ -1860,6 +1860,14 @@ mod tests {
         let (ok, headers) = hit(&hooks, &path, Some(&token), b"{}".to_vec()).await;
         assert_eq!(ok, StatusCode::ACCEPTED);
         assert_eq!(headers["x-run"], "1");
+        {
+            // The `plugin_webhooks` kill switch answers 503 before the token is even looked at.
+            let _off = wayhouse_config::features::off_here(&["plugin_webhooks"]);
+            let (status, headers) = hit(&hooks, &path, Some(&token), b"{}".to_vec()).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(headers.contains_key("retry-after"));
+            assert!(!headers.contains_key("x-run"));
+        }
         // Missing, wrong and unknown-install tokens all look the same.
         for (uri, tok) in [
             (path.as_str(), None),

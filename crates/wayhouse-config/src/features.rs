@@ -121,26 +121,32 @@ pub const REGISTRY: &[Flag] = &[
         "Plugin entry listeners are removed; customers lose those ports (they stay reserved).",
         "Established TCP sessions continue; UDP sessions drain.",
     )),
-    flag(
-        "admin_write.backends",
-        Proxy,
-        Both,
-        "Adding, patching and removing backends through the admin API answers 403.",
-        "No connection is touched; reads, drain and the flag endpoints stay open.",
+    wired(
+        flag(
+            "admin_write.backends",
+            Proxy,
+            Both,
+            "Adding, patching and removing backends through the admin API answers 403.",
+            "No connection is touched; reads, drain and the flag endpoints stay open.",
+        )
     ),
-    flag(
-        "admin_write.sniffer_upload",
-        Proxy,
-        Both,
-        "Uploading, deleting and rolling back sniffer modules answers 403.",
-        "No connection is touched; reads, drain and the flag endpoints stay open.",
+    wired(
+        flag(
+            "admin_write.sniffer_upload",
+            Proxy,
+            Both,
+            "Uploading, deleting and rolling back sniffer modules answers 403.",
+            "No connection is touched; reads, drain and the flag endpoints stay open.",
+        )
     ),
-    flag(
-        "admin_write.route_hint",
-        Proxy,
-        Both,
-        "Route hints answer 403.",
-        "No connection is touched; reads, drain and the flag endpoints stay open.",
+    wired(
+        flag(
+            "admin_write.route_hint",
+            Proxy,
+            Both,
+            "Route hints answer 403.",
+            "No connection is touched; reads, drain and the flag endpoints stay open.",
+        )
     ),
     wired(protection(flag(
         "rate_limit",
@@ -170,33 +176,41 @@ pub const REGISTRY: &[Flag] = &[
         "Country allow and deny lists are bypassed.",
         "New connections only.",
     ))),
-    flag(
-        "plugin_webhooks",
-        Controller,
-        OffOnly,
-        "Every plugin webhook call answers 503; the listener stays up.",
-        "No plugin tick is affected.",
+    wired(
+        flag(
+            "plugin_webhooks",
+            Controller,
+            OffOnly,
+            "Every plugin webhook call answers 503; the listener stays up.",
+            "No plugin tick is affected.",
+        )
     ),
-    flag(
-        "registry_install",
-        Controller,
-        OffOnly,
-        "Installing or updating from a registry is refused.",
-        "Installed plugins and sniffers keep running.",
+    wired(
+        flag(
+            "registry_install",
+            Controller,
+            OffOnly,
+            "Installing or updating from a registry is refused.",
+            "Installed plugins and sniffers keep running.",
+        )
     ),
-    flag(
-        "acme_issuance",
-        Controller,
-        Both,
-        "No new orders or renewals; served certificates keep working until they expire.",
-        "No connection is touched.",
+    wired(
+        flag(
+            "acme_issuance",
+            Controller,
+            Both,
+            "No new orders or renewals; served certificates keep working until they expire.",
+            "No connection is touched.",
+        )
     ),
-    flag(
-        "tunnel_registration",
-        Controller,
-        Both,
-        "New origin and proxy registrations are refused.",
-        "Existing leases and tunnels are untouched.",
+    wired(
+        flag(
+            "tunnel_registration",
+            Controller,
+            Both,
+            "New origin and proxy registrations are refused.",
+            "Existing leases and tunnels are untouched.",
+        )
     ),
 ];
 
@@ -229,6 +243,86 @@ pub const RATE_LIMIT: usize = index_of("rate_limit");
 pub const PER_SOURCE: usize = index_of("per_source");
 pub const ACL: usize = index_of("acl");
 pub const GEO: usize = index_of("geo");
+pub const ADMIN_WRITE_BACKENDS: usize = index_of("admin_write.backends");
+pub const ADMIN_WRITE_SNIFFER_UPLOAD: usize = index_of("admin_write.sniffer_upload");
+pub const ADMIN_WRITE_ROUTE_HINT: usize = index_of("admin_write.route_hint");
+pub const PLUGIN_WEBHOOKS: usize = index_of("plugin_webhooks");
+pub const REGISTRY_INSTALL: usize = index_of("registry_install");
+pub const ACME_ISSUANCE: usize = index_of("acme_issuance");
+pub const TUNNEL_REGISTRATION: usize = index_of("tunnel_registration");
+
+/// The effective values a process publishes for its code to read: one bit per registry
+/// position, so a read is one relaxed load and nothing locks. Every flag starts on, which is
+/// also what a process that never publishes gets.
+#[derive(Debug)]
+pub struct Mask(std::sync::atomic::AtomicU64);
+
+// The mask holds one bit per registry entry.
+const _: () = assert!(REGISTRY.len() <= 64);
+
+impl Default for Mask {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Mask {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(std::sync::atomic::AtomicU64::new(u64::MAX))
+    }
+
+    /// Whether the flag at registry position `flag` is on.
+    #[inline]
+    #[must_use]
+    pub fn on(&self, flag: usize) -> bool {
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(mask) = test_mask::LOCAL.with(std::cell::Cell::get) {
+            return mask >> flag & 1 == 1;
+        }
+        self.0.load(std::sync::atomic::Ordering::Relaxed) >> flag & 1 == 1
+    }
+
+    /// Publishes the value of every flag; `value` answers by name.
+    pub fn set_all(&self, value: impl Fn(&str) -> bool) {
+        let mask = REGISTRY
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| value(f.name))
+            .fold(0, |m, (i, _)| m | 1 << i);
+        self.0.store(mask, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A per-thread switch for unit tests, so tests that flip a flag cannot race the others.
+#[cfg(any(test, feature = "test-util"))]
+mod test_mask {
+    thread_local! {
+        pub(super) static LOCAL: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    }
+}
+
+/// Switches `off` off for this thread, in every [`Mask`], until the guard drops.
+#[cfg(any(test, feature = "test-util"))]
+pub fn off_here(off: &[&str]) -> OffGuard {
+    let mask = REGISTRY
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !off.contains(&f.name))
+        .fold(0, |m, (i, _)| m | 1 << i);
+    test_mask::LOCAL.with(|l| l.set(Some(mask)));
+    OffGuard
+}
+
+#[cfg(any(test, feature = "test-util"))]
+pub struct OffGuard;
+
+#[cfg(any(test, feature = "test-util"))]
+impl Drop for OffGuard {
+    fn drop(&mut self) {
+        test_mask::LOCAL.with(|l| l.set(None));
+    }
+}
 
 /// The registry entry named `name`.
 #[must_use]
@@ -416,20 +510,17 @@ mod tests {
     use super::*;
     use crate::parse_str as parse;
 
+    /// #513: a flag the registry lists but no code reads is a kill switch that does nothing.
+    /// Wiring a flag means flipping `wired` in the same change as the code that reads it.
     #[test]
-    fn the_data_plane_flags_are_wired_and_indexed() {
-        for name in [
-            "gossip_verdicts",
-            "sniffers",
-            "port_routes",
-            "rate_limit",
-            "per_source",
-            "acl",
-            "geo",
-        ] {
-            let f = lookup(name).unwrap();
-            assert!(f.wired, "{name} is read by the data path");
-            assert_eq!(REGISTRY[index_of(name)].name, name);
+    fn no_registry_flag_stays_unwired() {
+        for (i, f) in REGISTRY.iter().enumerate() {
+            assert!(
+                f.wired,
+                "{} is in the registry but nothing reads it",
+                f.name
+            );
+            assert_eq!(index_of(f.name), i);
         }
     }
 
