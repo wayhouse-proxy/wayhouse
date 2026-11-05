@@ -42,4 +42,5 @@ serde = { workspace = true, optional = true }
 postcard = { version = "1", features = ["use-std"], optional = true }
 
 [dev-dependencies]
+wayhouse-config = { path = "../wayhouse-config", features = ["test-util"] }
 tokio = { workspace = true, features = ["rt", "test-util"] }

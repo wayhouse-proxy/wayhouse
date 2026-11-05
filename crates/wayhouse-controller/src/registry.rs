@@ -674,6 +674,23 @@ async fn register<R: Registration>(
     if let Err(e) = reg.validate() {
         return unprocessable(e);
     }
+    // The `tunnel_registration` kill switch: no NEW names. `POST {base}` is also how a
+    // live agent or proxy renews (refreshes `last_seen`) and re-registers after a restart,
+    // so a name the registry already knows keeps working with the switch off.
+    if !crate::features::on(wayhouse_config::features::TUNNEL_REGISTRATION)
+        && !matches!(state.current_for(reg.name()), Ok(Some(_)))
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: format!(
+                    "new {} registrations are switched off (feature tunnel_registration)",
+                    words.noun
+                ),
+            }),
+        )
+            .into_response();
+    }
     if let Some(ha) = &state.ha {
         return ha::register(
             &state,

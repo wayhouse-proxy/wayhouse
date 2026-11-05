@@ -76,6 +76,7 @@ rand = { workspace = true, optional = true }
 tonic-prost-build = { workspace = true, optional = true }
 
 [dev-dependencies]
+wayhouse-config = { path = "../wayhouse-config", features = ["test-util"] }
 tokio = { workspace = true, features = ["test-util"] }
 hickory-server = { version = "0.26", features = ["testing"] }
 wat.workspace = true
