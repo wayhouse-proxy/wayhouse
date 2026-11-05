@@ -648,6 +648,12 @@ pub(crate) fn validate(
                 }
                 rs.push(Route { matcher, action });
             }
+            if rs.is_empty() && l.enabled && l.plugin_routes.is_none() {
+                return Err(Invalid(format!(
+                    "listener {}: every route names a parked resolver, so it would answer nothing; switch a resolver on or park the listener",
+                    l.name
+                )));
+            }
             rs
         } else if l.pool.is_none() && l.plugin_routes.is_some() {
             // Only plugins add routes: whatever they leave unclaimed is `no_route`.

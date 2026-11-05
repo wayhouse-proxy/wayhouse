@@ -2442,6 +2442,29 @@ fn a_disabled_resolver_is_not_built_and_its_routes_fall_through() {
 }
 
 #[test]
+fn a_listener_whose_every_route_names_a_parked_resolver_is_refused() {
+    let doc = format!(
+        "{ENABLED_BASE}listeners:\n  - name: l\n    bind: \"0.0.0.0:7777\"\n    routes:\n      - match: {{ type: always }}\n        action: {{ resolver: lookup }}\n"
+    );
+    let parked = doc.replace(
+        "  - name: lookup\n    endpoint: \"http://127.0.0.1:9/resolve\"\n",
+        "  - name: lookup\n    endpoint: \"http://127.0.0.1:9/resolve\"\n    enabled: false\n",
+    );
+    assert!(
+        parse_str(&doc).is_ok(),
+        "the same listener with the resolver on"
+    );
+    let e = parse_str(&parked).unwrap_err().to_string();
+    assert!(
+        e.contains("parked resolver") && e.contains("listener l"),
+        "{e}"
+    );
+    // Parking the listener too is the way out.
+    let both = parked.replace("    routes:\n", "    enabled: false\n    routes:\n");
+    assert!(parse_str(&both).is_ok());
+}
+
+#[test]
 fn a_disabled_backend_source_stays_in_the_config_marked_disabled() {
     let doc = |enabled: &str| {
         format!(

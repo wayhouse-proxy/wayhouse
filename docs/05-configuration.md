@@ -228,8 +228,10 @@
 > and it is still validated (a `web.sites[]` entry is the exception: it is not checked until
 > enabled). A parked listener is not run and does not take its bind (another listener may use
 > it); a parked filter does not run; a parked resolver is not built and routes that name it are
-> skipped, so the walk falls to the next route; a parked backend source stops refreshing and its
-> pool keeps the last backend set it discovered (a static source never refreshes anyway); a
+> skipped, so the walk falls to the next route (a listener whose every route names a parked
+> resolver is refused at load, since it would answer nothing); a parked backend source stops
+> refreshing and its pool keeps the last backend set it discovered (a restart still does the one
+> startup fetch, so the pool is not empty; a static source never refreshes anyway); a
 > parked web site is not rendered. All take effect on reload and add nothing to the data path:
 > the resolved configuration simply does not contain what is parked.
 >
