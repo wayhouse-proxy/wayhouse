@@ -58,7 +58,7 @@ const hasFilter = (f: Filter) => !!(f.q || f.state || f.region || f.tags.length)
 
 function columns(): ColumnDef<FleetNode>[] {
   return [
-    { id: "instance", header: "Node", enableSorting: false, cell: ({ row }) => <span className="font-mono">{row.original.instance}</span> },
+    { id: "instance", header: "Node", enableSorting: false, cell: ({ row }) => <span className="whitespace-nowrap font-mono">{row.original.instance}</span> },
     { id: "state", header: "State", enableSorting: false, cell: ({ row }) => <NodeStateBadge state={row.original.state} /> },
     {
       id: "version",

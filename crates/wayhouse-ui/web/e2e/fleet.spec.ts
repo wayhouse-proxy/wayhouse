@@ -17,7 +17,7 @@ const FLEET = Array.from({ length: 500 }, (_, i) => ({
 
 const rollup = (ns: typeof FLEET) => ({ nodes: ns.length, degraded: ns.filter((n) => n.state === "degraded").length, stale: ns.filter((n) => n.state === "stale").length, sessions: ns.length * 3 });
 
-async function stub(page: Page, drained: string[]) {
+async function stub(page: Page, drained: string[], fleet = FLEET) {
   await page.route("**/ui/session", (r) => r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ authenticated: true, username: "ana", role: "admin" }) }));
   await page.route("**/ws/**", (r) => r.abort());
   await page.route("**/api/ui/**", (r) => r.fulfill({ status: 200, contentType: "application/json", body: '{"items":[]}' }));
@@ -28,7 +28,7 @@ async function stub(page: Page, drained: string[]) {
   await page.route("**/api/fleet/nodes**", (r) => {
     const url = new URL(r.request().url());
     const p = url.searchParams;
-    const all = FLEET.filter((n) => (!p.get("state") || n.state === p.get("state")) && (!p.get("q") || n.instance.includes(p.get("q")!))).sort((a, b) => a.region.localeCompare(b.region) || a.instance.localeCompare(b.instance));
+    const all = fleet.filter((n) => (!p.get("state") || n.state === p.get("state")) && (!p.get("q") || n.instance.includes(p.get("q")!))).sort((a, b) => a.region.localeCompare(b.region) || a.instance.localeCompare(b.instance));
     const body = url.pathname.endsWith("/resolve")
       ? { count: all.length, instances: all.map((n) => n.instance) }
       : { items: all.slice((Number(p.get("page") ?? 1) - 1) * 25, Number(p.get("page") ?? 1) * 25), total: all.length, page: Number(p.get("page") ?? 1), size: 25, rollup: rollup(all), groups: REGIONS.slice().sort().map((region) => ({ region, ...rollup(all.filter((n) => n.region === region)) })) };
@@ -61,4 +61,20 @@ test("a 500-node fleet: page, filter, inspect and drain what a filter selects", 
   await dlg.getByRole("button", { name: "Drain 5" }).click();
   await expect(page.getByRole("status").filter({ hasText: "drain: 5 nodes done" }).first()).toBeVisible();
   expect(drained.sort()).toEqual(["n099", "n199", "n299", "n399", "n499"]);
+});
+
+test("a node name stays on one line while the inspector narrows the table", async ({ page }) => {
+  const named = FLEET.slice(0, 30).map((n, i) => ({ ...n, instance: `ams-edge-${String(i).padStart(2, "0")}`, tags: { provider: "ovh", tier: "standard", env: "prod" }, version: "0.3.0", skew: "within-window" }));
+  await stub(page, [], named);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/fleet");
+  await page.getByRole("row", { name: /ams-edge-02/ }).click();
+  await expect(page.getByRole("complementary", { name: "Details" })).toBeVisible();
+  const cell = page.getByRole("cell", { name: "ams-edge-01", exact: true });
+  const lines = await cell.evaluate((el) => {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    return new Set([...r.getClientRects()].map((q) => Math.round(q.top))).size;
+  });
+  expect(lines).toBe(1);
 });
