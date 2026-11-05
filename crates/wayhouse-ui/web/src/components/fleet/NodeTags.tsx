@@ -13,19 +13,23 @@ const MAX_TAGS = 16;
 
 /**
  * A node's tags. What the node reports can only be filtered on; the operator's part is editable and
- * overrides a reported tag of the same key. Each change sends the whole operator set (docs/06).
+ * overrides a reported tag of the same key. Each change sends the whole operator set (docs/06), built
+ * from a fresh read of the node right before the PUT so a tag another operator added meanwhile is kept.
  */
 export function NodeTags({
   instance,
   node,
   unavailable,
   onTag,
+  latest,
 }: {
   instance: string;
   node?: FleetNode;
   /** The controller did not answer the list, so the operator's part is not known. */
   unavailable?: boolean;
   onTag: (tag: string) => void;
+  /** Reads the node again from the aggregator; the set is built from this, not from the list that may be 5 s old. */
+  latest?: () => Promise<FleetNode | undefined>;
 }) {
   const canOperate = useCan("operator");
   const toast = useToast();
@@ -41,7 +45,11 @@ export function NodeTags({
   const off = !canOperate || unavailable || untaggable || !node;
 
   const save = useMutation({
-    mutationFn: (tags: Record<string, string>) => (Object.keys(tags).length ? setNodeTags(instance, tags) : clearNodeTags(instance)),
+    mutationFn: async (edit: (cur: Record<string, string>) => Record<string, string>) => {
+      const fresh = await latest?.().catch(() => undefined);
+      const tags = edit(fresh?.operator_tags ?? mine);
+      return Object.keys(tags).length ? setNodeTags(instance, tags) : clearNodeTags(instance);
+    },
     onSuccess: () => {
       setKey("");
       setValue("");
@@ -57,11 +65,13 @@ export function NodeTags({
     if (!VALUE.test(value)) return setProblem({ field: "value", text: "A value uses letters, digits and . _ : / @ + - (1 to 64)." });
     if (!(key in mine) && Object.keys(mine).length >= MAX_TAGS) return setProblem({ field: "key", text: `At most ${MAX_TAGS} tags.` });
     setProblem(null);
-    save.mutate({ ...mine, [key]: value });
+    save.mutate((cur) => ({ ...cur, [key]: value }));
   }
   function remove(k: string) {
-    const { [k]: _gone, ...rest } = mine;
-    save.mutate(rest);
+    save.mutate((cur) => {
+      const { [k]: _gone, ...rest } = cur;
+      return rest;
+    });
   }
 
   const chip = "rounded-sm border border-line px-1.5 py-0.5 font-mono text-xs";
@@ -69,6 +79,8 @@ export function NodeTags({
     <section aria-label="Tags" className="flex flex-col gap-2">
       <h3 className="font-semibold">Tags</h3>
       {unavailable && <p className="text-ink-muted">Operator tags are unavailable (the controller did not answer), so only the tags the node reports are shown and editing is off.</p>}
+      {!canOperate && <p className="text-ink-muted">Your role can view tags but not change them.</p>}
+      {canOperate && !node && !unavailable && !untaggable && <p className="text-ink-muted">This node is not on the current page, so its tags cannot be edited here.</p>}
       {untaggable && <p className="text-ink-muted">A node id with a slash or over 64 characters cannot be tagged.</p>}
       <ul className="flex flex-wrap gap-1">
         {reported.map(([k, v]) => (
@@ -82,6 +94,7 @@ export function NodeTags({
           <li key={k} className="flex">
             <button type="button" title="Filter by this tag (set by an operator)" onClick={() => onTag(`${k}=${v}`)} className={`${chip} rounded-r-none bg-surface-sunken hover:bg-surface-raised`}>
               {k}={v}
+              <span className="sr-only">, set by operator</span>
             </button>
             <button type="button" aria-label={`Remove tag ${k}`} disabled={off || save.isPending} onClick={() => remove(k)} className={`${chip} rounded-l-none border-l-0 disabled:opacity-50`}>
               ×

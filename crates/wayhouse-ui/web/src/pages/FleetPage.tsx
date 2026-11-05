@@ -132,6 +132,8 @@ export function FleetPage() {
   const node = data?.items.find((n) => n.instance === q.sel);
   const live = instances.find((i) => i.instance === q.sel);
   const shown = useRef(false);
+  // The tag editor builds its PUT from this fresh read, not from the list that is up to one poll old.
+  const latest = async () => (await nodes.refetch()).data?.items.find((n) => n.instance === q.sel);
   const addTag = (tag: string) => update((cur) => ({ tags: [...new Set([...cur.tags, tag])] }));
   useEffect(() => {
     if (shown.current && !inspector.current && q.sel) {
@@ -146,7 +148,7 @@ export function FleetPage() {
       return;
     }
     shown.current = true;
-    inspector.open(q.sel, <NodeInspector instance={q.sel} node={node} live={live} onTag={addTag} tagsUnavailable={data?.operatorTagsUnavailable} />);
+    inspector.open(q.sel, <NodeInspector instance={q.sel} node={node} live={live} onTag={addTag} tagsUnavailable={data?.operatorTagsUnavailable} latest={latest} />);
   }, [q.sel, node, live, data?.operatorTagsUnavailable]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => inspector.close(), []); // eslint-disable-line react-hooks/exhaustive-deps
 

@@ -63,6 +63,46 @@ describe("node tags", () => {
     expect(api.setNodeTags).not.toHaveBeenCalled();
   });
 
+  it("builds the new set from a fresh read, so another operator's tag added meanwhile survives", async () => {
+    const latest = vi.fn().mockResolvedValue({ ...NODE, operator_tags: { rack: "r1", gpu: "a100" } });
+    show({ latest });
+    await userEvent.type(screen.getByLabelText("Tag key"), "zone");
+    await userEvent.type(screen.getByLabelText("Tag value"), "a1");
+    await userEvent.click(screen.getByRole("button", { name: "Add tag" }));
+    await vi.waitFor(() => expect(api.setNodeTags).toHaveBeenCalled());
+    expect(latest).toHaveBeenCalledTimes(1);
+    expect(api.setNodeTags.mock.calls[0].slice(0, 2)).toEqual(["n1", { rack: "r1", gpu: "a100", zone: "a1" }]);
+  });
+
+  it("removing a tag also starts from the fresh set", async () => {
+    show({ latest: vi.fn().mockResolvedValue({ ...NODE, operator_tags: { rack: "r1", gpu: "a100" } }) });
+    await userEvent.click(screen.getByRole("button", { name: "Remove tag rack" }));
+    await vi.waitFor(() => expect(api.setNodeTags).toHaveBeenCalled());
+    expect(api.setNodeTags.mock.calls[0].slice(0, 2)).toEqual(["n1", { gpu: "a100" }]);
+  });
+
+  it("falls back to the list it has when the fresh read fails", async () => {
+    show({ latest: vi.fn().mockRejectedValue(new Error("down")) });
+    await userEvent.click(screen.getByRole("button", { name: "Remove tag rack" }));
+    await vi.waitFor(() => expect(api.clearNodeTags).toHaveBeenCalled());
+  });
+
+  it("names an operator's tag as set by an operator, for a screen reader", () => {
+    show();
+    expect(screen.getByRole("button", { name: "rack=r1, set by operator" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "env=prod" })).toBeInTheDocument(); // reported: no suffix
+  });
+
+  it("tells a viewer why the tags cannot be changed", () => {
+    show({}, "viewer");
+    expect(screen.getByText(/your role can view tags but not change them/i)).toBeInTheDocument();
+  });
+
+  it("tells an operator why a node that is not on the page has no editing", () => {
+    show({ node: undefined });
+    expect(screen.getByText(/not on the current page/i)).toBeInTheDocument();
+  });
+
   it("is read-only for a viewer", () => {
     show({}, "viewer");
     expect(screen.getByLabelText("Tag key")).toBeDisabled();

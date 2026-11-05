@@ -558,7 +558,9 @@ un-namespaced names.
   answer, the list is served from declared tags and the reply carries `X-Operator-Tags:
   unavailable`; `resolve` answers `502` instead, so a bulk action never acts on a set the
   operator did not see. With no controller configured there are no operator tags and the PUT
-  answers `503`.
+  answers `503`. The PUT replaces the whole set and the API has no merge, so the UI builds each
+  one from a fresh read of the node right before sending: a tag another operator added a moment
+  earlier is kept, while two saves in the same instant are still last-write-wins.
 - `GET /fleet/stats?range=5m|15m|1h` (default `15m`) — fleet rates and gauges
   from a rolling in-memory history: one-minute points, an hour deep, aggregates
   only (fleet, per listener, per pool, per region; never per node). Proxies push

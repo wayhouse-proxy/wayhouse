@@ -24,12 +24,14 @@ export function NodeInspector({
   live,
   onTag,
   tagsUnavailable,
+  latest,
 }: {
   instance: string;
   node?: FleetNode;
   live?: FleetInstanceView;
   onTag: (tag: string) => void;
   tagsUnavailable?: boolean;
+  latest?: () => Promise<FleetNode | undefined>;
 }) {
   const canOperate = useCan("operator");
   const toast = useToast();
@@ -74,7 +76,7 @@ export function NodeInspector({
         <p className="text-ink-muted">This node is not on the current page of results.</p>
       )}
 
-      <NodeTags instance={instance} node={node} unavailable={tagsUnavailable} onTag={onTag} />
+      <NodeTags instance={instance} node={node} unavailable={tagsUnavailable} onTag={onTag} latest={latest} />
 
       <section aria-label="Actions" className="flex gap-2">
         <Button
