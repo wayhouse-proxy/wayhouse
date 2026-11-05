@@ -244,6 +244,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::controller_proxy::viewer_router())
         .merge(crate::ui_data_proxy::viewer_router())
         .merge(crate::registry_api::viewer_router())
+        .merge(crate::plugin_registry_api::viewer_router())
         .merge(crate::ws::router())
         .route_layer(role_layer!(Role::Viewer));
 
@@ -253,6 +254,7 @@ pub fn router(state: AppState) -> Router {
         .route_layer(role_layer!(Role::Operator));
 
     let admin = crate::controller_proxy::admin_router()
+        .merge(crate::plugin_registry_api::admin_router())
         .merge(crate::ui_data_proxy::admin_router())
         .route_layer(role_layer!(Role::Admin));
 

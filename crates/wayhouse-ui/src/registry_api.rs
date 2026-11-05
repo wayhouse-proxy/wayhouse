@@ -51,11 +51,11 @@ pub fn operator_router() -> Router<AppState> {
         .route("/api/registries/updates/check", post(check_updates))
 }
 
-fn error(status: StatusCode, msg: impl Into<String>) -> Response {
+pub(crate) fn error(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(json!({ "error": msg.into() }))).into_response()
 }
 
-fn risk(r: &RegistryRef) -> &'static str {
+pub(crate) fn risk(r: &RegistryRef) -> &'static str {
     if r.official {
         "official"
     } else {
@@ -63,7 +63,7 @@ fn risk(r: &RegistryRef) -> &'static str {
     }
 }
 
-fn registry_json(r: &RegistryRef) -> serde_json::Value {
+pub(crate) fn registry_json(r: &RegistryRef) -> serde_json::Value {
     json!({ "id": r.id, "name": r.name, "url": r.url, "official": r.official, "risk": risk(r) })
 }
 
@@ -98,7 +98,7 @@ async fn remove_registry(State(state): State<AppState>, Path(id): Path<String>) 
     }
 }
 
-fn fetch_failure(e: &FetchError) -> Response {
+pub(crate) fn fetch_failure(e: &FetchError) -> Response {
     error(StatusCode::BAD_GATEWAY, format!("registry: {e}"))
 }
 
@@ -189,7 +189,11 @@ async fn list_sniffers(
     Extension(Actor(actor)): Extension<Actor>,
     Path(id): Path<String>,
 ) -> Response {
-    let Some(reg) = state.registries.get(&id) else {
+    let Some(reg) = state
+        .registries
+        .get(&id)
+        .filter(|r| r.kind == crate::registries::RegistryKind::Sniffer)
+    else {
         return error(StatusCode::NOT_FOUND, "no such registry");
     };
     let index: std::sync::Arc<Index> = match state.registry_client.fetch_index(&reg.url).await {
@@ -260,7 +264,7 @@ impl FanOutResult {
 /// the flag is read fresh on every install; a controller that cannot answer refuses the
 /// install, so a kill switch cannot be sidestepped by making the controller unreachable.
 #[allow(clippy::result_large_err)] // the Err is the ready-made refusal the handler returns as is
-async fn installs_allowed(state: &AppState) -> Result<(), Response> {
+pub(crate) async fn installs_allowed(state: &AppState) -> Result<(), Response> {
     let Some(controller) = &state.controller else {
         return Ok(());
     };
@@ -310,7 +314,11 @@ async fn install(
     if let Err(refused) = installs_allowed(&state).await {
         return refused;
     }
-    let Some(reg) = state.registries.get(&id) else {
+    let Some(reg) = state
+        .registries
+        .get(&id)
+        .filter(|r| r.kind == crate::registries::RegistryKind::Sniffer)
+    else {
         return error(StatusCode::NOT_FOUND, "no such registry");
     };
     let index = match state.registry_client.fetch_index(&reg.url).await {

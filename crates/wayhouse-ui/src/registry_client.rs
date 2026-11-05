@@ -12,7 +12,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
-use wayhouse_registry::{parse_index, Index, IndexError, MAX_INDEX_BYTES};
+use wayhouse_registry::{
+    parse_index, parse_plugin_index, Index, IndexError, PluginIndex, PluginIndexError,
+    MAX_INDEX_BYTES,
+};
 
 /// Largest signature file fetched.
 pub const MAX_SIGNATURE_BYTES: u64 = 4 * 1024;
@@ -33,6 +36,8 @@ pub enum FetchError {
     Status(u16),
     #[error("invalid index: {0}")]
     Index(#[from] IndexError),
+    #[error("invalid plugin index: {0}")]
+    PluginIndex(#[from] PluginIndexError),
     #[error("{0}")]
     Io(String),
 }
@@ -84,6 +89,7 @@ impl Resolve for PublicOnlyResolver {
 }
 
 type IndexCache = Arc<Mutex<HashMap<String, (Instant, Arc<Index>)>>>;
+type PluginIndexCache = Arc<Mutex<HashMap<String, (Instant, Arc<PluginIndex>)>>>;
 
 #[derive(Clone)]
 pub struct RegistryClient {
@@ -92,6 +98,7 @@ pub struct RegistryClient {
     allow_private: bool,
     ttl: Duration,
     cache: IndexCache,
+    plugin_cache: PluginIndexCache,
     /// Tests only: `https://registry.test` URLs (the only kind an index may hold) are
     /// fetched from this local server instead.
     #[cfg(test)]
@@ -137,6 +144,7 @@ impl RegistryClient {
             allow_private,
             ttl,
             cache: Arc::default(),
+            plugin_cache: Arc::default(),
             #[cfg(test)]
             rewrite_to: None,
         }
@@ -150,6 +158,23 @@ impl RegistryClient {
 
     pub fn invalidate(&self, url: &str) {
         self.cache.lock().unwrap().remove(url);
+        self.plugin_cache.lock().unwrap().remove(url);
+    }
+
+    /// As [`RegistryClient::fetch_index`], for a plugin registry.
+    pub async fn fetch_plugin_index(&self, url: &str) -> Result<Arc<PluginIndex>, FetchError> {
+        if let Some((at, index)) = self.plugin_cache.lock().unwrap().get(url) {
+            if at.elapsed() < self.ttl {
+                return Ok(index.clone());
+            }
+        }
+        let bytes = self.get(url, MAX_INDEX_BYTES as u64).await?;
+        let index = Arc::new(parse_plugin_index(&bytes)?);
+        self.plugin_cache
+            .lock()
+            .unwrap()
+            .insert(url.to_string(), (Instant::now(), index.clone()));
+        Ok(index)
     }
 
     pub async fn fetch_index(&self, url: &str) -> Result<Arc<Index>, FetchError> {
