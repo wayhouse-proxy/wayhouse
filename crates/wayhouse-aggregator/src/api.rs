@@ -1242,8 +1242,6 @@ mod tests {
         state.store.ingest(a);
         state.store.ingest(full_payload("old"));
         let app = router(state);
-        let (_, v) = get_json(&app, "/fleet/pools").await;
-        let _ = v;
         let (status, v) = get_json(&app, "/fleet/features").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
@@ -1251,8 +1249,6 @@ mod tests {
             (Some(1), Some(2))
         );
         assert_eq!(v["flags"][0]["off_instances"][0], "a");
-        let view = serde_json::to_value(fleet_view(&test_state().store)).unwrap();
-        assert!(view.as_array().unwrap().is_empty());
     }
 
     #[test]

@@ -189,6 +189,10 @@ impl IngestPayload {
         if self.features.len() > MAX_FEATURES {
             return Err(format!("more than {MAX_FEATURES} feature flags"));
         }
+        let mut names = std::collections::HashSet::new();
+        if let Some(f) = self.features.iter().find(|f| !names.insert(&f.name)) {
+            return Err(format!("feature flag {:?} listed twice", f.name));
+        }
         if self
             .features
             .iter()
@@ -449,6 +453,19 @@ mod tests {
             })
             .collect();
         assert!(p.check_bounds().is_err());
+    }
+
+    #[test]
+    fn a_payload_repeating_a_feature_name_is_rejected() {
+        let mut p = payload("f");
+        let one = FeatureReport {
+            name: "acl".into(),
+            value: true,
+            source: "default".into(),
+            available: true,
+        };
+        p.features = vec![one.clone(), one];
+        assert!(p.check_bounds().unwrap_err().contains("twice"));
     }
 
     #[test]

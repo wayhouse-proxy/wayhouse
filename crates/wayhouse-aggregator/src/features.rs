@@ -11,6 +11,9 @@ use crate::ingest::InstanceState;
 /// Most instance names listed per flag; the counts are always complete.
 const MAX_LISTED: usize = 50;
 
+/// Most distinct flag names a roll-up lists; proxies self-report names, so the answer stays bounded.
+const MAX_FLAGS: usize = 256;
+
 #[derive(Debug, Default, Serialize, PartialEq, Eq)]
 pub struct FlagRollup {
     pub name: String,
@@ -41,6 +44,9 @@ pub fn rollup(states: &[InstanceState]) -> FeatureRollup {
         let p = &s.payload;
         reporting += usize::from(!p.features.is_empty());
         for f in &p.features {
+            if flags.len() >= MAX_FLAGS && !flags.contains_key(f.name.as_str()) {
+                continue;
+            }
             let r = flags.entry(&f.name).or_insert_with(|| FlagRollup {
                 name: f.name.clone(),
                 ..FlagRollup::default()
@@ -103,6 +109,17 @@ mod tests {
         assert_eq!((acl.on, acl.off, acl.unavailable), (1, 1, 1));
         assert_eq!(acl.off_instances, ["b"]);
         assert_eq!(acl.overridden_instances, ["b"]);
+    }
+
+    #[test]
+    fn distinct_flag_names_are_capped() {
+        let many = serde_json::Value::Array(
+            (0..MAX_FLAGS + 10)
+                .map(|i| json!({"name": format!("f{i}"), "value": true, "source": "default", "available": true}))
+                .collect(),
+        );
+        let r = rollup(&[node("a", &many)]);
+        assert_eq!(r.flags.len(), MAX_FLAGS);
     }
 
     #[test]

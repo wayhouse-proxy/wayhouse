@@ -559,8 +559,8 @@ un-namespaced names.
   unavailable`; `resolve` answers `502` instead, so a bulk action never acts on a set the
   operator did not see. With no controller configured there are no operator tags and the PUT
   answers `503`. Tags of nodes that went away stay until an operator removes them:
-  `POST /api/fleet/node-tags/prune` (`?dry_run=true` lists first) deletes those of every node the
-  aggregator no longer lists, and refuses when it lists none.
+  `POST /api/fleet/node-tags/prune` lists the tagged nodes the aggregator does not list; sent again
+  with `{"names": [...]}` from that list it deletes those (see [stored UI data](ui-data.md)).
 - `GET /fleet/features` — how each feature flag stands across the fleet, from the flags every
   proxy reports in its push: per flag the number of nodes with it on, off or not in their build,
   and the (first 50) node names that run it off or by override. `reporting` of `total` nodes is how
