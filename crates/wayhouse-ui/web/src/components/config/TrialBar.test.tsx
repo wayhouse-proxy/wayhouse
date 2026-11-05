@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({ getPendingConfig: vi.fn(), confirmRevision: vi.fn(), revertNow: vi.fn() }));
 vi.mock("../../api", async (orig) => ({ ...(await orig<typeof import("../../api")>()), ...api }));
+import { ApiError } from "../../api";
 import { SessionProvider } from "../../lib/session";
 import { TrialBar } from "./TrialBar";
 
@@ -79,5 +80,38 @@ describe("TrialBar", () => {
     expect(live()).toBe("10 seconds left to confirm.");
     for (let i = 0; i < 8; i++) await act(async () => void vi.advanceTimersByTime(1000));
     expect(live()).toMatch(/Time is up/);
+  });
+  it("does not double the full stop when a reason already ends with one", async () => {
+    const base = pending(45_000);
+    api.getPendingConfig.mockResolvedValue({
+      ...base,
+      pending: { ...base.pending, reasons: ["admin_listen", "proxy_v2"] },
+      risks: [{ id: "admin_listen", text: "A pool's idle timeout changed." }, { id: "proxy_v2", text: "The pool sends PROXY v2." }],
+    });
+    bar();
+    const text = (await screen.findByText(/Applied as revision 9/)).textContent!;
+    expect(text).toContain("(A pool's idle timeout changed; The pool sends PROXY v2.)");
+    expect(text).not.toMatch(/\.\./);
+  });
+
+  it("treats a 409 from Keep or Revert as an ordinary outcome: it refreshes and shows no error", async () => {
+    api.getPendingConfig.mockResolvedValue(pending(45_000));
+    api.confirmRevision.mockRejectedValue(new ApiError(409, "revision 9 is not on trial"));
+    bar();
+    await screen.findByText(/Applied as revision 9/);
+    const before = api.getPendingConfig.mock.calls.length;
+    await userEvent.click(screen.getByRole("button", { name: "Keep changes" }));
+    await act(async () => {});
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(api.getPendingConfig.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it("still reports a failure that is not a 409", async () => {
+    api.getPendingConfig.mockResolvedValue(pending(45_000));
+    api.revertNow.mockRejectedValue(new ApiError(500, "boom"));
+    bar();
+    await screen.findByText(/Applied as revision 9/);
+    await userEvent.click(screen.getByRole("button", { name: "Revert now" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("boom");
   });
 });

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
-import { confirmRevision, revertNow } from "../../api";
+import { ApiError, confirmRevision, revertNow } from "../../api";
 import { PENDING_KEY, usePending } from "../../lib/config/usePending";
 import { useCan } from "../../lib/session";
 import { Button } from "../ui/Button";
@@ -45,7 +45,7 @@ export function TrialBar() {
   if (!pending) return null;
 
   const secs = Math.ceil(remainingMs / 1000);
-  const why = data!.risks.filter((r) => pending.reasons.includes(r.id)).map((r) => r.text);
+  const why = data!.risks.filter((r) => pending.reasons.includes(r.id)).map((r) => r.text.replace(/\.$/, ""));
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2 border border-warn bg-surface px-3 py-2 text-sm">
       <AlertTriangle aria-hidden size={16} strokeWidth={1.5} className="shrink-0 text-warn" />
@@ -62,7 +62,7 @@ export function TrialBar() {
       <Button disabled={!canWrite} onClick={() => end.mutate(false)}>
         Revert now
       </Button>
-      {end.isError && <span role="alert" className="w-full text-bad">{end.error instanceof Error ? end.error.message : String(end.error)}</span>}
+      {end.isError && !(end.error instanceof ApiError && end.error.status === 409) && <span role="alert" className="w-full text-bad">{end.error instanceof Error ? end.error.message : String(end.error)}</span>}
     </div>
   );
 }
