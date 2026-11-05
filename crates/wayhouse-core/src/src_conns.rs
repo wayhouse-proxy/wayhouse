@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use wayhouse_config::features::PER_SOURCE;
 use wayhouse_config::PerSourceLimit;
 
 use crate::ratelimit::NetKey;
@@ -47,7 +48,7 @@ impl SourceLimiter {
     /// when a cap is already reached (nothing is reserved); `Ok(guard)` releases
     /// the slot on drop.
     pub fn acquire(self: &Arc<Self>, ip: IpAddr) -> Result<SourceGuard, &'static str> {
-        if !self.is_enabled() {
+        if !self.is_enabled() || !crate::flags::on(PER_SOURCE) {
             return Ok(SourceGuard { limiter: None });
         }
         let key = NetKey::of(ip);
@@ -129,6 +130,16 @@ mod tests {
         for _ in 0..1000 {
             g.push(l.acquire("1.2.3.4".parse().unwrap()).unwrap());
         }
+    }
+
+    #[test]
+    fn per_source_off_lets_every_connection_in() {
+        let l = SourceLimiter::new(Some(&cfg(Some(1), None)));
+        let ip: IpAddr = "9.9.9.9".parse().unwrap();
+        let _held = l.acquire(ip).unwrap();
+        assert!(l.acquire(ip).is_err());
+        let _off = crate::flags::off(&["per_source"]);
+        let _g: Vec<_> = (0..10).map(|_| l.acquire(ip).unwrap()).collect();
     }
 
     #[test]

@@ -20,6 +20,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::{interval, MissedTickBehavior};
+use wayhouse_config::features::GOSSIP_VERDICTS;
 use wayhouse_config::HealthCheckKind;
 
 use crate::gossip::GossipFabric;
@@ -162,7 +163,7 @@ fn sweep(
                 }
                 // This instance only ever asserts an opinion about a backend
                 // it actually checks itself (docs/10 "Tier 2").
-                if let Some(fabric) = &gossip {
+                if let Some(fabric) = gossip.as_ref().filter(|_| crate::flags::on(GOSSIP_VERDICTS)) {
                     fabric.handle.publish_backend_health(backend.addr, ok);
                 }
             });
@@ -172,9 +173,11 @@ fn sweep(
     if let Some(fabric) = gossip {
         for pool in snap.pools.values() {
             for backend in pool.backends() {
-                let quorum_down = fabric
-                    .handle
-                    .quorum_down(backend.addr, fabric.quorum_fraction);
+                // Off: the mesh's verdict is ignored (and a standing one cleared).
+                let quorum_down = crate::flags::on(GOSSIP_VERDICTS)
+                    && fabric
+                        .handle
+                        .quorum_down(backend.addr, fabric.quorum_fraction);
                 if let Some(new_state) = backend.observe_domain(quorum_down) {
                     tracing::info!(
                         backend = %backend.addr,
@@ -344,6 +347,14 @@ mod tests {
         // Still locally "healthy" (fall = 3, only ever probed once per
         // sweep) — the override is purely from the domain view.
         assert_eq!(fabric.handle.domain_votes(backend.addr), (0, 1));
+
+        // Switching `gossip_verdicts` off drops the mesh's verdict at the next sweep: the
+        // backend is judged by this proxy's own checks again.
+        {
+            let _off = crate::flags::off(&["gossip_verdicts"]);
+            sweep_and_settle(&snap, Some(&fabric)).await;
+            assert!(backend.is_healthy(), "the domain verdict is ignored while off");
+        }
 
         let _ = shutdown_tx.send(true);
         let _ = mesh.await;

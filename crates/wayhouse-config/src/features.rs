@@ -90,32 +90,37 @@ const fn protection(mut f: Flag) -> Flag {
     f
 }
 
+const fn wired(mut f: Flag) -> Flag {
+    f.wired = true;
+    f
+}
+
 use OverrideMode::{Both, OffOnly};
 use Scope::{Controller, Proxy};
 
 /// Every flag, in the order the UI lists them.
 pub const REGISTRY: &[Flag] = &[
-    flag(
+    wired(flag(
         "gossip_verdicts",
         Proxy,
         Both,
         "Backends are judged by this proxy's own health checks only; regional correlation is lost.",
         "The mesh keeps running; established connections are untouched.",
-    ),
-    flag(
+    )),
+    wired(flag(
         "sniffers",
         Proxy,
         Both,
         "Routes with `sniffer:` never match, so players can land on the default or another pool.",
         "Connections already routed are untouched; sniffing only reads the first bytes.",
-    ),
-    flag(
+    )),
+    wired(flag(
         "port_routes",
         Proxy,
         OffOnly,
         "Plugin entry listeners are removed; customers lose those ports (they stay reserved).",
         "Established TCP sessions continue; UDP sessions drain.",
-    ),
+    )),
     flag(
         "admin_write.backends",
         Proxy,
@@ -137,34 +142,34 @@ pub const REGISTRY: &[Flag] = &[
         "Route hints answer 403.",
         "No connection is touched; reads, drain and the flag endpoints stay open.",
     ),
-    protection(flag(
+    wired(protection(flag(
         "rate_limit",
         Proxy,
         Both,
         "New-connection rate limits are bypassed: less protection against floods.",
         "New connections only.",
-    )),
-    protection(flag(
+    ))),
+    wired(protection(flag(
         "per_source",
         Proxy,
         Both,
         "Per-source connection limits are bypassed: less protection against one noisy client.",
         "New connections only.",
-    )),
-    protection(flag(
+    ))),
+    wired(protection(flag(
         "acl",
         Proxy,
         Both,
         "Client address allow and deny lists are bypassed.",
         "New connections only.",
-    )),
-    protection(flag(
+    ))),
+    wired(protection(flag(
         "geo",
         Proxy,
         Both,
         "Country allow and deny lists are bypassed.",
         "New connections only.",
-    )),
+    ))),
     flag(
         "plugin_webhooks",
         Controller,
@@ -194,6 +199,36 @@ pub const REGISTRY: &[Flag] = &[
         "Existing leases and tunnels are untouched.",
     ),
 ];
+
+/// The position of `name` in [`REGISTRY`]; a compile error for a name that is not there, so a
+/// typo cannot become a flag that is silently always on.
+#[must_use]
+pub const fn index_of(name: &str) -> usize {
+    let mut i = 0;
+    while i < REGISTRY.len() {
+        let (a, b) = (REGISTRY[i].name.as_bytes(), name.as_bytes());
+        if a.len() == b.len() {
+            let mut j = 0;
+            while j < a.len() && a[j] == b[j] {
+                j += 1;
+            }
+            if j == a.len() {
+                return i;
+            }
+        }
+        i += 1;
+    }
+    panic!("not a registered feature flag")
+}
+
+/// Registry positions of the flags the data path reads (see `wayhouse_core::flags`).
+pub const GOSSIP_VERDICTS: usize = index_of("gossip_verdicts");
+pub const SNIFFERS: usize = index_of("sniffers");
+pub const PORT_ROUTES: usize = index_of("port_routes");
+pub const RATE_LIMIT: usize = index_of("rate_limit");
+pub const PER_SOURCE: usize = index_of("per_source");
+pub const ACL: usize = index_of("acl");
+pub const GEO: usize = index_of("geo");
 
 /// The registry entry named `name`.
 #[must_use]
@@ -380,6 +415,23 @@ pub fn view(
 mod tests {
     use super::*;
     use crate::parse_str as parse;
+
+    #[test]
+    fn the_data_plane_flags_are_wired_and_indexed() {
+        for name in [
+            "gossip_verdicts",
+            "sniffers",
+            "port_routes",
+            "rate_limit",
+            "per_source",
+            "acl",
+            "geo",
+        ] {
+            let f = lookup(name).unwrap();
+            assert!(f.wired, "{name} is read by the data path");
+            assert_eq!(REGISTRY[index_of(name)].name, name);
+        }
+    }
 
     const BODY: &str = "pools:\n  - name: mc\n    targets: [\"127.0.0.1:25566\"]\nlisteners:\n  - name: main\n    bind: \"0.0.0.0:25565\"\n    protocol: tcp\n    pool: mc\n";
 
