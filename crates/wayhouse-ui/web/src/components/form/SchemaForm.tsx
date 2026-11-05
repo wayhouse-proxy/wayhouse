@@ -49,18 +49,23 @@ function onPage(ctx: Ctx, path: Path): boolean {
   return Object.entries(ctx.layout.fields).some(([k, f]) => f.page === ctx.page && (k === prefix || k.startsWith(`${prefix}.`)));
 }
 
-const MONO = /(listen|bind|addr|url|dir|path|db|cert|key|target|seed|host|cidr|name|group)/;
+/** Machine data (addresses, paths, keys) is set in mono; ordinary text, names and groups are not. Whole words of the field name only. */
+const MONO_WORDS = new Set(["listen", "bind", "addr", "address", "url", "dir", "path", "db", "cert", "key", "target", "seed", "host", "cidr"]);
+const isMono = (name: string) => name.split(/[^a-z0-9]+/i).some((w) => MONO_WORDS.has(w.toLowerCase()));
 
-/** Widgets read the layout for their unit and the id of their help and error text. */
+/**
+ * Widgets point at their help text, but only when there is some: `uiFor` records that in the `help` option.
+ * (The server answers a bad document with one message, shown by the save bar, so there are no per-field errors.)
+ */
 function describe(p: WidgetProps) {
-  return { "aria-describedby": `${p.id}-help ${p.id}-error`, "aria-invalid": p.rawErrors?.length ? (true as const) : undefined };
+  return { "aria-describedby": p.options.help ? `${p.id}-help` : undefined };
 }
 
 const Text = (p: WidgetProps) => (
   <Input
     id={p.id}
     value={p.value ?? ""}
-    mono={MONO.test(p.name ?? p.label)}
+    mono={isMono(p.name ?? p.label)}
     placeholder={p.schema["x-wayhouse-default"] !== undefined ? String(p.schema["x-wayhouse-default"]) : undefined}
     disabled={p.disabled || p.readonly}
     onChange={(e) => p.onChange(e.target.value === "" ? undefined : e.target.value)}
@@ -185,7 +190,6 @@ function FieldTemplate(p: FieldTemplateProps) {
       help={[l?.help ?? helpOf(p.rawDescription), since ? `Since schema ${since}.` : ""].filter(Boolean).join(" ") || undefined}
       changed={changedCount(ctx, path) > 0}
       required={p.required && entry === null}
-      error={p.rawErrors?.[0]}
       render={() => p.children}
     />
   );
@@ -292,11 +296,14 @@ function uiFor(root: any, node: any, path: Path, layout: Layout): UiSchema {
   const ui: UiSchema = {};
   const l = layout.fields[patternOf(path)];
   if (l?.widget) ui["ui:widget"] = WIDGET_NAMES[l.widget];
+  const options: Record<string, boolean | string> = {};
+  if (l?.help || helpOf(n.description) || sinceOf(n)) options.help = true;
   if (n.type === "integer" || n.type === "number") {
     ui["ui:widget"] ??= "NumberWidget"; // rjsf's default for numbers is the text widget
     const unit = l?.unit ?? unitFor(String(path[path.length - 1] ?? ""), n);
-    if (unit) ui["ui:options"] = { unit };
+    if (unit) options.unit = unit;
   }
+  if (Object.keys(options).length) ui["ui:options"] = options;
   if (n.type === "object" && n.properties)
     for (const [k, v] of Object.entries<any>(n.properties)) ui[k] = uiFor(root, v, [...path, k], layout);
   else if (n.type === "array" && n.items) {
