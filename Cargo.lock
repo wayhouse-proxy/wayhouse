@@ -4793,6 +4793,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.21",
  "wayhouse-config",
+ "wayhouse-secrets",
 ]
 
 [[package]]

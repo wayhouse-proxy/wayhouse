@@ -119,7 +119,7 @@ pub(crate) struct RawGossip {
     pub(crate) quorum_fraction: f64,
     /// Pre-shared key: every gossip datagram carries an HMAC-SHA256 tag
     /// computed with it. A wrong or missing tag is dropped silently.
-    pub(crate) psk: String,
+    pub(crate) psk: crate::SecretOr,
 }
 
 pub(crate) fn default_gossip_quorum_fraction() -> f64 {
@@ -202,7 +202,7 @@ pub(crate) struct RawAdmin {
     /// that boundary — today, `wayhouse-aggregator`'s intent-verb fan-out
     /// (phase 10+11 slice 10, `docs/10` "The aggregator").
     #[serde(default)]
-    pub(crate) auth_token: Option<String>,
+    pub(crate) auth_token: Option<crate::SecretOr>,
     /// Serve the admin API over HTTPS with this certificate pair.
     #[serde(default)]
     pub(crate) tls: Option<AdminTls>,

@@ -226,7 +226,7 @@ pub struct Config {
     pub admin_listen: SocketAddr,
     /// Bearer token every admin API request (except `GET /healthz`) must
     /// present; `None` leaves the API open.
-    pub admin_auth_token: Option<String>,
+    pub admin_auth_token: Option<crate::SecretOr>,
     /// `settings.admin.tls`: serve the admin API over HTTPS. Startup-only.
     pub admin_tls: Option<AdminTls>,
     pub pools: Vec<PoolConfig>,
@@ -339,7 +339,7 @@ pub struct GossipConfig {
     pub bind: SocketAddr,
     pub seeds: Vec<SocketAddr>,
     pub quorum_fraction: f64,
-    pub psk: String,
+    pub psk: crate::SecretOr,
 }
 
 /// Resolved `settings.sniffers` (phase 9). The loader itself (`wasmtime`, the
