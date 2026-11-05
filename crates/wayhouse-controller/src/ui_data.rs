@@ -647,11 +647,14 @@ mod tests {
         let (s, _d) = store();
         let ok = json!({"value": false, "reason": "noisy", "actor": "ops", "set_at": 100});
         assert_eq!(
-            s.apply_local(&put(Kind::FeatureOverride, "sniffers", ok.clone()))
+            s.apply_local(&put(Kind::FeatureOverride, "gossip_verdicts", ok.clone()))
                 .unwrap(),
             Applied::Done
         );
-        assert_eq!(s.get(Kind::FeatureOverride, "sniffers").unwrap(), Some(ok));
+        assert_eq!(
+            s.get(Kind::FeatureOverride, "gossip_verdicts").unwrap(),
+            Some(ok)
+        );
         for (bad, needle) in [
             (json!({"value": "no", "reason": "r", "set_at": 1}), "value"),
             (json!({"value": false, "reason": "", "set_at": 1}), "reason"),
@@ -666,7 +669,7 @@ mod tests {
             ),
         ] {
             let why = invalid(
-                s.apply_local(&put(Kind::FeatureOverride, "sniffers", bad))
+                s.apply_local(&put(Kind::FeatureOverride, "gossip_verdicts", bad))
                     .unwrap(),
             );
             assert!(why.contains(needle), "{why}");

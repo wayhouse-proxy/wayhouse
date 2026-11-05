@@ -224,7 +224,8 @@
 >
 > The proxy flags are `gossip_verdicts`, `sniffers`, `port_routes`, `admin_write.backends`,
 > `admin_write.sniffer_upload`, `admin_write.route_hint`, and the protection flags
-> `rate_limit`, `per_source`, `acl`, `geo` (turning those off removes protection). The
+> `sniffers`, `rate_limit`, `per_source`, `acl`, `geo` (turning those off removes protection; a
+> sniffer's reject verdict is one). The
 > controller reads `plugin_webhooks`, `registry_install`, `acme_issuance` and
 > `tunnel_registration`; they are not valid in a proxy config. `GET /features` on the proxy
 > admin API and on the controller lists every flag of that process with its effective value,
@@ -251,7 +252,7 @@
 > `wired: false` is accepted and reported but changes nothing. The proxy flags `gossip_verdicts`,
 > `sniffers`, `port_routes`, `rate_limit`, `per_source`, `acl` and `geo` are wired: switching one
 > off takes effect for new connections (and at the next health sweep for `gossip_verdicts`) within
-> seconds, without a restart, and an expired override puts a protection flag back at once.
+> seconds, without a restart, and an expired override puts a protection flag back at the next 15 s poll.
 > `port_routes` off removes the plugin entry-port listeners on the next rebuild: established TCP
 > sessions continue, UDP sessions drain. Overrides are replicated under HA like dashboards.
 >

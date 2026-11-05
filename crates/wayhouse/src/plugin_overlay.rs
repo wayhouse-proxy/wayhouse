@@ -80,8 +80,7 @@ fn lock() -> std::sync::MutexGuard<'static, Vec<PluginRoute>> {
 }
 
 /// The overlay's routes minus the entry-port ones while the `port_routes` flag is off.
-fn in_force(routes: &[PluginRoute]) -> Vec<PluginRoute> {
-    let ports = wayhouse_core::flags::on(wayhouse_config::features::PORT_ROUTES);
+fn in_force(routes: &[PluginRoute], ports: bool) -> Vec<PluginRoute> {
     routes
         .iter()
         .filter(|r| ports || !matches!(r.key, RouteKey::Port { .. }))
@@ -92,7 +91,10 @@ fn in_force(routes: &[PluginRoute]) -> Vec<PluginRoute> {
 /// `text` with the current overlay applied. Falls back to `text` itself when the merge
 /// fails, so a plugin can never take a valid operator config down.
 pub fn merge(text: &str) -> String {
-    let routes = in_force(&lock());
+    let routes = in_force(
+        &lock(),
+        wayhouse_core::flags::on(wayhouse_config::features::PORT_ROUTES),
+    );
     match merge_text(text, &routes) {
         Ok(m) => {
             for s in &m.skipped {
@@ -251,10 +253,8 @@ mod tests {
             PluginRoute::host("a.example.com", "10.0.1.1:1"),
             PluginRoute::port(30003, PortProto::Udp, "10.0.0.1:7777"),
         ];
-        assert_eq!(in_force(&routes).len(), 2);
-        wayhouse_core::flags::set_all(|n| n != "port_routes");
-        let off = in_force(&routes);
-        wayhouse_core::flags::set_all(|_| true);
+        assert_eq!(in_force(&routes, true).len(), 2);
+        let off = in_force(&routes, false);
         assert_eq!(off, vec![PluginRoute::host("a.example.com", "10.0.1.1:1")]);
     }
 

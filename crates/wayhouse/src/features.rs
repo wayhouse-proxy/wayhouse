@@ -179,24 +179,33 @@ pub async fn run(
 }
 
 /// The `port_routes` value the plugin overlay was last merged with.
-static PORT_ROUTES_MERGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static PORT_ROUTES_APPLIED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 
 /// Hands the effective values to the data path (`wayhouse_core::flags`). Returns whether
 /// `port_routes` differs from what the last config build merged, which asks for a rebuild.
-fn apply(config: &BTreeMap<String, bool>) -> bool {
+fn apply(config: &BTreeMap<String, bool>, applied: &std::sync::atomic::AtomicBool) -> bool {
     use std::sync::atomic::Ordering;
     let rows = effective(config);
     let value = |name: &str| rows.iter().find(|r| r.name == name).is_none_or(|r| r.value);
     wayhouse_core::flags::set_all(value);
     let ports = value("port_routes");
-    PORT_ROUTES_MERGED.swap(ports, Ordering::SeqCst) != ports
+    applied.swap(ports, Ordering::SeqCst) != ports
 }
 
 /// Applies `config` and the live overrides to the data path, then sets
 /// `wayhouse_feature_enabled` and `wayhouse_feature_source`. A change of `port_routes` asks
 /// for a rebuild, since the plugin entry listeners are part of the built configuration.
 pub fn publish(config: &BTreeMap<String, bool>, handle: &wayhouse_core::RuntimeHandle) {
-    if apply(config) {
+    publish_with(config, &PORT_ROUTES_APPLIED, handle);
+}
+
+fn publish_with(
+    config: &BTreeMap<String, bool>,
+    applied: &std::sync::atomic::AtomicBool,
+    handle: &wayhouse_core::RuntimeHandle,
+) {
+    if apply(config, applied) {
         tracing::info!("port_routes changed; rebuilding the configuration");
         handle.request_reload();
     }
@@ -271,32 +280,66 @@ mod tests {
         set_overrides(BTreeMap::new());
     }
 
-    #[test]
-    fn publishing_sets_what_the_data_path_reads_and_reports_a_port_routes_change() {
+    #[tokio::test]
+    async fn a_port_routes_change_asks_for_a_rebuild_and_nothing_else_does() {
         let _t = TURN
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         set_overrides(BTreeMap::new());
-        let on = |name: &str| wayhouse_core::flags::on(wayhouse_config::features::index_of(name));
-        assert!(
-            !apply(&BTreeMap::new()),
-            "nothing changed from the defaults"
+        let cfg = wayhouse_config::parse_str(
+            "pools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\nlisteners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    pool: p\n",
+        )
+        .unwrap();
+        let runtime = wayhouse_core::Runtime::start(
+            wayhouse_core::Snapshot::from_config(&cfg),
+            std::sync::Arc::default(),
+            1,
         );
-        assert!(on("acl"));
-        let off = BTreeMap::from([
-            ("acl".to_string(), false),
-            ("port_routes".to_string(), false),
-        ]);
-        assert!(apply(&off), "port_routes went off");
-        assert!(!on("acl") && !on("port_routes") && on("geo"));
-        assert!(!apply(&off), "the same document changes nothing");
-        // An override that has run out puts a protection flag back on without a new document.
-        let past = BTreeMap::from([("geo".to_string(), (false, Some(1)))]);
-        set_overrides(past);
-        apply(&BTreeMap::new());
-        assert!(on("geo"), "an expired override does not hold geo off");
+        let handle = runtime.handle();
+        let asked = || async {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                handle.reload_requested().notified(),
+            )
+            .await
+            .is_ok()
+        };
+        // Only this test's own marker is read; the shared mask is written but not asserted on.
+        let applied = std::sync::atomic::AtomicBool::new(true);
+        let off = BTreeMap::from([("port_routes".to_string(), false)]);
+        publish_with(&BTreeMap::new(), &applied, &handle);
+        assert!(!asked().await, "defaults change nothing");
+        publish_with(&off, &applied, &handle);
+        assert!(asked().await, "port_routes went off");
+        publish_with(&off, &applied, &handle);
+        assert!(!asked().await, "the same document changes nothing");
+        publish_with(&BTreeMap::new(), &applied, &handle);
+        assert!(asked().await, "and back on");
+        runtime
+            .shutdown_with_grace(std::time::Duration::from_millis(100))
+            .await;
+    }
+
+    #[test]
+    fn an_expired_override_no_longer_holds_a_flag_off() {
+        let _t = TURN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let value = |name: &str| {
+            effective(&BTreeMap::new())
+                .into_iter()
+                .find(|r| r.name == name)
+                .unwrap()
+                .value
+        };
+        set_overrides(BTreeMap::from([(
+            "geo".to_string(),
+            (false, Some(unix_now() + 600)),
+        )]));
+        assert!(!value("geo"));
+        set_overrides(BTreeMap::from([("geo".to_string(), (false, Some(1)))]));
+        assert!(value("geo"), "past its expiry");
         set_overrides(BTreeMap::new());
-        apply(&BTreeMap::new());
     }
 
     #[test]
