@@ -50,7 +50,7 @@ function onPage(ctx: Ctx, path: Path): boolean {
 }
 
 /** Machine data (addresses, paths, keys) is set in mono; ordinary text, names and groups are not. Whole words of the field name only. */
-const MONO_WORDS = new Set(["listen", "bind", "addr", "address", "url", "dir", "path", "db", "cert", "key", "target", "seed", "host", "cidr"]);
+const MONO_WORDS = new Set(["listen", "bind", "addr", "address", "url", "dir", "path", "db", "cert", "key", "target", "seed", "host", "cidr", "pubkey"]);
 const isMono = (name: string) => name.split(/[^a-z0-9]+/i).some((w) => MONO_WORDS.has(w.toLowerCase()));
 
 /**
@@ -108,8 +108,10 @@ function NumberW(p: WidgetProps) {
         setText(e.target.value);
         if (e.target.value !== "" && Number.isFinite(Number(e.target.value))) p.onChange(Number(e.target.value));
       }}
-      onBlur={() => {
-        if (text === "" && p.value !== undefined) p.onChange(undefined);
+      onBlur={(e) => {
+        // A type=number input reports "" for an unparsable draft ("-", "1e"): that is not an emptied field. Restore the last valid value instead of deleting the key.
+        if (e.currentTarget.validity.badInput) setText(show(p.value));
+        else if (text === "" && p.value !== undefined) p.onChange(undefined);
       }}
       {...describe(p)}
     />

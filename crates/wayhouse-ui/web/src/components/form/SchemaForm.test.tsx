@@ -89,6 +89,26 @@ describe("SchemaForm on the real schema", () => {
     expect(yaml()).toContain("workers: 2 # tasks");
   });
 
+  it("blurring after an unparsable draft restores the last value instead of deleting the key", async () => {
+    render(<Harness path={["settings"]} />);
+    const workers = screen.getByLabelText(/Worker tasks per listener/) as HTMLInputElement;
+    await userEvent.clear(workers);
+    await userEvent.type(workers, "-");
+    // A browser reports value "" and badInput for a lone minus; jsdom does not model that, so say it.
+    Object.defineProperty(workers, "validity", { value: { badInput: true }, configurable: true });
+    await userEvent.tab();
+    expect(yaml()).toContain("workers: 2 # tasks");
+    expect(workers).toHaveValue(2);
+  });
+
+  it("blurring an emptied number field still removes the key", async () => {
+    render(<Harness path={["settings"]} />);
+    const workers = screen.getByLabelText(/Worker tasks per listener/);
+    await userEvent.clear(workers);
+    await userEvent.tab();
+    expect(yaml()).not.toContain("workers:");
+  });
+
   it("every aria-describedby points at text that exists, and a field with no help has none", () => {
     const { container } = render(<Harness path={["settings"]} showAdvanced />);
     const described = [...container.querySelectorAll("[aria-describedby]")];
