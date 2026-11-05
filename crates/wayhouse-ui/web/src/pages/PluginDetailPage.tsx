@@ -38,6 +38,7 @@ function ago(unixSecs: number): string {
 // One install: its options (with re-approval when they move the capabilities), secrets, webhook and status.
 export function PluginDetailPage() {
   const { id = "" } = useParams();
+  const canWrite = useCan("admin");
   const [plugin, setPlugin] = useState<PluginDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
@@ -55,7 +56,8 @@ export function PluginDetailPage() {
   if (error) return <ErrorState onRetry={load}>{error}</ErrorState>;
   if (!plugin) return <Loading />;
   const wantsWebhook = !!plugin.approved.triggers?.on_webhook;
-  const hasSecrets = (plugin.approved.secrets?.length ?? 0) > 0;
+  // The controller answers the secret slots to an admin only, so a viewer gets no tab that would show a 403.
+  const hasSecrets = canWrite && (plugin.approved.secrets?.length ?? 0) > 0;
   return (
     <div className="max-w-3xl">
       <PageHeader
@@ -136,7 +138,7 @@ function OptionsTab({ plugin, onSaved }: { plugin: PluginDetail; onSaved: () => 
     );
   return (
     <>
-      <SchemaForm schema={form.schema} layout={form.layout} value={config} saved={saved} onChange={(v) => setConfig(v as Record<string, unknown>)} />
+      <SchemaForm schema={form.schema} layout={form.layout} readonly={!canWrite} value={config} saved={saved} onChange={(v) => setConfig(v as Record<string, unknown>)} />
       {form.secrets.length > 0 && (
         <p className="mt-2 text-sm text-ink-muted">{form.secrets.join(", ")}: set under Secrets, not here.</p>
       )}
