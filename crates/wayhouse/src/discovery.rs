@@ -1006,7 +1006,7 @@ mod tests {
     #[test]
     fn a_parked_source_still_gets_its_one_startup_fetch() {
         let cfg = wayhouse_config::parse_str(
-            "schema_version: 4\nbackend_sources:\n  - name: dns\n    type: dns_srv\n    record: _g._tcp.example.com\n    enabled: false\npools:\n  - name: p\n    source: dns\nlisteners:\n  - name: l\n    bind: \"0.0.0.0:7777\"\n    pool: p\n",
+            "schema_version: 4\nbackend_sources:\n  - name: dns\n    type: consul\n    service: game\n    enabled: false\npools:\n  - name: p\n    source: dns\nlisteners:\n  - name: l\n    bind: \"0.0.0.0:7777\"\n    pool: p\n",
         )
         .unwrap();
         assert_eq!(build_sources(&cfg, None).unwrap().len(), 1);
