@@ -14,11 +14,12 @@ const LOW: u32 = 20_000;
 const SPAN: u32 = 10_000;
 static CALLS: AtomicU32 = AtomicU32::new(0);
 
-/// The next port to try: this process's own starting point, one further per call. 37 is
-/// coprime with `SPAN` and larger than the few ports a test takes, so two processes started
-/// close together do not walk the same ports.
+/// The next port to try: this process's own starting point, two further per call, so the port
+/// after a handed-out one stays free for a test that binds a range (`SPAN` is even, so the
+/// stride survives the wrap). The factor 37 keeps two processes started close together from
+/// walking the same ports.
 fn candidate() -> u16 {
-    let at = std::process::id() * 37 + CALLS.fetch_add(1, Ordering::Relaxed);
+    let at = std::process::id() * 37 + 2 * CALLS.fetch_add(1, Ordering::Relaxed);
     u16::try_from(LOW + at % SPAN).expect("below 65536")
 }
 
@@ -54,6 +55,17 @@ fn free_addresses_stay_below_the_ephemeral_range_and_are_not_repeated() {
             assert!((20_000..30_000).contains(&a.port()), "{a}");
         }
         assert!(seen.insert(free_tcp_addr().port()));
+    }
+}
+
+#[test]
+fn the_port_after_a_handed_out_one_is_never_handed_out() {
+    // A test may bind `port + 1` itself (a range of two); the next caller must not get it.
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..500 {
+        let p = free_udp_addr().port();
+        assert!(!seen.contains(&(p - 1)) && !seen.contains(&(p + 1)), "{p}");
+        seen.insert(p);
     }
 }
 
