@@ -123,6 +123,8 @@ struct Loaded {
 struct Schedule {
     loaded: HashMap<String, Loaded>,
     next_due: HashMap<String, Instant>,
+    /// Installs whose scheduled tick has not finished; the scan starts no second one.
+    inflight: std::collections::HashSet<String>,
     /// The term this node has been ticking in as leader (HA); a change resets the schedule.
     led_term: Option<u64>,
 }
@@ -264,9 +266,12 @@ impl Runner {
     pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut every = tokio::time::interval(SCAN_EVERY);
+            // Ticks run detached, so one slow plugin cannot delay the others' scans.
+            let mut running = tokio::task::JoinSet::new();
             loop {
                 every.tick().await;
-                self.run_due(Instant::now()).await;
+                while running.try_join_next().is_some() {}
+                self.scan(Instant::now(), &mut running).await;
             }
         })
     }
@@ -283,13 +288,26 @@ impl Runner {
 
     /// One scheduling pass at `now`: start every due tick and wait for them all.
     pub async fn run_due(self: &Arc<Self>, now: Instant) {
+        let mut running = tokio::task::JoinSet::new();
+        self.scan(now, &mut running).await;
+        while running.join_next().await.is_some() {}
+    }
+
+    /// One scheduling pass at `now`: start every due tick into `running` and return without
+    /// waiting for them. An install whose previous tick is still in flight is skipped, so
+    /// there is one call per install at a time.
+    pub async fn scan(self: &Arc<Self>, now: Instant, running: &mut tokio::task::JoinSet<()>) {
         let Some(term) = self.lead() else {
             // Not the leader: forget everything, so a later election starts clean.
             *self.schedule.lock().await = Schedule::default();
             self.lock_status().clear();
             return;
         };
-        let installs = match self.store.list() {
+        let installs = match self
+            .blocking(|store| store.list().map_err(|e| e.to_string()))
+            .await
+            .and_then(|r| r)
+        {
             Ok(i) => i,
             Err(e) => {
                 tracing::error!(error = %e, "plugin runner could not list installs");
@@ -336,20 +354,30 @@ impl Runner {
                     continue;
                 };
                 let at = *sched.next_due.entry(rec.id.clone()).or_insert(first);
-                if now >= at {
+                if now >= at && !sched.inflight.contains(&rec.id) {
                     if let Some(next) = now.checked_add(interval) {
                         sched.next_due.insert(rec.id.clone(), next);
                     }
+                    sched.inflight.insert(rec.id.clone());
                     due.push((rec.clone(), now));
                 }
             }
         }
-        let mut tasks = tokio::task::JoinSet::new();
         for (rec, at) in due {
             let this = self.clone();
-            tasks.spawn(async move { this.tick(rec, at, term).await });
+            running.spawn(async move {
+                let id = rec.id.clone();
+                // The tick runs in its own task, so a panic in it is caught here: the id
+                // leaves `inflight` either way (or that install would never tick again) and
+                // the failure is logged.
+                let ticking = this.clone();
+                if let Err(e) = tokio::spawn(async move { ticking.tick(rec, at, term).await }).await
+                {
+                    tracing::error!(install = %id, error = %e, "a plugin tick task failed");
+                }
+                this.schedule.lock().await.inflight.remove(&id);
+            });
         }
-        while tasks.join_next().await.is_some() {}
     }
 
     async fn install_lock(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
@@ -428,9 +456,14 @@ impl Runner {
         };
         // Not part of `LoadKey`: suspending or resuming must not reload (and re-`init`) the plugin.
         plugin.set_suspended(rec.suspended.iter().cloned());
-        let (rev, snapshot) = match self.store.state(&rec.id) {
+        let read_id = rec.id.clone();
+        let (rev, snapshot) = match self
+            .blocking(move |store| store.state(&read_id).map_err(|e| e.to_string()))
+            .await
+            .and_then(|r| r)
+        {
             Ok(s) => s,
-            Err(e) => return Outcome::Failed(e.to_string()),
+            Err(e) => return Outcome::Failed(e),
         };
         if rec.approved.port_routes.is_some() {
             match self.store.port_routes(&rec.id) {
@@ -493,10 +526,12 @@ impl Runner {
         }
         plugin.set_suspended(rec.suspended.iter().cloned());
         let plugin = Arc::new(plugin);
+        let read_id = rec.id.clone();
         let (rev, snapshot) = self
-            .store
-            .state(&rec.id)
-            .map_err(|e| Fail::other(e.to_string()))?;
+            .blocking(move |store| store.state(&read_id).map_err(|e| e.to_string()))
+            .await
+            .and_then(|r| r)
+            .map_err(Fail::other)?;
         let config = serde_json::to_vec(&rec.config).map_err(|e| Fail::other(e.to_string()))?;
         let (p, pool) = (plugin.clone(), self.pool.clone());
         let fx = flatten(
@@ -519,6 +554,18 @@ impl Runner {
             },
         );
         Ok(plugin)
+    }
+
+    /// Runs a store call on the blocking pool: reads, scans and flushed writes must not
+    /// occupy the async workers (#274).
+    async fn blocking<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(PluginStore) -> T + Send + 'static,
+    ) -> Result<T, String> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || f(store))
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Commit a call's state writes: locally, or under HA as one `PluginState` entry
@@ -550,14 +597,22 @@ impl Runner {
         }
         let stale = || "the state changed during the call; its writes were dropped".to_string();
         let (Some(ha), Some(term)) = (&self.ha, term) else {
-            return match self.store.commit_state_full(
-                id,
-                rev,
-                &fx.state_puts,
-                routes.as_deref(),
-                port_routes.as_deref(),
-                unix_now(),
-            ) {
+            // A sled-style write with a flush (an fsync) holds the store's write mutex, so it
+            // runs off the async workers.
+            let (id, puts) = (id.to_string(), fx.state_puts.clone());
+            let written = self
+                .blocking(move |store| {
+                    store.commit_state_full(
+                        &id,
+                        rev,
+                        &puts,
+                        routes.as_deref(),
+                        port_routes.as_deref(),
+                        unix_now(),
+                    )
+                })
+                .await?;
+            return match written {
                 Ok(_) => Ok(()),
                 Err(CommitError::Stale) => Err(stale()),
                 Err(e) => Err(e.to_string()),
@@ -1335,6 +1390,34 @@ mod tests {
             r.schedule.lock().await.loaded.contains_key(HID),
             "the scan evicted a plugin that only has a webhook"
         );
+    }
+
+    #[tokio::test]
+    async fn a_slow_tick_does_not_hold_up_the_scan_or_the_other_installs() {
+        let (r, store, _d) = fixture(1, 4);
+        install(&store, "a", &counter());
+        install(&store, "b", &counter());
+        let t0 = Instant::now();
+        r.run_due(t0).await; // schedules both for t0 + 30 s
+                             // Install a's turn is taken, so its tick waits, as a slow tick would.
+        let hold = r.install_lock("a").await;
+        let mut running = tokio::task::JoinSet::new();
+        tokio::time::timeout(Duration::from_secs(2), r.scan(secs(t0, 30), &mut running))
+            .await
+            .expect("the scan waited for a tick");
+        for _ in 0..200 {
+            if counter_value(&store, "b") == Some(1) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(counter_value(&store, "b"), Some(1), "b ticked on time");
+        assert_eq!(counter_value(&store, "a"), None);
+        // While a's tick is still in flight, the next scan starts no second one for it.
+        r.scan(secs(t0, 61), &mut running).await;
+        drop(hold);
+        while running.join_next().await.is_some() {}
+        assert_eq!(counter_value(&store, "a"), Some(1), "one call per install");
     }
 
     #[tokio::test]
