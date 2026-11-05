@@ -86,6 +86,8 @@ pub enum SealError {
     NoKey,
     #[error("a secret must be {MIN_SECRET_BYTES} to {MAX_SECRET_BYTES} bytes")]
     Size,
+    #[error("a secret name is 1 to 63 of a-z, 0-9 and '-'")]
+    Name,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -97,6 +99,8 @@ pub enum OpenError {
     Auth,
     #[error("the stored secret is malformed")]
     Malformed,
+    #[error("a secret name is 1 to 63 of a-z, 0-9 and '-'")]
+    Name,
 }
 
 struct Key {
@@ -285,11 +289,17 @@ pub fn valid_cluster_name(name: &str) -> bool {
 impl Keyring {
     /// Seals a cluster secret under its name.
     pub fn seal_cluster(&self, name: &str, plaintext: &[u8]) -> Result<Sealed, SealError> {
+        if !valid_cluster_name(name) {
+            return Err(SealError::Name);
+        }
         self.seal(CLUSTER_SCOPE, name, plaintext)
     }
 
     /// Opens a cluster secret sealed under `name`.
     pub fn open_cluster(&self, name: &str, sealed: &Sealed) -> Result<SecretValue, OpenError> {
+        if !valid_cluster_name(name) {
+            return Err(OpenError::Name);
+        }
         self.open(CLUSTER_SCOPE, name, sealed)
     }
 }
@@ -433,6 +443,41 @@ mod tests {
         );
         // The reserved scope cannot be an install id (those are hex).
         assert!(CLUSTER_SCOPE.starts_with('@'));
+    }
+
+    /// Made by the code before the extraction (key `[7; 32]`, scope `0123abcd`, name `API_TOKEN`), so a
+    /// change to the associated data, the key id or the cipher cannot slip through a seal-then-open test.
+    #[test]
+    fn a_secret_sealed_by_the_old_code_still_opens() {
+        let r = ring(&[7]);
+        let sealed = Sealed {
+            key_id: "4559e316c2d041bb".into(),
+            nonce: "6qSK5zM1/dc9IASHmYjCZOGJSU/tT8AB".into(),
+            ciphertext: "Ozj/AXqO3XulpUCPVKVo1R31jNEC7T0DuA8CYLyLwK00wbRd/w==".into(),
+        };
+        assert_eq!(r.active_id(), Some("4559e316c2d041bb"));
+        assert_eq!(
+            r.open("0123abcd", "API_TOKEN", &sealed).unwrap().expose(),
+            b"old-code-secret-value"
+        );
+        assert_eq!(
+            r.open("0123abcd", "OTHER", &sealed).unwrap_err(),
+            OpenError::Auth
+        );
+    }
+
+    #[test]
+    fn a_cluster_name_that_is_not_valid_is_refused_before_it_reaches_the_associated_data() {
+        let r = ring(&[1]);
+        for bad in ["", "a\0b", "Admin", "a/b"] {
+            assert_eq!(
+                r.seal_cluster(bad, b"long-enough-value").unwrap_err(),
+                SealError::Name,
+                "{bad:?}"
+            );
+        }
+        let ok = r.seal_cluster("admin-token", b"long-enough-value").unwrap();
+        assert_eq!(r.open_cluster("a\0b", &ok).unwrap_err(), OpenError::Name);
     }
 
     #[test]
