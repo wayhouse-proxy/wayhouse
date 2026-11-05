@@ -253,6 +253,14 @@
 > `sniffers`, `port_routes`, `rate_limit`, `per_source`, `acl` and `geo` are wired: switching one
 > off takes effect for new connections (and at the next health sweep for `gossip_verdicts`) within
 > seconds, without a restart, and an expired override puts a protection flag back at the next 15 s poll.
+> The `admin_write.*` flags answer `403` on their write routes only (pool backends, sniffer
+> upload, delete and rollback, route hints); reads, drain, undrain and the flag endpoints never
+> depend on them. The controller flags are wired too and take effect within the 15 s poll of
+> the stored overrides: `plugin_webhooks` off answers `503` on the webhook listener,
+> `tunnel_registration` off refuses new origin and proxy registrations with `503` (held
+> leases and tunnels are untouched), `acme_issuance` off holds every order and renewal, and
+> `registry_install` off refuses installs from a registry in the UI (it asks the controller on
+> every install, and refuses while the controller cannot be asked).
 > `port_routes` off removes the plugin entry-port listeners on the next rebuild: established TCP
 > sessions continue, UDP sessions drain. Overrides are replicated under HA like dashboards.
 >

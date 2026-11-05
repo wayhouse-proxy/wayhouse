@@ -255,12 +255,56 @@ impl FanOutResult {
     }
 }
 
+/// The `registry_install` kill switch, which lives on the controller (its override layer is
+/// the only one). Without a controller there are no overrides and installs stay on. With one,
+/// the flag is read fresh on every install; a controller that cannot answer refuses the
+/// install, so a kill switch cannot be sidestepped by making the controller unreachable.
+async fn installs_allowed(state: &AppState) -> Result<(), Response> {
+    let Some(controller) = &state.controller else {
+        return Ok(());
+    };
+    let mut req = state.http.get(format!("{}/features", controller.base_url));
+    if let Some(token) = &controller.token {
+        req = req.bearer_auth(token);
+    }
+    let on = async {
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| wayhouse_http::error_chain(&e))?;
+        if !resp.status().is_success() {
+            return Err(format!("the controller answered {}", resp.status()));
+        }
+        let doc: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+        doc["flags"]
+            .as_array()
+            .and_then(|f| f.iter().find(|f| f["name"] == "registry_install"))
+            .and_then(|f| f["value"].as_bool())
+            .ok_or_else(|| "the controller does not report registry_install".to_string())
+    }
+    .await;
+    match on {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "installing from a registry is switched off (feature registry_install)",
+        )),
+        Err(why) => Err(error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("cannot check the registry_install switch, so no install: {why}"),
+        )),
+    }
+}
+
 async fn install(
     State(state): State<AppState>,
     Extension(Actor(actor)): Extension<Actor>,
     Path(id): Path<String>,
     Json(req): Json<InstallRequest>,
 ) -> Response {
+    if let Err(refused) = installs_allowed(&state).await {
+        return refused;
+    }
     let Some(reg) = state.registries.get(&id) else {
         return error(StatusCode::NOT_FOUND, "no such registry");
     };
@@ -762,12 +806,25 @@ mod tests {
         official: bool,
         role: crate::role::Role,
     ) -> Harness {
+        harness_with(registry_base, aggregator, official, role, None).await
+    }
+
+    async fn harness_with(
+        registry_base: &str,
+        aggregator: &str,
+        official: bool,
+        role: crate::role::Role,
+        controller: Option<String>,
+    ) -> Harness {
         let regs = Arc::new(Registries::load(None, false).unwrap());
         let reg = regs.add_unchecked(&format!("{registry_base}/index.json"), official);
-        let state = AppState::new(Some("secret".into()))
+        let mut state = AppState::new(Some("secret".into()))
             .with_aggregator(aggregator.to_string(), None)
             .with_registries(regs, false)
             .with_registry_client(RegistryClient::for_tests().with_rewrite(registry_base));
+        if let Some(url) = controller {
+            state = state.with_controller(url, None);
+        }
         let session = state.sessions.create(crate::session::Session {
             role,
             username: None,
@@ -1012,6 +1069,50 @@ mod tests {
             .await;
         assert_eq!(body["min_proxy_checked"], false);
         assert_eq!(body["sniffers"][0]["compatible"]["version"], "0.1.0");
+    }
+
+    async fn fake_controller_features(registry_install: bool) -> String {
+        serve(Router::new().route(
+            "/features",
+            get(move || async move {
+                Json(
+                    json!({ "flags": [{ "name": "registry_install", "value": registry_install }] }),
+                )
+            }),
+        ))
+        .await
+    }
+
+    #[tokio::test]
+    async fn the_registry_install_switch_refuses_installs_and_uploads_nothing() {
+        let module = wat::parse_str(MODULE_WAT).unwrap();
+        let base = fake_registry(module, "0.1", None).await;
+        let (agg, uploads) = fake_aggregator(ok_results()).await;
+        let off = fake_controller_features(false).await;
+        let h = harness_with(&base, &agg, false, crate::role::Role::Operator, Some(off)).await;
+        let (status, body) = h.install().await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("registry_install"));
+        assert!(uploads.lock().unwrap().is_empty());
+        // A controller that cannot be asked also refuses: the switch cannot be dodged by that.
+        let h = harness_with(
+            &base,
+            &agg,
+            false,
+            crate::role::Role::Operator,
+            Some("http://127.0.0.1:1".into()),
+        )
+        .await;
+        let (status, body) = h.install().await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("cannot check"));
+        assert!(uploads.lock().unwrap().is_empty());
+        // On, the install goes through.
+        let on = fake_controller_features(true).await;
+        let h = harness_with(&base, &agg, false, crate::role::Role::Operator, Some(on)).await;
+        let (status, body) = h.install().await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uploads.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -146,9 +146,22 @@ pub fn router(state: HookState) -> Router {
     Router::new()
         .route("/plugins/{id}/hook", post(hook))
         .route("/plugins/{id}/hook/{*suffix}", post(hook_suffix))
+        .layer(axum::middleware::from_fn(webhooks_gate))
         // The body is read by hand after the token is checked.
         .layer(DefaultBodyLimit::disable())
         .with_state(state)
+}
+
+/// The `plugin_webhooks` kill switch: while it is off every call answers 503, whatever its
+/// token, before anything is read. The listener itself stays up.
+async fn webhooks_gate(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    if crate::features::on(wayhouse_config::features::PLUGIN_WEBHOOKS) {
+        return next.run(req).await;
+    }
+    json_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "plugin webhooks are switched off (feature plugin_webhooks)",
+    )
 }
 
 fn json_error(status: StatusCode, msg: &str) -> Response {

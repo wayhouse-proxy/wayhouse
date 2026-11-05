@@ -667,6 +667,20 @@ async fn register<R: Registration>(
     body: String,
 ) -> Response {
     let words = wording(R::ROLE);
+    // The `tunnel_registration` kill switch: no new registrations. Renewals, heartbeats and
+    // leases already held use other routes and are untouched.
+    if !crate::features::on(wayhouse_config::features::TUNNEL_REGISTRATION) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: format!(
+                    "new {} registrations are switched off (feature tunnel_registration)",
+                    words.noun
+                ),
+            }),
+        )
+            .into_response();
+    }
     let mut reg: R = match serde_json::from_str(&body) {
         Ok(reg) => reg,
         Err(e) => return unprocessable(format!("malformed {} registration: {e}", words.noun)),

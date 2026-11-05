@@ -123,6 +123,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_tunnel_registration_switch_refuses_new_registrations_and_back_on_accepts_them() {
+        let (state, _book, _dir) = test_state();
+        let app = router(state);
+        {
+            let _off = wayhouse_config::features::off_here(&["tunnel_registration"]);
+            let (status, body) = post(&app, reg_body("edge-1", "203.0.113.9:51820")).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+            assert!(body["error"]
+                .as_str()
+                .unwrap()
+                .contains("tunnel_registration"));
+        }
+        let (status, body) = post(&app, reg_body("edge-1", "203.0.113.9:51820")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    #[tokio::test]
     async fn a_caller_one_minor_behind_gets_only_the_baseline_fields() {
         let v = registered_with_header("1.0").await;
         assert!(v.get("revision").is_some() && v.get("tunnel_address").is_some());
