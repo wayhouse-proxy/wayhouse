@@ -259,6 +259,7 @@ impl FanOutResult {
 /// the only one). Without a controller there are no overrides and installs stay on. With one,
 /// the flag is read fresh on every install; a controller that cannot answer refuses the
 /// install, so a kill switch cannot be sidestepped by making the controller unreachable.
+#[allow(clippy::result_large_err)] // the Err is the ready-made refusal the handler returns as is
 async fn installs_allowed(state: &AppState) -> Result<(), Response> {
     let Some(controller) = &state.controller else {
         return Ok(());
