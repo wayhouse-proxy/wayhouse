@@ -55,6 +55,7 @@ metrics.workspace = true
 url = "2"
 
 [dev-dependencies]
+wayhouse-config = { path = "../wayhouse-config", features = ["test-util"] }
 wayhouse-acme = { path = "../wayhouse-acme", features = ["test-support"] }
 tempfile.workspace = true
 wat.workspace = true

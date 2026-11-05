@@ -220,6 +220,11 @@ pub enum WriteRequest {
         id: String,
         token_hash: Option<String>,
     },
+    /// Replaces the set of capabilities switched off for an install (empty resumes).
+    PluginSetSuspended {
+        id: String,
+        suspended: std::collections::BTreeSet<String>,
+    },
     /// One plugin call's `state_put`s, committed as one entry: applied only
     /// if the install's state revision is still `expected_rev` (the one the
     /// call read) and the entry was appended in `term` (the proposing

@@ -22,7 +22,7 @@ pub mod secrets;
 use crate::kv::transaction::{ConflictableTransactionError, TransactionError};
 use crate::kv::Transactional;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ports::{allocate, PortAssignment, PortLedger};
 use secrets::Sealed;
@@ -76,6 +76,10 @@ pub struct InstallRecord {
     /// itself is shown once, when it is created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhook: Option<WebhookAuth>,
+    /// Capabilities (names from `SUSPENDABLE`) the operator switched off. The approval is
+    /// untouched, so clearing the set resumes the plugin with no new approval.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub suspended: BTreeSet<String>,
 }
 
 /// How an install's webhook authenticates callers.
@@ -163,6 +167,16 @@ impl InstallRecord {
             .is_some_and(|w| !is_sha256(&w.token_hash))
         {
             return Err("webhook token hash must be 64 lowercase hex characters".into());
+        }
+        if let Some(bad) = self
+            .suspended
+            .iter()
+            .find(|n| !wayhouse_plugin_host::SUSPENDABLE.contains(&n.as_str()))
+        {
+            return Err(format!(
+                "cannot suspend `{bad}`; suspendable: {}",
+                wayhouse_plugin_host::SUSPENDABLE.join(", ")
+            ));
         }
         if self.webhook.is_some() && !self.approved.triggers.on_webhook {
             return Err("a webhook needs the approved on_webhook trigger".into());
@@ -331,6 +345,11 @@ pub enum PluginOp<'a> {
     SetWebhook {
         id: &'a str,
         token_hash: Option<&'a str>,
+    },
+    /// Replace the set of switched-off capabilities (empty resumes).
+    SetSuspended {
+        id: &'a str,
+        suspended: &'a BTreeSet<String>,
     },
     State {
         id: &'a str,
@@ -695,6 +714,24 @@ impl PluginStore {
         Ok(Applied::Done(None))
     }
 
+    /// Standalone [`PluginOp::SetSuspended`].
+    pub fn set_suspended(
+        &self,
+        id: &str,
+        suspended: &BTreeSet<String>,
+    ) -> Result<Applied, PluginStoreError> {
+        let _guard = self.lock();
+        let Some(mut record) = self.get(id)? else {
+            return Ok(Applied::NoSuchInstall);
+        };
+        record.suspended = suspended.clone();
+        if let Err(why) = record.validate() {
+            return Ok(Applied::Invalid(why));
+        }
+        self.write_record(&record)?;
+        Ok(Applied::Done(None))
+    }
+
     /// Standalone [`PluginOp::SetConfig`].
     pub fn set_config(
         &self,
@@ -943,6 +980,18 @@ impl PluginStore {
                         record.webhook = token_hash.map(|h| WebhookAuth {
                             token_hash: h.to_string(),
                         });
+                        if let Err(why) = record.validate() {
+                            return done(Applied::Invalid(why));
+                        }
+                        let bytes = serde_json::to_vec(&record).map_err(|e| abort(e.into()))?;
+                        inst.insert(id.as_bytes(), bytes)?;
+                        done(Applied::Done(None))
+                    }
+                    PluginOp::SetSuspended { id, suspended } => {
+                        let Some(mut record) = read(id)? else {
+                            return done(Applied::NoSuchInstall);
+                        };
+                        record.suspended = suspended.clone();
                         if let Err(why) = record.validate() {
                             return done(Applied::Invalid(why));
                         }
@@ -1396,6 +1445,7 @@ mod tests {
             created_at: at,
             created_by: Some("leandro".into()),
             webhook: None,
+            suspended: std::collections::BTreeSet::default(),
         }
     }
 
@@ -1860,6 +1910,40 @@ mod tests {
         );
         s.apply_at(7, on_b(None)).unwrap();
         assert!(s.get(ID_B).unwrap().unwrap().webhook.is_none());
+    }
+
+    #[test]
+    fn suspending_a_capability_is_stored_validated_and_needs_no_new_approval() {
+        let (s, _d) = store();
+        let r = valid(ID_A, 'a', 1);
+        s.apply_at(1, PluginOp::Install(&r)).unwrap();
+        let log: BTreeSet<String> = ["log".to_string()].into();
+        let op = |names| PluginOp::SetSuspended {
+            id: ID_A,
+            suspended: names,
+        };
+        assert_eq!(s.apply_at(2, op(&log)).unwrap(), Applied::Done(None));
+        let got = s.get(ID_A).unwrap().unwrap();
+        assert_eq!(got.suspended, log);
+        assert_eq!(got.approved, r.approved, "the approval is never edited");
+        // An unknown name, or a trigger, is refused and nothing changes.
+        let bad: BTreeSet<String> = ["on_timer".to_string()].into();
+        assert!(matches!(
+            s.apply_at(3, op(&bad)).unwrap(),
+            Applied::Invalid(_)
+        ));
+        assert_eq!(s.get(ID_A).unwrap().unwrap().suspended, log);
+        // Standalone path agrees, and an empty set resumes.
+        assert!(matches!(
+            s.set_suspended(ID_A, &bad).unwrap(),
+            Applied::Invalid(_)
+        ));
+        assert_eq!(
+            s.set_suspended(ID_A, &BTreeSet::new()).unwrap(),
+            Applied::Done(None)
+        );
+        assert!(s.get(ID_A).unwrap().unwrap().suspended.is_empty());
+        assert_eq!(s.set_suspended(ID_B, &log).unwrap(), Applied::NoSuchInstall);
     }
 
     #[test]

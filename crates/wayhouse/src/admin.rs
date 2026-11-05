@@ -17,6 +17,9 @@ use metrics_exporter_prometheus::PrometheusHandle;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use wayhouse_config::features::{
+    ADMIN_WRITE_BACKENDS, ADMIN_WRITE_ROUTE_HINT, ADMIN_WRITE_SNIFFER_UPLOAD,
+};
 use wayhouse_core::pool::AdminState as BackendState;
 use wayhouse_core::sniff::Sniffers;
 use wayhouse_core::RuntimeHandle;
@@ -56,10 +59,21 @@ fn router(state: AdminState) -> Router {
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
         .route("/pools", get(pools))
-        .route("/pools/{pool}/backends", post(add_backend))
+        .route(
+            "/pools/{pool}/backends",
+            post(add_backend).layer(middleware::from_fn_with_state(
+                ADMIN_WRITE_BACKENDS,
+                write_gate,
+            )),
+        )
         .route(
             "/pools/{pool}/backends/{addr}",
-            patch(patch_backend).delete(delete_backend),
+            patch(patch_backend)
+                .delete(delete_backend)
+                .layer(middleware::from_fn_with_state(
+                    ADMIN_WRITE_BACKENDS,
+                    write_gate,
+                )),
         )
         .route("/config", get(config))
         .route("/web", get(web))
@@ -67,17 +81,40 @@ fn router(state: AdminState) -> Router {
         .route("/sessions", get(sessions))
         .route("/admin/drain", post(drain))
         .route("/admin/undrain", post(undrain))
-        .route("/route-hint", post(route_hint))
+        .route(
+            "/route-hint",
+            post(route_hint).layer(middleware::from_fn_with_state(
+                ADMIN_WRITE_ROUTE_HINT,
+                write_gate,
+            )),
+        )
         .route(
             "/admin/sniffers",
-            get(list_sniffers)
-                .post(upload_sniffer)
-                .layer(DefaultBodyLimit::max(
-                    crate::sniffer_loader::MAX_MODULE_BYTES,
-                )),
+            get(list_sniffers).merge(
+                post(upload_sniffer)
+                    .layer(DefaultBodyLimit::max(
+                        crate::sniffer_loader::MAX_MODULE_BYTES,
+                    ))
+                    .layer(middleware::from_fn_with_state(
+                        ADMIN_WRITE_SNIFFER_UPLOAD,
+                        write_gate,
+                    )),
+            ),
         )
-        .route("/admin/sniffers/{name}", delete(delete_sniffer))
-        .route("/admin/sniffers/{name}/rollback", post(rollback_sniffer));
+        .route(
+            "/admin/sniffers/{name}",
+            delete(delete_sniffer).layer(middleware::from_fn_with_state(
+                ADMIN_WRITE_SNIFFER_UPLOAD,
+                write_gate,
+            )),
+        )
+        .route(
+            "/admin/sniffers/{name}/rollback",
+            post(rollback_sniffer).layer(middleware::from_fn_with_state(
+                ADMIN_WRITE_SNIFFER_UPLOAD,
+                write_gate,
+            )),
+        );
 
     // The aggregator's fan-out (and the controller's tooling) call these with the
     // protocol header; operators also call them by hand, so a missing header is
@@ -95,6 +132,25 @@ fn router(state: AdminState) -> Router {
         .route("/healthz", get(healthz))
         .merge(gated)
         .with_state(state)
+}
+
+/// A write route behind one of the `admin_write.*` kill switches: while the flag is off the
+/// answer is `403`, before the handler or the body is read. Only the routes that change a pool,
+/// a sniffer module or a route hint carry it; reads, drain and the flag endpoints never do, so
+/// switching these off cannot lock an operator out of the way back in.
+async fn write_gate(
+    State(flag): State<usize>,
+    req: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
+    if wayhouse_core::flags::on(flag) {
+        return next.run(req).await;
+    }
+    (
+        StatusCode::FORBIDDEN,
+        "this write is switched off by a feature flag (admin_write.*); GET /features shows which\n",
+    )
+        .into_response()
 }
 
 /// The admin API's TLS handshake limits: the defaults, with each
@@ -1890,6 +1946,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
+        runtime
+            .shutdown_with_grace(std::time::Duration::from_millis(100))
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::items_after_statements)] // the alias sits next to its only users
+    async fn admin_write_flags_refuse_their_writes_and_never_lock_out_reads_drain_or_the_flags() {
+        use reqwest::Method as M;
+        let yaml = "schema_version: 4\npools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\n\
+                    listeners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    routes:\n\
+                    \x20     - match: { type: always }\n        action: { pool: p }\n";
+        let (base, runtime) = spawn_admin_with_token(yaml, Some("tok")).await;
+        let http = reqwest::Client::new();
+        let call = |m: reqwest::Method, path: &str, body: Option<serde_json::Value>| {
+            let mut req = http.request(m, format!("{base}{path}")).bearer_auth("tok");
+            if let Some(b) = body {
+                req = req.json(&b);
+            }
+            async move { req.send().await.unwrap().status().as_u16() }
+        };
+        let writes = [
+            (
+                M::POST,
+                "/pools/p/backends",
+                Some(serde_json::json!({"addr": "127.0.0.1:2"})),
+            ),
+            (
+                M::PATCH,
+                "/pools/p/backends/127.0.0.1:1",
+                Some(serde_json::json!({})),
+            ),
+            (M::DELETE, "/pools/p/backends/127.0.0.1:1", None),
+            (M::POST, "/route-hint", Some(serde_json::json!({}))),
+            (M::POST, "/admin/sniffers", None),
+            (M::DELETE, "/admin/sniffers/x", None),
+            (M::POST, "/admin/sniffers/x/rollback", None),
+        ];
+        // On, none of them is the kill switch's 403.
+        for (m, path, body) in &writes {
+            assert_ne!(
+                call(m.clone(), path, body.clone()).await,
+                403,
+                "{m} {path} on"
+            );
+        }
+        let _off = wayhouse_config::features::off_here(&[
+            "admin_write.backends",
+            "admin_write.sniffer_upload",
+            "admin_write.route_hint",
+        ]);
+        for (m, path, body) in &writes {
+            assert_eq!(
+                call(m.clone(), path, body.clone()).await,
+                403,
+                "{m} {path} off"
+            );
+        }
+        for (m, path) in [
+            (M::GET, "/pools"),
+            (M::GET, "/config"),
+            (M::GET, "/sessions"),
+            (M::GET, "/features"),
+            (M::GET, "/admin/sniffers"),
+            (M::POST, "/admin/drain"),
+            (M::POST, "/admin/undrain"),
+        ] {
+            assert_ne!(
+                call(m.clone(), path, None).await,
+                403,
+                "{m} {path} stays open"
+            );
+        }
         runtime
             .shutdown_with_grace(std::time::Duration::from_millis(100))
             .await;

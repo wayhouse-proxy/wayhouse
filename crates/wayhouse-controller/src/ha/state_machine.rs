@@ -786,6 +786,13 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                                 token_hash: token_hash.as_deref(),
                             },
                         )?,
+                        WriteRequest::PluginSetSuspended { id, suspended } => self.apply_plugin(
+                            index,
+                            PluginOp::SetSuspended {
+                                id: &id,
+                                suspended: &suspended,
+                            },
+                        )?,
                         WriteRequest::PluginState {
                             id,
                             expected_rev,
@@ -2099,6 +2106,7 @@ mod tests {
             created_at: 1,
             created_by: None,
             webhook: None,
+            suspended: std::collections::BTreeSet::default(),
         }
     }
 

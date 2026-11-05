@@ -5,7 +5,18 @@
 
 use std::collections::BTreeMap;
 
-use wayhouse_config::features::{view, FeatureView, Scope, Source};
+use wayhouse_config::features::{view, FeatureView, Mask, Scope, Source};
+
+/// What the controller's own code reads (`on`), set by [`publish`] from the overrides in force.
+static ON: Mask = Mask::new();
+
+/// Whether the controller flag at registry position `flag` (see
+/// `wayhouse_config::features::PLUGIN_WEBHOOKS` and friends) is on.
+#[inline]
+#[must_use]
+pub fn on(flag: usize) -> bool {
+    ON.on(flag)
+}
 
 /// Whether this binary contains the code behind `flag`.
 fn available(flag: &str) -> bool {
@@ -25,7 +36,9 @@ pub fn fleet_view(overrides: &BTreeMap<String, bool>) -> Vec<FeatureView> {
 
 /// Sets `wayhouse_feature_enabled` and `wayhouse_feature_source`.
 pub fn publish(overrides: &BTreeMap<String, bool>) {
-    for row in effective(overrides) {
+    let rows = effective(overrides);
+    ON.set_all(|name| rows.iter().find(|r| r.name == name).is_none_or(|r| r.value));
+    for row in rows {
         metrics::gauge!("wayhouse_feature_enabled", "flag" => row.name)
             .set(f64::from(u8::from(row.value)));
         for source in Source::ALL {

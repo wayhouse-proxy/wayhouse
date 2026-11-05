@@ -204,6 +204,12 @@ impl Runner {
                 return Pass::Held;
             }
         }
+        // The `acme_issuance` kill switch: no new orders or renewals; certificates already
+        // served keep working until they expire.
+        if !crate::features::on(wayhouse_config::features::ACME_ISSUANCE) {
+            tracing::warn!("acme: issuance is switched off (feature acme_issuance)");
+            return Pass::Held;
+        }
         self.prune_challenges(now).await;
         let (mut issued, mut failed) = (vec![], vec![]);
         for site in sites.iter().filter(|s| s.enabled) {
@@ -931,6 +937,21 @@ mod tests {
         assert_eq!(f.runner.run_once().await, ran(&[], &["web"]));
         let err = f.store.attempt("web").unwrap().unwrap().last_error.unwrap();
         assert!(err.contains("not available"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_acme_issuance_switch_holds_every_order_until_it_is_back_on() {
+        let f = fixture().await;
+        put(&f, site("web", "a.example.com"));
+        {
+            let _off = wayhouse_config::features::off_here(&["acme_issuance"]);
+            assert_eq!(f.runner.run_once().await, Pass::Held);
+            assert!(
+                f.store.cert("web").unwrap().is_none(),
+                "nothing was ordered"
+            );
+        }
+        assert_eq!(f.runner.run_once().await, ran(&["web"], &[]));
     }
 
     #[tokio::test]

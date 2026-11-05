@@ -20,7 +20,7 @@ pub use bindings::{parse_declared, resolve_caps, BindError, DeclaredCaps};
 pub use bounds::Bounds;
 pub use caps::{
     Capabilities, HttpCap, HttpHost, SecretSlot, StateCap, Triggers, MAX_STATE_BYTES,
-    MAX_TICK_INTERVAL_SECS,
+    MAX_TICK_INTERVAL_SECS, SUSPENDABLE,
 };
 pub use http::{HttpEngine, Transport};
 pub use manifest::{BindingDecl, BindingKind, Manifest, OptionsSchema};
