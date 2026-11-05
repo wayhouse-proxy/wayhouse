@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
   getAcmeAccount: vi.fn(),
   putAcmeSite: vi.fn(),
   deleteAcmeSite: vi.fn(),
+  revokeAcmeGateway: vi.fn(),
   createAcmeGateway: vi.fn(),
   listPlugins: vi.fn(),
 }));
@@ -179,6 +180,7 @@ describe("CertificatesPage", () => {
     beforeEach(() => {
       api.putAcmeSite.mockReset().mockResolvedValue(undefined);
       api.deleteAcmeSite.mockReset().mockResolvedValue(undefined);
+      api.revokeAcmeGateway.mockReset().mockResolvedValue(undefined);
       api.createAcmeGateway.mockReset().mockResolvedValue({ name: "edge-2", token: "tok-secret-123" });
     });
 
@@ -272,6 +274,17 @@ describe("CertificatesPage", () => {
       const dlg = await screen.findByRole("dialog");
       await userEvent.click(within(dlg).getByRole("button", { name: "Remove" }));
       expect(api.deleteAcmeSite).toHaveBeenCalledWith("off");
+    });
+
+    it("revokes a gateway after asking, and says what that does", async () => {
+      render(<CertificatesPage />);
+      await screen.findByText("https://ca.test/acct/1");
+      await userEvent.click(screen.getByRole("button", { name: "Revoke gateway edge-1" }));
+      expect(api.revokeAcmeGateway).not.toHaveBeenCalled();
+      const dlg = await screen.findByRole("dialog");
+      expect(dlg).toHaveTextContent(/token stops working/i);
+      await userEvent.click(within(dlg).getByRole("button", { name: "Revoke" }));
+      expect(api.revokeAcmeGateway).toHaveBeenCalledWith("edge-1");
     });
 
     it("registers a gateway and shows its token once", async () => {

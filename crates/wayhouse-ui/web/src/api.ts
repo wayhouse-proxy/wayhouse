@@ -454,6 +454,11 @@ export function createAcmeGateway(name: string): Promise<{ name: string; token: 
   return requestJson("/api/acme/gateways", jsonInit("POST", { name }));
 }
 
+/** Revokes a gateway: its token answers 401 at once (docs/acme.md). */
+export function revokeAcmeGateway(name: string): Promise<void> {
+  return requestJson(`/api/acme/gateways/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
 export function listAcmeGateways(): Promise<{ gateways: AcmeGateway[] }> {
   return requestJson("/api/acme/gateways");
 }

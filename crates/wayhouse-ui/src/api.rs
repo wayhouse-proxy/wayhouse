@@ -844,6 +844,7 @@ mod tests {
             ("PUT", "/api/acme/sites/panel"),
             ("DELETE", "/api/acme/sites/panel"),
             ("POST", "/api/acme/gateways"),
+            ("DELETE", "/api/acme/gateways/edge-1"),
         ] {
             let resp = app
                 .clone()
