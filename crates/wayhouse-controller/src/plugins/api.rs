@@ -1110,6 +1110,8 @@ async fn put_secret(
                 ),
             )
         }
+        // Only `seal_cluster` checks a name; a slot was validated before it got here.
+        Err(e @ SealError::Name) => return err(StatusCode::BAD_REQUEST, e.to_string()),
     };
     drop(value);
     if let Some(ha) = &st.ha {
