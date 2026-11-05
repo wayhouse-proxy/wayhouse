@@ -1257,6 +1257,9 @@ mod tests {
         )
     }
 
+    /// A valid install id for tests that go through `set_suspended` (which validates).
+    const AID: &str = "000000000000000a";
+
     const HID: &str = "00000000000000aa";
 
     /// A webhook-enabled install (a valid id and sha, which `set_webhook` checks).
@@ -1513,16 +1516,26 @@ mod tests {
                 doc.len()
             ),
         );
-        install(&store, "a", &m);
+        install(&store, AID, &m);
         let t0 = Instant::now();
         r.run_due(t0).await;
         r.run_due(secs(t0, 30)).await;
-        let routes = store.routes("a").unwrap();
+        let routes = store.routes(AID).unwrap();
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].host, "a.mc.example.com");
         assert_eq!(store.overlay().unwrap().routes.len(), 1);
+        // Suspending `routes` withdraws what the plugin already committed (not only its
+        // next `routes_set`), keeps the stored table, and resuming brings it back.
+        let off: std::collections::BTreeSet<String> = ["routes".to_string()].into();
+        store.set_suspended(AID, &off).unwrap();
+        assert!(store.overlay().unwrap().routes.is_empty());
+        assert_eq!(store.routes(AID).unwrap().len(), 1);
+        store
+            .set_suspended(AID, &std::collections::BTreeSet::default())
+            .unwrap();
+        assert_eq!(store.overlay().unwrap().routes.len(), 1);
         // Disabling the install withdraws its routes from the overlay.
-        store.set_enabled("a", false).unwrap();
+        store.set_enabled(AID, false).unwrap();
         assert!(store.overlay().unwrap().routes.is_empty());
     }
     const PORT_TIMER: &str = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"state":{"max_bytes":256},"port_routes":{"ports":["30000-30009"],"proto":["udp","tcp"],"backends":["10.0.0.0/16"],"max_entries":4}}"#;
@@ -1550,16 +1563,16 @@ mod tests {
     async fn a_plugin_that_declares_port_routes_gets_stable_entry_ports() {
         let (r, store, _d) = fixture(1, 4);
         let doc = r#"[{"key":"srv-a","backend":"10.0.1.2:7777","proto":"udp","prefer":30005},{"key":"srv-b","backend":"10.0.1.3:25565","proto":"both"}]"#;
-        install(&store, "a", &port_guest(doc));
+        install(&store, AID, &port_guest(doc));
         let t0 = Instant::now();
         r.run_due(t0).await;
         r.run_due(secs(t0, 30)).await;
-        let table = store.port_routes("a").unwrap();
+        let table = store.port_routes(AID).unwrap();
         let got: Vec<_> = table.iter().map(|a| (a.key.as_str(), a.port)).collect();
         assert_eq!(got, vec![("srv-a", Some(30005)), ("srv-b", Some(30000))]);
         // The plugin reads its assignments back on the next call.
         r.run_due(secs(t0, 60)).await;
-        let (_, state) = store.state("a").unwrap();
+        let (_, state) = store.state(AID).unwrap();
         assert_eq!(
             String::from_utf8(state["n"].clone()).unwrap(),
             r#"{"srv-a":30005,"srv-b":30000}"#
@@ -1574,17 +1587,27 @@ mod tests {
         assert_eq!(
             ports,
             vec![
-                (30000, "10.0.1.3:25565", "plugin:a"),
-                (30005, "10.0.1.2:7777", "plugin:a")
+                (30000, "10.0.1.3:25565", "plugin:000000000000000a"),
+                (30005, "10.0.1.2:7777", "plugin:000000000000000a")
             ]
         );
         assert!(overlay.exhausted.is_empty());
+        // Suspending `port_routes` withdraws the listeners and keeps the ports reserved;
+        // resuming brings the same ports back.
+        let off: std::collections::BTreeSet<String> = ["port_routes".to_string()].into();
+        store.set_suspended(AID, &off).unwrap();
+        assert!(store.overlay().unwrap().port_routes.is_empty());
+        assert_eq!(store.port_ledger().unwrap().owners.len(), 2);
+        store
+            .set_suspended(AID, &std::collections::BTreeSet::default())
+            .unwrap();
+        assert_eq!(store.overlay().unwrap().port_routes.len(), 2);
         // Disabling the install withdraws the routes but keeps the ports reserved.
-        store.set_enabled("a", false).unwrap();
+        store.set_enabled(AID, false).unwrap();
         assert!(store.overlay().unwrap().port_routes.is_empty());
         assert_eq!(store.port_ledger().unwrap().owners.len(), 2);
         // Deleting releases them into quarantine.
-        store.delete("a").unwrap();
+        store.delete(AID).unwrap();
         let ledger = store.port_ledger().unwrap();
         assert!(ledger.owners.is_empty());
         assert_eq!(ledger.quarantine.len(), 2);
@@ -1595,7 +1618,7 @@ mod tests {
         let rec = |approved: &str, config: serde_json::Value| InstallRecord {
             id: "00000000000000aa".into(),
             name: "demo".into(),
-            sha256: "a".repeat(64),
+            sha256: AID.repeat(64),
             size: 3,
             approved: wayhouse_plugin_host::Capabilities::parse(approved.as_bytes()).unwrap(),
             config,
@@ -1611,7 +1634,7 @@ mod tests {
             base != LoadKey::of(&rec(r#"{}"#, serde_json::json!({}))),
             "caps revoked"
         );
-        assert!(base != LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({"a": 1}))));
+        assert!(base != LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({AID: 1}))));
     }
 
     /// Logs "hello" at each tick; its `log` capability is fixed, its routes are bound.

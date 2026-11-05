@@ -162,12 +162,19 @@ impl PluginStore {
         let mut installs = Vec::new();
         let mut ports = Vec::new();
         for rec in self.list()? {
-            let routes = if rec.enabled {
+            // A suspended capability withdraws what the plugin already committed; the stored
+            // table stays, so resuming brings the same routes and ports back.
+            let routes = if rec.enabled && !rec.suspended.contains("routes") {
                 self.routes(&rec.id)?
             } else {
                 Vec::new()
             };
-            ports.push((rec.clone(), self.port_routes(&rec.id)?));
+            let table = if rec.suspended.contains("port_routes") {
+                Vec::new()
+            } else {
+                self.port_routes(&rec.id)?
+            };
+            ports.push((rec.clone(), table));
             installs.push((rec, routes));
         }
         let mut overlay = materialise(installs);
