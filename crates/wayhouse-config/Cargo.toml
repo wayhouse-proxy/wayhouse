@@ -20,6 +20,8 @@ serde_json = { workspace = true, optional = true }
 [features]
 # The config JSON Schema (`json_schema()`), served by the controller. Off for the proxy build.
 json-schema = ["dep:schemars", "dep:serde_json"]
+# `features::off_here`, a per-thread flag switch for other crates' unit tests.
+test-util = []
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -40,6 +40,7 @@ semver.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+wayhouse-config = { path = "../wayhouse-config", features = ["test-util"] }
 tower = "0.5"
 tokio-tungstenite = "0.29"
 futures-util = { version = "0.3", default-features = false }
