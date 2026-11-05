@@ -9,6 +9,8 @@
 //! - the rate limit is applied before any state change (no session, no forward
 //!   to the backend) for the datagrams it rejects.
 
+mod common;
+use common::free_udp_addr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,13 +19,6 @@ use tokio::net::UdpSocket;
 
 use wayhouse_config::parse_str;
 use wayhouse_core::{Runtime, Snapshot};
-
-fn free_udp_addr() -> std::net::SocketAddr {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-}
 
 /// A UDP echo backend that counts the datagrams it receives.
 async fn counting_echo_backend() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
