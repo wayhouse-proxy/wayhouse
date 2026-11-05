@@ -87,7 +87,7 @@ impl Filter {
                 return Err(format!("q is longer than {MAX_QUERY} bytes"))
             }
             "q" if !value.is_empty() => self.q = Some(value.to_lowercase()),
-            "state" => {
+            "state" if !value.is_empty() => {
                 let s = NodeState::parse(value).ok_or("state must be ok, degraded or stale")?;
                 self.state = Some(NodeStateFilter(s));
             }
@@ -105,7 +105,7 @@ impl Filter {
                 }
                 self.tags.push((k.to_string(), v));
             }
-            "q" | "region" | "tag" => {}
+            "q" | "state" | "region" | "tag" => {}
             _ => return Ok(false),
         }
         Ok(true)
@@ -356,6 +356,22 @@ pub fn select(all: Vec<Node>, filter: &Filter) -> Vec<Node> {
     all.into_iter().filter(|n| filter.matches(n)).collect()
 }
 
+/// Orders version strings by their dotted numbers (`0.9.0` before `0.10.0`), a pre-release
+/// before its release; text that is not a dotted number sorts as text, after the numbers.
+fn cmp_version(a: &str, b: &str) -> std::cmp::Ordering {
+    let key = |v: &str| {
+        let (core, pre) = v.split_once('-').unwrap_or((v, ""));
+        let nums: Option<Vec<u64>> = core.split('.').map(|p| p.parse().ok()).collect();
+        nums.map(|n| (n, pre.is_empty(), pre.to_string()))
+    };
+    match (key(a), key(b)) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.cmp(b),
+    }
+}
+
 /// The page `q` asks for out of `all`.
 pub fn page(all: Vec<Node>, q: &Query) -> Page {
     let mut selected = select(all, &q.filter);
@@ -387,7 +403,7 @@ pub fn page(all: Vec<Node>, q: &Query) -> Page {
             SortKey::Sessions => {
                 (a.sessions.tcp + a.sessions.udp).cmp(&(b.sessions.tcp + b.sessions.udp))
             }
-            SortKey::Version => a.version.cmp(&b.version),
+            SortKey::Version => cmp_version(&a.version, &b.version),
         };
         let by_key = if q.desc { by_key.reverse() } else { by_key };
         by_region
@@ -397,7 +413,7 @@ pub fn page(all: Vec<Node>, q: &Query) -> Page {
     let total = selected.len();
     let items = selected
         .into_iter()
-        .skip((q.page - 1) * q.size)
+        .skip((q.page - 1).saturating_mul(q.size))
         .take(q.size)
         .collect();
     let groups = q.group_by_region.then(|| {
@@ -463,6 +479,8 @@ mod tests {
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect(),
                 listeners: vec![],
+                config_revision: None,
+                features: vec![],
             },
             received_at_ms: NOW - age_ms,
             mismatch_rose_at_ms: None,
@@ -639,6 +657,28 @@ mod tests {
                 String::from_utf8_lossy(bad)
             );
         }
+    }
+
+    #[test]
+    fn a_huge_page_number_is_an_empty_page_not_an_overflow() {
+        let p = page(fleet(), &q("page=18446744073709551615&size=200"));
+        assert_eq!((p.items.len(), p.total), (0, 7));
+    }
+
+    #[test]
+    fn versions_sort_by_number_not_by_text() {
+        let mut all = fleet();
+        all[0].version = "0.10.0".into();
+        all[1].version = "0.9.0".into();
+        let p = page(all, &q("sort=version&size=200"));
+        let at = |n: &str| names(&p).iter().position(|x| *x == n).unwrap();
+        assert!(at("b") < at("a"), "0.9.0 before 0.10.0: {:?}", names(&p));
+    }
+
+    #[test]
+    fn an_empty_state_is_ignored_like_an_empty_region() {
+        assert_eq!(page(fleet(), &q("state=")).total, 7);
+        assert!(Filter::parse("state=&region=&q=").is_ok());
     }
 
     #[test]

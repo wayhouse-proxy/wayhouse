@@ -355,13 +355,17 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
         }
         Kind::NodeTags => {
             only_keys(obj, "", &["name", "tags"])?;
-            let tags = object(obj.get("tags").unwrap_or(&Value::Null), "tags")?
-                .iter()
-                .map(|(k, v)| match v.as_str() {
-                    Some(v) => Ok((k.clone(), v.to_string())),
-                    None => Err(format!("tags.{k} must be a string")),
-                })
-                .collect::<Result<_, _>>()?;
+            let tags: std::collections::BTreeMap<String, String> =
+                object(obj.get("tags").unwrap_or(&Value::Null), "tags")?
+                    .iter()
+                    .map(|(k, v)| match v.as_str() {
+                        Some(v) => Ok((k.clone(), v.to_string())),
+                        None => Err(format!("tags.{k} must be a string")),
+                    })
+                    .collect::<Result<_, _>>()?;
+            if tags.is_empty() {
+                return Err("tags is empty: DELETE the record to clear a node's tags".into());
+            }
             wayhouse_http::labels::check_labels(None, &tags)
         }
         Kind::Defaults => {
@@ -698,6 +702,7 @@ mod tests {
             (json!({"tags": ["env"]}), "tags must be an object"),
             (json!({"tags": {"env": 1}}), "string"),
             (json!({"tags": {}, "region": "eu"}), "known key"),
+            (json!({"tags": {}}), "DELETE"),
         ] {
             let why = invalid(s.apply_local(&put(Kind::NodeTags, "fra-1", bad)).unwrap());
             assert!(why.contains(needle), "{needle}: {why}");

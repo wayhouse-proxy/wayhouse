@@ -116,7 +116,7 @@ async fn apply(
                 sniffers,
                 &format!("file {}", path.display()),
             )
-            .await
+            .await;
         }
         Err(e) => {
             metrics::counter!(m::CONFIG_RELOAD, "result" => "failed").increment(1);
@@ -139,7 +139,7 @@ pub(crate) async fn apply_config(
     sniffer_loader: Option<&SnifferLoader>,
     sniffers: &Sniffers,
     source_desc: &str,
-) {
+) -> bool {
     for w in cfg.warnings() {
         tracing::warn!(source = source_desc, "{w}");
     }
@@ -155,7 +155,7 @@ pub(crate) async fn apply_config(
                 error = %e,
                 "sniffer rescan failed; reload rejected, keeping the current configuration and sniffer set"
             );
-            return;
+            return false;
         }
     };
     let prev = handle.current();
@@ -210,6 +210,7 @@ pub(crate) async fn apply_config(
         rebuild_resolvers(&cfg, resolvers);
     }
     tracing::info!(source = %source_desc, "configuration reloaded");
+    true
 }
 
 /// Rebuild the external-resolver clients from the new `resolvers:` and swap the

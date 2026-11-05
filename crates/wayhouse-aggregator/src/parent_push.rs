@@ -119,6 +119,8 @@ mod tests {
             region: None,
             tags: std::collections::BTreeMap::default(),
             listeners: vec![],
+            config_revision: None,
+            features: vec![],
         }
     }
 
