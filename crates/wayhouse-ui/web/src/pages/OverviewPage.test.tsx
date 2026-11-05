@@ -9,6 +9,7 @@ vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()),
 import { OverviewPage } from "./OverviewPage";
 import { ListenersPage } from "./ListenersPage";
 import { PoolsPage } from "./PoolsPage";
+import { toRows } from "./StatsParts";
 import { onset, freshness, fmtBytes, fmtRate } from "../lib/stats";
 
 const T0 = Date.UTC(2026, 9, 29, 12, 0);
@@ -21,7 +22,11 @@ const stats = {
     { name: "mc", resolution_sec: 60, last_sample_ms: T0, points: [0, 1].map((i) => ({ t_ms: T0 + i * 60_000, partial: false, accepted_per_sec: 4, blocked_per_sec: 1, bytes_c2s_per_sec: 100, bytes_s2c_per_sec: 200, packets_per_sec: 1 })) },
     { name: "dns", resolution_sec: 60, last_sample_ms: T0, points: [{ t_ms: T0, partial: false, accepted_per_sec: 9, blocked_per_sec: 0, bytes_c2s_per_sec: 1, bytes_s2c_per_sec: 2, packets_per_sec: 1 }] },
   ],
-  pools: [{ name: "eu", resolution_sec: 60, last_sample_ms: T0, points: [{ t_ms: T0, partial: false, healthy_backends: 1, backends: 3 }] }],
+  pools: [
+    { name: "eu", resolution_sec: 60, last_sample_ms: T0 + 3 * 60_000, points: [{ t_ms: T0 + 3 * 60_000, partial: false, healthy_backends: 1, backends: 3 }] },
+    // An instance that stopped reporting 40 minutes ago: its last point is history, not the present.
+    { name: "old", resolution_sec: 60, last_sample_ms: T0 - 40 * 60_000, points: [{ t_ms: T0 - 40 * 60_000, partial: false, healthy_backends: 2, backends: 2 }] },
+  ],
   regions: [],
 };
 
@@ -91,7 +96,24 @@ describe("Listeners and pools", () => {
   });
 });
 
+describe("Pools, stale pools", () => {
+  it("does not show a pool that stopped reporting as up now", async () => {
+    show(<PoolsPage />);
+    const row = (await screen.findByRole("link", { name: "old" })).closest("tr")!;
+    expect(within(row).queryByText("Up")).not.toBeInTheDocument();
+    expect(within(row).getByText("No recent sample")).toBeInTheDocument();
+    expect(within(row).getAllByText("–")).toHaveLength(2);
+  });
+});
+
 describe("stats helpers", () => {
+  it("pads a chart's rows to every minute, with nulls for a minute nobody reported", () => {
+    const pts = [0, 3].map((i) => ({ t_ms: T0 + i * 60_000, partial: i === 3, v: 5 }));
+    const rows = toRows(pts, (p) => ({ a: p.v, b: null }));
+    expect(rows.map((r) => r.t)).toEqual([0, 1, 2, 3].map((i) => T0 + i * 60_000));
+    expect(rows[1]).toEqual({ t: T0 + 60_000, partial: false, a: null, b: null });
+    expect(rows[3]).toMatchObject({ partial: true, a: 5 });
+  });
   it("finds when a rate began and ignores one that was always on", () => {
     const v = (p: { v: number }) => p.v;
     expect(onset([{ v: 0 }, { v: 0 }, { v: 2 }, { v: 3 }], v, () => 7)).toBe(7);
