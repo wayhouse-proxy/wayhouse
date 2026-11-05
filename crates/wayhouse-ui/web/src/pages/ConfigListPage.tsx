@@ -42,6 +42,16 @@ export interface ListPageProps {
   above?: (ctx: { item: Json; index: number; items: Json[]; root: Json; update: (item: Json) => void; canWrite: boolean }) => React.ReactNode;
 }
 
+/** When the open item was renamed and something still uses the old name: what, in words (the controller would refuse that document). */
+function renameWarning(kind: ListPageProps["refKind"], root: Json, saved: Json | undefined, listPath: (string | number)[], index: number): string | null {
+  if (!kind || !saved) return null;
+  const was = get(saved, [...listPath, index])?.name;
+  const now = get(root, [...listPath, index])?.name;
+  if (typeof was !== "string" || was === "" || was === now) return null;
+  const refs = usedBy(root, kind, was);
+  return refs.length ? `Renamed from ${was}: ${refs.join(", ")} still use the old name. Change them too, or the controller will refuse this document.` : null;
+}
+
 /**
  * One top-level named list of the configuration as a page: a table of its items (the open one in the URL by position, since
  * the name is an editable field), Add, Remove with a note of where it is used, and the generated form for the open one.
@@ -148,6 +158,11 @@ export function ConfigListPage(p: ListPageProps) {
                   <Trash2 aria-hidden size={14} strokeWidth={1.5} /> Remove {p.noun}
                 </Button>
               </div>
+              {renameWarning(p.refKind, root, doc.savedValue as Json | undefined, p.listPath, index) && (
+                <p role="status" className="mb-2 text-sm text-ink">
+                  {renameWarning(p.refKind, root, doc.savedValue as Json | undefined, p.listPath, index)}
+                </p>
+              )}
               {p.above?.({ item: current, index, items, root, canWrite, update: (item) => put([...p.listPath, index], item) })}
               <SchemaForm
                 schema={doc.schema}

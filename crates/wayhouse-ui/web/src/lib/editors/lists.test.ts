@@ -12,8 +12,9 @@ describe("pool, source and resolver helpers", () => {
   });
 
   it("a source type shows the fields it takes and no others", () => {
-    expect(sourceFields("static")).toEqual(["name", "refresh_interval_sec", "targets"]);
+    expect(sourceFields("static")).toEqual(["name", "targets"]); // a fixed list is never refreshed, so the form does not offer the interval
     expect(sourceFields("dns_srv")).toContain("record");
+    expect(sourceFields("dns_srv")).toContain("refresh_interval_sec");
     expect(sourceFields("dns_srv")).not.toContain("targets");
     expect(sourceFields("consul")).toEqual(expect.arrayContaining(["service", "tag", "consul_addr", "consul_token_file"]));
     expect(sourceFields("kubernetes")).toEqual(expect.arrayContaining(["service", "namespace", "port_name", "api"]));
