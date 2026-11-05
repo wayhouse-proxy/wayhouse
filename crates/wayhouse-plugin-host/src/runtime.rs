@@ -294,6 +294,7 @@ impl PluginHost {
             limits: self.limits.clone(),
             http: None,
             port_assignments: Mutex::default(),
+            suspended: Mutex::default(),
             _alive: self.alive.clone(),
         };
         let mut store = plugin.store(Arc::default());
@@ -315,6 +316,9 @@ pub struct Plugin {
     http: Option<Arc<HttpEngine>>,
     /// What `port_routes_get` reports; the controller sets it before each call.
     port_assignments: Mutex<Arc<BTreeMap<String, u16>>>,
+    /// Capabilities the operator switched off ([`Capabilities::suspend`]); the controller
+    /// sets it before each call. Not part of what was approved, so resuming needs no approval.
+    suspended: Mutex<Vec<String>>,
     _alive: Arc<()>,
 }
 
@@ -325,6 +329,14 @@ impl Plugin {
             .port_assignments
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = assigned;
+    }
+
+    /// Sets the capabilities (names from [`crate::SUSPENDABLE`]) the next calls run without.
+    pub fn set_suspended(&self, names: impl IntoIterator<Item = String>) {
+        *self
+            .suspended
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = names.into_iter().collect();
     }
 
     fn port_assignments(&self) -> Arc<BTreeMap<String, u16>> {
@@ -434,6 +446,14 @@ impl Plugin {
     fn store(&self, snapshot: Arc<StateSnapshot>) -> Store<CallState> {
         let state_entries = snapshot.len();
         let state_bytes = snapshot.iter().map(|(k, v)| k.len() + v.len()).sum();
+        let mut caps = self.info.caps.clone();
+        caps.suspend(
+            self.suspended
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .map(String::as_str),
+        );
         let state = CallState {
             limits: StoreLimitsBuilder::new()
                 .memory_size(self.limits.max_memory_bytes)
@@ -443,7 +463,7 @@ impl Plugin {
                 .tables(4)
                 .trap_on_grow_failure(true)
                 .build(),
-            caps: self.info.caps.clone(),
+            caps,
             run: self.limits.clone(),
             snapshot,
             puts: BTreeMap::new(),

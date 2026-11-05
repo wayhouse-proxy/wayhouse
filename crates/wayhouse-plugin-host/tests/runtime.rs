@@ -474,7 +474,11 @@ fn a_suspended_capability_is_denied_until_it_is_resumed() {
     // Resuming needs no new approval: the loaded capabilities were never touched.
     plugin.set_suspended(Vec::new());
     assert_eq!(
-        plugin.on_timer(&StateSnapshot::new()).unwrap().state_puts.len(),
+        plugin
+            .on_timer(&StateSnapshot::new())
+            .unwrap()
+            .state_puts
+            .len(),
         1
     );
     // Suspending state alone leaves log working and denies the state write.
