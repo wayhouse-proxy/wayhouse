@@ -130,7 +130,7 @@ pub fn router(state: UiState) -> Router {
                  OriginalUri(uri): OriginalUri,
                  headers: HeaderMap,
                  Path(name): Path<String>| async move {
-                    delete_one(&st, Kind::FeatureOverride, name, uri.path(), &headers).await
+                    delete_override(&st, name, uri.path(), &headers).await
                 },
             ),
         );
@@ -180,9 +180,12 @@ struct OverrideBody {
     value: bool,
     reason: String,
     expires_at: Option<u64>,
+    /// Seconds from now; the controller stamps `expires_at` itself (the browser clock is not
+    /// trusted). Exclusive with `expires_at`.
+    ttl_secs: Option<u64>,
 }
 
-/// `PUT /features/overrides/{name}`: `{value, reason, expires_at?}`; the actor is the
+/// `PUT /features/overrides/{name}`: `{value, reason, expires_at? | ttl_secs?}`; the actor is the
 /// `X-Actor` header the UI backend sets, the time is the controller's.
 async fn put_override(
     st: &UiState,
@@ -196,30 +199,69 @@ async fn put_override(
         Err(e) => return err(StatusCode::UNPROCESSABLE_ENTITY, e),
     };
     let set_at = now();
-    if b.expires_at.is_some_and(|e| e <= set_at) {
+    let expires_at = match (b.expires_at, b.ttl_secs) {
+        (Some(_), Some(_)) => {
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "send expires_at or ttl_secs, not both",
+            )
+        }
+        (_, Some(0)) => return err(StatusCode::UNPROCESSABLE_ENTITY, "ttl_secs must be positive"),
+        (_, Some(ttl)) => Some(set_at.saturating_add(ttl)),
+        (e, None) => e,
+    };
+    if expires_at.is_some_and(|e| e <= set_at) {
         return err(
             StatusCode::UNPROCESSABLE_ENTITY,
             "expires_at is already past",
         );
     }
-    if let Err(why) = wayhouse_config::features::check_override(&name, b.value, b.expires_at) {
+    if let Err(why) =
+        wayhouse_config::features::check_override(&name, b.value, set_at, expires_at)
+    {
         return err(StatusCode::UNPROCESSABLE_ENTITY, why);
     }
     let mut value = json!({ "value": b.value, "reason": b.reason, "set_at": set_at });
-    if let Some(e) = b.expires_at {
+    if let Some(e) = expires_at {
         value["expires_at"] = e.into();
     }
-    if let Some(a) = headers.get("x-actor").and_then(|v| v.to_str().ok()) {
-        value["actor"] = a.into();
+    let actor = actor(headers);
+    if let Some(a) = &actor {
+        value["actor"] = a.as_str().into();
     }
     let reply = exported(Kind::FeatureOverride, &name, value.clone());
+    let audit = (name.clone(), b.value, b.reason, expires_at);
     let op = UiOp::Put {
         kind: Kind::FeatureOverride,
         name,
         value,
     };
     write(st, op, Method::PUT, path, headers, body, move || {
+        let (flag, on, reason, expires_at) = audit;
+        tracing::warn!(%flag, value = on, %reason, ?expires_at, actor = actor.as_deref().unwrap_or("-"), "feature override set");
         Json(reply).into_response()
+    })
+    .await
+}
+
+fn actor(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-actor")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// `DELETE /features/overrides/{name}`, with the audit line.
+async fn delete_override(st: &UiState, name: String, path: &str, headers: &HeaderMap) -> Response {
+    let who = actor(headers);
+    let flag = name.clone();
+    let op = UiOp::Delete {
+        kind: Kind::FeatureOverride,
+        name,
+    };
+    write(st, op, Method::DELETE, path, headers, Bytes::new(), move || {
+        tracing::warn!(%flag, actor = who.as_deref().unwrap_or("-"), "feature override deleted");
+        StatusCode::NO_CONTENT.into_response()
     })
     .await
 }
@@ -529,6 +571,67 @@ mod tests {
         )
         .await;
         assert_eq!(st, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_ttl_is_turned_into_an_expiry_by_the_controller_and_a_protection_flag_is_capped() {
+        let (app, _s, _d) = app(None);
+        let put = |b: Value| {
+            let app = app.clone();
+            async move { call(&app, "PUT", "/features/overrides/rate_limit", b, None).await }
+        };
+        let before = now();
+        let (st, got) = put(json!({"value": false, "reason": "r", "ttl_secs": 600})).await;
+        assert_eq!(st, StatusCode::OK, "{got}");
+        let exp = got["expires_at"].as_u64().unwrap();
+        assert!((before + 600..=now() + 600).contains(&exp), "{exp}");
+        let both = json!({"value": false, "reason": "r", "ttl_secs": 60, "expires_at": before + 60});
+        assert_eq!(put(both).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+        let zero = json!({"value": false, "reason": "r", "ttl_secs": 0});
+        assert_eq!(put(zero).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+        let long = json!({"value": false, "reason": "r", "ttl_secs": 8 * 24 * 3600});
+        let (st, got) = put(long).await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{got}");
+        let forever = json!({"value": false, "reason": "r", "expires_at": u64::MAX});
+        assert_eq!(put(forever).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[derive(Clone, Default)]
+    struct Log(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Log {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Log {
+        type Writer = Log;
+        fn make_writer(&'a self) -> Log {
+            self.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn setting_and_deleting_an_override_leave_an_audit_line() {
+        let log = Log::default();
+        let _g = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(log.clone())
+                .with_ansi(false)
+                .finish(),
+        );
+        let (app, _s, _d) = app(None);
+        let uri = "/features/overrides/plugin_webhooks";
+        call(&app, "PUT", uri, json!({"value": false, "reason": "storm"}), None).await;
+        call(&app, "DELETE", uri, Value::Null, None).await;
+        let out = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert!(out.contains("feature override set") && out.contains("storm"), "{out}");
+        assert!(out.contains("feature override deleted"), "{out}");
     }
 
     #[tokio::test]

@@ -46,22 +46,52 @@ pub fn overrides() -> BTreeMap<String, bool> {
         .unwrap_or_default()
 }
 
+type Overrides = BTreeMap<String, (bool, Option<u64>)>;
+
 /// Reads a `GET /features/overrides` body; `None` for anything that is not that document.
-fn parse_overrides(body: &[u8]) -> Option<BTreeMap<String, (bool, Option<u64>)>> {
+/// An item without a name or a boolean value is skipped (and logged), not the whole document.
+fn parse_overrides(body: &[u8]) -> Option<Overrides> {
     let doc: serde_json::Value = serde_json::from_slice(body).ok()?;
-    doc["items"]
-        .as_array()?
-        .iter()
-        .map(|i| {
-            Some((
-                i["name"].as_str()?.to_string(),
-                (i["value"].as_bool()?, i["expires_at"].as_u64()),
-            ))
-        })
-        .collect()
+    Some(
+        doc["items"]
+            .as_array()?
+            .iter()
+            .filter_map(|i| {
+                let item = i["name"].as_str().zip(i["value"].as_bool());
+                if item.is_none() {
+                    tracing::warn!(item = %i, "feature override skipped: it needs a name and a value");
+                }
+                let (name, value) = item?;
+                Some((name.to_string(), (value, i["expires_at"].as_u64())))
+            })
+            .collect(),
+    )
 }
 
-fn set_overrides(next: BTreeMap<String, (bool, Option<u64>)>) -> bool {
+/// Writes the overrides in the shape the controller serves them, so a restart without a
+/// reachable controller keeps a kill switch where it was. A failure is logged, never fatal.
+fn save(path: &std::path::Path, overrides: &Overrides) {
+    let items: Vec<_> = overrides
+        .iter()
+        .map(|(name, (value, exp))| serde_json::json!({"name": name, "value": value, "expires_at": exp}))
+        .collect();
+    let tmp = path.with_extension("tmp");
+    let doc = serde_json::json!({ "items": items }).to_string();
+    if let Err(e) = std::fs::write(&tmp, doc).and_then(|()| std::fs::rename(&tmp, path)) {
+        tracing::warn!(path = %path.display(), error = %e, "feature overrides not saved");
+    }
+}
+
+/// Loads the saved overrides at start; an expired one is judged out by [`overrides`].
+fn restore(path: &std::path::Path) -> bool {
+    let Some(saved) = std::fs::read(path).ok().and_then(|b| parse_overrides(&b)) else {
+        return false;
+    };
+    set_overrides(saved);
+    true
+}
+
+fn set_overrides(next: Overrides) -> bool {
     let Ok(mut g) = OVERRIDES.write() else {
         return false;
     };
@@ -72,9 +102,29 @@ fn set_overrides(next: BTreeMap<String, (bool, Option<u64>)>) -> bool {
 
 /// Polls the controller's overrides every 15 s and republishes the gauges when they change.
 /// An unreachable controller keeps the last document; a 404/501 (an older controller) clears it.
-pub async fn run(base_url: String, token: Option<String>, handle: wayhouse_core::RuntimeHandle) {
+pub async fn run(
+    base_url: String,
+    token: Option<String>,
+    handle: wayhouse_core::RuntimeHandle,
+    saved: std::path::PathBuf,
+) {
     let url = format!("{base_url}/features/overrides");
+    if restore(&saved) {
+        tracing::info!(path = %saved.display(), "feature overrides restored");
+        publish(&handle.snapshot().features);
+    }
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+    // Warn when the failure changes (a rotated token shows up once), not every 15 s.
+    let mut failing: Option<String> = None;
+    let mut note = |problem: Option<String>| {
+        if problem != failing {
+            match &problem {
+                Some(p) => tracing::warn!(problem = %p, "feature overrides not read; keeping the last ones"),
+                None => tracing::info!("feature overrides are being read again"),
+            }
+            failing = problem;
+        }
+    };
     loop {
         tick.tick().await;
         let mut req = wayhouse_http::client().get(&url);
@@ -90,15 +140,17 @@ pub async fn run(base_url: String, token: Option<String>, handle: wayhouse_core:
             }
             Ok(r) if matches!(r.status().as_u16(), 404 | 501) => BTreeMap::new(),
             Ok(r) => {
-                tracing::debug!(status = %r.status(), "feature overrides not read");
+                note(Some(format!("controller answered {}", r.status())));
                 continue;
             }
             Err(e) => {
-                tracing::debug!(error = %wayhouse_http::error_chain(&e), "feature overrides not read");
+                note(Some(wayhouse_http::error_chain(&e)));
                 continue;
             }
         };
-        if set_overrides(next) {
+        note(None);
+        if set_overrides(next.clone()) {
+            save(&saved, &next);
             tracing::info!("feature overrides changed");
             publish(&handle.snapshot().features);
         }
@@ -120,8 +172,44 @@ pub fn publish(config: &BTreeMap<String, bool>) {
 mod tests {
     use super::*;
 
+    /// `OVERRIDES` is process-global; tests that touch it take turns.
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn one_bad_item_does_not_drop_the_rest_of_the_document() {
+        let body = br#"{"items":[{"name":"acl","value":false},{"value":true},{"name":"geo"},{"name":"sniffers","value":false,"expires_at":99}]}"#;
+        let got = parse_overrides(body).unwrap();
+        assert_eq!(
+            got.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["acl", "sniffers"]
+        );
+    }
+
+    #[test]
+    fn overrides_survive_a_restart_with_the_controller_down() {
+        let _t = TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("overrides.json");
+        assert!(!restore(&file), "no file, nothing to restore");
+        let soon = unix_now() + 600;
+        let live = BTreeMap::from([("acl".to_string(), (false, Some(soon)))]);
+        save(&file, &live);
+        set_overrides(BTreeMap::new());
+        assert!(restore(&file));
+        assert_eq!(overrides().get("acl"), Some(&false));
+        // An override that ran out while the proxy was down is not revived.
+        save(&file, &BTreeMap::from([("acl".to_string(), (false, Some(1)))]));
+        set_overrides(BTreeMap::new());
+        restore(&file);
+        assert!(overrides().is_empty());
+        std::fs::write(&file, b"garbage").unwrap();
+        assert!(!restore(&file), "an unreadable file is ignored");
+        set_overrides(BTreeMap::new());
+    }
+
     #[test]
     fn the_controllers_overrides_are_read_and_an_expired_one_is_ignored() {
+        let _t = TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let body = br#"{"items":[{"name":"sniffers","value":false,"reason":"r","set_at":1},{"name":"acl","value":false,"expires_at":2}]}"#;
         let got = parse_overrides(body).unwrap();
         assert_eq!(got["sniffers"], (false, None));

@@ -201,9 +201,18 @@ pub fn lookup(name: &str) -> Option<&'static Flag> {
     REGISTRY.iter().find(|f| f.name == name)
 }
 
+/// The longest a protection flag may stay switched off by one override.
+pub const MAX_PROTECTION_OFF_SECS: u64 = 7 * 24 * 3600;
+
 /// Whether an operator may override `name` to `value`: the flag exists, an `off_only` flag is
-/// only turned off, and switching a protection flag off carries an expiry.
-pub fn check_override(name: &str, value: bool, expires_at: Option<u64>) -> Result<(), String> {
+/// only turned off, and switching a protection flag off carries an expiry no later than
+/// `MAX_PROTECTION_OFF_SECS` after `set_at`.
+pub fn check_override(
+    name: &str,
+    value: bool,
+    set_at: u64,
+    expires_at: Option<u64>,
+) -> Result<(), String> {
     let f = lookup(name).ok_or_else(|| format!("unknown flag {name:?}"))?;
     if value && f.override_mode == OverrideMode::OffOnly {
         return Err(format!("{name} can only be turned off by an override"));
@@ -211,6 +220,15 @@ pub fn check_override(name: &str, value: bool, expires_at: Option<u64>) -> Resul
     if !value && f.protection && expires_at.is_none() {
         return Err(format!(
             "turning {name} off removes protection; set expires_at so it comes back on"
+        ));
+    }
+    if !value
+        && f.protection
+        && expires_at.is_some_and(|e| e > set_at.saturating_add(MAX_PROTECTION_OFF_SECS))
+    {
+        return Err(format!(
+            "{name} may be off for at most {} days; renew the override instead",
+            MAX_PROTECTION_OFF_SECS / 86400
         ));
     }
     Ok(())
@@ -450,17 +468,23 @@ mod tests {
             .find(|f| f.override_mode == OverrideMode::OffOnly && !f.protection)
             .unwrap()
             .name;
-        assert!(check_override("nope", false, None)
+        assert!(check_override("nope", false, 0, None)
             .unwrap_err()
             .contains("unknown flag"));
-        assert!(check_override(off_only, true, None)
+        assert!(check_override(off_only, true, 0, None)
             .unwrap_err()
             .contains("only be turned off"));
-        assert!(check_override(off_only, false, None).is_ok());
-        assert!(check_override(some_protection, false, None)
+        assert!(check_override(off_only, false, 0, None).is_ok());
+        assert!(check_override(some_protection, false, 0, None)
             .unwrap_err()
             .contains("expires_at"));
-        assert!(check_override(some_protection, false, Some(10)).is_ok());
+        assert!(check_override(some_protection, false, 0, Some(10)).is_ok());
+        let week = MAX_PROTECTION_OFF_SECS;
+        assert!(check_override(some_protection, false, 5, Some(5 + week)).is_ok());
+        assert!(check_override(some_protection, false, 5, Some(u64::MAX))
+            .unwrap_err()
+            .contains("at most 7 days"));
+        assert!(check_override(off_only, false, 5, Some(u64::MAX)).is_ok());
     }
 
     #[test]
