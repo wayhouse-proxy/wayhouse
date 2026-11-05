@@ -96,7 +96,7 @@ describe("TrialBar", () => {
 
   it("treats a 409 from Keep or Revert as an ordinary outcome: it refreshes and shows no error", async () => {
     api.getPendingConfig.mockResolvedValue(pending(45_000));
-    api.confirmRevision.mockRejectedValue(new ApiError(409, "revision 9 is not on trial"));
+    api.confirmRevision.mockRejectedValue(new ApiError(409, "revision 9 is on trial"));
     bar();
     await screen.findByText(/Applied as revision 9/);
     const before = api.getPendingConfig.mock.calls.length;
@@ -104,6 +104,15 @@ describe("TrialBar", () => {
     await act(async () => {});
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(api.getPendingConfig.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it("shows a 409 that is a real refusal, such as a replica without confirm-and-revert", async () => {
+    api.getPendingConfig.mockResolvedValue(pending(45_000));
+    api.revertNow.mockRejectedValue(new ApiError(409, "node 2 runs a build without confirm-and-revert; upgrade every replica first"));
+    bar();
+    await screen.findByText(/Applied as revision 9/);
+    await userEvent.click(screen.getByRole("button", { name: "Revert now" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("upgrade every replica first");
   });
 
   it("still reports a failure that is not a 409", async () => {

@@ -15,6 +15,13 @@ function spoken(level: 0 | 10 | 30 | null, revertTo: number): string {
 }
 
 /**
+ * The controller's ordinary 409: the revision is no longer the one on trial (confirmed, reverted or replaced; its
+ * wording is "revision 9 is on trial" or "no revision is on trial"). Any other 409, such as a replica that runs a
+ * build without confirm-and-revert, is a real refusal and stays visible.
+ */
+const notOnTrial = (e: unknown) => e instanceof ApiError && e.status === 409 && / is on trial$/.test(e.message);
+
+/**
  * A revision on trial (config confirm and revert, docs/06). The deadline is the controller's, so this page,
  * another operator's page and a closed tab all agree; the buttons only end the trial early.
  */
@@ -62,7 +69,7 @@ export function TrialBar() {
       <Button disabled={!canWrite} onClick={() => end.mutate(false)}>
         Revert now
       </Button>
-      {end.isError && !(end.error instanceof ApiError && end.error.status === 409) && <span role="alert" className="w-full text-bad">{end.error instanceof Error ? end.error.message : String(end.error)}</span>}
+      {end.isError && !notOnTrial(end.error) && <span role="alert" className="w-full text-bad">{end.error instanceof Error ? end.error.message : String(end.error)}</span>}
     </div>
   );
 }
