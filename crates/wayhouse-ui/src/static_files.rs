@@ -56,7 +56,8 @@ pub fn service(dir: &Path) -> Router {
 /// `index.html` and the page fallback must be revalidated, or an upgrade would keep serving the old app
 /// shell; what is under `/assets/` is named by content hash.
 fn cached(path: &str, mut resp: Response) -> Response {
-    let value = if path.starts_with("/assets/") {
+    // Only a real file under /assets/ is content-hashed; /assets/ or /assets/foo gets the app shell.
+    let value = if path.starts_with("/assets/") && names_a_file(path) {
         if !resp.status().is_success() {
             return resp;
         }
@@ -125,6 +126,15 @@ mod tests {
         assert_eq!(
             cache_control(&app, "/assets/a.js").await.as_deref(),
             Some(IMMUTABLE)
+        );
+        // The app shell served for an extension-less path under /assets/ must be revalidated too.
+        assert_eq!(
+            cache_control(&app, "/assets/").await.as_deref(),
+            Some("no-cache")
+        );
+        assert_eq!(
+            cache_control(&app, "/assets/foo").await.as_deref(),
+            Some("no-cache")
         );
         // A missing asset must not be remembered as immutable.
         assert_eq!(cache_control(&app, "/assets/missing.js").await, None);
