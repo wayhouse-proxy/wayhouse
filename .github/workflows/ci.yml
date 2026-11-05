@@ -379,6 +379,8 @@ jobs:
           if-no-files-found: ignore
       - name: Typecheck + build
         run: npm run build
+      - name: Build the demo (keeps src/demo type-checked)
+        run: npm run build:demo
       - name: Playwright version
         id: pw
         run: echo "version=$(npx playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"

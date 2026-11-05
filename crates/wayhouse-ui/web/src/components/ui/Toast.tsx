@@ -1,5 +1,5 @@
 import * as RadixToast from "@radix-ui/react-toast";
-import { createContext, useCallback, useContext, useState } from "react";
+import { createContext, useCallback, useContext, useRef, useState } from "react";
 import { StatusMark } from "./StatusMark";
 
 type Tone = "up" | "down";
@@ -16,8 +16,10 @@ export const useToast = () => useContext(Ctx);
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<Item[]>([]);
+  const next = useRef(0);
   const push = useCallback((text: string, tone: Tone = "up") => {
-    setItems((all) => [...all, { id: Date.now() + all.length, text, tone }]);
+    const id = next.current++;
+    setItems((all) => [...all, { id, text, tone }]);
   }, []);
   return (
     <Ctx.Provider value={push}>
