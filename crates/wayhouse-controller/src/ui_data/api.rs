@@ -242,7 +242,7 @@ async fn put_override(
     };
     write(st, op, Method::PUT, path, headers, body, move || {
         let (flag, on, reason, expires_at) = audit;
-        tracing::warn!(%flag, value = on, %reason, ?expires_at, actor = actor.as_deref().unwrap_or("-"), "feature override set");
+        tracing::warn!(%flag, value = on, ?reason, ?expires_at, actor = actor.as_deref().unwrap_or("-"), "feature override set");
         Json(reply).into_response()
     })
     .await

@@ -1274,52 +1274,42 @@
       "description": "Feature flags by name (`features.rs`). Config schema 4.",
       "properties": {
         "acl": {
-          "default": true,
           "description": "Client address allow and deny lists are bypassed.",
           "type": "boolean"
         },
         "admin_write.backends": {
-          "default": true,
           "description": "Adding, patching and removing backends through the admin API answers 403.",
           "type": "boolean"
         },
         "admin_write.route_hint": {
-          "default": true,
           "description": "Route hints answer 403.",
           "type": "boolean"
         },
         "admin_write.sniffer_upload": {
-          "default": true,
           "description": "Uploading, deleting and rolling back sniffer modules answers 403.",
           "type": "boolean"
         },
         "geo": {
-          "default": true,
           "description": "Country allow and deny lists are bypassed.",
           "type": "boolean"
         },
         "gossip_verdicts": {
-          "default": true,
           "description": "Backends are judged by this proxy's own health checks only; regional correlation is lost.",
           "type": "boolean"
         },
         "per_source": {
-          "default": true,
           "description": "Per-source connection limits are bypassed: less protection against one noisy client.",
           "type": "boolean"
         },
         "port_routes": {
-          "default": true,
           "description": "Plugin entry listeners are removed; customers lose those ports (they stay reserved).",
           "type": "boolean"
         },
         "rate_limit": {
-          "default": true,
           "description": "New-connection rate limits are bypassed: less protection against floods.",
           "type": "boolean"
         },
         "sniffers": {
-          "default": true,
           "description": "Routes with `sniffer:` never match, so players can land on the default or another pool.",
           "type": "boolean"
         }

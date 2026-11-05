@@ -48,6 +48,9 @@ class RealRepo(unittest.TestCase):
     def test_ui_web_only(self):
         self.assertEqual(self.areas("crates/wayhouse-ui/web/src/App.tsx"), {"ui"})
 
+    def test_the_config_json_schema_runs_the_ui_job(self):
+        self.assertIn("ui", self.areas("crates/wayhouse-config/schema/config.schema.json"))
+
     def test_ui_lockfile_also_runs_deploy_for_the_image_scan(self):
         self.assertEqual(
             self.areas("crates/wayhouse-ui/web/package-lock.json"),

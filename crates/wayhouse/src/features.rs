@@ -84,7 +84,16 @@ fn save(path: &std::path::Path, overrides: &Overrides) {
 
 /// Loads the saved overrides at start; an expired one is judged out by [`overrides`].
 fn restore(path: &std::path::Path) -> bool {
-    let Some(saved) = std::fs::read(path).ok().and_then(|b| parse_overrides(&b)) else {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "saved feature overrides not read");
+            return false;
+        }
+    };
+    let Some(saved) = parse_overrides(&bytes) else {
+        tracing::warn!(path = %path.display(), "saved feature overrides are not a valid document; ignored");
         return false;
     };
     set_overrides(saved);
@@ -133,6 +142,9 @@ pub async fn run(
         if let Some(t) = &token {
             req = req.bearer_auth(t);
         }
+        // An old controller (or an ingress hiccup) answering 404/501 clears the live set but
+        // must not wipe the saved copy a later restart relies on.
+        let mut cleared = false;
         let next = match req.send().await {
             Ok(r) if r.status().is_success() => {
                 match r.bytes().await.ok().and_then(|b| parse_overrides(&b)) {
@@ -140,7 +152,10 @@ pub async fn run(
                     None => continue,
                 }
             }
-            Ok(r) if matches!(r.status().as_u16(), 404 | 501) => BTreeMap::new(),
+            Ok(r) if matches!(r.status().as_u16(), 404 | 501) => {
+                cleared = true;
+                BTreeMap::new()
+            }
             Ok(r) => {
                 note(Some(format!("controller answered {}", r.status())));
                 continue;
@@ -152,7 +167,9 @@ pub async fn run(
         };
         note(None);
         if set_overrides(next.clone()) {
-            save(&saved, &next);
+            if !cleared {
+                save(&saved, &next);
+            }
             tracing::info!("feature overrides changed");
             publish(&handle.snapshot().features);
         }

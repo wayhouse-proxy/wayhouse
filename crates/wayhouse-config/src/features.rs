@@ -244,7 +244,7 @@ pub(crate) fn schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         .map(|f| {
             (
                 f.name.to_string(),
-                serde_json::json!({ "type": "boolean", "description": f.risk, "default": f.default }),
+                serde_json::json!({ "type": "boolean", "description": f.risk }),
             )
         })
         .collect();
