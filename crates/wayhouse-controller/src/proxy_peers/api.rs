@@ -140,6 +140,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_known_name_still_renews_with_registration_switched_off() {
+        let (state, _book, _dir) = test_state();
+        let app = router(state);
+        let (status, body) = post(&app, reg_body("edge-1", "203.0.113.9:51820")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let _off = wayhouse_config::features::off_here(&["tunnel_registration"]);
+        let (status, body) = post(&app, reg_body("edge-1", "203.0.113.9:51820")).await;
+        assert_eq!(status, StatusCode::OK, "renewal refused: {body}");
+        let (status, _) = post(&app, reg_body("edge-2", "203.0.113.10:51820")).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
     async fn a_caller_one_minor_behind_gets_only_the_baseline_fields() {
         let v = registered_with_header("1.0").await;
         assert!(v.get("revision").is_some() && v.get("tunnel_address").is_some());

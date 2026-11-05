@@ -667,9 +667,19 @@ async fn register<R: Registration>(
     body: String,
 ) -> Response {
     let words = wording(R::ROLE);
-    // The `tunnel_registration` kill switch: no new registrations. Renewals, heartbeats and
-    // leases already held use other routes and are untouched.
-    if !crate::features::on(wayhouse_config::features::TUNNEL_REGISTRATION) {
+    let mut reg: R = match serde_json::from_str(&body) {
+        Ok(reg) => reg,
+        Err(e) => return unprocessable(format!("malformed {} registration: {e}", words.noun)),
+    };
+    if let Err(e) = reg.validate() {
+        return unprocessable(e);
+    }
+    // The `tunnel_registration` kill switch: no NEW names. `POST {base}` is also how a
+    // live agent or proxy renews (refreshes `last_seen`) and re-registers after a restart,
+    // so a name the registry already knows keeps working with the switch off.
+    if !crate::features::on(wayhouse_config::features::TUNNEL_REGISTRATION)
+        && !matches!(state.current_for(reg.name()), Ok(Some(_)))
+    {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse {
@@ -680,13 +690,6 @@ async fn register<R: Registration>(
             }),
         )
             .into_response();
-    }
-    let mut reg: R = match serde_json::from_str(&body) {
-        Ok(reg) => reg,
-        Err(e) => return unprocessable(format!("malformed {} registration: {e}", words.noun)),
-    };
-    if let Err(e) = reg.validate() {
-        return unprocessable(e);
     }
     if let Some(ha) = &state.ha {
         return ha::register(

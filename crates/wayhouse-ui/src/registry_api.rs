@@ -263,7 +263,11 @@ async fn installs_allowed(state: &AppState) -> Result<(), Response> {
     let Some(controller) = &state.controller else {
         return Ok(());
     };
-    let mut req = state.http.get(format!("{}/features", controller.base_url));
+    // The shared client waits 60 s; a hung controller must not hold an install that long.
+    let mut req = state
+        .http
+        .get(format!("{}/features", controller.base_url))
+        .timeout(std::time::Duration::from_secs(5));
     if let Some(token) = &controller.token {
         req = req.bearer_auth(token);
     }
