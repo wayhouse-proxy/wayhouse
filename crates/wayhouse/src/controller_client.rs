@@ -29,6 +29,19 @@ const RECONNECT_MAX: Duration = Duration::from_secs(30);
 
 /// `X-Config-Revision` — set by `wayhouse-controller`'s `GET /config`
 /// (`crates/wayhouse-controller/src/api.rs`).
+/// The controller revision this process last applied (`0`: none, a file-config proxy). The
+/// push to the aggregator reports it so the fleet view can show how far a rollout got.
+static APPLIED_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn note_applied(revision: u64) {
+    APPLIED_REVISION.store(revision, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The revision in force, if this proxy takes its config from a controller.
+pub fn applied_revision() -> Option<u64> {
+    Some(APPLIED_REVISION.load(std::sync::atomic::Ordering::Relaxed)).filter(|r| *r > 0)
+}
+
 const REVISION_HEADER: &str = "x-config-revision";
 
 /// One-shot `GET /config` — the initial revision + config text, fetched
@@ -289,11 +302,11 @@ pub async fn watch_admin_reloads(
         // coalescing `reload::run` does for its own triggers.
         let _ = tokio::time::timeout(Duration::ZERO, admin.notified()).await;
 
-        let (_revision, text) =
+        let (revision, text) =
             fetch_with_retry(|| fetch_current(&base_url, token.as_deref())).await;
         match wayhouse_config::parse_str(&crate::plugin_overlay::merge(&text)) {
             Ok(cfg) => {
-                crate::reload::apply_config(
+                let applied = crate::reload::apply_config(
                     cfg,
                     &handle,
                     &resolvers,
@@ -302,6 +315,9 @@ pub async fn watch_admin_reloads(
                     "admin-triggered overlay change",
                 )
                 .await;
+                if applied {
+                    note_applied(revision);
+                }
             }
             Err(e) => tracing::error!(
                 error = %e,
@@ -322,7 +338,7 @@ async fn apply_sse_event(
 
     match wayhouse_config::parse_str(&crate::plugin_overlay::merge(&config)) {
         Ok(cfg) => {
-            crate::reload::apply_config(
+            let applied = crate::reload::apply_config(
                 cfg,
                 handle,
                 resolvers,
@@ -331,6 +347,9 @@ async fn apply_sse_event(
                 &format!("controller revision {revision}"),
             )
             .await;
+            if applied {
+                note_applied(revision);
+            }
         }
         Err(e) => {
             metrics::counter!(m::CONFIG_RELOAD, "result" => "failed").increment(1);

@@ -70,7 +70,7 @@ so; if it becomes leader nothing is issued until the key is there.
 
 All routes need the admin bearer token like the rest of the controller API.
 
-The web UI's Certificates page reads these routes for every role and, for an admin, adds, replaces and removes sites and registers gateways (the token is shown once, in the dialog that registers it). Its backend passes `PUT` and `DELETE /api/acme/sites/{name}` and `POST /api/acme/gateways` to the controller unchanged, so every rule below is the controller's.
+The web UI's Certificates page reads these routes for every role and, for an admin, adds, replaces and removes sites, registers gateways (the token is shown once, in the dialog that registers it) and revokes them. Its backend passes `PUT` and `DELETE /api/acme/sites/{name}`, `POST /api/acme/gateways` and `DELETE /api/acme/gateways/{name}` to the controller unchanged (bodies are capped at 64 KiB for a site and 1 KiB for a gateway, and each write leaves an audit log line naming the actor), so every rule below is the controller's.
 
 | Route                       | Does                                                                                                                  |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------- |

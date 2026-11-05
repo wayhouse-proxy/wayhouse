@@ -1952,7 +1952,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::items_after_statements)] // the alias sits next to its only users
     async fn admin_write_flags_refuse_their_writes_and_never_lock_out_reads_drain_or_the_flags() {
+        use reqwest::Method as M;
         let yaml = "schema_version: 4\npools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\n\
                     listeners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    routes:\n\
                     \x20     - match: { type: always }\n        action: { pool: p }\n";
@@ -1965,7 +1967,6 @@ mod tests {
             }
             async move { req.send().await.unwrap().status().as_u16() }
         };
-        use reqwest::Method as M;
         let writes = [
             (
                 M::POST,

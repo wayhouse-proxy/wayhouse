@@ -2,8 +2,9 @@
 //!
 //! A `SIGHUP` or a change to the config file rebuilds the snapshot and swaps it
 //! in atomically. Pool membership, balancer, health-check and capacity changes
-//! take effect live; changes to a listener's bind / protocol / pool mapping
-//! need a restart and are logged as a warning.
+//! take effect live, and so do listeners (reconciled by name: added, removed or
+//! re-spawned), resolvers and backend sources. Only the startup-only settings
+//! (`workers`, `limits`, `geo_db`, `admin`, sniffer engine limits) need a restart.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -115,7 +116,7 @@ async fn apply(
                 sniffers,
                 &format!("file {}", path.display()),
             )
-            .await
+            .await;
         }
         Err(e) => {
             metrics::counter!(m::CONFIG_RELOAD, "result" => "failed").increment(1);
@@ -138,7 +139,7 @@ pub(crate) async fn apply_config(
     sniffer_loader: Option<&SnifferLoader>,
     sniffers: &Sniffers,
     source_desc: &str,
-) {
+) -> bool {
     for w in cfg.warnings() {
         tracing::warn!(source = source_desc, "{w}");
     }
@@ -154,7 +155,7 @@ pub(crate) async fn apply_config(
                 error = %e,
                 "sniffer rescan failed; reload rejected, keeping the current configuration and sniffer set"
             );
-            return;
+            return false;
         }
     };
     let prev = handle.current();
@@ -209,6 +210,7 @@ pub(crate) async fn apply_config(
         rebuild_resolvers(&cfg, resolvers);
     }
     tracing::info!(source = %source_desc, "configuration reloaded");
+    true
 }
 
 /// Rebuild the external-resolver clients from the new `resolvers:` and swap the

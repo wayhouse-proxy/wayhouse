@@ -122,6 +122,7 @@ mod header_contract {
         ("PUT", "/api/acme/sites/panel"),
         ("DELETE", "/api/acme/sites/panel"),
         ("POST", "/api/acme/gateways"),
+        ("DELETE", "/api/acme/gateways/edge-1"),
         ("PUT", "/api/plugins/0123abcd/config"),
         ("GET", "/api/plugins/0123abcd/secrets"),
         ("PUT", "/api/plugins/0123abcd/secrets/TOKEN"),

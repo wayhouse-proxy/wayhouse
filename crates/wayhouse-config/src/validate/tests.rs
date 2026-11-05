@@ -2362,3 +2362,124 @@ fn consul_addr_must_be_https_or_loopback_when_a_token_is_sent() {
     assert!(err.contains("consul_addr"), "{err}");
     assert!(c("http://127.0.0.1@evil.example", true).is_err());
 }
+
+// ---- per-item `enabled:` (schema 4) ----
+
+const ENABLED_BASE: &str = r#"
+schema_version: 4
+settings:
+  geo_db: /tmp/none.mmdb
+resolvers:
+  - name: lookup
+    endpoint: "http://127.0.0.1:9/resolve"
+  - name: spare
+    endpoint: "http://127.0.0.1:9/spare"
+pools:
+  - name: local
+    targets: ["127.0.0.1:9001"]
+"#;
+
+fn with(listeners: &str) -> String {
+    format!("{ENABLED_BASE}listeners:\n{listeners}")
+}
+
+#[test]
+fn a_disabled_listener_is_parked_not_run_and_frees_its_bind() {
+    let cfg = parse_str(&with(
+        "  - name: parked\n    bind: \"0.0.0.0:7777\"\n    pool: local\n    enabled: false\n  - name: live\n    bind: \"0.0.0.0:7777\"\n    pool: local\n",
+    ))
+    .unwrap();
+    let names: Vec<_> = cfg.listeners.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["live"]);
+    // Parked is still checked: a typo in it fails now, not when it is switched on.
+    let bad = parse_str(&with(
+        "  - name: parked\n    bind: \"0.0.0.0:7777\"\n    pool: nope\n    enabled: false\n  - name: live\n    bind: \"0.0.0.0:7778\"\n    pool: local\n",
+    ));
+    assert!(bad.unwrap_err().to_string().contains("nope"));
+}
+
+#[test]
+fn a_disabled_filter_resolves_to_no_filter_but_is_still_checked() {
+    let listener = |extra: &str| {
+        with(&format!(
+            "  - name: l\n    bind: \"0.0.0.0:7777\"\n    pool: local\n{extra}"
+        ))
+    };
+    let cfg = parse_str(&listener(
+        "    rate_limit: { enabled: false, per_ip: { rate: 5 } }\n    per_source: { enabled: false, max_per_ip: 2 }\n    geo: { enabled: false, deny: [XX] }\n",
+    ))
+    .unwrap();
+    let l = &cfg.listeners[0];
+    assert!(l.rate_limit.is_none() && l.per_source.is_none() && l.geo.is_none());
+    let on = parse_str(&listener("    rate_limit: { per_ip: { rate: 5 } }\n")).unwrap();
+    assert!(on.listeners[0].rate_limit.is_some(), "enabled by default");
+    let bad = listener("    rate_limit: { enabled: false, per_ip: { rate: 0 } }\n");
+    assert!(
+        parse_str(&bad).is_err(),
+        "a parked limit is still validated"
+    );
+}
+
+#[test]
+fn a_disabled_resolver_is_not_built_and_its_routes_fall_through() {
+    let doc = format!(
+        "{ENABLED_BASE}listeners:\n  - name: l\n    bind: \"0.0.0.0:7777\"\n    routes:\n      - match: {{ type: always }}\n        action: {{ resolver: lookup }}\n      - match: {{ type: always }}\n        action: {{ pool: local }}\n"
+    )
+    .replace(
+        "  - name: lookup\n    endpoint: \"http://127.0.0.1:9/resolve\"\n",
+        "  - name: lookup\n    endpoint: \"http://127.0.0.1:9/resolve\"\n    enabled: false\n",
+    );
+    let cfg = parse_str(&doc).unwrap();
+    assert_eq!(
+        cfg.resolvers
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect::<Vec<_>>(),
+        ["spare"]
+    );
+    assert_eq!(cfg.listeners[0].routes.len(), 1);
+    assert!(matches!(cfg.listeners[0].routes[0].action, Action::Pool(_)));
+}
+
+#[test]
+fn a_listener_whose_every_route_names_a_parked_resolver_is_refused() {
+    let doc = format!(
+        "{ENABLED_BASE}listeners:\n  - name: l\n    bind: \"0.0.0.0:7777\"\n    routes:\n      - match: {{ type: always }}\n        action: {{ resolver: lookup }}\n"
+    );
+    let parked = doc.replace(
+        "  - name: lookup\n    endpoint: \"http://127.0.0.1:9/resolve\"\n",
+        "  - name: lookup\n    endpoint: \"http://127.0.0.1:9/resolve\"\n    enabled: false\n",
+    );
+    assert!(
+        parse_str(&doc).is_ok(),
+        "the same listener with the resolver on"
+    );
+    let e = parse_str(&parked).unwrap_err().to_string();
+    assert!(
+        e.contains("parked resolver") && e.contains("listener l"),
+        "{e}"
+    );
+    // Parking the listener too is the way out.
+    let both = parked.replace("    routes:\n", "    enabled: false\n    routes:\n");
+    assert!(parse_str(&both).is_ok());
+}
+
+#[test]
+fn a_disabled_backend_source_stays_in_the_config_marked_disabled() {
+    let doc = |enabled: &str| {
+        format!(
+            "schema_version: 4\nbackend_sources:\n  - name: dns\n    type: dns_srv\n    record: _g._tcp.example.com\n{enabled}pools:\n  - name: p\n    source: dns\nlisteners:\n  - name: l\n    bind: \"0.0.0.0:7777\"\n    pool: p\n"
+        )
+    };
+    let off = parse_str(&doc("    enabled: false\n")).unwrap();
+    assert!(!off.pools[0].source.as_ref().unwrap().enabled);
+    let on = parse_str(&doc("")).unwrap();
+    assert!(on.pools[0].source.as_ref().unwrap().enabled);
+}
+
+#[test]
+fn enabled_needs_schema_4() {
+    let doc = "schema_version: 3\npools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\nlisteners:\n  - name: l\n    bind: \"0.0.0.0:7777\"\n    pool: p\n    enabled: true\n";
+    let e = parse_str(doc).unwrap_err().to_string();
+    assert!(e.contains("listeners.enabled"), "{e}");
+}
