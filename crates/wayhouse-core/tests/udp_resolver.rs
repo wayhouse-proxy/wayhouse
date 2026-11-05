@@ -2,6 +2,8 @@
 //! session's route is pending, established sessions keep flowing and extra
 //! datagrams for the pending session are buffered, not dropped.
 
+mod common;
+use common::free_udp_addr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,13 +57,6 @@ async fn echo_backend() -> std::net::SocketAddr {
         }
     });
     addr
-}
-
-fn free_udp_addr() -> std::net::SocketAddr {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
 }
 
 async fn recv(client: &UdpSocket, wait: Duration) -> Option<Vec<u8>> {

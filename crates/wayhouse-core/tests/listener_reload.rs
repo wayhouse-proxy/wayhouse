@@ -2,26 +2,14 @@
 //! was stopping (#260), and a UDP hand-off must not wait on workers that keep
 //! their port (#258).
 
+mod common;
+use common::{free_tcp_addr, free_udp_addr};
 use std::time::{Duration, Instant};
 
 use tokio::net::UdpSocket;
 
 use wayhouse_config::parse_str;
 use wayhouse_core::{Runtime, Snapshot};
-
-fn free_tcp_addr() -> std::net::SocketAddr {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-}
-
-fn free_udp_addr() -> std::net::SocketAddr {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-}
 
 /// #260: a reload that is cancelled while it awaits the groups it stopped must
 /// leave them with the manager, so a later shutdown still stops every one.
