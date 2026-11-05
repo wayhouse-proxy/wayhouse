@@ -48,6 +48,20 @@ describe("navigation", () => {
     expect(within(rail).getByRole("link", { name: "Fleet" })).toHaveAttribute("aria-current", "page");
   });
 
+  it("the current page has a bar on its left, not only a tint", () => {
+    setup("admin");
+    const rail = screen.getByRole("navigation", { name: "Main" });
+    expect(within(rail).getByRole("link", { name: "Fleet" })).toHaveClass("border-rail-ink");
+    expect(within(rail).getByRole("link", { name: "Plugins" })).not.toHaveClass("border-rail-ink");
+  });
+
+  it("the mobile top bar and the open menu have an edge against the page", () => {
+    const { container } = setup("admin");
+    const bar = container.querySelector("[data-rail].min-\\[760px\\]\\:hidden")!;
+    expect(bar).toHaveClass("border-b", "border-line");
+    expect(container.querySelector("#rail")).toHaveClass("border-b", "border-line");
+  });
+
   it("hides items above the session's role and the second level too", () => {
     setup("viewer");
     const rail = screen.getByRole("navigation", { name: "Main" });

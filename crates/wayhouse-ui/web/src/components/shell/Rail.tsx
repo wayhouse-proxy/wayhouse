@@ -6,8 +6,9 @@ import { atLeast, useSession } from "../../lib/session";
 import { matches, type NavGroup, type NavItem } from "./nav";
 
 const row =
-  "flex min-h-8 w-full items-center gap-1.5 rounded-sm px-2 text-left text-sm text-rail-ink hover:bg-rail-hover";
-const current = "bg-rail-hover font-semibold";
+  "flex min-h-8 w-full items-center gap-1.5 rounded-sm border-l-2 border-transparent px-2 text-left text-sm text-rail-ink hover:bg-rail-hover";
+// The tint alone is about 1.1:1 against the rail; the 2 px bar in the ink colour is the 3:1 marker.
+const current = "border-rail-ink bg-rail-hover font-semibold";
 
 function Item({ item }: { item: NavItem }) {
   const { pathname } = useLocation();

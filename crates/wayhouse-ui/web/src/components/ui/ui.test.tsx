@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Button } from "./Button";
 import { FieldRow } from "./FieldRow";
@@ -30,6 +30,18 @@ describe("Button", () => {
     expect(b).toHaveAttribute("aria-busy", "true");
     await userEvent.click(b);
     expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it.each(["primary", "secondary", "ghost", "danger"] as const)("%s: a click is swallowed while loading and works again once loading ends", async (variant) => {
+    const onClick = vi.fn();
+    const { rerender } = render(<Button variant={variant} loading onClick={onClick}>Apply</Button>);
+    await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(onClick).not.toHaveBeenCalled();
+    rerender(<Button variant={variant} onClick={onClick}>Apply</Button>);
+    const b = screen.getByRole("button", { name: "Apply" });
+    expect(b).not.toHaveAttribute("aria-busy");
+    await userEvent.click(b);
+    expect(onClick).toHaveBeenCalledTimes(1);
   });
 
   it("is a type=button by default so it never submits a form by accident", () => {
@@ -121,6 +133,29 @@ describe("Table", () => {
 });
 
 describe("Toast", () => {
+  it("gives every toast its own key when one has gone and another is raised in the same millisecond", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    let toast: ReturnType<typeof useToast> = () => {};
+    function Grab() {
+      toast = useToast();
+      return null;
+    }
+    render(<ToastProvider><Grab /></ToastProvider>);
+    act(() => toast("first"));
+    await act(() => vi.advanceTimersByTimeAsync(3000));
+    act(() => toast("second"));
+    await act(() => vi.advanceTimersByTimeAsync(2500)); // the first one has timed out, the second has not
+    act(() => toast("third"));
+    expect(screen.queryByText("first")).toBeNull();
+    expect(screen.getByText("second")).toBeInTheDocument();
+    expect(screen.getByText("third")).toBeInTheDocument();
+    expect(err.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
   it("announces a finished action", async () => {
     function Go() {
       const toast = useToast();
