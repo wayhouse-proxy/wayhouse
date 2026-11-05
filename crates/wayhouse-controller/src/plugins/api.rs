@@ -282,7 +282,7 @@ struct InstallRequest {
 /// change made here would be undone by the next reconcile. Only the reconciler's own
 /// calls (its actor) pass. Secrets, the webhook and suspending stay open.
 fn managed_refusal(st: &PluginsState, headers: &HeaderMap, id: &str) -> Option<Response> {
-    if actor(headers).as_deref() == Some(super::declared::FILE_ACTOR) {
+    if super::declared::is_file_caller(headers) {
         return None;
     }
     let record = st.store.get(id).ok().flatten()?;
@@ -303,10 +303,20 @@ fn yes() -> bool {
 }
 
 pub(super) fn actor(headers: &HeaderMap) -> Option<String> {
+    if super::declared::is_file_caller(headers) {
+        return Some(super::declared::FILE_ACTOR.to_string());
+    }
     headers
         .get("x-actor")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.chars().take(128).collect())
+        // The file's name belongs to the reconciler: nobody can claim ownership with it.
+        .map(|s| {
+            if s == super::declared::FILE_ACTOR {
+                format!("api:{s}")
+            } else {
+                s.chars().take(128).collect()
+            }
+        })
 }
 
 fn pool_error(e: PoolError) -> ApiError {
@@ -2929,5 +2939,37 @@ mod tests {
         std::fs::write(&path, "plugins: [ broken").unwrap();
         let (status, _) = call(&plan, "GET", "/plugins/file/plan", Vec::new(), None).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn the_file_actor_name_cannot_be_claimed_over_http() {
+        let (st, _d) = state(None);
+        let app = router(st.clone());
+        let sha = upload(&app, &bound_module()).await;
+        let body = format!(
+            r#"{{"name":"mine","sha256":"{sha}","approved":{PANEL_CAPS},"config":{{"panel":"p.example"}}}}"#
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/plugins")
+            .header("content-type", "application/json")
+            .header("x-actor", FILE_ACTOR)
+            .header(super::super::declared::FILE_HEADER, "guess")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let made = st.store.list().unwrap();
+        assert_eq!(made[0].created_by.as_deref(), Some("api:plugins-file"));
+        // So it is not the file's, and the API can still delete it.
+        let (status, _) = call(
+            &app,
+            "DELETE",
+            &format!("/plugins/{}", made[0].id),
+            Vec::new(),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
     }
 }

@@ -463,12 +463,12 @@ file never carries module bytes, secrets or webhook tokens: upload the module (o
 registry) first, and set secrets through the API.
 
 - **Runs** at start, on `SIGHUP`, and every 30 seconds, so a module uploaded after the file was
-  written is picked up. Under `--ha-peers` only the leader reconciles; the writes go through Raft
+  written is picked up. Under `--ha-peers` only the leader reconciles, after it has applied every committed entry; installing the `SIGHUP` handler means a hangup no longer ends the process; the writes go through Raft
   like any other install write.
 - **Ownership.** The file only changes installs it created (their `created_by` is
   `plugins-file`). An install made in the UI or API is never changed, adopted or removed; an
   entry whose name clashes with one is reported as `refused`.
-- **Safety.** A file that cannot be read or parsed changes nothing. An entry is applied only if
+- **Safety.** A file that cannot be read or parsed changes nothing, and that includes an empty or comment-only file: the `plugins:` list is required, and `plugins: []` is how to remove every managed install on purpose. An entry is applied only if
   the module is stored and its approval hash matches; otherwise it is `refused` with the reason.
   Removing an entry removes its install. To change an entry's module, give the entry a new name
   (the old install is removed; the new one starts without the old one's secrets).

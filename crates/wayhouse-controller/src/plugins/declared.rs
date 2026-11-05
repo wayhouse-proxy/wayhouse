@@ -44,15 +44,39 @@ use super::{valid_name, InstallRecord, MAX_CONFIG_BYTES};
 
 /// The `created_by` of installs the file owns.
 pub const FILE_ACTOR: &str = "plugins-file";
+/// The header the reconciler's own calls carry. Its value is a per-process secret that
+/// never leaves the process (it is not among the headers a follower forwards), so an HTTP
+/// caller cannot pass as the reconciler by sending `x-actor: plugins-file` or this header.
+pub const FILE_HEADER: &str = "x-wayhouse-plugins-file";
+
+fn file_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| format!("{:032x}", rand::random::<u128>()))
+}
+
+/// Whether this call is the reconciler's own.
+pub fn is_file_caller(headers: &HeaderMap) -> bool {
+    headers
+        .get(FILE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v == file_token())
+}
 /// How often the file is reconciled without a signal.
 pub const INTERVAL: Duration = Duration::from_secs(30);
 const MAX_FILE_BYTES: usize = 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DeclaredFile {
-    #[serde(default)]
     pub plugins: Vec<Declared>,
+}
+
+/// `plugins` is `Option` so that a missing key and a bare `plugins:` (null) can be told
+/// from `plugins: []`: an empty, comment-only or half-written file must be a parse error,
+/// not "remove everything". Write `plugins: []` to say that on purpose.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Raw {
+    plugins: Option<Vec<Declared>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -83,7 +107,12 @@ impl DeclaredFile {
         if text.len() > MAX_FILE_BYTES {
             return Err(format!("the file is over {MAX_FILE_BYTES} bytes"));
         }
-        let mut file: Self = serde_norway::from_str(text).map_err(|e| e.to_string())?;
+        let raw: Raw = serde_norway::from_str(text).map_err(|e| e.to_string())?;
+        let mut file = Self {
+            plugins: raw.plugins.ok_or(
+                "the file needs a `plugins:` list (`plugins: []` removes every managed install)",
+            )?,
+        };
         let mut seen = std::collections::HashSet::new();
         for d in &mut file.plugins {
             if !valid_name(&d.name) {
@@ -269,10 +298,22 @@ pub fn plan(file: &DeclaredFile, installs: &[InstallRecord], resolve: Resolve<'_
                 });
                 ops.extend(step.into_iter().map(|op| (row_ix, op)));
             }
-            _ => rows.push(refused(
+            [_] => rows.push(refused(
                 &d.name,
                 None,
                 "an install with this name exists and the file does not own it",
+            )),
+            many => rows.push(refused(
+                &d.name,
+                None,
+                format!(
+                    "{} installs share this name ({}); delete the extra ones",
+                    many.len(),
+                    many.iter()
+                        .map(|r| r.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
             )),
         }
     }
@@ -323,10 +364,23 @@ impl Reconciler {
         info.effective_caps(config).map_err(|e| e.to_string())
     }
 
+    /// Standalone: always. Under HA: this node is the leader and has applied every committed
+    /// entry, so a fresh leader does not plan from a store that is behind (and create a
+    /// duplicate of what the old leader just created).
+    async fn leader_caught_up(&self) -> bool {
+        match &self.st.ha {
+            None => true,
+            Some(ha) => ha.is_leader() && ha.raft.ensure_linearizable().await.is_ok(),
+        }
+    }
+
     pub async fn plan(&self) -> Result<Planned, String> {
-        let text = tokio::fs::read_to_string(&*self.path)
-            .await
-            .map_err(|e| format!("cannot read {}: {e}", self.path.display()))?;
+        let read = |e: std::io::Error| format!("cannot read {}: {e}", self.path.display());
+        let len = tokio::fs::metadata(&*self.path).await.map_err(read)?.len();
+        if len > MAX_FILE_BYTES as u64 {
+            return Err(format!("the file is over {MAX_FILE_BYTES} bytes"));
+        }
+        let text = tokio::fs::read_to_string(&*self.path).await.map_err(read)?;
         let file = DeclaredFile::parse(&text)?;
         let installs = self.st.store.list().map_err(|e| e.to_string())?;
         let this = self.clone();
@@ -341,8 +395,20 @@ impl Reconciler {
     pub async fn reconcile(&self) -> Result<Vec<Row>, String> {
         let Planned { mut rows, ops } = self.plan().await?;
         let mut headers = HeaderMap::new();
-        headers.insert("x-actor", HeaderValue::from_static(FILE_ACTOR));
+        headers.insert(
+            FILE_HEADER,
+            HeaderValue::from_str(file_token()).expect("hex is a header value"),
+        );
         for (ix, op) in ops {
+            // A failed config step leaves the rest of that entry's steps for the next pass.
+            if rows[ix].error.is_some() {
+                continue;
+            }
+            // A forwarded call would lose the reconciler's identity, so never forward.
+            if self.st.ha.as_ref().is_some_and(|h| !h.is_leader()) {
+                rows[ix].error = Some("not the leader any more".into());
+                continue;
+            }
             let resp = self.run(&headers, op).await;
             if !resp.status().is_success() {
                 let status = resp.status();
@@ -398,7 +464,7 @@ pub fn spawn(reconciler: Reconciler) -> tokio::task::JoinHandle<()> {
         let mut last = String::new();
         loop {
             // Only the leader writes; a standalone controller is its own leader.
-            if reconciler.st.ha.as_ref().is_none_or(|h| h.is_leader()) {
+            if reconciler.leader_caught_up().await {
                 let summary = match reconciler.reconcile().await {
                     Ok(rows) => {
                         let changed: Vec<String> = rows
@@ -555,6 +621,20 @@ mod tests {
     }
 
     #[test]
+    fn two_installs_with_one_name_are_reported_with_their_ids() {
+        let a = rec("000000000000000a", "one", SHA_A, FILE_ACTOR);
+        let b = rec("000000000000000b", "one", SHA_A, FILE_ACTOR);
+        let p = plan(&file(vec![entry("one", SHA_A)]), &[a, b], &ok);
+        assert_eq!(actions(&p), [("one", "refused")]);
+        let why = p.rows[0].reason.as_deref().unwrap();
+        assert!(
+            why.contains("000000000000000a") && why.contains("000000000000000b"),
+            "{why}"
+        );
+        assert!(p.ops.is_empty());
+    }
+
+    #[test]
     fn a_module_that_is_not_stored_is_refused() {
         let missing = |_: &str, _: &serde_json::Value| {
             Err("no module with this sha256 is stored".to_string())
@@ -599,6 +679,11 @@ mod tests {
         let unknown = format!("{ok_entry}  secrets: {{}}\n");
         assert!(DeclaredFile::parse(&format!("plugins:\n{}", indent(&unknown))).is_err());
         assert!(DeclaredFile::parse("extra: 1").is_err());
+        // Empty, blank, comment-only and key-without-value documents are errors, never
+        // "remove everything"; an explicit empty list is the way to say that.
+        for broken in ["", "   \n", "# only a comment\n", "plugins:\n"] {
+            assert!(DeclaredFile::parse(broken).is_err(), "{broken:?}");
+        }
     }
 
     fn indent(s: &str) -> String {
