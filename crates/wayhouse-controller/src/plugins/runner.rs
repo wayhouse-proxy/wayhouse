@@ -426,6 +426,8 @@ impl Runner {
                 Err(Fail::Other(why)) => return Outcome::Failed(why),
             },
         };
+        // Not part of `LoadKey`: suspending or resuming must not reload (and re-`init`) the plugin.
+        plugin.set_suspended(rec.suspended.iter().cloned());
         let (rev, snapshot) = match self.store.state(&rec.id) {
             Ok(s) => s,
             Err(e) => return Outcome::Failed(e.to_string()),
@@ -489,6 +491,7 @@ impl Runner {
         {
             plugin = plugin.with_http(engine);
         }
+        plugin.set_suspended(rec.suspended.iter().cloned());
         let plugin = Arc::new(plugin);
         let (rev, snapshot) = self
             .store
@@ -863,6 +866,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
     }
@@ -1091,6 +1095,7 @@ mod tests {
             created_at: 1,
             created_by: None,
             webhook: None,
+            suspended: std::collections::BTreeSet::default(),
         };
         let done = handle
             .raft
@@ -1252,6 +1257,9 @@ mod tests {
         )
     }
 
+    /// A valid install id for tests that go through `set_suspended` (which validates).
+    const AID: &str = "000000000000000a";
+
     const HID: &str = "00000000000000aa";
 
     /// A webhook-enabled install (a valid id and sha, which `set_webhook` checks).
@@ -1271,6 +1279,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         let done = store.set_webhook(HID, Some(&"0".repeat(64))).unwrap();
@@ -1315,6 +1324,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         store.set_webhook(HID, Some(&"0".repeat(64))).unwrap();
@@ -1358,6 +1368,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         let t0 = Instant::now();
@@ -1378,6 +1389,24 @@ mod tests {
             r.run_hook(HID, Hook::Webhook(request())).await,
             Err(HookError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn a_suspended_capability_fails_the_next_call_and_resuming_needs_no_reload() {
+        let (r, store, _d) = fixture(1, 4);
+        hooked_install(&store);
+        r.run_hook(HID, Hook::Webhook(request())).await.unwrap();
+        assert_eq!(counter_value(&store, HID), Some(1));
+        let state: std::collections::BTreeSet<String> = ["state".to_string()].into();
+        store.set_suspended(HID, &state).unwrap();
+        // The cached plugin is reused (suspending is not part of the load key) and refuses.
+        assert!(r.run_hook(HID, Hook::Webhook(request())).await.is_err());
+        assert_eq!(counter_value(&store, HID), Some(1), "nothing was written");
+        store
+            .set_suspended(HID, &std::collections::BTreeSet::default())
+            .unwrap();
+        r.run_hook(HID, Hook::Webhook(request())).await.unwrap();
+        assert_eq!(counter_value(&store, HID), Some(2));
     }
 
     #[tokio::test]
@@ -1443,6 +1472,7 @@ mod tests {
                 created_at: 2,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         crate::plugins::events::deliver(
@@ -1486,16 +1516,26 @@ mod tests {
                 doc.len()
             ),
         );
-        install(&store, "a", &m);
+        install(&store, AID, &m);
         let t0 = Instant::now();
         r.run_due(t0).await;
         r.run_due(secs(t0, 30)).await;
-        let routes = store.routes("a").unwrap();
+        let routes = store.routes(AID).unwrap();
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].host, "a.mc.example.com");
         assert_eq!(store.overlay().unwrap().routes.len(), 1);
+        // Suspending `routes` withdraws what the plugin already committed (not only its
+        // next `routes_set`), keeps the stored table, and resuming brings it back.
+        let off: std::collections::BTreeSet<String> = ["routes".to_string()].into();
+        store.set_suspended(AID, &off).unwrap();
+        assert!(store.overlay().unwrap().routes.is_empty());
+        assert_eq!(store.routes(AID).unwrap().len(), 1);
+        store
+            .set_suspended(AID, &std::collections::BTreeSet::default())
+            .unwrap();
+        assert_eq!(store.overlay().unwrap().routes.len(), 1);
         // Disabling the install withdraws its routes from the overlay.
-        store.set_enabled("a", false).unwrap();
+        store.set_enabled(AID, false).unwrap();
         assert!(store.overlay().unwrap().routes.is_empty());
     }
     const PORT_TIMER: &str = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"state":{"max_bytes":256},"port_routes":{"ports":["30000-30009"],"proto":["udp","tcp"],"backends":["10.0.0.0/16"],"max_entries":4}}"#;
@@ -1523,16 +1563,16 @@ mod tests {
     async fn a_plugin_that_declares_port_routes_gets_stable_entry_ports() {
         let (r, store, _d) = fixture(1, 4);
         let doc = r#"[{"key":"srv-a","backend":"10.0.1.2:7777","proto":"udp","prefer":30005},{"key":"srv-b","backend":"10.0.1.3:25565","proto":"both"}]"#;
-        install(&store, "a", &port_guest(doc));
+        install(&store, AID, &port_guest(doc));
         let t0 = Instant::now();
         r.run_due(t0).await;
         r.run_due(secs(t0, 30)).await;
-        let table = store.port_routes("a").unwrap();
+        let table = store.port_routes(AID).unwrap();
         let got: Vec<_> = table.iter().map(|a| (a.key.as_str(), a.port)).collect();
         assert_eq!(got, vec![("srv-a", Some(30005)), ("srv-b", Some(30000))]);
         // The plugin reads its assignments back on the next call.
         r.run_due(secs(t0, 60)).await;
-        let (_, state) = store.state("a").unwrap();
+        let (_, state) = store.state(AID).unwrap();
         assert_eq!(
             String::from_utf8(state["n"].clone()).unwrap(),
             r#"{"srv-a":30005,"srv-b":30000}"#
@@ -1547,17 +1587,27 @@ mod tests {
         assert_eq!(
             ports,
             vec![
-                (30000, "10.0.1.3:25565", "plugin:a"),
-                (30005, "10.0.1.2:7777", "plugin:a")
+                (30000, "10.0.1.3:25565", "plugin:000000000000000a"),
+                (30005, "10.0.1.2:7777", "plugin:000000000000000a")
             ]
         );
         assert!(overlay.exhausted.is_empty());
+        // Suspending `port_routes` withdraws the listeners and keeps the ports reserved;
+        // resuming brings the same ports back.
+        let off: std::collections::BTreeSet<String> = ["port_routes".to_string()].into();
+        store.set_suspended(AID, &off).unwrap();
+        assert!(store.overlay().unwrap().port_routes.is_empty());
+        assert_eq!(store.port_ledger().unwrap().owners.len(), 2);
+        store
+            .set_suspended(AID, &std::collections::BTreeSet::default())
+            .unwrap();
+        assert_eq!(store.overlay().unwrap().port_routes.len(), 2);
         // Disabling the install withdraws the routes but keeps the ports reserved.
-        store.set_enabled("a", false).unwrap();
+        store.set_enabled(AID, false).unwrap();
         assert!(store.overlay().unwrap().port_routes.is_empty());
         assert_eq!(store.port_ledger().unwrap().owners.len(), 2);
         // Deleting releases them into quarantine.
-        store.delete("a").unwrap();
+        store.delete(AID).unwrap();
         let ledger = store.port_ledger().unwrap();
         assert!(ledger.owners.is_empty());
         assert_eq!(ledger.quarantine.len(), 2);
@@ -1576,6 +1626,7 @@ mod tests {
             created_at: 1,
             created_by: None,
             webhook: None,
+            suspended: std::collections::BTreeSet::default(),
         };
         let base = LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({})));
         assert!(base == LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({}))));
@@ -1626,6 +1677,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
     }

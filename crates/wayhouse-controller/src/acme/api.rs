@@ -551,6 +551,7 @@ mod tests {
             created_at: 0,
             created_by: None,
             webhook: None,
+            suspended: std::collections::BTreeSet::default(),
         }
     }
 

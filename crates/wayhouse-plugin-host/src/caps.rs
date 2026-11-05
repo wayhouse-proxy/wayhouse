@@ -51,6 +51,28 @@ pub struct Capabilities {
     pub port_routes: Option<Box<crate::port_routes::PortRouteCap>>,
 }
 
+/// The capabilities an operator can switch off for an install without revoking its approval
+/// (`Capabilities::suspend`). Triggers are not here: an install's `enabled` flag covers them.
+pub const SUSPENDABLE: &[&str] = &["log", "state", "http", "routes", "port_routes"];
+
+impl Capabilities {
+    /// Clears the named capabilities (names from [`SUSPENDABLE`]; others are ignored), so
+    /// the imports behind them answer "not approved". The approval itself is not edited
+    /// anywhere: suspending is applied to the copy a call runs with.
+    pub fn suspend<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) {
+        for name in names {
+            match name {
+                "log" => self.log = false,
+                "state" => self.state = None,
+                "http" => self.http = None,
+                "routes" => self.routes = None,
+                "port_routes" => self.port_routes = None,
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Most hosts an `http` declaration may list.
 pub const MAX_HTTP_HOSTS: usize = 16;
 /// Most secret slots a plugin may declare.

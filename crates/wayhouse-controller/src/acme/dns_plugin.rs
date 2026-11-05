@@ -283,6 +283,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         let lookup = Arc::new(Fake::default());
