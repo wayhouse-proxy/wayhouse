@@ -123,6 +123,8 @@ struct Loaded {
 struct Schedule {
     loaded: HashMap<String, Loaded>,
     next_due: HashMap<String, Instant>,
+    /// Installs whose scheduled tick has not finished; the scan starts no second one.
+    inflight: std::collections::HashSet<String>,
     /// The term this node has been ticking in as leader (HA); a change resets the schedule.
     led_term: Option<u64>,
 }
@@ -264,9 +266,12 @@ impl Runner {
     pub fn spawn(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut every = tokio::time::interval(SCAN_EVERY);
+            // Ticks run detached, so one slow plugin cannot delay the others' scans.
+            let mut running = tokio::task::JoinSet::new();
             loop {
                 every.tick().await;
-                self.run_due(Instant::now()).await;
+                while running.try_join_next().is_some() {}
+                self.scan(Instant::now(), &mut running).await;
             }
         })
     }
@@ -283,13 +288,26 @@ impl Runner {
 
     /// One scheduling pass at `now`: start every due tick and wait for them all.
     pub async fn run_due(self: &Arc<Self>, now: Instant) {
+        let mut running = tokio::task::JoinSet::new();
+        self.scan(now, &mut running).await;
+        while running.join_next().await.is_some() {}
+    }
+
+    /// One scheduling pass at `now`: start every due tick into `running` and return without
+    /// waiting for them. An install whose previous tick is still in flight is skipped, so
+    /// there is one call per install at a time.
+    pub async fn scan(self: &Arc<Self>, now: Instant, running: &mut tokio::task::JoinSet<()>) {
         let Some(term) = self.lead() else {
             // Not the leader: forget everything, so a later election starts clean.
             *self.schedule.lock().await = Schedule::default();
             self.lock_status().clear();
             return;
         };
-        let installs = match self.store.list() {
+        let installs = match self
+            .blocking(|store| store.list().map_err(|e| e.to_string()))
+            .await
+            .and_then(|r| r)
+        {
             Ok(i) => i,
             Err(e) => {
                 tracing::error!(error = %e, "plugin runner could not list installs");
@@ -336,20 +354,30 @@ impl Runner {
                     continue;
                 };
                 let at = *sched.next_due.entry(rec.id.clone()).or_insert(first);
-                if now >= at {
+                if now >= at && !sched.inflight.contains(&rec.id) {
                     if let Some(next) = now.checked_add(interval) {
                         sched.next_due.insert(rec.id.clone(), next);
                     }
+                    sched.inflight.insert(rec.id.clone());
                     due.push((rec.clone(), now));
                 }
             }
         }
-        let mut tasks = tokio::task::JoinSet::new();
         for (rec, at) in due {
             let this = self.clone();
-            tasks.spawn(async move { this.tick(rec, at, term).await });
+            running.spawn(async move {
+                let id = rec.id.clone();
+                // The tick runs in its own task, so a panic in it is caught here: the id
+                // leaves `inflight` either way (or that install would never tick again) and
+                // the failure is logged.
+                let ticking = this.clone();
+                if let Err(e) = tokio::spawn(async move { ticking.tick(rec, at, term).await }).await
+                {
+                    tracing::error!(install = %id, error = %e, "a plugin tick task failed");
+                }
+                this.schedule.lock().await.inflight.remove(&id);
+            });
         }
-        while tasks.join_next().await.is_some() {}
     }
 
     async fn install_lock(&self, id: &str) -> tokio::sync::OwnedMutexGuard<()> {
@@ -426,9 +454,16 @@ impl Runner {
                 Err(Fail::Other(why)) => return Outcome::Failed(why),
             },
         };
-        let (rev, snapshot) = match self.store.state(&rec.id) {
+        // Not part of `LoadKey`: suspending or resuming must not reload (and re-`init`) the plugin.
+        plugin.set_suspended(rec.suspended.iter().cloned());
+        let read_id = rec.id.clone();
+        let (rev, snapshot) = match self
+            .blocking(move |store| store.state(&read_id).map_err(|e| e.to_string()))
+            .await
+            .and_then(|r| r)
+        {
             Ok(s) => s,
-            Err(e) => return Outcome::Failed(e.to_string()),
+            Err(e) => return Outcome::Failed(e),
         };
         if rec.approved.port_routes.is_some() {
             match self.store.port_routes(&rec.id) {
@@ -489,11 +524,14 @@ impl Runner {
         {
             plugin = plugin.with_http(engine);
         }
+        plugin.set_suspended(rec.suspended.iter().cloned());
         let plugin = Arc::new(plugin);
+        let read_id = rec.id.clone();
         let (rev, snapshot) = self
-            .store
-            .state(&rec.id)
-            .map_err(|e| Fail::other(e.to_string()))?;
+            .blocking(move |store| store.state(&read_id).map_err(|e| e.to_string()))
+            .await
+            .and_then(|r| r)
+            .map_err(Fail::other)?;
         let config = serde_json::to_vec(&rec.config).map_err(|e| Fail::other(e.to_string()))?;
         let (p, pool) = (plugin.clone(), self.pool.clone());
         let fx = flatten(
@@ -516,6 +554,18 @@ impl Runner {
             },
         );
         Ok(plugin)
+    }
+
+    /// Runs a store call on the blocking pool: reads, scans and flushed writes must not
+    /// occupy the async workers (#274).
+    async fn blocking<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(PluginStore) -> T + Send + 'static,
+    ) -> Result<T, String> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || f(store))
+            .await
+            .map_err(|e| e.to_string())
     }
 
     /// Commit a call's state writes: locally, or under HA as one `PluginState` entry
@@ -547,14 +597,22 @@ impl Runner {
         }
         let stale = || "the state changed during the call; its writes were dropped".to_string();
         let (Some(ha), Some(term)) = (&self.ha, term) else {
-            return match self.store.commit_state_full(
-                id,
-                rev,
-                &fx.state_puts,
-                routes.as_deref(),
-                port_routes.as_deref(),
-                unix_now(),
-            ) {
+            // A sled-style write with a flush (an fsync) holds the store's write mutex, so it
+            // runs off the async workers.
+            let (id, puts) = (id.to_string(), fx.state_puts.clone());
+            let written = self
+                .blocking(move |store| {
+                    store.commit_state_full(
+                        &id,
+                        rev,
+                        &puts,
+                        routes.as_deref(),
+                        port_routes.as_deref(),
+                        unix_now(),
+                    )
+                })
+                .await?;
+            return match written {
                 Ok(_) => Ok(()),
                 Err(CommitError::Stale) => Err(stale()),
                 Err(e) => Err(e.to_string()),
@@ -863,6 +921,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
     }
@@ -1091,6 +1150,7 @@ mod tests {
             created_at: 1,
             created_by: None,
             webhook: None,
+            suspended: std::collections::BTreeSet::default(),
         };
         let done = handle
             .raft
@@ -1252,6 +1312,9 @@ mod tests {
         )
     }
 
+    /// A valid install id for tests that go through `set_suspended` (which validates).
+    const AID: &str = "000000000000000a";
+
     const HID: &str = "00000000000000aa";
 
     /// A webhook-enabled install (a valid id and sha, which `set_webhook` checks).
@@ -1271,6 +1334,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         let done = store.set_webhook(HID, Some(&"0".repeat(64))).unwrap();
@@ -1315,6 +1379,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         store.set_webhook(HID, Some(&"0".repeat(64))).unwrap();
@@ -1325,6 +1390,34 @@ mod tests {
             r.schedule.lock().await.loaded.contains_key(HID),
             "the scan evicted a plugin that only has a webhook"
         );
+    }
+
+    #[tokio::test]
+    async fn a_slow_tick_does_not_hold_up_the_scan_or_the_other_installs() {
+        let (r, store, _d) = fixture(1, 4);
+        install(&store, "a", &counter());
+        install(&store, "b", &counter());
+        let t0 = Instant::now();
+        r.run_due(t0).await; // schedules both for t0 + 30 s
+                             // Install a's turn is taken, so its tick waits, as a slow tick would.
+        let hold = r.install_lock("a").await;
+        let mut running = tokio::task::JoinSet::new();
+        tokio::time::timeout(Duration::from_secs(2), r.scan(secs(t0, 30), &mut running))
+            .await
+            .expect("the scan waited for a tick");
+        for _ in 0..200 {
+            if counter_value(&store, "b") == Some(1) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(counter_value(&store, "b"), Some(1), "b ticked on time");
+        assert_eq!(counter_value(&store, "a"), None);
+        // While a's tick is still in flight, the next scan starts no second one for it.
+        r.scan(secs(t0, 61), &mut running).await;
+        drop(hold);
+        while running.join_next().await.is_some() {}
+        assert_eq!(counter_value(&store, "a"), Some(1), "one call per install");
     }
 
     #[tokio::test]
@@ -1358,6 +1451,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         let t0 = Instant::now();
@@ -1378,6 +1472,24 @@ mod tests {
             r.run_hook(HID, Hook::Webhook(request())).await,
             Err(HookError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn a_suspended_capability_fails_the_next_call_and_resuming_needs_no_reload() {
+        let (r, store, _d) = fixture(1, 4);
+        hooked_install(&store);
+        r.run_hook(HID, Hook::Webhook(request())).await.unwrap();
+        assert_eq!(counter_value(&store, HID), Some(1));
+        let state: std::collections::BTreeSet<String> = ["state".to_string()].into();
+        store.set_suspended(HID, &state).unwrap();
+        // The cached plugin is reused (suspending is not part of the load key) and refuses.
+        assert!(r.run_hook(HID, Hook::Webhook(request())).await.is_err());
+        assert_eq!(counter_value(&store, HID), Some(1), "nothing was written");
+        store
+            .set_suspended(HID, &std::collections::BTreeSet::default())
+            .unwrap();
+        r.run_hook(HID, Hook::Webhook(request())).await.unwrap();
+        assert_eq!(counter_value(&store, HID), Some(2));
     }
 
     #[tokio::test]
@@ -1443,6 +1555,7 @@ mod tests {
                 created_at: 2,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         crate::plugins::events::deliver(
@@ -1486,16 +1599,26 @@ mod tests {
                 doc.len()
             ),
         );
-        install(&store, "a", &m);
+        install(&store, AID, &m);
         let t0 = Instant::now();
         r.run_due(t0).await;
         r.run_due(secs(t0, 30)).await;
-        let routes = store.routes("a").unwrap();
+        let routes = store.routes(AID).unwrap();
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].host, "a.mc.example.com");
         assert_eq!(store.overlay().unwrap().routes.len(), 1);
+        // Suspending `routes` withdraws what the plugin already committed (not only its
+        // next `routes_set`), keeps the stored table, and resuming brings it back.
+        let off: std::collections::BTreeSet<String> = ["routes".to_string()].into();
+        store.set_suspended(AID, &off).unwrap();
+        assert!(store.overlay().unwrap().routes.is_empty());
+        assert_eq!(store.routes(AID).unwrap().len(), 1);
+        store
+            .set_suspended(AID, &std::collections::BTreeSet::default())
+            .unwrap();
+        assert_eq!(store.overlay().unwrap().routes.len(), 1);
         // Disabling the install withdraws its routes from the overlay.
-        store.set_enabled("a", false).unwrap();
+        store.set_enabled(AID, false).unwrap();
         assert!(store.overlay().unwrap().routes.is_empty());
     }
     const PORT_TIMER: &str = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"state":{"max_bytes":256},"port_routes":{"ports":["30000-30009"],"proto":["udp","tcp"],"backends":["10.0.0.0/16"],"max_entries":4}}"#;
@@ -1523,16 +1646,16 @@ mod tests {
     async fn a_plugin_that_declares_port_routes_gets_stable_entry_ports() {
         let (r, store, _d) = fixture(1, 4);
         let doc = r#"[{"key":"srv-a","backend":"10.0.1.2:7777","proto":"udp","prefer":30005},{"key":"srv-b","backend":"10.0.1.3:25565","proto":"both"}]"#;
-        install(&store, "a", &port_guest(doc));
+        install(&store, AID, &port_guest(doc));
         let t0 = Instant::now();
         r.run_due(t0).await;
         r.run_due(secs(t0, 30)).await;
-        let table = store.port_routes("a").unwrap();
+        let table = store.port_routes(AID).unwrap();
         let got: Vec<_> = table.iter().map(|a| (a.key.as_str(), a.port)).collect();
         assert_eq!(got, vec![("srv-a", Some(30005)), ("srv-b", Some(30000))]);
         // The plugin reads its assignments back on the next call.
         r.run_due(secs(t0, 60)).await;
-        let (_, state) = store.state("a").unwrap();
+        let (_, state) = store.state(AID).unwrap();
         assert_eq!(
             String::from_utf8(state["n"].clone()).unwrap(),
             r#"{"srv-a":30005,"srv-b":30000}"#
@@ -1547,17 +1670,27 @@ mod tests {
         assert_eq!(
             ports,
             vec![
-                (30000, "10.0.1.3:25565", "plugin:a"),
-                (30005, "10.0.1.2:7777", "plugin:a")
+                (30000, "10.0.1.3:25565", "plugin:000000000000000a"),
+                (30005, "10.0.1.2:7777", "plugin:000000000000000a")
             ]
         );
         assert!(overlay.exhausted.is_empty());
+        // Suspending `port_routes` withdraws the listeners and keeps the ports reserved;
+        // resuming brings the same ports back.
+        let off: std::collections::BTreeSet<String> = ["port_routes".to_string()].into();
+        store.set_suspended(AID, &off).unwrap();
+        assert!(store.overlay().unwrap().port_routes.is_empty());
+        assert_eq!(store.port_ledger().unwrap().owners.len(), 2);
+        store
+            .set_suspended(AID, &std::collections::BTreeSet::default())
+            .unwrap();
+        assert_eq!(store.overlay().unwrap().port_routes.len(), 2);
         // Disabling the install withdraws the routes but keeps the ports reserved.
-        store.set_enabled("a", false).unwrap();
+        store.set_enabled(AID, false).unwrap();
         assert!(store.overlay().unwrap().port_routes.is_empty());
         assert_eq!(store.port_ledger().unwrap().owners.len(), 2);
         // Deleting releases them into quarantine.
-        store.delete("a").unwrap();
+        store.delete(AID).unwrap();
         let ledger = store.port_ledger().unwrap();
         assert!(ledger.owners.is_empty());
         assert_eq!(ledger.quarantine.len(), 2);
@@ -1576,6 +1709,7 @@ mod tests {
             created_at: 1,
             created_by: None,
             webhook: None,
+            suspended: std::collections::BTreeSet::default(),
         };
         let base = LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({})));
         assert!(base == LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({}))));
@@ -1626,6 +1760,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
     }

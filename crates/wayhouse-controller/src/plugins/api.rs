@@ -143,6 +143,7 @@ pub fn router(state: PluginsState) -> Router {
             "/plugins/{id}/webhook",
             post(enable_webhook).delete(revoke_webhook),
         )
+        .route("/plugins/{id}/suspended", put(put_suspended))
         .route("/plugins/{id}/enable", post(enable))
         .route("/plugins/{id}/disable", post(disable))
         .route("/plugins/{id}/secrets", get(list_secrets))
@@ -395,6 +396,7 @@ async fn install_inner(
             .map_or(0, |d| d.as_secs()),
         created_by: actor(headers),
         webhook: None,
+        suspended: std::collections::BTreeSet::default(),
     };
     // Every replica checks this again when it applies the entry; checking here is what
     // gives the operator the reason.
@@ -617,6 +619,79 @@ async fn disable(
     Path(id): Path<String>,
 ) -> Response {
     set_enabled(&st, &headers, id, false).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SuspendedRequest {
+    /// The whole set of switched-off capabilities; empty resumes. Names from `SUSPENDABLE`.
+    suspended: std::collections::BTreeSet<String>,
+}
+
+/// Switches capabilities of an install off or on again without touching its approval, so
+/// resuming needs no new approval. The runner applies the set before its next call.
+async fn put_suspended(
+    State(st): State<PluginsState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(req): Json<SuspendedRequest>,
+) -> Response {
+    if !valid_id(&id) {
+        return err(StatusCode::NOT_FOUND, "no such install");
+    }
+    let applied = if let Some(ha) = &st.ha {
+        if let Err(why) = super::peer::check_support(ha).await {
+            return err(StatusCode::CONFLICT, why);
+        }
+        let path = format!("/plugins/{id}/suspended");
+        let body = serde_json::json!({ "suspended": &req.suspended }).to_string();
+        let (store, read_id) = (st.store.clone(), id.clone());
+        return propose_write_as(
+            ha,
+            WriteRequest::PluginSetSuspended {
+                id,
+                suspended: req.suspended,
+            },
+            Method::PUT,
+            &path,
+            body,
+            &ForwardHeaders::from_headers(&headers),
+            move |resp| match resp {
+                WriteResponse::PluginApplied(_) => match store.get(&read_id) {
+                    Ok(Some(record)) => Json(record).into_response(),
+                    Ok(None) => err(StatusCode::NOT_FOUND, "no such install"),
+                    Err(e) => internal(e),
+                },
+                WriteResponse::PluginRejected(PluginReject::Invalid) => err(
+                    StatusCode::BAD_REQUEST,
+                    "a name is not a suspendable capability",
+                ),
+                other => unexpected(&other),
+            },
+        )
+        .await;
+    } else {
+        st.store.set_suspended(&id, &req.suspended)
+    };
+    match applied {
+        Ok(Applied::Done(_)) => {
+            tracing::info!(
+                target: "wayhouse_controller::plugins::audit",
+                what = "suspended set", install = %id, suspended = ?req.suspended,
+                actor = actor(&headers).as_deref(),
+                "plugin capabilities suspended or resumed"
+            );
+            match st.store.get(&id) {
+                Ok(Some(record)) => Json(record).into_response(),
+                Ok(None) => err(StatusCode::NOT_FOUND, "no such install"),
+                Err(e) => internal(e),
+            }
+        }
+        Ok(Applied::NoSuchInstall) => err(StatusCode::NOT_FOUND, "no such install"),
+        Ok(Applied::Invalid(why)) => err(StatusCode::BAD_REQUEST, why),
+        Ok(_) => err(StatusCode::BAD_REQUEST, "the change was refused"),
+        Err(e) => internal(e),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1968,6 +2043,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn suspending_a_capability_is_a_put_and_needs_no_new_approval() {
+        let (st, _d) = state(None);
+        let app = router(st.clone());
+        let sha = upload(&app, &module(CAPS)).await;
+        let (_, rec) = call(&app, "POST", "/plugins", install_body(&sha, CAPS), None).await;
+        let id = rec["id"].as_str().unwrap().to_string();
+        let path = format!("/plugins/{id}/suspended");
+        let (status, v) = call(
+            &app,
+            "PUT",
+            &path,
+            br#"{"suspended":["log"]}"#.to_vec(),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["suspended"], serde_json::json!(["log"]));
+        assert_eq!(v["approved"], rec["approved"]);
+        let (status, v) = call(
+            &app,
+            "PUT",
+            &path,
+            br#"{"suspended":["bogus"]}"#.to_vec(),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        let (status, _) = call(&app, "PUT", &path, br#"{"suspended":[]}"#.to_vec(), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(st.store.get(&id).unwrap().unwrap().suspended.is_empty());
+        let (status, _) = call(
+            &app,
+            "PUT",
+            "/plugins/0123456789abcdef/suspended",
+            br#"{"suspended":[]}"#.to_vec(),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn two_installs_share_one_blob() {
         let (st, _d) = state(None);
         let app = router(st.clone());
@@ -2074,6 +2191,49 @@ mod tests {
         let sha = upload(&app, &module(CAPS)).await;
         let (status, _) = call(&app, "POST", "/plugins", install_body(&sha, CAPS), None).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn a_busy_compile_pool_answers_503_at_once_not_after_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
+        let host = Arc::new(PluginHost::new(Limits::default()).unwrap());
+        // One worker, one queue slot, and a timeout so long that only `Busy` can be quick.
+        let pool = Arc::new(CompilePool::new(host, 1, 1, Duration::from_secs(60)).unwrap());
+        let store = PluginStore::open(&db).unwrap();
+        let st = PluginsState {
+            runner: Runner::new(store.clone(), pool.clone()),
+            store,
+            pool: pool.clone(),
+            auth_token: None,
+            ha: None,
+            keyring: KeyringHandle::default(),
+        };
+        let app = router(st);
+        let sha = upload(&app, &module(CAPS)).await;
+        // Hold the worker, then fill the queue slot behind it.
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+        let (p1, p2) = (pool.clone(), pool.clone());
+        let holder = std::thread::spawn(move || {
+            p1.call(move || {
+                let _ = started_tx.send(());
+                let _ = gate_rx.recv();
+            })
+        });
+        started_rx.recv().unwrap();
+        let queued = std::thread::spawn(move || p2.call(|| ()));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let began = std::time::Instant::now();
+        let (status, _) = call(&app, "POST", "/plugins", install_body(&sha, CAPS), None).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            began.elapsed() < Duration::from_secs(10),
+            "a full queue must refuse at once, not wait for the compile timeout"
+        );
+        drop(gate_tx);
+        holder.join().unwrap().unwrap();
+        queued.join().unwrap().unwrap();
     }
 
     #[tokio::test]

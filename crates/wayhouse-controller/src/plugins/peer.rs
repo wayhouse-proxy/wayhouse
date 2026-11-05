@@ -601,7 +601,10 @@ mod tests {
         // Level 4 is the port-routes build, which cannot read an ABI 0.2 module.
         let old = check_support_answers(&[(2, Ok(who(4)))]).unwrap_err();
         assert!(old.contains("node 2") && old.contains("upgrade"), "{old}");
-        assert_eq!(PLUGIN_SUPPORT, 5);
+        // Level 5 cannot decode `PluginSetSuspended`.
+        let old = check_support_answers(&[(2, Ok(who(5)))]).unwrap_err();
+        assert!(old.contains("node 2") && old.contains("upgrade"), "{old}");
+        assert_eq!(PLUGIN_SUPPORT, 6);
     }
 
     fn unreachable() -> WhoamiError {
@@ -798,6 +801,7 @@ mod tests {
             created_at: 1,
             created_by: None,
             webhook: None,
+            suspended: std::collections::BTreeSet::default(),
         }
     }
 
