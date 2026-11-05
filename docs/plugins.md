@@ -442,6 +442,40 @@ the status, and the plugin is called again at its next interval. Deleting an ins
 removes its state; disabling keeps it, and enabling again resumes against it. `created_by` is a label taken from
 the `X-Actor` header the caller sent, not a verified identity (the admin token is what authorises the call). This is the single-node form of the design's term-checked commit; the HA form is below.
 
+## The plugins file (`--plugins-file`)
+
+Instead of clicking, a controller can reconcile its installs with a YAML file (needs `--plugins`):
+
+```yaml
+plugins:
+    - name: pelican-main
+      sha256: 9f2c0000000000000000000000000000000000000000000000000000000041ab # the stored module
+      enabled: true
+      config:
+          panel_host: panel.example.com
+      approved_sha256: 41ab0000000000000000000000000000000000000000000000000000000041ab
+```
+
+`approved_sha256` is the SHA-256 of the capability set the options resolve to, as JSON. Do not
+compute it by hand: `GET /plugins/file/plan` (the dry run, admin token) lists what a reconcile
+would do and, for an entry whose hash is wrong, prints the real one in `effective_sha256`. The
+file never carries module bytes, secrets or webhook tokens: upload the module (or fetch it from a
+registry) first, and set secrets through the API.
+
+- **Runs** at start, on `SIGHUP`, and every 30 seconds, so a module uploaded after the file was
+  written is picked up. Under `--ha-peers` only the leader reconciles, after it has applied every committed entry; installing the `SIGHUP` handler means a hangup no longer ends the process; the writes go through Raft
+  like any other install write.
+- **Ownership.** The file only changes installs it created (their `created_by` is
+  `plugins-file`). An install made in the UI or API is never changed, adopted or removed; an
+  entry whose name clashes with one is reported as `refused`.
+- **Safety.** A file that cannot be read or parsed changes nothing, and that includes an empty or comment-only file: the `plugins:` list is required, and `plugins: []` is how to remove every managed install on purpose. An entry is applied only if
+  the module is stored and its approval hash matches; otherwise it is `refused` with the reason.
+  Removing an entry removes its install. To change an entry's module, give the entry a new name
+  (the old install is removed; the new one starts without the old one's secrets).
+- **Read-only in the API.** Config edits, enable, disable and delete of a managed install answer
+  `409` with `reason: managed_by_file`. Secrets, the webhook and suspending capabilities stay
+  available.
+
 ## The Plugins page (web UI)
 
 `wayhouse-ui` proxies the controller's `/plugins` API (`/api/plugins*`, needs `--controller-url`). Listing is viewer-level; installing, editing and removing need the admin role. The Plugins page lists installs with their approved capabilities in plain words, and a "Port routes" table lists every entry port the plugins hold (entry port first, then key, protocol, backend and plugin); a notice names the keys still waiting for a free port. A controller that does not serve plugins (off, slave) shows its reason instead of a list.

@@ -50,6 +50,7 @@ hickory-resolver = { workspace = true, optional = true }
 rand.workspace = true
 base64 = "0.22"
 sha2.workspace = true
+serde_norway.workspace = true
 zeroize = "1"
 metrics.workspace = true
 url = "2"
