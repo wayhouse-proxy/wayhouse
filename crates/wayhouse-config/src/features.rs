@@ -9,9 +9,9 @@
 //! worse than a rejected config), and a flag that is new after schema 4 adds a
 //! `features.<name>` entry to [`crate::version::FIELD_SINCE`].
 //!
-//! `wired` says whether the runtime consults the flag yet. The registry lands before the code
-//! that reads each flag (F3), so an unwired flag is accepted and reported but changes nothing;
-//! the UI hides it.
+//! `wired` says whether the runtime consults the flag yet. An unwired flag is accepted and
+//! reported but changes nothing; the UI hides it. The proxy reads the data-plane flags through
+//! `wayhouse_core::flags` (one bit per registry position, see the `ACL` style constants).
 
 use std::collections::BTreeMap;
 

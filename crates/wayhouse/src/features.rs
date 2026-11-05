@@ -120,7 +120,7 @@ pub async fn run(
     let url = format!("{base_url}/features/overrides");
     if restore(&saved) {
         tracing::info!(path = %saved.display(), "feature overrides restored");
-        publish(&handle.snapshot().features);
+        publish(&handle.snapshot().features, &handle);
     }
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
     // Warn when the failure changes (a rotated token shows up once), not every 15 s.
@@ -138,6 +138,8 @@ pub async fn run(
     };
     loop {
         tick.tick().await;
+        // An override that ran out puts its flag back even if the controller says nothing new.
+        publish(&handle.snapshot().features, &handle);
         let mut req = wayhouse_http::client().get(&url);
         if let Some(t) = &token {
             req = req.bearer_auth(t);
@@ -171,13 +173,33 @@ pub async fn run(
                 save(&saved, &next);
             }
             tracing::info!("feature overrides changed");
-            publish(&handle.snapshot().features);
+            publish(&handle.snapshot().features, &handle);
         }
     }
 }
 
-/// Sets `wayhouse_feature_enabled` and `wayhouse_feature_source` from `config`.
-pub fn publish(config: &BTreeMap<String, bool>) {
+/// The `port_routes` value the plugin overlay was last merged with.
+static PORT_ROUTES_MERGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Hands the effective values to the data path (`wayhouse_core::flags`). Returns whether
+/// `port_routes` differs from what the last config build merged, which asks for a rebuild.
+fn apply(config: &BTreeMap<String, bool>) -> bool {
+    use std::sync::atomic::Ordering;
+    let rows = effective(config);
+    let value = |name: &str| rows.iter().find(|r| r.name == name).is_none_or(|r| r.value);
+    wayhouse_core::flags::set_all(value);
+    let ports = value("port_routes");
+    PORT_ROUTES_MERGED.swap(ports, Ordering::SeqCst) != ports
+}
+
+/// Applies `config` and the live overrides to the data path, then sets
+/// `wayhouse_feature_enabled` and `wayhouse_feature_source`. A change of `port_routes` asks
+/// for a rebuild, since the plugin entry listeners are part of the built configuration.
+pub fn publish(config: &BTreeMap<String, bool>, handle: &wayhouse_core::RuntimeHandle) {
+    if apply(config) {
+        tracing::info!("port_routes changed; rebuilding the configuration");
+        handle.request_reload();
+    }
     for row in effective(config) {
         metrics::gauge!(m::FEATURE_ENABLED, "flag" => row.name).set(f64::from(u8::from(row.value)));
         for source in Source::ALL {
@@ -247,6 +269,34 @@ mod tests {
         let same = OVERRIDES.read().unwrap().clone();
         assert!(!set_overrides(same));
         set_overrides(BTreeMap::new());
+    }
+
+    #[test]
+    fn publishing_sets_what_the_data_path_reads_and_reports_a_port_routes_change() {
+        let _t = TURN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        set_overrides(BTreeMap::new());
+        let on = |name: &str| wayhouse_core::flags::on(wayhouse_config::features::index_of(name));
+        assert!(
+            !apply(&BTreeMap::new()),
+            "nothing changed from the defaults"
+        );
+        assert!(on("acl"));
+        let off = BTreeMap::from([
+            ("acl".to_string(), false),
+            ("port_routes".to_string(), false),
+        ]);
+        assert!(apply(&off), "port_routes went off");
+        assert!(!on("acl") && !on("port_routes") && on("geo"));
+        assert!(!apply(&off), "the same document changes nothing");
+        // An override that has run out puts a protection flag back on without a new document.
+        let past = BTreeMap::from([("geo".to_string(), (false, Some(1)))]);
+        set_overrides(past);
+        apply(&BTreeMap::new());
+        assert!(on("geo"), "an expired override does not hold geo off");
+        set_overrides(BTreeMap::new());
+        apply(&BTreeMap::new());
     }
 
     #[test]

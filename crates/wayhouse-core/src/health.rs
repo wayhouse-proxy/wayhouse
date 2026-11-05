@@ -163,7 +163,10 @@ fn sweep(
                 }
                 // This instance only ever asserts an opinion about a backend
                 // it actually checks itself (docs/10 "Tier 2").
-                if let Some(fabric) = gossip.as_ref().filter(|_| crate::flags::on(GOSSIP_VERDICTS)) {
+                if let Some(fabric) = gossip
+                    .as_ref()
+                    .filter(|_| crate::flags::on(GOSSIP_VERDICTS))
+                {
                     fabric.handle.publish_backend_health(backend.addr, ok);
                 }
             });
@@ -353,7 +356,10 @@ mod tests {
         {
             let _off = crate::flags::off(&["gossip_verdicts"]);
             sweep_and_settle(&snap, Some(&fabric)).await;
-            assert!(backend.is_healthy(), "the domain verdict is ignored while off");
+            assert!(
+                backend.is_healthy(),
+                "the domain verdict is ignored while off"
+            );
         }
 
         let _ = shutdown_tx.send(true);

@@ -57,6 +57,7 @@ use wayhouse_config::{Action, ListenerConfig, RouteHint};
 
 use crate::drain::{ConnGuard, ConnTracker};
 use crate::error::ListenerError;
+use crate::flags::on;
 use crate::geo::GeoDb;
 use crate::limits::{GlobalLimits, LimitGuard};
 use crate::metrics_defs as m;
@@ -69,6 +70,7 @@ use crate::snapshot::Snapshot;
 use crate::sniff::Sniffers;
 use crate::src_conns::{SourceGuard, SourceLimiter};
 use crate::util::{is_local_resource_error, mono_ms};
+use wayhouse_config::features::{ACL, GEO};
 
 /// Max datagram we will relay in either direction.
 const MAX_DATAGRAM: usize = 64 * 1024;
@@ -415,14 +417,14 @@ pub async fn run_udp_listener(
                     // IP is dropped before session allocation. Established
                     // sessions keep their steady-state path scan-free.
                     let client_ip = client.ip().to_canonical();
-                    if !cfg.acl.permits(client_ip) {
+                    if on(ACL) && !cfg.acl.permits(client_ip) {
                         metrics::counter!(
                             m::FILTER_BLOCKED,
                             "listener" => cfg.name.clone(), "filter" => "acl",
                         ).increment(1);
                         continue;
                     }
-                    if let Some(geo_acl) = &cfg.geo {
+                    if let Some(geo_acl) = cfg.geo.as_ref().filter(|_| on(GEO)) {
                         let admitted = geo
                             .as_deref()
                             .map(|db| geo_acl.permits(db.country_code(client_ip)))

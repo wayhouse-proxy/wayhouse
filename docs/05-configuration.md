@@ -248,8 +248,12 @@
 > directory) and load that file at start, so a restart during a controller outage keeps a kill
 > switch. A 404 or 501 from the controller (an older build) clears the overrides, so do not point
 > proxies at a controller of a different build than the rest of the fleet. A flag with
-> `wired: false` is accepted and reported but changes nothing. Overrides are replicated under HA
-> like dashboards.
+> `wired: false` is accepted and reported but changes nothing. The proxy flags `gossip_verdicts`,
+> `sniffers`, `port_routes`, `rate_limit`, `per_source`, `acl` and `geo` are wired: switching one
+> off takes effect for new connections (and at the next health sweep for `gossip_verdicts`) within
+> seconds, without a restart, and an expired override puts a protection flag back at once.
+> `port_routes` off removes the plugin entry-port listeners on the next rebuild: established TCP
+> sessions continue, UDP sessions drain. Overrides are replicated under HA like dashboards.
 >
 > **In the UI:** Configure > Features (`/features`) lists every flag the build enforces with its
 > value and where it comes from (default, config, override, or "not in this build"), the risk

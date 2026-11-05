@@ -491,7 +491,7 @@ async fn run(
     .map_err(|e| anyhow::anyhow!("cannot start listeners: {e}"))?;
     let handle = runtime.handle();
     metrics::gauge!(wayhouse_core::metrics_defs::CONFIG_VERSION).set(reload::unix_now());
-    features::publish(&cfg.features);
+    features::publish(&cfg.features, &handle);
     // Build identity + fd headroom (docs/06 "Planned / not yet built", now
     // built): version/commit are fixed for the process lifetime, so
     // `wayhouse_build_info` and `wayhouse_fd_limit` are set once; `wayhouse_fd_open` needs a
