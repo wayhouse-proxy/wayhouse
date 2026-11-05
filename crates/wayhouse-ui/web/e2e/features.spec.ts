@@ -17,12 +17,21 @@ const flag = (name: string, over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-test("an admin switches a protection flag off for an hour with a reason, then clears the override", async ({ page }) => {
+test("an admin switches a protection flag off for an hour with a reason, sees it on every node, then clears the override", async ({ page }) => {
   const puts: unknown[] = [];
   let overridden = false;
   await page.route("**/ui/session", (r) => r.fulfill({ status: 200, body: "ok" }));
   await page.route("**/ws/**", (r) => r.abort());
   await page.route("**/api/config", (r) => r.fulfill({ body: "pools: []\n", headers: { "x-config-revision": "1" } }));
+  await page.route("**/api/fleet/features", (r) =>
+    r.fulfill({
+      json: {
+        reporting: 3,
+        total: 3,
+        flags: [{ name: "acl", on: overridden ? 0 : 3, off: overridden ? 3 : 0, unavailable: 0, off_instances: overridden ? ["eu-1", "eu-2", "us-1"] : [], overridden_instances: [] }],
+      },
+    }),
+  );
   await page.route("**/api/features/overrides", (r) =>
     r.fulfill({ json: { items: overridden ? [{ name: "acl", value: false, reason: "false positives", actor: "ana", set_at: 1, expires_at: 4102444800 }] : [] } }),
   );
@@ -48,10 +57,12 @@ test("an admin switches a protection flag off for an hour with a reason, then cl
   await dlg.getByRole("button", { name: "Turn off acl" }).click();
   await expect(dlg).toBeHidden();
   expect(puts).toHaveLength(1);
-  expect(puts[0]).toMatchObject({ value: false, reason: "false positives" });
+  expect(puts[0]).toMatchObject({ value: false, reason: "false positives", ttl_secs: 3600 });
+  expect(puts[0]).not.toHaveProperty("expires_at");
   await expect(page.getByText(/Protection is reduced: acl is off/)).toBeVisible();
+  await expect(page.getByText("off on 3 of 3 nodes")).toBeVisible();
 
   await page.getByRole("button", { name: "Clear override of acl" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Clear override" }).click();
+  await page.getByRole("button", { name: "Yes, clear acl" }).click();
   await expect(page.getByText(/Protection is reduced/)).toHaveCount(0);
 });
