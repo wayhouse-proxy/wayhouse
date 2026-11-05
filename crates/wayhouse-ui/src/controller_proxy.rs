@@ -68,9 +68,18 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/config/revert", post(revert_config))
         .route(
             "/api/acme/sites/{name}",
-            put(put_acme_site).delete(delete_acme_site),
+            put(put_acme_site)
+                .delete(delete_acme_site)
+                .layer(DefaultBodyLimit::max(ACME_SITE_BODY_BYTES)),
         )
-        .route("/api/acme/gateways", post(create_acme_gateway))
+        .route(
+            "/api/acme/gateways",
+            post(create_acme_gateway).layer(DefaultBodyLimit::max(ACME_GATEWAY_BODY_BYTES)),
+        )
+        .route(
+            "/api/acme/gateways/{name}",
+            axum::routing::delete(revoke_acme_gateway),
+        )
         .route("/api/tunnel/origins/{name}", delete(release_origin))
         .route("/api/tunnel/proxies/{name}", delete(release_proxy))
         .route(
@@ -109,6 +118,11 @@ pub fn admin_router() -> Router<AppState> {
 /// A reason, a boolean and an expiry; the controller reads little more.
 const FEATURE_OVERRIDE_BODY_BYTES: usize = 8 * 1024;
 
+/// A site names at most 100 names of at most 253 bytes, plus a few short fields.
+const ACME_SITE_BODY_BYTES: usize = 64 * 1024;
+/// A gateway registration is one name.
+const ACME_GATEWAY_BODY_BYTES: usize = 1024;
+
 /// The controller's own cap on an install's config is 64 KiB; the rest is the approved set.
 const PLUGIN_CONFIG_BODY_BYTES: usize = 80 * 1024;
 /// The controller refuses a bigger secret body (16 KiB) too.
@@ -130,6 +144,7 @@ async fn put_acme_site(
     let Some(segment) = crate::proxy_util::path_segment(&name) else {
         return bad_acme_name();
     };
+    tracing::info!(actor = actor.as_deref().unwrap_or("-"), site = %name, "acme: put site");
     proxy_typed(
         &state,
         Method::PUT,
@@ -150,6 +165,7 @@ async fn delete_acme_site(
     let Some(segment) = crate::proxy_util::path_segment(&name) else {
         return bad_acme_name();
     };
+    tracing::info!(actor = actor.as_deref().unwrap_or("-"), site = %name, "acme: delete site");
     proxy(
         &state,
         Method::DELETE,
@@ -167,12 +183,37 @@ async fn create_acme_gateway(
     Extension(Actor(actor)): Extension<Actor>,
     body: Bytes,
 ) -> Response {
+    // Only the actor: the body is a name, but the answer carries the token and is never logged.
+    tracing::info!(
+        actor = actor.as_deref().unwrap_or("-"),
+        "acme: register gateway"
+    );
     proxy_typed(
         &state,
         Method::POST,
         "/acme/gateways".to_string(),
         Some(body),
         Some("application/json"),
+        actor,
+    )
+    .await
+}
+
+/// `DELETE /api/acme/gateways/{name}`: revokes a gateway; its token answers `401` at once (docs/acme.md).
+async fn revoke_acme_gateway(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(name): Path<String>,
+) -> Response {
+    let Some(segment) = crate::proxy_util::path_segment(&name) else {
+        return bad_acme_name();
+    };
+    tracing::info!(actor = actor.as_deref().unwrap_or("-"), gateway = %name, "acme: revoke gateway");
+    proxy(
+        &state,
+        Method::DELETE,
+        format!("/acme/gateways/{segment}"),
+        None,
         actor,
     )
     .await
@@ -1500,7 +1541,14 @@ mod tests {
     async fn acme_site_name_cannot_be_steered_to_another_controller_path() {
         let (url, seen) = recording_controller(StatusCode::OK).await;
         let app = app_with_controller(url, None);
-        for name in ["..", "%2E%2E", "a%2Fb", "a%3Fb"] {
+        // Dot segments are refused outright; a separator or query character stays inside one segment.
+        for (name, forwarded) in [
+            ("..", None),
+            ("%2E%2E", None),
+            ("a%2Fb", Some("/acme/sites/a%2Fb")),
+            ("a%3Fb", Some("/acme/sites/a%3Fb")),
+        ] {
+            seen.lock().unwrap().clear();
             let resp = app
                 .clone()
                 .oneshot(
@@ -1510,16 +1558,86 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert!(
-                resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::OK,
-                "{name}"
-            );
+            let paths: Vec<String> = seen.lock().unwrap().iter().map(|r| r.1.clone()).collect();
+            match forwarded {
+                None => {
+                    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{name}");
+                    assert!(paths.is_empty(), "{name}: {paths:?}");
+                }
+                Some(path) => {
+                    assert_eq!(resp.status(), StatusCode::OK, "{name}");
+                    assert_eq!(paths, [path], "{name}");
+                }
+            }
         }
-        assert!(seen
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|(_, p, _, _)| p.starts_with("/acme/sites/") && p.matches('/').count() == 3));
+    }
+
+    #[tokio::test]
+    async fn acme_writes_refuse_an_oversized_body_and_forward_nothing() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        let big = |n: usize| Body::from("x".repeat(n));
+        for (req, name) in [
+            (
+                Request::put("/api/acme/sites/web").body(big(ACME_SITE_BODY_BYTES + 1)),
+                "put site",
+            ),
+            (
+                Request::post("/api/acme/gateways").body(big(ACME_GATEWAY_BODY_BYTES + 1)),
+                "register gateway",
+            ),
+        ] {
+            let resp = app.clone().oneshot(req.unwrap()).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE, "{name}");
+        }
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_feature_override_body_over_the_cap_is_refused_and_forwards_nothing() {
+        let (url, seen) = recording_controller(StatusCode::NO_CONTENT).await;
+        let app = app_with_controller(url, None);
+        let resp = app
+            .oneshot(
+                Request::put("/api/features/overrides/acl")
+                    .body(Body::from("x".repeat(FEATURE_OVERRIDE_BODY_BYTES + 1)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoking_a_gateway_calls_the_controller_with_one_encoded_segment() {
+        let (url, seen) = recording_controller(StatusCode::NO_CONTENT).await;
+        let app = app_with_controller(url, None);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::delete("/api/acme/gateways/edge-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let resp = app
+            .oneshot(
+                Request::delete("/api/acme/gateways/..")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(
+            (seen[0].0.as_str(), seen[0].1.as_str()),
+            ("DELETE", "/acme/gateways/edge-1")
+        );
     }
 
     #[tokio::test]

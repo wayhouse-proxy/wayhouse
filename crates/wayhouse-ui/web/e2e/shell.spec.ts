@@ -42,7 +42,7 @@ test("the rail is reachable by keyboard", async ({ page }) => {
   await expect(page).toHaveURL(/\/settings\/appearance$/);
 });
 
-test("a deep client route opens straight from its URL (assets load from the root)", async ({ page }) => {
+test("a deep client route loads on the preview server (the Rust fallback is tested in static_files.rs)", async ({ page }) => {
   await stub(page, "admin");
   await page.goto("/plugins/new");
   await expect(page.getByRole("heading", { level: 1, name: "Install a plugin" })).toBeVisible();

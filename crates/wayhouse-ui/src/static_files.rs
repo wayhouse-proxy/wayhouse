@@ -22,7 +22,9 @@ const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 /// gets the app. Otherwise a stale `/assets/index-OLDHASH.js` after an upgrade would be served the
 /// app as `text/html` with status 200.
 fn names_a_file(path: &str) -> bool {
-    path.rsplit('/').next().is_some_and(|last| last.contains('.'))
+    path.rsplit('/')
+        .next()
+        .is_some_and(|last| last.contains('.'))
 }
 
 pub fn service(dir: &Path) -> Router {
@@ -116,8 +118,14 @@ mod tests {
         let app = service(dir.path());
 
         assert_eq!(cache_control(&app, "/").await.as_deref(), Some("no-cache"));
-        assert_eq!(cache_control(&app, "/settings/source").await.as_deref(), Some("no-cache"));
-        assert_eq!(cache_control(&app, "/assets/a.js").await.as_deref(), Some(IMMUTABLE));
+        assert_eq!(
+            cache_control(&app, "/settings/source").await.as_deref(),
+            Some("no-cache")
+        );
+        assert_eq!(
+            cache_control(&app, "/assets/a.js").await.as_deref(),
+            Some(IMMUTABLE)
+        );
         // A missing asset must not be remembered as immutable.
         assert_eq!(cache_control(&app, "/assets/missing.js").await, None);
     }
@@ -143,7 +151,10 @@ mod tests {
             );
         }
         // A file name that does not exist is a 404, not the app; and nothing else is cached wrongly.
-        assert_eq!(get(&app, "/assets/missing.js").await.0, StatusCode::NOT_FOUND);
+        assert_eq!(
+            get(&app, "/assets/missing.js").await.0,
+            StatusCode::NOT_FOUND
+        );
         assert_eq!(get(&app, "/favicon.ico").await.0, StatusCode::NOT_FOUND);
         for api in ["/api/nope", "/ui/nope", "/ws/nope"] {
             assert_eq!(get(&app, api).await.0, StatusCode::NOT_FOUND, "{api}");
