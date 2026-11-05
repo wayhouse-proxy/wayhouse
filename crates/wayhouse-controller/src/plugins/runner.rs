@@ -1618,7 +1618,7 @@ mod tests {
         let rec = |approved: &str, config: serde_json::Value| InstallRecord {
             id: "00000000000000aa".into(),
             name: "demo".into(),
-            sha256: AID.repeat(64),
+            sha256: "a".repeat(64),
             size: 3,
             approved: wayhouse_plugin_host::Capabilities::parse(approved.as_bytes()).unwrap(),
             config,
@@ -1634,7 +1634,7 @@ mod tests {
             base != LoadKey::of(&rec(r#"{}"#, serde_json::json!({}))),
             "caps revoked"
         );
-        assert!(base != LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({AID: 1}))));
+        assert!(base != LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({"a": 1}))));
     }
 
     /// Logs "hello" at each tick; its `log` capability is fixed, its routes are bound.
