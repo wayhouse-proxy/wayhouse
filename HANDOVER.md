@@ -447,6 +447,27 @@ Listener reconcile, backend overlay rebuild, backend discovery refresh
 (`refresh_loop` per source → `fetch` → `Discovery::store` + `notify` → snapshot
 rebuild reads `Discovery::get`).
 
+### Controller store write rate (redb, #430)
+
+Every `Tree::insert`/`remove` in `kv.rs` is its own write transaction with an fsync, and
+writers queue behind one another. `write_rate_of_single_inserts` (ignored; run
+`cargo test -p wayhouse-controller write_rate -- --ignored --nocapture`) measures it. On the
+cloud container's virtual disk (2026-11-05, debug build, 200-byte values):
+
+| writers | commits per second | latency of one write |
+| ------- | ------------------ | -------------------- |
+| 1       | about 760          | 1.3 ms               |
+| 8       | about 770          | 10 ms                |
+| 64      | about 650          | 100 ms               |
+
+So the store does about 650 to 770 commits per second however many threads write: more
+writers add queueing, not throughput. A 500-node fleet that wrote once per node every 5 s
+would use about 100 commits per second (13% of that). Which paths write per request, and how
+often, was not measured here, and a physical disk's fsync time differs from this one's. No
+batching or `spawn_blocking` until a real deployment's write rate gets near these numbers;
+the first thing to look at then is the peer and session updates, since proxy heartbeats go
+to the aggregator, which keeps them in memory.
+
 ---
 
 ## Codebase map
