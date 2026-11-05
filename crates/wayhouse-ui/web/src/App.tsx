@@ -56,6 +56,7 @@ export function App() {
     <QueryProvider>
     <ThemeSync />
     <Routes>
+      <Route element={<SharedConfigDoc />}>
       <Route element={<Shell banner={<TrialBar />} onSignOut={() => logout().finally(() => setSession(null))} />}>
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
@@ -63,15 +64,13 @@ export function App() {
         <Route path="/listeners" element={<ListenersPage />} />
         <Route path="/pools" element={<PoolsPage />} />
         <Route path="/fleet" element={<FleetPage />} />
-        <Route element={<SharedConfigDoc />}>
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/settings/source" element={<SourcePage />} />
-          <Route path="/config/listeners" element={<ListenersEditorPage />} />
-          <Route path="/config/pools" element={<PoolsEditorPage />} />
-          <Route path="/config/sources" element={<SourcesEditorPage />} />
-          <Route path="/config/resolvers" element={<ResolversEditorPage />} />
-          <Route path="/config/web" element={<WebEditorPage />} />
-        </Route>
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/settings/source" element={<SourcePage />} />
+        <Route path="/config/listeners" element={<ListenersEditorPage />} />
+        <Route path="/config/pools" element={<PoolsEditorPage />} />
+        <Route path="/config/sources" element={<SourcesEditorPage />} />
+        <Route path="/config/resolvers" element={<ResolversEditorPage />} />
+        <Route path="/config/web" element={<WebEditorPage />} />
         <Route path="/settings/appearance" element={<AppearancePage />} />
         <Route path="/settings/layout" element={<LayoutPage />} />
         <Route path="/sniffers" element={<SniffersPage />} />
@@ -83,6 +82,7 @@ export function App() {
         <Route path="/certificates" element={<CertificatesPage />} />
         <Route path="/features" element={<FeaturesPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      </Route>
       </Route>
     </Routes>
     </QueryProvider>
