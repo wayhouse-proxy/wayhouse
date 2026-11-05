@@ -56,7 +56,8 @@ DOCS_ONLY = re.compile(r"\.md$|^docs/|^LICENSE-")
 
 # Non-Cargo paths per area, on top of the package graph.
 EXTRA = {
-    "ui": re.compile(r"^crates/wayhouse-ui/web/"),
+    # The UI forms are generated from the config JSON schema, so a schema change tests them.
+    "ui": re.compile(r"^crates/wayhouse-ui/web/|^crates/wayhouse-config/schema/"),
     # .config/nextest.toml holds the `ci` profile the job runs under; sniffers.lock
     # pins the modules it fetches. (fetch_sniffers.py lives under .github/, which
     # already runs everything.)

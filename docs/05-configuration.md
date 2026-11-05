@@ -235,13 +235,21 @@
 >
 > **Emergency overrides (controller):** an operator can override a flag for the whole fleet
 > without touching any config: `PUT /features/overrides/{name}` on the controller with
-> `{"value": false, "reason": "...", "expires_at": <unix seconds, optional>}` (the UI backend
-> adds `X-Actor`), `DELETE` to clear, `GET /features/overrides` to list. An override beats the
+> `{"value": false, "reason": "...", "ttl_secs": <seconds, optional>}` (or `expires_at`, unix
+> seconds, instead of `ttl_secs`; the controller stamps the expiry from its own clock when it
+> gets `ttl_secs`; the UI backend adds `X-Actor`), `DELETE` to clear, `GET /features/overrides` to list. An override beats the
 > `features:` section and the default; a flag compiled out of a binary stays off. A flag that
 > opens new exposure is `off_only` (an override can only turn it off), and switching a
-> protection flag off needs an `expires_at`, after which it is on again. Proxies poll the
-> controller every 15 s, judge the expiry themselves and keep the last overrides when the
-> controller is unreachable. Overrides are replicated under HA like dashboards.
+> protection flag off needs an expiry at most 7 days away, after which it is on again. Every set
+> and delete writes a `warn` audit line on the controller (flag, value, reason, expiry, actor).
+> Proxies poll the controller every 15 s, judge the expiry themselves and keep the last
+> overrides when the controller is unreachable; they also save them to
+> `--feature-overrides-file` (default `wayhouse-feature-overrides.json` in the working
+> directory) and load that file at start, so a restart during a controller outage keeps a kill
+> switch. A 404 or 501 from the controller (an older build) clears the overrides, so do not point
+> proxies at a controller of a different build than the rest of the fleet. A flag with
+> `wired: false` is accepted and reported but changes nothing. Overrides are replicated under HA
+> like dashboards.
 >
 > **In the UI:** Configure > Features (`/features`) lists every flag the build enforces with its
 > value and where it comes from (default, config, override, or "not in this build"), the risk

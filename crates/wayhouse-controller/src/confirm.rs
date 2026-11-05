@@ -52,8 +52,8 @@ pub fn lockout_risks(old: Option<&Config>, new: &Config) -> Vec<&'static str> {
     let hits = [
         old.admin_listen != new.admin_listen,
         old.admin_auth_token != new.admin_auth_token,
-        format!("{:?}", old.admin_tls) != format!("{:?}", new.admin_tls),
-        format!("{:?}", old.gossip) != format!("{:?}", new.gossip),
+        old.admin_tls != new.admin_tls,
+        old.gossip != new.gossip,
         touched_listener(old, new) || touched_listener(new, old),
     ];
     RISKS
@@ -69,7 +69,9 @@ pub struct Trial {
     /// The revision whose bytes come back if nobody confirms.
     pub revert_to: u64,
     /// Unix milliseconds. The proposer's clock, carried through the Raft log, so every replica
-    /// reads the same deadline; controllers need clocks within a second or so of each other.
+    /// reads the same deadline. A skewed proposer shortens or lengthens the window the operator
+    /// sees by the skew, which is why the shortest window is 10 s and controllers must keep
+    /// their clocks within a second or two (NTP); `docs/10` says so.
     pub deadline_ms: u64,
     /// Why the window exists: [`RISKS`] ids, or empty when the caller asked for it.
     pub reasons: Vec<String>,

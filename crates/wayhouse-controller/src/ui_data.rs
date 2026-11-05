@@ -244,6 +244,9 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                 .get("widgets")
                 .and_then(Value::as_array)
                 .ok_or("widgets must be an array")?;
+            if obj.get("version").is_some_and(|v| !v.is_u64()) {
+                return Err("version must be a whole number".into());
+            }
             if widgets.len() > MAX_WIDGETS {
                 return Err(format!("widgets can hold at most {MAX_WIDGETS} entries"));
             }
@@ -404,6 +407,11 @@ impl UiStore {
             .map_err(Into::into)
     }
 
+    /// How many records of `kind` there are, without parsing them.
+    fn count(&self, kind: Kind) -> usize {
+        self.records.scan_prefix(key(kind, "")).count()
+    }
+
     /// Named records of `kind`, by name.
     pub fn list(&self, kind: Kind) -> Result<Vec<(String, Value)>, UiStoreError> {
         let prefix = key(kind, "");
@@ -447,7 +455,7 @@ impl UiStore {
                 }
                 let k = key(*kind, name);
                 if let Some(max) = kind.max_records() {
-                    if self.records.get(&k)?.is_none() && self.list(*kind)?.len() >= max {
+                    if self.records.get(&k)?.is_none() && self.count(*kind) >= max {
                         return Ok(Err(Applied::Full(max)));
                     }
                 }
@@ -869,6 +877,25 @@ mod tests {
             s.apply_local(&del(Kind::Dashboard, "nope")).unwrap(),
             Applied::NotFound
         );
+    }
+
+    #[test]
+    fn a_dashboard_version_must_be_a_whole_number() {
+        let (s, _d) = store();
+        let mut d = dash();
+        d["version"] = json!(3);
+        assert_eq!(
+            s.apply_local(&put(Kind::Dashboard, "v", d.clone()))
+                .unwrap(),
+            Applied::Done
+        );
+        for bad in [json!("3"), json!(-1), json!(1.5), json!(null)] {
+            d["version"] = bad;
+            let got = s
+                .apply_local(&put(Kind::Dashboard, "v", d.clone()))
+                .unwrap();
+            assert!(invalid(got).contains("version"), "{d}");
+        }
     }
 
     #[test]

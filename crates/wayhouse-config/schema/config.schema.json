@@ -1272,6 +1272,48 @@
       },
       "default": {},
       "description": "Feature flags by name (`features.rs`). Config schema 4.",
+      "properties": {
+        "acl": {
+          "description": "Client address allow and deny lists are bypassed.",
+          "type": "boolean"
+        },
+        "admin_write.backends": {
+          "description": "Adding, patching and removing backends through the admin API answers 403.",
+          "type": "boolean"
+        },
+        "admin_write.route_hint": {
+          "description": "Route hints answer 403.",
+          "type": "boolean"
+        },
+        "admin_write.sniffer_upload": {
+          "description": "Uploading, deleting and rolling back sniffer modules answers 403.",
+          "type": "boolean"
+        },
+        "geo": {
+          "description": "Country allow and deny lists are bypassed.",
+          "type": "boolean"
+        },
+        "gossip_verdicts": {
+          "description": "Backends are judged by this proxy's own health checks only; regional correlation is lost.",
+          "type": "boolean"
+        },
+        "per_source": {
+          "description": "Per-source connection limits are bypassed: less protection against one noisy client.",
+          "type": "boolean"
+        },
+        "port_routes": {
+          "description": "Plugin entry listeners are removed; customers lose those ports (they stay reserved).",
+          "type": "boolean"
+        },
+        "rate_limit": {
+          "description": "New-connection rate limits are bypassed: less protection against floods.",
+          "type": "boolean"
+        },
+        "sniffers": {
+          "description": "Routes with `sniffer:` never match, so players can land on the default or another pool.",
+          "type": "boolean"
+        }
+      },
       "type": "object",
       "x-wayhouse-since": 4
     },

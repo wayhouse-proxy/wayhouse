@@ -334,7 +334,7 @@ impl Config {
 /// Resolved `settings.gossip` (phase 13, docs/10 "Tier 2"). The mesh itself
 /// (`foca`, the UDP socket, the HMAC auth) lives in `wayhouse-core::gossip` — this
 /// is just the validated config it reads.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GossipConfig {
     pub bind: SocketAddr,
     pub seeds: Vec<SocketAddr>,
