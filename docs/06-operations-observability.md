@@ -673,6 +673,57 @@ for the fan-out verbs and forwards the header on to each instance — a
 convenience, not a durable record (this aggregator holds no durable state
 by design).
 
+### Feature flags: what to flip when
+
+A flag is a switch for one capability; the config sets it, an override is the emergency
+exception on top (see [05-configuration.md](05-configuration.md)). In the
+UI, **Configure > Features** shows each flag with its value, where the value comes from, what
+turning it off costs, and (with more than one node reporting) which nodes run it off or
+without the code. Everything below works the same on a single instance. The examples use the
+controller directly; they are valid in fish and bash (`$TOKEN` is the controller's
+`--auth-token`, `$CTL` its address, `$AGG` and `$AGG_TOKEN` the aggregator's address and its own `--auth-token`).
+
+| Symptom | Flip | Cost of flipping | Ends |
+|---|---|---|---|
+| Players land on the wrong pool after a sniffer change | `sniffers` off | Routes with `sniffer:` never match; rejects stop dropping connections | Always has an end time (at most 7 days) |
+| A bad deploy of an ACL, country list or limit locks real players out | `acl`, `geo`, `rate_limit` or `per_source` off | That protection is gone for new connections | Always has an end time (at most 7 days) |
+| A plugin's ports must stop taking customers | `port_routes` off | Those listeners are removed; TCP sessions already open continue | Until cleared (it can only be turned off) |
+| Backend verdicts from other regions are wrong | `gossip_verdicts` off | Each proxy judges backends by its own checks | Until cleared |
+| A plugin webhook is being abused | `plugin_webhooks` off | The webhook listener answers 503; plugin ticks go on | Until cleared |
+| Certificate orders keep failing and you want them to stop | `acme_issuance` off | No new orders or renewals; served certificates keep working until they expire | Until cleared |
+| Nobody should change backends, sniffers or route hints right now | `admin_write.backends`, `.sniffer_upload`, `.route_hint` off | Those write routes answer 403; reads and drain stay open | Until cleared |
+
+Turn a flag off for an hour, with the reason that is recorded next to your name:
+
+```
+curl -sS -X PUT "$CTL/features/overrides/acl" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"value": false, "reason": "false positives after the 14:00 deploy", "ttl_secs": 3600}'
+```
+
+See what is overridden, then clear it:
+
+```
+curl -sS "$CTL/features/overrides" -H "Authorization: Bearer $TOKEN"
+curl -sS -X DELETE "$CTL/features/overrides/acl" -H "Authorization: Bearer $TOKEN"
+```
+
+The fleet view, for "which nodes are off":
+
+```
+curl -sS "$AGG/fleet/features" -H "Authorization: Bearer $AGG_TOKEN"
+```
+
+Things to know before relying on it:
+
+- Proxies pick an override up within about 15 seconds and keep the last one when the controller
+  is unreachable; an expired one is dropped by the proxy itself.
+- Turning a flag off does not touch connections that are already open (the table says where that
+  differs). It never restarts anything.
+- An override survives a config change. Clear it, or let it end, to go back to the config value.
+- A node whose build lacks the code behind a flag reports it as not available; no override can
+  switch it on.
+- Every set and clear writes a `warn` audit line on the controller with the flag, value, reason,
+  end time and actor.
+
 ### Fronting layer: anycast vs. L4 load balancer
 
 | | **BGP anycast** (same VIP announced from every site) | **L4 LB / NLB** (per-region VIP, flow hashing) |

@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { parse } from "yaml";
-import { ApiError, clearFeatureOverride, getCurrentConfig, getFeatures, listFeatureOverrides, putFeatureOverride } from "../api";
-import type { FeatureFlag, FeatureOverride } from "../types";
+import { ApiError, clearFeatureOverride, getCurrentConfig, getFeatures, getFleetFeatures, listFeatureOverrides, putFeatureOverride } from "../api";
+import type { FeatureFlag, FeatureOverride, FlagRollup } from "../types";
 import { AlertBar, PageHeader } from "../components/shell/Page";
 import { ErrorState, Loading } from "../components/shell/States";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
-import { useConfirm } from "../components/ui/ConfirmDialog";
 import { Dialog } from "../components/ui/Dialog";
 import { Select, Textarea } from "../components/ui/Input";
 import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
@@ -20,7 +19,31 @@ const TTLS: [string, number][] = [
   ["24 hours", 86400],
 ];
 
+/** Plain names for the flags; one this build does not know shows its key alone. */
+const LABELS: Record<string, string> = {
+  gossip_verdicts: "Shared verdicts",
+  sniffers: "Protocol sniffers",
+  port_routes: "Port routes",
+  rate_limit: "Rate limiting",
+  per_source: "Per-source limits",
+  acl: "Access lists",
+  geo: "Geo rules",
+  plugin_webhooks: "Plugin webhooks",
+  acme_issuance: "Certificate issuance",
+  registry_install: "Registry install",
+  tunnel_registration: "Tunnel registration",
+};
+
 const SOURCE_LABEL = { default: "default", config: "config", override: "override", build: "not in this build" };
+
+/** Which nodes run the flag differently; nothing to say when one node reports or all agree. */
+function fleetNote(r: FlagRollup | undefined, reporting: number): { lines: string[]; names: string } | null {
+  if (!r || reporting < 2) return null;
+  const lines = [];
+  if (r.off > 0) lines.push(`off on ${r.off} of ${reporting} nodes`);
+  if (r.unavailable > 0) lines.push(`not in the build on ${r.unavailable} of ${reporting} nodes`);
+  return lines.length ? { lines, names: r.off_instances.join(", ") } : null;
+}
 
 function span(secs: number): string {
   const abs = Math.abs(secs);
@@ -64,7 +87,7 @@ function OverrideDialog({ flag, onClose, onDone }: { flag: FeatureFlag; onClose:
     setProblem(null);
     setBusy(true);
     try {
-      await putFeatureOverride(flag.name, turnOn, reason.trim(), ttl === "never" ? undefined : Math.floor(Date.now() / 1000) + Number(ttl));
+      await putFeatureOverride(flag.name, turnOn, reason.trim(), ttl === "never" ? undefined : Number(ttl));
       onDone();
     } catch (err) {
       setProblem(err instanceof ApiError ? err.message : String(err));
@@ -123,16 +146,26 @@ function OverrideDialog({ flag, onClose, onDone }: { flag: FeatureFlag; onClose:
 // from, and the emergency override (docs/05-configuration.md, "Feature flags").
 export function FeaturesPage() {
   const admin = useCan("admin");
-  const { confirm, dialog } = useConfirm();
-  const [rows, setRows] = useState<FeatureFlag[] | null>(null);
+    const [rows, setRows] = useState<FeatureFlag[] | null>(null);
   const [overrides, setOverrides] = useState<Record<string, FeatureOverride>>({});
   const [configRead, setConfigRead] = useState(true);
   const [overridesRead, setOverridesRead] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [fleet, setFleet] = useState<{ reporting: number; byName: Record<string, FlagRollup> } | null>(null);
+  const [clearing, setClearing] = useState<string | null>(null);
+  // The confirm swaps the row's buttons, which drops focus to the page: put it on Keep, then back.
+  const keepRef = useRef<HTMLButtonElement>(null);
+  const clearRefs = useRef(new Map<string, HTMLButtonElement | null>());
+  const lastClearing = useRef<string | null>(null);
+  useEffect(() => {
+    if (clearing) keepRef.current?.focus();
+    else if (lastClearing.current) clearRefs.current.get(lastClearing.current)?.focus();
+    lastClearing.current = clearing;
+  }, [clearing]);
   const [editing, setEditing] = useState<FeatureFlag | null>(null);
 
   const refresh = useCallback(async () => {
-    const [f, o, c] = await Promise.allSettled([getFeatures(), listFeatureOverrides(), getCurrentConfig()]);
+    const [f, o, c, n] = await Promise.allSettled([getFeatures(), listFeatureOverrides(), getCurrentConfig(), getFleetFeatures()]);
     if (f.status === "rejected") {
       setError(f.reason instanceof Error ? f.reason : new Error(String(f.reason)));
       return;
@@ -143,6 +176,7 @@ export function FeaturesPage() {
     setOverridesRead(o.status === "fulfilled");
     const now = Math.floor(Date.now() / 1000);
     setOverrides(Object.fromEntries((o.status === "fulfilled" ? o.value.items : []).filter((x) => !x.expires_at || x.expires_at > now).map((x) => [x.name, x])));
+    setFleet(n.status === "fulfilled" ? { reporting: n.value.reporting, byName: Object.fromEntries(n.value.flags.map((x) => [x.name, x])) } : null);
     setRows(merge(f.value.flags, f.value.proxy_flags, config));
   }, []);
 
@@ -151,13 +185,7 @@ export function FeaturesPage() {
   }, [refresh]);
 
   async function clear(flag: FeatureFlag) {
-    const ok = await confirm({
-      title: `Clear the override of ${flag.name}?`,
-      description: `It goes back to ${flag.source === "override" ? "the config value or the default" : "its value"}. ${flag.impact}`,
-      confirmLabel: "Clear override",
-      danger: false,
-    });
-    if (!ok) return;
+    setClearing(null);
     try {
       await clearFeatureOverride(flag.name);
       await refresh();
@@ -178,7 +206,7 @@ export function FeaturesPage() {
       {reduced.length > 0 && (
         <AlertBar>
           Protection is reduced: {reduced.map((f) => f.name).join(", ")} {reduced.length === 1 ? "is" : "are"} off
-          {reduced.some((f) => overrides[f.name]?.expires_at) && ", an override puts it back on by itself"}.
+          {reduced.every((f) => overrides[f.name]?.expires_at) && ", and the override ends by itself"}.
         </AlertBar>
       )}
       {!configRead && <p className="mb-3 text-sm text-ink-muted">The config could not be read, so config values are not shown; flags set there look like their default.</p>}
@@ -194,7 +222,7 @@ export function FeaturesPage() {
                   <TH>flag</TH>
                   <TH>value</TH>
                   <TH>from</TH>
-                  <TH>what it does</TH>
+                  <TH>if turned off</TH>
                   <TH>
                     <span className="sr-only">actions</span>
                   </TH>
@@ -203,12 +231,24 @@ export function FeaturesPage() {
               <TBody>
                 {visible.map((f) => {
                   const o = f.source === "override" ? overrides[f.name] : undefined;
+                  const note = fleetNote(fleet?.byName[f.name], fleet?.reporting ?? 0);
                   const canFlip = f.available && !(f.override === "off_only" && !f.value);
                   return (
                     <TR key={f.name} className="align-top">
-                      <TD className="font-mono text-ink">{f.name}</TD>
+                      <TD className="text-ink">
+                        {LABELS[f.name] && <div>{LABELS[f.name]}</div>}
+                        <code className="font-mono text-xs text-ink-muted">{f.name}</code>
+                      </TD>
                       <TD>
                         <Badge tone={f.value ? "good" : f.protection ? "bad" : "neutral"}>{f.value ? "on" : "off"}</Badge>
+                        {note && (
+                          <div className="mt-1 text-xs text-ink-muted" title={note.names}>
+                            {note.lines.map((l) => (
+                              <p key={l}>{l}</p>
+                            ))}
+                            {note.names && <p>{note.names}</p>}
+                          </div>
+                        )}
                       </TD>
                       <TD className="text-ink-muted">{SOURCE_LABEL[f.source]}</TD>
                       <TD className="max-w-md text-ink-muted">
@@ -221,10 +261,22 @@ export function FeaturesPage() {
                         )}
                       </TD>
                       <TD className="whitespace-nowrap text-right">
-                        {f.source === "override" && (
-                          <Button size="sm" disabled={!admin} aria-label={`Clear override of ${f.name}`} onClick={() => clear(f)}>
-                            Clear override
-                          </Button>
+                        {f.source === "override" && clearing === f.name ? (
+                          <span className="inline-flex items-center gap-2">
+                            <span className="text-xs text-ink-muted">Back to the config value or default?</span>
+                            <Button size="sm" variant="danger" aria-label={`Yes, clear ${f.name}`} onClick={() => clear(f)}>
+                              Yes, clear
+                            </Button>
+                            <Button ref={keepRef} size="sm" variant="ghost" aria-label={`Keep ${f.name} override`} onClick={() => setClearing(null)}>
+                              Keep
+                            </Button>
+                          </span>
+                        ) : (
+                          f.source === "override" && (
+                            <Button ref={(el) => void clearRefs.current.set(f.name, el)} size="sm" disabled={!admin} aria-label={`Clear override of ${f.name}`} onClick={() => setClearing(f.name)}>
+                              Clear override
+                            </Button>
+                          )
                         )}{" "}
                         {canFlip && (
                           <Button size="sm" disabled={!admin} aria-label={`Override ${f.name}`} onClick={() => setEditing(f)}>
@@ -255,7 +307,6 @@ export function FeaturesPage() {
           }}
         />
       )}
-      {dialog}
     </div>
   );
 }

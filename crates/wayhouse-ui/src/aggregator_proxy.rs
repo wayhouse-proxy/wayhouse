@@ -35,6 +35,7 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/fleet/sessions", get(get_sessions))
         .route("/api/fleet/healthz", get(get_healthz))
         .route("/api/fleet/stats", get(get_stats))
+        .route("/api/fleet/features", get(get_features))
         .route("/api/fleet/nodes", get(get_nodes))
         .route("/api/fleet/nodes/resolve", post(resolve_nodes))
         .route(
@@ -92,6 +93,11 @@ async fn get_sessions(State(state): State<AppState>) -> Response {
 
 async fn get_healthz(State(state): State<AppState>) -> Response {
     proxy(&state, Method::GET, "/fleet/healthz", None, None).await
+}
+
+/// How each feature flag stands across the fleet (per flag: nodes on, off, without the code).
+async fn get_features(State(state): State<AppState>) -> Response {
+    proxy(&state, Method::GET, "/fleet/features", None, None).await
 }
 
 /// The `range` query rides along unchanged; the aggregator validates it.
@@ -1246,6 +1252,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_fleet_feature_rollup_is_passed_through_for_a_viewer() {
+        let upstream = Router::new().route(
+            "/fleet/features",
+            axum::routing::get(|| async { r#"{"reporting":2,"total":3,"flags":[]}"# }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let (app, session_id) = logged_in_app(url, None);
+
+        let resp = app
+            .oneshot(
+                Request::get("/api/fleet/features")
+                    .header(header::COOKIE, cookie(&session_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(bytes, r#"{"reporting":2,"total":3,"flags":[]}"#.as_bytes());
     }
 
     #[tokio::test]

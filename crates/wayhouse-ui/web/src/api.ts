@@ -6,6 +6,7 @@
 import type {
   AcmeAccount,
   FeatureFlag,
+  FeatureRollup,
   FeatureOverride,
   AcmeGateway,
   AcmeSite,
@@ -566,11 +567,16 @@ export function getFeatures(): Promise<{ flags: FeatureFlag[]; proxy_flags: Feat
 export function listFeatureOverrides(): Promise<{ items: FeatureOverride[] }> {
   return requestJson("/api/features/overrides");
 }
-export function putFeatureOverride(name: string, value: boolean, reason: string, expiresAt?: number): Promise<FeatureOverride> {
+/** `ttlSecs` is seconds from now; the controller stamps the end time from its own clock. */
+export function putFeatureOverride(name: string, value: boolean, reason: string, ttlSecs?: number): Promise<FeatureOverride> {
   return requestJson(
     `/api/features/overrides/${encodeURIComponent(name)}`,
-    jsonInit("PUT", { value, reason, ...(expiresAt ? { expires_at: expiresAt } : {}) }),
+    jsonInit("PUT", { value, reason, ...(ttlSecs ? { ttl_secs: ttlSecs } : {}) }),
   );
+}
+/** How each flag stands across the fleet (the aggregator's `GET /fleet/features`). */
+export function getFleetFeatures(): Promise<FeatureRollup> {
+  return requestJson("/api/fleet/features");
 }
 export function clearFeatureOverride(name: string): Promise<void> {
   return requestJson(`/api/features/overrides/${encodeURIComponent(name)}`, { method: "DELETE" });

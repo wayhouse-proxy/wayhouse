@@ -350,6 +350,22 @@ export interface FeatureFlag {
   impact: string;
 }
 
+/** One flag across the fleet (`wayhouse_aggregator::features::FlagRollup`). */
+export interface FlagRollup {
+  name: string;
+  on: number;
+  off: number;
+  unavailable: number;
+  off_instances: string[];
+  overridden_instances: string[];
+}
+
+export interface FeatureRollup {
+  reporting: number;
+  total: number;
+  flags: FlagRollup[];
+}
+
 export interface FeatureOverride {
   name: string;
   value: boolean;
