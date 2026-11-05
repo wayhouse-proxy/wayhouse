@@ -40,7 +40,7 @@ The shipped default is keyed by the dotted path of a field (`pools.*.targets`, `
 - An unknown key or a value of the wrong type in one field is ignored with a warning; the rest of the layout applies.
 - A layout that is not JSON, has no `"version": 1` or has no `fields` object is not used at all: the forms use the default layout and show a notice saying why.
 - Settings > Layout (admins write, everyone reads) edits the override as JSON with a live preview on one real form, import, export and Reset to default.
-- The override is limited to 64 KiB. Export and import use the same JSON, so a layout is a file as well as a setting.
+- The editor refuses an override over 64 KiB (the controller itself only applies its general request-size limit). Export and import use the same JSON, so a layout is a file as well as a setting.
 
 ## Related
 

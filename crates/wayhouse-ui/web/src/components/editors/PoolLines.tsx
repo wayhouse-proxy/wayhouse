@@ -5,6 +5,8 @@ import { Table, TBody, TD, TH, THead, TR } from "../ui/Table";
 export interface BackendRow {
   addr: string;
   state: State;
+  /** Said next to the state when the row is not what the configuration lists, e.g. "reported, not in config". */
+  note?: string;
 }
 
 const ROW = 28;
@@ -26,7 +28,7 @@ export function PoolLines({ name, source, rows }: { name: string; source?: strin
   const height = Math.max(rows.length, 1) * ROW + 16;
   const mid = height / 2;
   const label = `Pool ${name}${source ? `, backends from source ${source}` : ""}. ${
-    rows.length ? rows.map((r, i) => `Backend ${i + 1}: ${r.addr}, ${WORD[r.state]}`).join(". ") : "No backends."
+    rows.length ? rows.map((r, i) => `Backend ${i + 1}: ${r.addr}, ${WORD[r.state]}${r.note ? ` (${r.note})` : ""}`).join(". ") : "No backends."
   }`;
   return (
     <figure className="mb-4">
@@ -43,6 +45,7 @@ export function PoolLines({ name, source, rows }: { name: string; source?: strin
                 <Mark x={238} y={y} state={r.state} />
                 <text x={252} y={y + 4} className="fill-ink text-xs font-mono">
                   {r.addr}
+                  {r.note && <tspan className="fill-ink-muted font-sans"> ({r.note})</tspan>}
                 </text>
               </g>
             );
@@ -70,7 +73,7 @@ export function PoolLines({ name, source, rows }: { name: string; source?: strin
               <TR key={i}>
                 <TD className="font-mono">{r.addr}</TD>
                 <TD>
-                  <StatusMark state={r.state} word={WORD[r.state]} />
+                  <StatusMark state={r.state} word={r.note ? `${WORD[r.state]}, ${r.note}` : WORD[r.state]} />
                 </TD>
               </TR>
             ))}

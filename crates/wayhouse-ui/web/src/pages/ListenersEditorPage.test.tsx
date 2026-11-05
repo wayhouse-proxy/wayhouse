@@ -165,6 +165,16 @@ describe("Listeners and routes editor", () => {
     expect(text).not.toContain("pool: gone");
   });
 
+  it("keeps the resolver kind when its target is cleared", async () => {
+    page();
+    const r2 = await route(2);
+    await userEvent.selectOptions(within(r2).getByLabelText("Target kind of route 2"), "resolver");
+    await userEvent.selectOptions(within(r2).getByLabelText("Target of route 2"), "lookup");
+    await userEvent.selectOptions(within(r2).getByLabelText("Target of route 2"), "");
+    expect(within(r2).getByLabelText("Target kind of route 2")).toHaveValue("resolver");
+    expect(within(r2).getByRole("option", { name: "choose a resolver" })).toBeInTheDocument();
+  });
+
   it("adds a listener with a fresh name and selects it", async () => {
     page();
     await screen.findByLabelText(/^Bind address/);

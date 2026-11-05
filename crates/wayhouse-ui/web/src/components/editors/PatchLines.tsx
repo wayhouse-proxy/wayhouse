@@ -52,7 +52,7 @@ export function PatchLines({ listener, stateOf }: { listener: PatchListener; sta
     <figure className="mb-4">
       <div className="overflow-x-auto border border-line bg-surface p-2">
         <svg role="img" aria-label={label} width={W} height={height} viewBox={`0 0 ${W} ${height}`} className="min-w-[510px]">
-          <Mark x={8} y={mid} state="up" />
+          <Mark x={8} y={mid} state="unknown" />
           <text x={20} y={mid - 4} className="fill-ink text-xs font-mono">
             {listener.name}
           </text>

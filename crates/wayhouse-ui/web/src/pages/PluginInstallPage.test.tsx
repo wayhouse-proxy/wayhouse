@@ -122,6 +122,16 @@ describe("PluginInstallPage with options", () => {
     expect(api.installPlugin).toHaveBeenCalledWith(expect.objectContaining({ approved: PANEL, config: { panel: "p.example" } }));
   });
 
+  it("moves focus to the new step when the step changes, so a keyboard or screen reader user lands on it", async () => {
+    await upload();
+    await screen.findByLabelText(/Panel host/);
+    expect(document.activeElement).toHaveTextContent("2. Options");
+    await userEvent.type(screen.getByLabelText(/Panel host/), "p.example");
+    await userEvent.click(screen.getByRole("button", { name: "Review what it asks for" }));
+    await screen.findByRole("button", { name: "Install…" });
+    expect(document.activeElement).toHaveTextContent("3. Review and install");
+  });
+
   it("names the option that does not fit and stays on the options", async () => {
     api.resolvePluginCapabilities.mockRejectedValue(new ApiError(422, "config.panel: must be a hostname"));
     await upload();

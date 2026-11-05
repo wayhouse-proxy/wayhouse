@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   putAcmeSite: vi.fn(),
   deleteAcmeSite: vi.fn(),
   createAcmeGateway: vi.fn(),
+  listPlugins: vi.fn(),
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
 
@@ -51,6 +52,7 @@ function cert(over: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.spyOn(Date, "now").mockReturnValue(NOW * 1000);
+  api.listPlugins.mockReset().mockResolvedValue([]);
   api.getAcmeAccount.mockReset().mockResolvedValue({
     directory_url: "https://ca.test/dir",
     account_url: "https://ca.test/acct/1",
@@ -193,6 +195,26 @@ describe("CertificatesPage", () => {
       expect(api.putAcmeSite).toHaveBeenCalledWith("panel", { names: ["panel.example.com"], challenge: "http-01", gateways: [], enabled: true });
     });
 
+    it("offers the enabled DNS plugins to pick from, not a free text field", async () => {
+      const dns = { triggers: { on_acme_dns: true } };
+      api.listPlugins.mockResolvedValue([
+        { id: "cf", name: "acme-dns-cloudflare", enabled: true, approved: dns },
+        { id: "off", name: "acme-dns-off", enabled: false, approved: dns },
+        { id: "other", name: "sync", enabled: true, approved: { triggers: { on_timer: true } } },
+      ]);
+      render(<CertificatesPage />);
+      await screen.findByText("https://ca.test/acct/1");
+      await userEvent.click(screen.getByRole("button", { name: "Add site" }));
+      const dlg = await screen.findByRole("dialog");
+      await userEvent.type(within(dlg).getByLabelText("Site name"), "panel");
+      await userEvent.type(within(dlg).getByLabelText(/^Names/), "panel.example.com");
+      const pick = await within(dlg).findByRole("combobox", { name: "DNS plugin" });
+      expect(within(pick).getAllByRole("option").map((o) => o.textContent)).toEqual(["choose a plugin", "acme-dns-cloudflare (cf)"]);
+      await userEvent.selectOptions(pick, "cf");
+      await userEvent.click(within(dlg).getByRole("button", { name: "Add site" }));
+      expect(api.putAcmeSite).toHaveBeenCalledWith("panel", expect.objectContaining({ dns_plugin: "cf" }));
+    });
+
     it("says before the call what the controller would refuse: a wildcard needs a gateway, DNS-01 needs a plugin", async () => {
       render(<CertificatesPage />);
       await screen.findByText("https://ca.test/acct/1");
@@ -231,6 +253,15 @@ describe("CertificatesPage", () => {
       await userEvent.click(stale);
       await userEvent.click(within(dlg).getByRole("button", { name: "Save site" }));
       expect(api.putAcmeSite).toHaveBeenCalledWith("web", expect.objectContaining({ gateways: ["edge-1"] }));
+    });
+
+    it("does not say a removed site's gateway loses the certificate: the files already fetched stay", async () => {
+      render(<CertificatesPage />);
+      await screen.findByText("https://ca.test/acct/1");
+      await userEvent.click(screen.getByRole("button", { name: "Remove site off" }));
+      const dlg = await screen.findByRole("dialog");
+      expect(dlg).not.toHaveTextContent(/loses its certificate/);
+      expect(dlg).toHaveTextContent(/files .* already fetched/i);
     });
 
     it("removing a site asks first", async () => {

@@ -209,7 +209,7 @@ export function CertificatesPage() {
                             onClick={async () => {
                               const ok = await confirm({
                                 title: `Remove site ${s.name}?`,
-                                description: "Its certificates and retry state are deleted. A gateway that still serves the names loses its certificate at the next fetch.",
+                                description: "Its certificates and retry state are deleted on the controller. A gateway keeps the files it already fetched, but gets no renewal, so they expire.",
                                 confirmLabel: "Remove",
                               });
                               if (!ok) return;
