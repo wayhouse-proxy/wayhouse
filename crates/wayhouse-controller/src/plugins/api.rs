@@ -2069,6 +2069,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_busy_compile_pool_answers_503_at_once_not_after_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::kv::Db::open(dir.path()).unwrap();
+        let host = Arc::new(PluginHost::new(Limits::default()).unwrap());
+        // One worker, one queue slot, and a timeout so long that only `Busy` can be quick.
+        let pool = Arc::new(CompilePool::new(host, 1, 1, Duration::from_secs(60)).unwrap());
+        let store = PluginStore::open(&db).unwrap();
+        let st = PluginsState {
+            runner: Runner::new(store.clone(), pool.clone()),
+            store,
+            pool: pool.clone(),
+            auth_token: None,
+            ha: None,
+            keyring: KeyringHandle::default(),
+        };
+        let app = router(st);
+        let sha = upload(&app, &module(CAPS)).await;
+        // Hold the worker, then fill the queue slot behind it.
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<()>();
+        let (p1, p2) = (pool.clone(), pool.clone());
+        let holder = std::thread::spawn(move || {
+            p1.call(move || {
+                let _ = started_tx.send(());
+                let _ = gate_rx.recv();
+            })
+        });
+        started_rx.recv().unwrap();
+        let queued = std::thread::spawn(move || p2.call(|| ()));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let began = std::time::Instant::now();
+        let (status, _) = call(&app, "POST", "/plugins", install_body(&sha, CAPS), None).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            began.elapsed() < Duration::from_secs(10),
+            "a full queue must refuse at once, not wait for the compile timeout"
+        );
+        drop(gate_tx);
+        holder.join().unwrap().unwrap();
+        queued.join().unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn the_bearer_token_is_required_when_one_is_set() {
         let (st, _d) = state(Some("sekrit-sekrit-sekrit"));
         let app = router(st);
