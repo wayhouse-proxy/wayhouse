@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
-import { confirmRevision, revertNow } from "../../api";
+import { ApiError, confirmRevision, revertNow } from "../../api";
 import { PENDING_KEY, usePending } from "../../lib/config/usePending";
 import { useCan } from "../../lib/session";
 import { Button } from "../ui/Button";
@@ -13,6 +13,13 @@ function spoken(level: 0 | 10 | 30 | null, revertTo: number): string {
   if (level === 30) return "30 seconds left to confirm.";
   return `Applied on trial. Confirm before the countdown ends, or the controller reverts to revision ${revertTo}.`;
 }
+
+/**
+ * The controller's ordinary 409: the revision is no longer the one on trial (confirmed, reverted or replaced; its
+ * wording is "revision 9 is on trial" or "no revision is on trial"). Any other 409, such as a replica that runs a
+ * build without confirm-and-revert, is a real refusal and stays visible.
+ */
+const notOnTrial = (e: unknown) => e instanceof ApiError && e.status === 409 && / is on trial$/.test(e.message);
 
 /**
  * A revision on trial (config confirm and revert, docs/06). The deadline is the controller's, so this page,
@@ -45,7 +52,7 @@ export function TrialBar() {
   if (!pending) return null;
 
   const secs = Math.ceil(remainingMs / 1000);
-  const why = data!.risks.filter((r) => pending.reasons.includes(r.id)).map((r) => r.text);
+  const why = data!.risks.filter((r) => pending.reasons.includes(r.id)).map((r) => r.text.replace(/\.$/, ""));
   return (
     <div className="mb-4 flex flex-wrap items-center gap-2 border border-warn bg-surface px-3 py-2 text-sm">
       <AlertTriangle aria-hidden size={16} strokeWidth={1.5} className="shrink-0 text-warn" />
@@ -62,7 +69,7 @@ export function TrialBar() {
       <Button disabled={!canWrite} onClick={() => end.mutate(false)}>
         Revert now
       </Button>
-      {end.isError && <span role="alert" className="w-full text-bad">{end.error instanceof Error ? end.error.message : String(end.error)}</span>}
+      {end.isError && !notOnTrial(end.error) && <span role="alert" className="w-full text-bad">{end.error instanceof Error ? end.error.message : String(end.error)}</span>}
     </div>
   );
 }

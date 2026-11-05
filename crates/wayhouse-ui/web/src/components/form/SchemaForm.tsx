@@ -161,14 +161,17 @@ function FieldTemplate(p: FieldTemplateProps) {
   if (p.schema.type === "object" || (p.schema.type === "array" && !p.uiSchema?.["ui:widget"])) return p.children;
   const name = String(path[path.length - 1] ?? "");
   const since = sinceOf(p.schema);
+  // A list entry is "Node ID 2", the list's singular and its position; rjsf's own "Node IDs-2 (required)" is for no one.
+  const entry = typeof path[path.length - 1] === "number" ? (path[path.length - 1] as number) : null;
+  const itemTitle = p.uiSchema?.["ui:itemTitle"];
   return (
     <FieldRow
       id={p.id}
-      label={l?.label ?? p.label}
+      label={l?.label ?? (entry !== null && itemTitle ? `${itemTitle} ${entry + 1}` : p.label)}
       yamlKey={l?.label ? name : undefined}
       help={[l?.help ?? helpOf(p.rawDescription), since ? `Since schema ${since}.` : ""].filter(Boolean).join(" ") || undefined}
       changed={changedCount(ctx, path) > 0}
-      required={p.required}
+      required={p.required && entry === null}
       error={p.rawErrors?.[0]}
       render={() => p.children}
     />
@@ -285,9 +288,10 @@ function uiFor(root: any, node: any, path: Path, layout: Layout): UiSchema {
     for (const [k, v] of Object.entries<any>(n.properties)) ui[k] = uiFor(root, v, [...path, k], layout);
   else if (n.type === "array" && n.items) {
     const item = resolve(root, n.items);
+    const itemTitle = singular(layout.fields[patternOf(path)]?.label ?? (n.title as string | undefined) ?? String(path[path.length - 1] ?? "item"));
     if (item.type === "string" && !item.enum) ui["ui:widget"] ??= "lines";
-    else ui.items = uiFor(root, n.items, [...path, 0], layout);
-    ui["ui:itemTitle"] = singular(layout.fields[patternOf(path)]?.label ?? String(path[path.length - 1] ?? "item"));
+    else ui.items = { ...uiFor(root, n.items, [...path, 0], layout), "ui:itemTitle": itemTitle };
+    ui["ui:itemTitle"] = itemTitle;
   }
   return ui;
 }
