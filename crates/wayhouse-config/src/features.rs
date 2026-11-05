@@ -107,13 +107,13 @@ pub const REGISTRY: &[Flag] = &[
         "Backends are judged by this proxy's own health checks only; regional correlation is lost.",
         "The mesh keeps running; established connections are untouched.",
     )),
-    wired(flag(
+    wired(protection(flag(
         "sniffers",
         Proxy,
         Both,
-        "Routes with `sniffer:` never match, so players can land on the default or another pool.",
+        "Routes with `sniffer:` never match, so players can land on the default or another pool, and sniffer rejects stop dropping connections.",
         "Connections already routed are untouched; sniffing only reads the first bytes.",
-    )),
+    ))),
     wired(flag(
         "port_routes",
         Proxy,

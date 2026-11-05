@@ -56,7 +56,7 @@ async fn echoed(proxy: std::net::SocketAddr) -> bool {
 }
 
 #[tokio::test]
-async fn acl_geo_and_limits_follow_their_flags_on_tcp() {
+async fn acl_follows_its_flag_on_tcp() {
     let _t = TURN.lock().await;
     let backend = tcp_echo().await;
     let proxy = common::free_tcp_addr();
