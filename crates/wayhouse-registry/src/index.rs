@@ -197,43 +197,20 @@ impl SnifferEntry {
 impl VersionEntry {
     fn validate(&self, sniffer: &str) -> Result<(), IndexError> {
         let version = self.version.to_string();
-        let https = |field: &'static str, url: &str| {
-            let Some(rest) = url.strip_prefix("https://") else {
-                return Err(IndexError::NotHttps {
-                    sniffer: sniffer.to_owned(),
-                    version: version.clone(),
-                    field,
-                    url: url.to_owned(),
-                });
-            };
-            // Authority is everything up to the first '/', '?' or '#'. Refuse an empty host
-            // and user info; whether the host is a private address is the fetch-time guard's job.
-            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-            let (host, port, host_ok) = match authority.strip_prefix('[') {
-                Some(v6) => v6.split_once(']').map_or(("", None, false), |(h, r)| {
-                    (
-                        h,
-                        r.strip_prefix(':').or(Some(r).filter(|r| !r.is_empty())),
-                        h.parse::<std::net::Ipv6Addr>().is_ok(),
-                    )
-                }),
-                None => (
-                    authority.rsplit_once(':').map_or(authority, |(h, _)| h),
-                    authority.rsplit_once(':').map(|(_, p)| p),
-                    // An IPv6 literal needs brackets, so a bare authority holds at most one colon.
-                    authority.matches(':').count() <= 1,
-                ),
-            };
-            let port_ok = port.is_none_or(|p| p.parse::<u16>().is_ok());
-            if authority.contains('@') || host.is_empty() || !host_ok || !port_ok {
-                return Err(IndexError::BadUrlHost {
-                    sniffer: sniffer.to_owned(),
-                    version: version.clone(),
-                    field,
-                    url: url.to_owned(),
-                });
-            }
-            Ok(())
+        let https = |field: &'static str, url: &str| match check_https_url(url) {
+            Ok(()) => Ok(()),
+            Err(UrlProblem::NotHttps) => Err(IndexError::NotHttps {
+                sniffer: sniffer.to_owned(),
+                version: version.clone(),
+                field,
+                url: url.to_owned(),
+            }),
+            Err(UrlProblem::BadHost) => Err(IndexError::BadUrlHost {
+                sniffer: sniffer.to_owned(),
+                version: version.clone(),
+                field,
+                url: url.to_owned(),
+            }),
         };
         https("url", &self.url)?;
         if let Some(sig) = &self.signature_url {
@@ -274,6 +251,43 @@ impl VersionEntry {
         }
         Ok(())
     }
+}
+
+/// Why an index URL is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UrlProblem {
+    NotHttps,
+    BadHost,
+}
+
+/// An index URL must be `https://` with a host, an optional valid port and no user info.
+/// Whether the host is a private address is the fetch-time guard's job.
+pub(crate) fn check_https_url(url: &str) -> Result<(), UrlProblem> {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return Err(UrlProblem::NotHttps);
+    };
+    // Authority is everything up to the first '/', '?' or '#'.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let (host, port, host_ok) = match authority.strip_prefix('[') {
+        Some(v6) => v6.split_once(']').map_or(("", None, false), |(h, r)| {
+            (
+                h,
+                r.strip_prefix(':').or(Some(r).filter(|r| !r.is_empty())),
+                h.parse::<std::net::Ipv6Addr>().is_ok(),
+            )
+        }),
+        None => (
+            authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+            authority.rsplit_once(':').map(|(_, p)| p),
+            // An IPv6 literal needs brackets, so a bare authority holds at most one colon.
+            authority.matches(':').count() <= 1,
+        ),
+    };
+    let port_ok = port.is_none_or(|p| p.parse::<u16>().is_ok());
+    if authority.contains('@') || host.is_empty() || !host_ok || !port_ok {
+        return Err(UrlProblem::BadHost);
+    }
+    Ok(())
 }
 
 /// Registry names are lowercase only, so two names never collide as files on a
