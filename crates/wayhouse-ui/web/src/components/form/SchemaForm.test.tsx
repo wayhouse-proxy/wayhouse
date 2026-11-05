@@ -69,10 +69,61 @@ describe("SchemaForm on the real schema", () => {
     expect(screen.getByText("1 changed")).toBeInTheDocument();
   });
 
-  it("clearing a field deletes the key", async () => {
+  it("a number cleared to type another keeps its key and comment; leaving it empty deletes the key", async () => {
     render(<Harness path={["settings"]} />);
-    await userEvent.clear(screen.getByLabelText(/Worker tasks per listener/));
+    const workers = screen.getByLabelText(/Worker tasks per listener/);
+    await userEvent.clear(workers);
+    expect(yaml()).toContain("workers: 2 # tasks"); // still the saved value while the field is being retyped
+    await userEvent.type(workers, "6");
+    expect(yaml()).toContain("workers: 6 # tasks"); // the comment survived the retype
+    await userEvent.clear(workers);
+    await userEvent.tab();
     expect(yaml()).not.toContain("workers");
+  });
+
+  it("typing a lone minus sign does not delete a number's key", async () => {
+    render(<Harness path={["settings"]} />);
+    const workers = screen.getByLabelText(/Worker tasks per listener/);
+    await userEvent.clear(workers);
+    await userEvent.type(workers, "-");
+    expect(yaml()).toContain("workers: 2 # tasks");
+  });
+
+  it("blurring after an unparsable draft restores the last value instead of deleting the key", async () => {
+    render(<Harness path={["settings"]} />);
+    const workers = screen.getByLabelText(/Worker tasks per listener/) as HTMLInputElement;
+    await userEvent.clear(workers);
+    await userEvent.type(workers, "-");
+    // A browser reports value "" and badInput for a lone minus; jsdom does not model that, so say it.
+    Object.defineProperty(workers, "validity", { value: { badInput: true }, configurable: true });
+    await userEvent.tab();
+    expect(yaml()).toContain("workers: 2 # tasks");
+    expect(workers).toHaveValue(2);
+  });
+
+  it("blurring an emptied number field still removes the key", async () => {
+    render(<Harness path={["settings"]} />);
+    const workers = screen.getByLabelText(/Worker tasks per listener/);
+    await userEvent.clear(workers);
+    await userEvent.tab();
+    expect(yaml()).not.toContain("workers:");
+  });
+
+  it("every aria-describedby points at text that exists, and a field with no help has none", () => {
+    const { container } = render(<Harness path={["settings"]} showAdvanced />);
+    const described = [...container.querySelectorAll("[aria-describedby]")];
+    expect(described.length).toBeGreaterThan(0);
+    for (const el of described) for (const id of el.getAttribute("aria-describedby")!.split(" ")) expect(container.querySelector(`[id="${id}"]`), id).not.toBeNull();
+    expect(container.querySelector('[aria-describedby*="-error"]')).toBeNull();
+  });
+
+  it("sets machine data in mono and ordinary text in the body face", () => {
+    const { container } = render(<Harness path={["settings"]} />);
+    const mono = (suffix: string) => container.querySelector<HTMLInputElement>(`input[id$="${suffix}"]`)!.className.includes("font-mono");
+    expect(mono("admin_listen")).toBe(true); // an address
+    expect(container.querySelector('input[id$="admin_listen"]')).not.toBeNull();
+    const { container: pools } = render(<Harness path={["pools", 0]} />);
+    expect(pools.querySelector<HTMLInputElement>('input[id$="_name"]')!.className).not.toContain("font-mono"); // a name is a label
   });
 
   it("hides advanced fields until Show advanced is on", () => {

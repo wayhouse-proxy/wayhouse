@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ApiError, installPlugin, resolvePluginCapabilities, uploadPluginModule } from "../api";
 import type { PluginCapabilities, PluginModule } from "../types";
@@ -40,6 +40,13 @@ export function PluginInstallPage() {
   const canWrite = useCan("admin");
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("upload");
+  // A new step takes focus (not the first one: that would steal it on arrival), so a keyboard or screen reader user lands on it.
+  const stepRef = useRef<HTMLLIElement>(null);
+  const first = useRef(true);
+  useEffect(() => {
+    if (first.current) first.current = false;
+    else stepRef.current?.focus();
+  }, [step]);
   const [file, setFile] = useState<File | null>(null);
   const [module, setModule] = useState<PluginModule | null>(null);
   const [config, setConfig] = useState<Record<string, unknown>>({});
@@ -158,7 +165,7 @@ export function PluginInstallPage() {
       />
       <ol className="mb-4 flex gap-4 text-sm text-ink-muted" aria-label="Steps">
         {STEPS.map(([s, label]) => (
-          <li key={s} aria-current={s === step ? "step" : undefined} className={s === step ? "font-semibold text-ink" : undefined}>
+          <li key={s} ref={s === step ? stepRef : undefined} tabIndex={s === step ? -1 : undefined} aria-current={s === step ? "step" : undefined} className={s === step ? "font-semibold text-ink" : undefined}>
             {label}
           </li>
         ))}

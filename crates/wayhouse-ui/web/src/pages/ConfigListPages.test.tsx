@@ -97,6 +97,20 @@ describe("Pools editor", () => {
     expect(await screen.findByRole("img", { name: /Backend 1: 10.0.0.5:7777, degraded. Backend 2: 10.0.0.6:7777, down/ })).toBeInTheDocument();
   });
 
+  it("an address the instances report but a static pool does not list is marked 'reported, not in config'", async () => {
+    live.instances = [{ pools: [{ name: "lobby", backends: [{ addr: "10.0.0.5:7777", healthy: true }, { addr: "10.0.0.9:7777", healthy: true }] }] }];
+    pools();
+    const img = await screen.findByRole("img", { name: /Backend 3: 10.0.0.9:7777, up \(reported, not in config\)/ });
+    expect(img).not.toHaveAccessibleName(/10.0.0.5:7777, up \(reported/);
+    expect(screen.getAllByText(/up, reported, not in config/).length).toBeGreaterThan(0); // the table says it too
+  });
+
+  it("a source's discovered backends are not called unlisted", async () => {
+    live.instances = [{ pools: [{ name: "eu", backends: [{ addr: "10.1.1.1:7777", healthy: true }] }] }];
+    pools("admin", "/config/pools?i=1");
+    await screen.findByRole("img", { name: /Backend 1: 10.1.1.1:7777, up$/ });
+  });
+
   it("a field edit is a patch: comments and the other pool survive", async () => {
     pools();
     const timeout = await screen.findByLabelText(/^Connect timeout/);
@@ -114,6 +128,17 @@ describe("Pools editor", () => {
     await userEvent.clear(name);
     await userEvent.type(name, "eu2");
     expect(await screen.findByRole("heading", { name: "eu2" })).toBeInTheDocument();
+  });
+
+  it("renaming a pool that listeners point at warns, in words, until the references are changed too", async () => {
+    pools("admin", "/config/pools?i=0");
+    expect(screen.queryByText(/still use the old name/)).toBeNull();
+    const name = await screen.findByLabelText(/^Name/);
+    await userEvent.clear(name);
+    await userEvent.type(name, "lobby2");
+    const warn = await screen.findByText(/still use the old name/);
+    expect(warn).toHaveTextContent("lobby");
+    expect(warn).toHaveTextContent("listener game");
   });
 
   it("weights show for the weighted balancer only, and the list is hidden while a source is chosen", async () => {
@@ -173,6 +198,16 @@ describe("Backend sources editor", () => {
     expect(await screen.findByLabelText(/^DNS SRV record/)).toHaveValue("_game._tcp.example.com");
     expect(screen.queryByLabelText(/^Addresses/)).toBeNull();
     expect(screen.queryByLabelText(/^Service/)).toBeNull();
+  });
+
+  it("a fixed list has no refresh interval, a discovered source does", async () => {
+    sources();
+    const interval = () => document.querySelector('input[id$="refresh_interval_sec"]');
+    await screen.findByLabelText(/^DNS SRV record/);
+    expect(interval()).not.toBeNull(); // dns_srv
+    await userEvent.selectOptions(screen.getByLabelText("Type"), "static");
+    await screen.findByLabelText(/^Addresses/);
+    expect(interval()).toBeNull();
   });
 
   it("switching the type drops the old type's fields and shows the new ones", async () => {

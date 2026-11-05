@@ -22,8 +22,8 @@ const SOURCE_FIELDS: Record<string, string[]> = {
   tunnel: ["pubkey"],
 };
 
-/** The fields of a backend source the form shows for its type; the config parser rejects the others' meaning. */
-export const sourceFields = (type: string): string[] => ["name", "refresh_interval_sec", ...(SOURCE_FIELDS[type] ?? [])];
+/** The fields of a backend source the form shows for its type; the config parser rejects the others' meaning. A static list is never refreshed, so it has no interval. */
+export const sourceFields = (type: string): string[] => ["name", ...(type === "static" ? [] : ["refresh_interval_sec"]), ...(SOURCE_FIELDS[type] ?? [])];
 
 /** The pool fields that apply: weights only to the weighted balancer, hash_on only to consistent hash, the list only without a source. */
 export function poolFields(pool: Json): string[] {

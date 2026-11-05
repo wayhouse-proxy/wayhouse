@@ -49,18 +49,23 @@ function onPage(ctx: Ctx, path: Path): boolean {
   return Object.entries(ctx.layout.fields).some(([k, f]) => f.page === ctx.page && (k === prefix || k.startsWith(`${prefix}.`)));
 }
 
-const MONO = /(listen|bind|addr|url|dir|path|db|cert|key|target|seed|host|cidr|name|group)/;
+/** Machine data (addresses, paths, keys) is set in mono; ordinary text, names and groups are not. Whole words of the field name only. */
+const MONO_WORDS = new Set(["listen", "bind", "addr", "address", "url", "dir", "path", "db", "cert", "key", "target", "seed", "host", "cidr", "pubkey"]);
+const isMono = (name: string) => name.split(/[^a-z0-9]+/i).some((w) => MONO_WORDS.has(w.toLowerCase()));
 
-/** Widgets read the layout for their unit and the id of their help and error text. */
+/**
+ * Widgets point at their help text, but only when there is some: `uiFor` records that in the `help` option.
+ * (The server answers a bad document with one message, shown by the save bar, so there are no per-field errors.)
+ */
 function describe(p: WidgetProps) {
-  return { "aria-describedby": `${p.id}-help ${p.id}-error`, "aria-invalid": p.rawErrors?.length ? (true as const) : undefined };
+  return { "aria-describedby": p.options.help ? `${p.id}-help` : undefined };
 }
 
 const Text = (p: WidgetProps) => (
   <Input
     id={p.id}
     value={p.value ?? ""}
-    mono={MONO.test(p.name ?? p.label)}
+    mono={isMono(p.name ?? p.label)}
     placeholder={p.schema["x-wayhouse-default"] !== undefined ? String(p.schema["x-wayhouse-default"]) : undefined}
     disabled={p.disabled || p.readonly}
     onChange={(e) => p.onChange(e.target.value === "" ? undefined : e.target.value)}
@@ -81,18 +86,33 @@ const Secret = (p: WidgetProps) => (
   />
 );
 
+/**
+ * A number is edited as text. A draft that is empty or not yet a number (a cleared field, a lone "-") writes nothing,
+ * so retyping never deletes the key and its comment; leaving the field empty is what removes the key.
+ */
 function NumberW(p: WidgetProps) {
   const unit = p.options.unit as string | undefined;
+  const show = (v: unknown) => (v === undefined || v === null ? "" : String(v));
+  const [text, setText] = useState(show(p.value));
+  useEffect(() => setText((t) => (t !== "" && Number(t) === p.value ? t : t === "" && p.value === undefined ? t : show(p.value))), [p.value]);
   return (
     <NumberInput
       id={p.id}
       unit={unit}
-      value={p.value ?? ""}
+      value={text}
       placeholder={p.schema["x-wayhouse-default"] !== undefined ? String(p.schema["x-wayhouse-default"]) : undefined}
       min={p.schema.minimum}
       step={p.schema.type === "integer" ? 1 : "any"}
       disabled={p.disabled || p.readonly}
-      onChange={(e) => p.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+      onChange={(e) => {
+        setText(e.target.value);
+        if (e.target.value !== "" && Number.isFinite(Number(e.target.value))) p.onChange(Number(e.target.value));
+      }}
+      onBlur={(e) => {
+        // A type=number input reports "" for an unparsable draft ("-", "1e"): that is not an emptied field. Restore the last valid value instead of deleting the key.
+        if (e.currentTarget.validity.badInput) setText(show(p.value));
+        else if (text === "" && p.value !== undefined) p.onChange(undefined);
+      }}
       {...describe(p)}
     />
   );
@@ -172,7 +192,6 @@ function FieldTemplate(p: FieldTemplateProps) {
       help={[l?.help ?? helpOf(p.rawDescription), since ? `Since schema ${since}.` : ""].filter(Boolean).join(" ") || undefined}
       changed={changedCount(ctx, path) > 0}
       required={p.required && entry === null}
-      error={p.rawErrors?.[0]}
       render={() => p.children}
     />
   );
@@ -279,11 +298,14 @@ function uiFor(root: any, node: any, path: Path, layout: Layout): UiSchema {
   const ui: UiSchema = {};
   const l = layout.fields[patternOf(path)];
   if (l?.widget) ui["ui:widget"] = WIDGET_NAMES[l.widget];
+  const options: Record<string, boolean | string> = {};
+  if (l?.help || helpOf(n.description) || sinceOf(n)) options.help = true;
   if (n.type === "integer" || n.type === "number") {
     ui["ui:widget"] ??= "NumberWidget"; // rjsf's default for numbers is the text widget
     const unit = l?.unit ?? unitFor(String(path[path.length - 1] ?? ""), n);
-    if (unit) ui["ui:options"] = { unit };
+    if (unit) options.unit = unit;
   }
+  if (Object.keys(options).length) ui["ui:options"] = options;
   if (n.type === "object" && n.properties)
     for (const [k, v] of Object.entries<any>(n.properties)) ui[k] = uiFor(root, v, [...path, k], layout);
   else if (n.type === "array" && n.items) {

@@ -97,3 +97,20 @@ test("a revision on trial shows the countdown on every page, and Revert now ends
   await expect(page.getByRole("button", { name: "Keep changes" })).toBeHidden();
   expect(wasReverted()).toBe(true);
 });
+
+test("an unsaved settings edit survives a visit to another page, and closing the tab asks first", async ({ page }) => {
+  await stubBackend(page);
+  await page.goto("/settings");
+  await page.getByLabel(/Worker tasks per listener/).fill("4");
+  await page.getByRole("link", { name: "Fleet", exact: true }).click();
+  await expect(page).toHaveURL(/\/fleet/);
+  await page.getByRole("link", { name: "General", exact: true }).first().click();
+  await expect(page.getByLabel(/Worker tasks per listener/)).toHaveValue("4");
+  // The browser's own "leave site?" prompt is what guards a reload or a closed tab while changes are unsaved.
+  const prompted = await page.evaluate(() => {
+    const e = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(e);
+    return e.defaultPrevented;
+  });
+  expect(prompted).toBe(true);
+});

@@ -80,7 +80,7 @@ export function RouteEditor({ routes, pools, resolvers, readOnly, onChange }: { 
                   aria-label={`Target of route ${i + 1}`}
                   value={target}
                   disabled={readOnly}
-                  onChange={(e) => set(i, { ...route, action: e.target.value ? { [kind]: e.target.value } : {} })}
+                  onChange={(e) => set(i, { ...route, action: e.target.value || kind === "resolver" ? { [kind]: e.target.value } : {} })}
                 >
                   <option value="">choose a {kind}</option>
                   {target && !names.includes(target) && <option value={target}>{target} (not defined)</option>}

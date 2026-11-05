@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
+import { SessionProvider, type Role } from "../lib/session";
 
 const api = vi.hoisted(() => ({
   getPlugin: vi.fn(),
@@ -49,13 +50,15 @@ function detail(extra = {}) {
   };
 }
 
-function page() {
+function page(role: Role = "admin") {
   render(
-    <MemoryRouter initialEntries={["/plugins/0123456789abcdef"]}>
-      <Routes>
-        <Route path="/plugins/:id" element={<PluginDetailPage />} />
-      </Routes>
-    </MemoryRouter>,
+    <SessionProvider value={{ username: "ana", role }}>
+      <MemoryRouter initialEntries={["/plugins/0123456789abcdef"]}>
+        <Routes>
+          <Route path="/plugins/:id" element={<PluginDetailPage />} />
+        </Routes>
+      </MemoryRouter>
+    </SessionProvider>,
   );
 }
 
@@ -69,6 +72,21 @@ beforeEach(() => {
   api.putPluginConfig.mockResolvedValue(detail());
   api.putPluginSecret.mockResolvedValue(undefined);
   api.enablePluginWebhook.mockResolvedValue({ token: "whk_secret123", path: "/plugins/0123456789abcdef/hook" });
+});
+
+describe("a viewer", () => {
+  it("sees no Secrets tab (the controller refuses the list to a viewer) and a read-only Options form", async () => {
+    page("viewer");
+    expect(await screen.findByLabelText(/Panel host/)).toBeDisabled();
+    expect(screen.queryByRole("tab", { name: "Secrets" })).not.toBeInTheDocument();
+    expect(api.listPluginSecrets).not.toHaveBeenCalled();
+  });
+
+  it("an admin has both", async () => {
+    page("admin");
+    expect(await screen.findByLabelText(/Panel host/)).toBeEnabled();
+    expect(screen.getByRole("tab", { name: "Secrets" })).toBeInTheDocument();
+  });
 });
 
 describe("Options tab", () => {

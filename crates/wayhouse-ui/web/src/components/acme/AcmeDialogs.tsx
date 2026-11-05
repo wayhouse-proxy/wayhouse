@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { ApiError, createAcmeGateway, putAcmeSite, type AcmeSiteInput } from "../../api";
+import { useEffect, useState } from "react";
+import { ApiError, createAcmeGateway, listPlugins, putAcmeSite, type AcmeSiteInput } from "../../api";
 import type { AcmeGateway, AcmeSite } from "../../types";
 import { Button } from "../ui/Button";
 import { Dialog } from "../ui/Dialog";
@@ -32,6 +32,17 @@ export function SiteDialog({ site, gateways, onClose, onSaved }: { site: AcmeSit
   const [enabled, setEnabled] = useState(site?.enabled ?? true);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The installs that can answer a DNS-01 challenge: enabled and approved for `on_acme_dns` (docs/acme.md). Null while loading or when the list is unavailable.
+  const [dnsPlugins, setDnsPlugins] = useState<{ id: string; name: string }[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    listPlugins()
+      .then((all) => live && setDnsPlugins(all.filter((p) => p.enabled && p.approved?.triggers?.on_acme_dns).map((p) => ({ id: p.id, name: p.name }))))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
   // A gateway the site still names but the controller no longer has stays listed: saving would send it back.
   const stale = (site?.gateways ?? []).filter((g) => !gateways.some((x) => x.name === g));
 
@@ -81,7 +92,17 @@ export function SiteDialog({ site, gateways, onClose, onSaved }: { site: AcmeSit
           <>
             <label className="flex flex-col gap-1">
               <span className="font-semibold">DNS plugin</span>
-              <Input mono value={plugin} onChange={(e) => setPlugin(e.target.value)} />
+              {dnsPlugins ? (
+                <Select aria-label="DNS plugin" value={plugin} onChange={(e) => setPlugin(e.target.value)}>
+                  <option value="">choose a plugin</option>
+                  {dnsPlugins.map((p) => (
+                    <option key={p.id} value={p.id}>{`${p.name} (${p.id})`}</option>
+                  ))}
+                  {plugin && !dnsPlugins.some((p) => p.id === plugin) && <option value={plugin}>{`${plugin} (not an enabled DNS plugin)`}</option>}
+                </Select>
+              ) : (
+                <Input mono aria-label="DNS plugin" value={plugin} onChange={(e) => setPlugin(e.target.value)} />
+              )}
             </label>
             <label className="flex flex-col gap-1">
               <span className="font-semibold">Challenge zone (optional)</span>

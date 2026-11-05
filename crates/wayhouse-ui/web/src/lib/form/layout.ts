@@ -55,7 +55,11 @@ export interface LayoutResult {
  * Checks an operator's override. Unknown paths (checked against `knownPaths`) and unknown keys are dropped with a
  * warning; a wrong shape is an error for the editor that submits it (`error`), and the default layout stays in use.
  */
+export const MAX_OVERRIDE_BYTES = 64 * 1024;
+
 export function parseOverride(text: string, knownPaths: Set<string>): LayoutResult & { error?: string } {
+  if (new TextEncoder().encode(text).length > MAX_OVERRIDE_BYTES)
+    return { layout: { version: 1, fields: {} }, warnings: [], error: "The layout is over 64 KiB; the limit keeps every form fast to render." };
   let raw: any;
   try {
     raw = JSON.parse(text);
