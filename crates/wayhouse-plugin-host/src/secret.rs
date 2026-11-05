@@ -9,38 +9,10 @@ use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_S
 use base64::Engine;
 use zeroize::Zeroizing;
 
-/// The shortest secret the store accepts: scrubbing a shorter value would mangle ordinary
-/// text and protect nothing.
-pub const MIN_SECRET_BYTES: usize = 8;
+pub use wayhouse_secrets::{SecretValue, MIN_SECRET_BYTES};
 
 /// What replaces a secret in anything the guest or a log can see.
 pub const REDACTED: &str = "[redacted]";
-
-/// A secret's plaintext, zeroed when dropped.
-pub struct SecretValue(Zeroizing<Vec<u8>>);
-
-impl SecretValue {
-    pub fn new(bytes: Vec<u8>) -> Self {
-        Self(Zeroizing::new(bytes))
-    }
-
-    /// The plaintext. Call only where it is written into a request.
-    pub fn expose(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for SecretValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
-impl std::fmt::Display for SecretValue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
 
 /// Where the host reads a plugin's secrets from: `Ok(None)` when the slot is not set,
 /// `Err` with a reason when it is set but cannot be read (the key is missing).
