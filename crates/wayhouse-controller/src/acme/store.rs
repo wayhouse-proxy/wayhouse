@@ -292,6 +292,11 @@ impl AcmeStore {
                             {
                                 return Ok(Applied::NameTaken(n.clone()));
                             }
+                            // A changed site (new names, plugin, gateways) may fix what failed:
+                            // try it now, not after the old backoff.
+                            if get_site(&site.name)?.is_some_and(|old| old != *site) {
+                                attempts.remove(site.name.as_bytes())?;
+                            }
                             sites.insert(site.name.as_bytes(), json(site)?)?;
                             Ok(Applied::Done)
                         }
@@ -804,6 +809,35 @@ mod tests {
         assert_eq!(versions, vec![2, 3]);
         assert_eq!(s.cert("a").unwrap().unwrap().version, 3);
         assert!(s.attempt("a").unwrap().is_none());
+    }
+
+    #[test]
+    fn changing_a_site_clears_its_backoff_and_setting_it_unchanged_keeps_it() {
+        let (s, _d) = store();
+        s.apply_local(&AcmeOp::SiteSet(site("a", &["a.example.com"])))
+            .unwrap();
+        let fail = || AcmeOp::Attempt {
+            site: "a".into(),
+            attempt: Attempt {
+                failures: 3,
+                next_attempt_at: 99,
+                last_error: Some("x".into()),
+                ..Attempt::default()
+            },
+        };
+        s.apply_local(&fail()).unwrap();
+        s.apply_local(&AcmeOp::SiteSet(site("a", &["a.example.com"])))
+            .unwrap();
+        assert_eq!(s.attempt("a").unwrap().unwrap().failures, 3, "unchanged");
+        s.apply_local(&AcmeOp::SiteSet(site(
+            "a",
+            &["a.example.com", "b.example.com"],
+        )))
+        .unwrap();
+        assert!(
+            s.attempt("a").unwrap().is_none(),
+            "fixing the site retries now"
+        );
     }
 
     #[test]

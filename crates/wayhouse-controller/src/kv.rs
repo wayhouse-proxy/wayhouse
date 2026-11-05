@@ -812,4 +812,35 @@ mod tests {
         t.insert(b"module", &big).unwrap();
         assert_eq!(t.get(b"module").unwrap().unwrap().to_vec(), big);
     }
+
+    /// Measures what a heartbeat costs the store (#430): every `insert` is its own write
+    /// transaction and fsync. Run with `cargo test -p wayhouse-controller --release
+    /// write_rate -- --ignored --nocapture`; the numbers depend on the disk, so it asserts nothing.
+    #[test]
+    #[ignore = "a measurement, not a test"]
+    fn write_rate_of_single_inserts() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Db::open(dir.path()).unwrap().open_tree("peers").unwrap();
+        for writers in [1usize, 8, 64] {
+            let per = 400 / writers.min(8);
+            let start = std::time::Instant::now();
+            std::thread::scope(|s| {
+                for w in 0..writers {
+                    let t = t.clone();
+                    s.spawn(move || {
+                        for i in 0..per {
+                            t.insert(format!("n{w}-{i}"), [0u8; 200]).unwrap();
+                        }
+                    });
+                }
+            });
+            let n = writers * per;
+            let secs = start.elapsed().as_secs_f64();
+            println!(
+                "{writers:>3} writers: {n} inserts in {secs:.2}s = {:.0}/s, {:.2} ms each",
+                n as f64 / secs,
+                secs * 1000.0 / n as f64 * writers as f64
+            );
+        }
+    }
 }

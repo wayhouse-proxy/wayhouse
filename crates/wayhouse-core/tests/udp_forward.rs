@@ -2,6 +2,8 @@
 //! per-client sessions, `consistent_hash` backend affinity, and idle-timeout eviction
 //! that releases the backend slot.
 
+mod common;
+use common::free_udp_addr;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
@@ -23,13 +25,6 @@ async fn echo_backend(tag: u8) -> std::net::SocketAddr {
         }
     });
     addr
-}
-
-fn free_udp_addr() -> std::net::SocketAddr {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
 }
 
 /// Send `payload` on `sock` until the echo comes back, for the first datagram
