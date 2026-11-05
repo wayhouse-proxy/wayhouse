@@ -260,4 +260,14 @@ describe("Features page", () => {
     expect(await screen.findByText("sniffers", { selector: "code" })).toBeInTheDocument();
     expect(screen.queryByText(/nodes/)).toBeNull();
   });
+
+  it("keeps keyboard focus in the row: on Keep when asked to confirm, back on Clear override afterwards", async () => {
+    api.getFeatures.mockResolvedValue({ flags: [], proxy_flags: [flag("port_routes", { override: "off_only", value: false, source: "override" })] });
+    page();
+    await userEvent.click(await screen.findByRole("button", { name: "Clear override of port_routes" }));
+    const keep = screen.getByRole("button", { name: "Keep port_routes override" });
+    expect(keep).toHaveFocus();
+    await userEvent.click(keep);
+    expect(screen.getByRole("button", { name: "Clear override of port_routes" })).toHaveFocus();
+  });
 });

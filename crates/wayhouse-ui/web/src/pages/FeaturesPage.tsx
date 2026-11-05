@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { parse } from "yaml";
 import { ApiError, clearFeatureOverride, getCurrentConfig, getFeatures, getFleetFeatures, listFeatureOverrides, putFeatureOverride } from "../api";
 import type { FeatureFlag, FeatureOverride, FlagRollup } from "../types";
@@ -153,6 +153,15 @@ export function FeaturesPage() {
   const [error, setError] = useState<Error | null>(null);
   const [fleet, setFleet] = useState<{ reporting: number; byName: Record<string, FlagRollup> } | null>(null);
   const [clearing, setClearing] = useState<string | null>(null);
+  // The confirm swaps the row's buttons, which drops focus to the page: put it on Keep, then back.
+  const keepRef = useRef<HTMLButtonElement>(null);
+  const clearRefs = useRef(new Map<string, HTMLButtonElement | null>());
+  const lastClearing = useRef<string | null>(null);
+  useEffect(() => {
+    if (clearing) keepRef.current?.focus();
+    else if (lastClearing.current) clearRefs.current.get(lastClearing.current)?.focus();
+    lastClearing.current = clearing;
+  }, [clearing]);
   const [editing, setEditing] = useState<FeatureFlag | null>(null);
 
   const refresh = useCallback(async () => {
@@ -258,13 +267,13 @@ export function FeaturesPage() {
                             <Button size="sm" variant="danger" aria-label={`Yes, clear ${f.name}`} onClick={() => clear(f)}>
                               Yes, clear
                             </Button>
-                            <Button size="sm" variant="ghost" aria-label={`Keep ${f.name} override`} onClick={() => setClearing(null)}>
+                            <Button ref={keepRef} size="sm" variant="ghost" aria-label={`Keep ${f.name} override`} onClick={() => setClearing(null)}>
                               Keep
                             </Button>
                           </span>
                         ) : (
                           f.source === "override" && (
-                            <Button size="sm" disabled={!admin} aria-label={`Clear override of ${f.name}`} onClick={() => setClearing(f.name)}>
+                            <Button ref={(el) => void clearRefs.current.set(f.name, el)} size="sm" disabled={!admin} aria-label={`Clear override of ${f.name}`} onClick={() => setClearing(f.name)}>
                               Clear override
                             </Button>
                           )

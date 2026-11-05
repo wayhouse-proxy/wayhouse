@@ -681,7 +681,7 @@ UI, **Configure > Features** shows each flag with its value, where the value com
 turning it off costs, and (with more than one node reporting) which nodes run it off or
 without the code. Everything below works the same on a single instance. The examples use the
 controller directly; they are valid in fish and bash (`$TOKEN` is the controller's
-`--auth-token`, `$CTL` its address, `$AGG` the aggregator's).
+`--auth-token`, `$CTL` its address, `$AGG` and `$AGG_TOKEN` the aggregator's address and its own `--auth-token`).
 
 | Symptom | Flip | Cost of flipping | Ends |
 |---|---|---|---|
@@ -709,7 +709,7 @@ curl -sS -X DELETE "$CTL/features/overrides/acl" -H "Authorization: Bearer $TOKE
 The fleet view, for "which nodes are off":
 
 ```
-curl -sS "$AGG/fleet/features" -H "Authorization: Bearer $TOKEN"
+curl -sS "$AGG/fleet/features" -H "Authorization: Bearer $AGG_TOKEN"
 ```
 
 Things to know before relying on it:
