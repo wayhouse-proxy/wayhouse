@@ -367,7 +367,14 @@ impl Runner {
             let this = self.clone();
             running.spawn(async move {
                 let id = rec.id.clone();
-                this.clone().tick(rec, at, term).await;
+                // The tick runs in its own task, so a panic in it is caught here: the id
+                // leaves `inflight` either way (or that install would never tick again) and
+                // the failure is logged.
+                let ticking = this.clone();
+                if let Err(e) = tokio::spawn(async move { ticking.tick(rec, at, term).await }).await
+                {
+                    tracing::error!(install = %id, error = %e, "a plugin tick task failed");
+                }
                 this.schedule.lock().await.inflight.remove(&id);
             });
         }
