@@ -69,10 +69,24 @@ describe("SchemaForm on the real schema", () => {
     expect(screen.getByText("1 changed")).toBeInTheDocument();
   });
 
-  it("clearing a field deletes the key", async () => {
+  it("a number cleared to type another keeps its key and comment; leaving it empty deletes the key", async () => {
     render(<Harness path={["settings"]} />);
-    await userEvent.clear(screen.getByLabelText(/Worker tasks per listener/));
+    const workers = screen.getByLabelText(/Worker tasks per listener/);
+    await userEvent.clear(workers);
+    expect(yaml()).toContain("workers: 2 # tasks"); // still the saved value while the field is being retyped
+    await userEvent.type(workers, "6");
+    expect(yaml()).toContain("workers: 6 # tasks"); // the comment survived the retype
+    await userEvent.clear(workers);
+    await userEvent.tab();
     expect(yaml()).not.toContain("workers");
+  });
+
+  it("typing a lone minus sign does not delete a number's key", async () => {
+    render(<Harness path={["settings"]} />);
+    const workers = screen.getByLabelText(/Worker tasks per listener/);
+    await userEvent.clear(workers);
+    await userEvent.type(workers, "-");
+    expect(yaml()).toContain("workers: 2 # tasks");
   });
 
   it("hides advanced fields until Show advanced is on", () => {

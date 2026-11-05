@@ -81,18 +81,31 @@ const Secret = (p: WidgetProps) => (
   />
 );
 
+/**
+ * A number is edited as text. A draft that is empty or not yet a number (a cleared field, a lone "-") writes nothing,
+ * so retyping never deletes the key and its comment; leaving the field empty is what removes the key.
+ */
 function NumberW(p: WidgetProps) {
   const unit = p.options.unit as string | undefined;
+  const show = (v: unknown) => (v === undefined || v === null ? "" : String(v));
+  const [text, setText] = useState(show(p.value));
+  useEffect(() => setText((t) => (t !== "" && Number(t) === p.value ? t : t === "" && p.value === undefined ? t : show(p.value))), [p.value]);
   return (
     <NumberInput
       id={p.id}
       unit={unit}
-      value={p.value ?? ""}
+      value={text}
       placeholder={p.schema["x-wayhouse-default"] !== undefined ? String(p.schema["x-wayhouse-default"]) : undefined}
       min={p.schema.minimum}
       step={p.schema.type === "integer" ? 1 : "any"}
       disabled={p.disabled || p.readonly}
-      onChange={(e) => p.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+      onChange={(e) => {
+        setText(e.target.value);
+        if (e.target.value !== "" && Number.isFinite(Number(e.target.value))) p.onChange(Number(e.target.value));
+      }}
+      onBlur={() => {
+        if (text === "" && p.value !== undefined) p.onChange(undefined);
+      }}
       {...describe(p)}
     />
   );
