@@ -455,3 +455,32 @@ fn a_declared_state_cap_over_the_host_ceiling_is_rejected() {
     );
     assert!(matches!(inspect(&m), Err(ModuleError::CapsInvalid(_))));
 }
+
+#[test]
+fn a_suspended_capability_is_denied_until_it_is_resumed() {
+    let m = guest(
+        TIMER_LOG_STATE,
+        r#"(func (export "init") (param i32 i32))
+           (func (export "on_timer")
+             (call $log (i32.const 2) (i32.const 0) (i32.const 5))
+             (drop (call $put (i32.const 16) (i32.const 1) (i32.const 32) (i32.const 2))))"#,
+    );
+    let plugin = host().load(&m, &approved(&m)).unwrap();
+    plugin.set_suspended(["log".to_owned()]);
+    assert!(matches!(
+        plugin.on_timer(&StateSnapshot::new()),
+        Err(CallError::CapabilityDenied("log"))
+    ));
+    // Resuming needs no new approval: the loaded capabilities were never touched.
+    plugin.set_suspended(Vec::new());
+    assert_eq!(
+        plugin.on_timer(&StateSnapshot::new()).unwrap().state_puts.len(),
+        1
+    );
+    // Suspending state alone leaves log working and denies the state write.
+    plugin.set_suspended(["state".to_owned()]);
+    assert!(matches!(
+        plugin.on_timer(&StateSnapshot::new()),
+        Err(CallError::CapabilityDenied("state"))
+    ));
+}
