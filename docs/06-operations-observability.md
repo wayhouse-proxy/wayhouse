@@ -558,7 +558,9 @@ un-namespaced names.
   answer, the list is served from declared tags and the reply carries `X-Operator-Tags:
   unavailable`; `resolve` answers `502` instead, so a bulk action never acts on a set the
   operator did not see. With no controller configured there are no operator tags and the PUT
-  answers `503`. Tags of nodes that went away stay until an operator removes them:
+  answers `503`. The PUT replaces the whole set and the API has no merge, so the UI builds each
+  one from a fresh read of the node right before sending: a tag another operator added a moment
+  earlier is kept, while two saves in the same instant are still last-write-wins. Tags of nodes that went away stay until an operator removes them:
   `POST /api/fleet/node-tags/prune` lists the tagged nodes the aggregator does not list; sent again
   with `{"names": [...]}` from that list it deletes those (see [stored UI data](ui-data.md)).
 - `GET /fleet/features` — how each feature flag stands across the fleet, from the flags every

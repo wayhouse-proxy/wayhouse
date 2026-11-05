@@ -36,6 +36,10 @@ pub(crate) struct RawConfig {
     pub(crate) web: Option<crate::web::RawWeb>,
     /// Feature flags by name (`features.rs`). Config schema 4.
     #[serde(default)]
+    #[cfg_attr(
+        feature = "json-schema",
+        schemars(schema_with = "crate::features::schema")
+    )]
     pub(crate) features: std::collections::BTreeMap<String, bool>,
 }
 

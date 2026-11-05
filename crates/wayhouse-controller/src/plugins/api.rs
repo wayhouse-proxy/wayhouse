@@ -60,6 +60,18 @@ fn err(status: StatusCode, msg: impl std::fmt::Display) -> Response {
         .into_response()
 }
 
+/// The `409` for an edit that lost a race; the UI branches on `reason`.
+fn stale_conflict() -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "reason": "stale",
+            "error": "the install changed while you edited it; reload and try again",
+        })),
+    )
+        .into_response()
+}
+
 /// The 400 for an `approved` that is not the set the options resolve to; the structured
 /// `effective` lets a client re-send without parsing the message.
 fn approved_mismatch(effective: &Capabilities) -> Response {
@@ -693,6 +705,7 @@ async fn put_config_inner(
                 return Err((
                     StatusCode::CONFLICT,
                     Json(serde_json::json!({
+                        "reason": "needs_approval",
                         "error": "the new options change the approved capabilities; send them as `approved` to confirm",
                         "approved": record.approved,
                         "effective": effective,
@@ -710,6 +723,12 @@ async fn put_config_inner(
     } else {
         record.approved.clone()
     };
+    // Refused here with its reason: under HA a replica's refusal travels back without one.
+    let mut next = record.clone();
+    next.config = config.clone();
+    next.approved = approved.clone();
+    next.validate()
+        .map_err(|why| err(StatusCode::BAD_REQUEST, why))?;
     if let Some(ha) = &st.ha {
         super::peer::check_support(ha)
             .await
@@ -773,10 +792,8 @@ async fn put_config_inner(
             }
         }
         Applied::NoSuchInstall => Err(err(StatusCode::NOT_FOUND, "no such install")),
-        Applied::Stale => Err(err(
-            StatusCode::CONFLICT,
-            "the install changed while you edited it; reload and try again",
-        )),
+        Applied::Stale => Err(stale_conflict()),
+        Applied::Invalid(why) if !why.is_empty() => Err(err(StatusCode::BAD_REQUEST, why)),
         _ => Err(err(StatusCode::BAD_REQUEST, "the config was refused")),
     }
 }
@@ -1447,6 +1464,7 @@ mod tests {
         let id = install_bound(&app, r#"{"panel":"p.example"}"#).await;
         let (status, needs) = put_config(&app, &id, r#"{"config":{"panel":"q.example"}}"#).await;
         assert_eq!(status, StatusCode::CONFLICT, "{needs}");
+        assert_eq!(needs["reason"], "needs_approval");
         assert_eq!(needs["approved"]["http"]["hosts"][0]["host"], "p.example");
         assert_eq!(needs["effective"]["http"]["hosts"][0]["host"], "q.example");
         assert_eq!(
@@ -1491,6 +1509,37 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
         let (status, _) = put_config(&app, "zz", r#"{"config":{}}"#).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_lost_race_answers_409_with_the_stale_reason() {
+        let resp = stale_conflict();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["reason"], "stale");
+    }
+
+    #[tokio::test]
+    async fn a_record_that_would_be_invalid_is_refused_with_its_reason() {
+        let (st, _d) = state(None);
+        let app = router(st.clone());
+        let sha = upload(&app, &module(CAPS)).await;
+        let (_, rec) = call(&app, "POST", "/plugins", install_body(&sha, CAPS), None).await;
+        let id = rec["id"].as_str().unwrap();
+        let mut record = st.store.get(id).unwrap().unwrap();
+        record.webhook = Some(super::super::WebhookAuth {
+            token_hash: "nope".into(),
+        });
+        st.store.write_record(&record).unwrap();
+        let (status, v) = put_config(&app, id, r#"{"config":{}}"#).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        assert!(
+            v["error"].as_str().unwrap().contains("webhook token hash"),
+            "{v}"
+        );
     }
 
     #[tokio::test]

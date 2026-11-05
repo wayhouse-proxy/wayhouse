@@ -2,17 +2,12 @@
 //! the clients whose sessions were open when it went down (#168): the ICMP
 //! port-unreachable of the dead window must not kill the session's reply pump.
 
+mod common;
+use common::free_udp_addr;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use wayhouse_config::parse_str;
 use wayhouse_core::{Runtime, Snapshot};
-
-fn free_udp_addr() -> std::net::SocketAddr {
-    std::net::UdpSocket::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-}
 
 fn spawn_echo(addr: std::net::SocketAddr) -> tokio::task::JoinHandle<()> {
     let s = std::net::UdpSocket::bind(addr).unwrap();

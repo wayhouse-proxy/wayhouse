@@ -2,6 +2,8 @@
 //! the generated `via: wayhouse` loopback listener (spec
 //! `docs/superpowers/specs/2026-10-15-web-routing-design.md`).
 
+mod common;
+use common::free_tcp_addr as free_addr;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -46,13 +48,6 @@ fn client_hello(sni: &str) -> Vec<u8> {
     rec.extend_from_slice(&(hs.len() as u16).to_be_bytes());
     rec.extend_from_slice(&hs);
     rec
-}
-
-fn free_addr() -> SocketAddr {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
 }
 
 /// What a backend saw at the start of one connection.

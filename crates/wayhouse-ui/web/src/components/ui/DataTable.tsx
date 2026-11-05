@@ -132,6 +132,12 @@ export function DataTable<T>({
   }
 
   const byId = new Map(sorted.map((r) => [r.id, r]));
+  // A header sort orders the rows inside each group; with no sort the caller's order stands.
+  const rank = new Map(sorted.map((r, i) => [r.id, i]));
+  const inGroup = (g: Group<T>) => {
+    const rows = g.rows.map((r) => byId.get(getRowId(r))).filter((r): r is NonNullable<typeof r> => !!r);
+    return sorting.length ? rows.sort((a, b) => rank.get(a.id)! - rank.get(b.id)!) : rows;
+  };
   return (
     <Table>
       {header}
@@ -155,7 +161,7 @@ export function DataTable<T>({
                   </td>
                 </tr>,
                 ...(open
-                  ? g.rows.map((r) => byId.get(getRowId(r))).filter((r): r is NonNullable<typeof r> => !!r).map((row) => (
+                  ? inGroup(g).map((row) => (
                       <TR key={row.id} {...rowProps(row)}>{cells(row)}</TR>
                     ))
                   : []),

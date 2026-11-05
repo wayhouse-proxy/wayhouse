@@ -163,6 +163,11 @@ struct Args {
     #[arg(long, default_value = "wayhouse-tunnel.key")]
     tunnel_key_file: PathBuf,
 
+    /// File where the controller's feature-flag overrides are kept, so a restart while the
+    /// controller is down keeps a kill switch as it was (used with `--controller`).
+    #[arg(long, default_value = "wayhouse-feature-overrides.json")]
+    feature_overrides_file: PathBuf,
+
     /// Base URL of the `wayhouse-controller` backend-peers registry to subscribe
     /// to — independent of `--controller` (a deployment may pull structural
     /// config from a file while still using a controller's tunnel registry,
@@ -391,6 +396,7 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
         resolvers,
         sources,
         admin_tls,
+        args.feature_overrides_file,
     )
     .await
 }
@@ -409,6 +415,7 @@ async fn run(
     resolvers: Arc<wayhouse_core::Resolvers>,
     sources: Vec<Arc<dyn wayhouse_core::BackendSource>>,
     admin_tls: Option<Arc<wayhouse_http::tls::ReloadingCert>>,
+    feature_overrides_file: PathBuf,
 ) -> anyhow::Result<()> {
     let prometheus = metrics_exporter_prometheus::PrometheusBuilder::new().install_recorder()?;
 
@@ -569,6 +576,7 @@ async fn run(
             url.clone(),
             token.clone(),
             handle.clone(),
+            feature_overrides_file.clone(),
         )))
     } else {
         None
