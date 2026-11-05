@@ -280,6 +280,8 @@ mod tests {
         set_overrides(BTreeMap::new());
     }
 
+    // The turn is held across awaits on purpose: `OVERRIDES` must stay empty until the end.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn a_port_routes_change_asks_for_a_rebuild_and_nothing_else_does() {
         let _t = TURN
