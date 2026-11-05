@@ -11,6 +11,13 @@ describe("layout", () => {
     expect(Object.keys(DEFAULT_LAYOUT.fields).filter((p) => !KNOWN.has(p))).toEqual([]);
   });
 
+  it("refuses an override over 64 KiB, which docs/ui-form-layout.md promises", () => {
+    const big = JSON.stringify({ version: 1, fields: { "/settings/workers": { help: "x".repeat(64 * 1024) } } });
+    expect(parseOverride(big, KNOWN).error).toMatch(/64 KiB/);
+    const ok = JSON.stringify({ version: 1, fields: { "/settings/workers": { help: "x".repeat(1000) } } });
+    expect(parseOverride(ok, KNOWN).error).toBeUndefined();
+  });
+
   it("looks up list items with *", () => {
     expect(patternOf(["listeners", 0, "bind"])).toBe("listeners.*.bind");
     expect(KNOWN.has("listeners.*.bind")).toBe(true);
