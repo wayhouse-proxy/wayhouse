@@ -128,19 +128,16 @@ export function FleetPage() {
     if (data && data.items.length === 0 && data.total > 0 && q.page > 1) update({ page: 1 });
   });
 
-  // Search text: typed freely, written to the URL after a short pause.
-  const [text, setText] = useState(q.q);
-  useEffect(() => setText(q.q), [q.q]);
-  useEffect(() => {
-    if (text === q.q) return;
-    const t = setTimeout(() => update({ q: text }), 250);
-    return () => clearTimeout(t);
-  }, [text]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Inspector follows `sel`. It holds a snapshot, so it is re-opened as the row or the live view changes.
   const node = data?.items.find((n) => n.instance === q.sel);
   const live = instances.find((i) => i.instance === q.sel);
   const shown = useRef(false);
+  // The tag editor builds its PUT from this fresh read, not from the list that is up to one poll old.
+  // (A failed refetch keeps the previous data, so the editor then falls back to the list it already had.)
+  const latest = async () => {
+    const page = (await nodes.refetch()).data;
+    return { node: page?.items.find((n) => n.instance === q.sel), unavailable: page?.operatorTagsUnavailable };
+  };
   const addTag = (tag: string) => update((cur) => ({ tags: [...new Set([...cur.tags, tag])] }));
   useEffect(() => {
     if (shown.current && !inspector.current && q.sel) {
@@ -155,7 +152,7 @@ export function FleetPage() {
       return;
     }
     shown.current = true;
-    inspector.open(q.sel, <NodeInspector instance={q.sel} node={node} live={live} onTag={addTag} tagsUnavailable={data?.operatorTagsUnavailable} />);
+    inspector.open(q.sel, <NodeInspector instance={q.sel} node={node} live={live} onTag={addTag} tagsUnavailable={data?.operatorTagsUnavailable} latest={latest} />);
   }, [q.sel, node, live, data?.operatorTagsUnavailable]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => inspector.close(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -234,7 +231,13 @@ export function FleetPage() {
         actions={<StatusMark state={connected ? "up" : "down"} word={connected ? "live" : "reconnecting…"} />}
       />
 
-      <FilterBar q={q} text={text} onText={setText} update={update} />
+      <FilterBar q={q} update={update} />
+
+      {nodes.isError && data && (
+        <p role="status" className="mb-2 text-sm text-bad">
+          The list is not updating: {nodes.error instanceof ApiError ? nodes.error.message : String(nodes.error)}. These rows are from the last successful refresh.
+        </p>
+      )}
 
       {nodes.isPending ? (
         <Loading rows={8} />
@@ -295,8 +298,22 @@ export function FleetPage() {
   );
 }
 
-function FilterBar({ q, text, onText, update }: { q: NodeQuery; text: string; onText: (s: string) => void; update: Update }) {
+/** A text filter typed freely and written to the URL after a short pause, so one request follows a word, not each key. */
+function useTypedFilter(value: string, commit: (v: string) => void): [string, (v: string) => void] {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  useEffect(() => {
+    if (text === value) return;
+    const t = setTimeout(() => commit(text), 250);
+    return () => clearTimeout(t);
+  }, [text]); // eslint-disable-line react-hooks/exhaustive-deps
+  return [text, setText];
+}
+
+function FilterBar({ q, update }: { q: NodeQuery; update: Update }) {
   const [tagDraft, setTagDraft] = useState("");
+  const [text, onText] = useTypedFilter(q.q, (v) => update({ q: v }));
+  const [region, onRegion] = useTypedFilter(q.region, (v) => update({ region: v }));
   return (
     <section aria-label="Filters" className="mb-3 flex flex-col gap-2">
       <div className="flex flex-wrap items-end gap-2">
@@ -315,7 +332,7 @@ function FilterBar({ q, text, onText, update }: { q: NodeQuery; text: string; on
         </label>
         <label className="flex flex-col gap-0.5 text-xs text-ink-muted">
           Region
-          <Input value={q.region} onChange={(e) => update({ region: e.target.value })} placeholder="any" className="w-32" />
+          <Input value={region} onChange={(e) => onRegion(e.target.value)} placeholder="any" className="w-32" />
         </label>
         <form
           className="flex items-end gap-1"
@@ -372,6 +389,10 @@ function SavedFilters({ q, update }: { q: NodeQuery; update: Update }) {
   const [active, setActive] = useState("");
   const [naming, setNaming] = useState<string | null>(null);
   const names = (saved.data ?? []).map((f) => f.name);
+  // The select names the applied filter only while the page still shows exactly that filter.
+  const applied = (saved.data ?? []).find((f) => f.name === active);
+  const shown = applied && filterQuery(savedFilter(applied)) === filterQuery(q) ? active : "";
+  if (saved.isError) return <p role="status" className="text-sm text-bad">The saved filters could not be loaded: {saved.error instanceof ApiError ? saved.error.message : String(saved.error)}.</p>;
   if (!saved.data?.length && !canWrite) return null;
 
   const fail = (what: string) => (e: unknown) => toast(`${what} failed: ${e instanceof ApiError ? e.message : e}`, "down");
@@ -380,7 +401,7 @@ function SavedFilters({ q, update }: { q: NodeQuery; update: Update }) {
       <label className="flex items-center gap-1.5 text-sm text-ink-muted">
         Saved filters
         <Select
-          value={active}
+          value={shown}
           onChange={(e) => {
             const f = (saved.data ?? []).find((x) => x.name === e.target.value);
             setActive(e.target.value);

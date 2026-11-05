@@ -23,6 +23,18 @@ export function RangeSelect({ value, onChange }: { value: Range; onChange: (r: R
 
 export const freshnessText = (s: FleetStats, last: number | null) => freshness(s.generated_at_ms, last);
 
-/** Chart rows from a series: the open minute is flagged, a missing sample stays a gap. */
-export const toRows = <P extends { t_ms: number; partial: boolean }>(points: P[], pick: (p: P) => Record<string, number | null>): ChartRow[] =>
-  points.map((p) => ({ t: p.t_ms, partial: p.partial, ...pick(p) }));
+/**
+ * Chart rows from a series: the open minute is flagged, and every minute between the first and the last
+ * sample gets a row (null values for a minute nobody reported), so the chart and its table show the gap
+ * instead of joining the line across it.
+ */
+export const toRows = <P extends { t_ms: number; partial: boolean }>(points: P[], pick: (p: P) => Record<string, number | null>, stepMs = 60_000): ChartRow[] => {
+  const rows: ChartRow[] = [];
+  for (const p of points) {
+    const picked = pick(p);
+    const prev = rows[rows.length - 1];
+    if (prev) for (let t = (prev.t as number) + stepMs; t < p.t_ms; t += stepMs) rows.push({ t, partial: false, ...Object.fromEntries(Object.keys(picked).map((k) => [k, null])) });
+    rows.push({ t: p.t_ms, partial: p.partial, ...picked });
+  }
+  return rows;
+};

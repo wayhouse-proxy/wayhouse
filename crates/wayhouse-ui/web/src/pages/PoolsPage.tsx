@@ -10,6 +10,8 @@ import { freshnessText, RangeSelect, toRows, useRange } from "./StatsParts";
 /** All backends healthy is up, none is down, anything between is degraded. */
 const stateOf = (healthy: number, total: number): State => (total === 0 ? "unknown" : healthy === total ? "up" : healthy === 0 ? "down" : "degraded");
 
+const STALE_MS = 180_000;
+
 export function PoolsPage() {
   const [range, setRange] = useRange();
   const [params] = useSearchParams();
@@ -43,7 +45,9 @@ export function PoolsPage() {
               </THead>
               <TBody>
                 {pools.map((p) => {
-                  const last = p.points[p.points.length - 1];
+                  // A pool whose instances stopped reporting keeps its last point; that is history, not "now".
+                  const age = p.last_sample_ms === null ? Infinity : (stats?.generated_at_ms ?? 0) - p.last_sample_ms;
+                  const last = age <= STALE_MS ? p.points[p.points.length - 1] : undefined;
                   return (
                     <TR key={p.name} selected={p === current}>
                       <TD className="font-mono">
@@ -51,7 +55,7 @@ export function PoolsPage() {
                           {p.name}
                         </Link>
                       </TD>
-                      <TD>{last ? <StatusMark state={stateOf(last.healthy_backends, last.backends)} /> : <StatusMark state="unknown" />}</TD>
+                      <TD>{last ? <StatusMark state={stateOf(last.healthy_backends, last.backends)} /> : <StatusMark state="unknown" word="No recent sample" />}</TD>
                       <TD numeric>{last ? fmtCount(last.healthy_backends) : "–"}</TD>
                       <TD numeric>{last ? fmtCount(last.backends) : "–"}</TD>
                     </TR>
