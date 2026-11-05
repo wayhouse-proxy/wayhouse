@@ -197,6 +197,7 @@ pub(crate) fn validate(
                 }
                 ResolvedSource::Dynamic(SourceConfig {
                     name: s.name.clone(),
+                    enabled: s.enabled,
                     kind: SourceKind::DnsSrv { record },
                     refresh_interval,
                 })
@@ -225,6 +226,7 @@ pub(crate) fn validate(
                 }
                 ResolvedSource::Dynamic(SourceConfig {
                     name: s.name.clone(),
+                    enabled: s.enabled,
                     kind: SourceKind::Consul {
                         service,
                         addr: s
@@ -250,6 +252,7 @@ pub(crate) fn validate(
                 }
                 ResolvedSource::Dynamic(SourceConfig {
                     name: s.name.clone(),
+                    enabled: s.enabled,
                     kind: SourceKind::Kubernetes {
                         namespace: s.namespace.clone().unwrap_or_else(|| "default".to_string()),
                         service,
@@ -278,6 +281,7 @@ pub(crate) fn validate(
                 }
                 ResolvedSource::Dynamic(SourceConfig {
                     name: s.name.clone(),
+                    enabled: s.enabled,
                     kind: SourceKind::Tunnel { pubkey },
                     refresh_interval,
                 })
@@ -498,7 +502,12 @@ pub(crate) fn validate(
 
     let mut resolver_names = BTreeSet::new();
     let mut resolvers = Vec::with_capacity(raw.resolvers.len());
+    // Validated like any other, then left out: routes that name one are skipped below.
+    let mut parked_resolvers = BTreeSet::new();
     for r in raw.resolvers {
+        if !r.enabled {
+            parked_resolvers.insert(r.name.clone());
+        }
         if !resolver_names.insert(r.name.clone()) {
             return Err(Invalid(format!("duplicate resolver name: {}", r.name)));
         }
@@ -566,6 +575,9 @@ pub(crate) fn validate(
             }
             None => None,
         };
+        if !r.enabled {
+            continue;
+        }
         resolvers.push(ResolverConfig {
             name: r.name,
             kind,
@@ -588,7 +600,7 @@ pub(crate) fn validate(
         }
         let (bind, extra_binds) = parse_bind_spec(&l.name, &l.bind)?;
         for addr in std::iter::once(bind).chain(extra_binds.iter().copied()) {
-            if !binds.insert((addr, l.protocol)) {
+            if l.enabled && !binds.insert((addr, l.protocol)) {
                 return Err(Invalid(format!(
                     "listener {}: bind {addr} is already used by another listener",
                     l.name
@@ -631,6 +643,9 @@ pub(crate) fn validate(
                     )))
                     }
                 };
+                if matches!(&action, Action::Resolver(n) if parked_resolvers.contains(n)) {
+                    continue;
+                }
                 rs.push(Route { matcher, action });
             }
             rs
@@ -877,6 +892,10 @@ pub(crate) fn validate(
             }
         };
 
+        // A parked filter was validated above and below; it just does not run.
+        let geo = geo.filter(|_| l.geo.as_ref().is_none_or(|g| g.enabled));
+        let per_source = per_source.filter(|_| l.per_source.as_ref().is_none_or(|p| p.enabled));
+        let rate_limit_on = l.rate_limit.as_ref().is_none_or(|r| r.enabled);
         let rate_limit = match l.rate_limit {
             None => None,
             Some(rl) => {
@@ -911,7 +930,8 @@ pub(crate) fn validate(
                 }
                 Some(RateLimit { per_ip, per_net })
             }
-        };
+        }
+        .filter(|_| rate_limit_on);
 
         // Distinct sniffer names, in route order (wayhouse-core tries them in this
         // order; the first to recognise the bytes wins).
@@ -924,6 +944,9 @@ pub(crate) fn validate(
             }
         }
 
+        if !l.enabled {
+            continue;
+        }
         listeners.push(ListenerConfig {
             name: l.name,
             bind,

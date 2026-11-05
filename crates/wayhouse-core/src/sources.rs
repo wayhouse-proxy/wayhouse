@@ -96,7 +96,7 @@ impl SourceManager {
     /// next reload can retry.
     pub fn start_all(&self, snap: &Snapshot) {
         let mut groups = self.groups.lock().unwrap_or_else(PoisonError::into_inner);
-        for (pool, cfg) in &snap.sources {
+        for (pool, cfg) in snap.sources.iter().filter(|(_, c)| c.enabled) {
             match self.spawn_group(pool, cfg) {
                 Ok(g) => {
                     groups.insert(pool.clone(), g);
@@ -121,7 +121,7 @@ impl SourceManager {
             let stale: Vec<String> = groups
                 .iter()
                 .filter(|(pool, g)| match snap.sources.get(pool.as_str()) {
-                    Some(new_cfg) => *new_cfg != g.cfg,
+                    Some(new_cfg) => !new_cfg.enabled || *new_cfg != g.cfg,
                     None => true,
                 })
                 .map(|(pool, _)| pool.clone())
@@ -131,7 +131,7 @@ impl SourceManager {
                 .filter_map(|p| groups.remove(p).map(|g| (p.clone(), g)))
                 .collect();
 
-            for (pool, cfg) in &snap.sources {
+            for (pool, cfg) in snap.sources.iter().filter(|(_, c)| c.enabled) {
                 if !groups.contains_key(pool) {
                     match self.spawn_group(pool, cfg) {
                         Ok(g) => {
@@ -259,6 +259,7 @@ mod tests {
                 record: addr.to_string(),
             },
             refresh_interval: Duration::from_millis(20),
+            enabled: true,
         }
     }
 
@@ -341,5 +342,42 @@ mod tests {
             after_stop,
             "no task polls after stop_all"
         );
+    }
+
+    #[tokio::test]
+    async fn a_disabled_source_stops_polling_but_keeps_its_last_set() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let discovery = Arc::new(Discovery::new());
+        let mgr = SourceManager::new(
+            discovery.clone(),
+            Arc::new(Notify::new()),
+            Arc::new(FakeFactory {
+                calls: calls.clone(),
+            }),
+        );
+        mgr.start_all(&snap_with(&[("p", src_cfg("eu", "10.0.0.1:7777"))]));
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let mut parked = src_cfg("eu", "10.0.0.1:7777");
+        parked.enabled = false;
+        let (running, stopped) = mgr.reconcile(&snap_with(&[("p", parked.clone())])).await;
+        assert_eq!((running, stopped), (0, 1));
+        assert_eq!(
+            discovery.get("p").unwrap(),
+            vec!["10.0.0.1:7777".parse().unwrap()],
+            "frozen at the last known good set, not cleared"
+        );
+        let after = calls.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            after,
+            "no refresh while parked"
+        );
+        // Switched on again: polling resumes.
+        mgr.reconcile(&snap_with(&[("p", src_cfg("eu", "10.0.0.1:7777"))]))
+            .await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(calls.load(Ordering::SeqCst) > after);
+        mgr.stop_all().await;
     }
 }

@@ -41,7 +41,9 @@ pub fn build_sources(
     let kube_auth = KubeAuth::from_pod();
     let mut out: Vec<Arc<dyn BackendSource>> = Vec::new();
     for p in &cfg.pools {
-        let Some(sc) = &p.source else { continue };
+        let Some(sc) = p.source.as_ref().filter(|s| s.enabled) else {
+            continue;
+        };
         out.push(build_one(&p.name, sc, &kube_auth, tunnel_registry)?);
     }
     Ok(out)
