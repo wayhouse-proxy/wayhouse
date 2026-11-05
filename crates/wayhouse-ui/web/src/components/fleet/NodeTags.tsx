@@ -29,7 +29,7 @@ export function NodeTags({
   unavailable?: boolean;
   onTag: (tag: string) => void;
   /** Reads the node again from the aggregator; the set is built from this, not from the list that may be 5 s old. */
-  latest?: () => Promise<FleetNode | undefined>;
+  latest?: () => Promise<{ node?: FleetNode; unavailable?: boolean } | undefined>;
 }) {
   const canOperate = useCan("operator");
   const toast = useToast();
@@ -47,7 +47,10 @@ export function NodeTags({
   const save = useMutation({
     mutationFn: async (edit: (cur: Record<string, string>) => Record<string, string>) => {
       const fresh = await latest?.().catch(() => undefined);
-      const tags = edit(fresh?.operator_tags ?? mine);
+      if (fresh?.unavailable) throw new Error("operator tags are unavailable right now (the controller did not answer)");
+      // A node the aggregator found with no operator_tags has none now (the field is left out when empty);
+      // the list's copy is only for when no fresh node came back.
+      const tags = edit(fresh?.node ? (fresh.node.operator_tags ?? {}) : mine);
       return Object.keys(tags).length ? setNodeTags(instance, tags) : clearNodeTags(instance);
     },
     onSuccess: () => {

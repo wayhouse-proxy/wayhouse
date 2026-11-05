@@ -64,7 +64,7 @@ describe("node tags", () => {
   });
 
   it("builds the new set from a fresh read, so another operator's tag added meanwhile survives", async () => {
-    const latest = vi.fn().mockResolvedValue({ ...NODE, operator_tags: { rack: "r1", gpu: "a100" } });
+    const latest = vi.fn().mockResolvedValue({ node: { ...NODE, operator_tags: { rack: "r1", gpu: "a100" } } });
     show({ latest });
     await userEvent.type(screen.getByLabelText("Tag key"), "zone");
     await userEvent.type(screen.getByLabelText("Tag value"), "a1");
@@ -75,7 +75,7 @@ describe("node tags", () => {
   });
 
   it("removing a tag also starts from the fresh set", async () => {
-    show({ latest: vi.fn().mockResolvedValue({ ...NODE, operator_tags: { rack: "r1", gpu: "a100" } }) });
+    show({ latest: vi.fn().mockResolvedValue({ node: { ...NODE, operator_tags: { rack: "r1", gpu: "a100" } } }) });
     await userEvent.click(screen.getByRole("button", { name: "Remove tag rack" }));
     await vi.waitFor(() => expect(api.setNodeTags).toHaveBeenCalled());
     expect(api.setNodeTags.mock.calls[0].slice(0, 2)).toEqual(["n1", { gpu: "a100" }]);
@@ -85,6 +85,24 @@ describe("node tags", () => {
     show({ latest: vi.fn().mockRejectedValue(new Error("down")) });
     await userEvent.click(screen.getByRole("button", { name: "Remove tag rack" }));
     await vi.waitFor(() => expect(api.clearNodeTags).toHaveBeenCalled());
+  });
+
+  it("a fresh node without operator_tags means the set is empty now, so a tag another operator removed does not come back", async () => {
+    const { operator_tags: _gone, ...bare } = NODE as unknown as Record<string, unknown>;
+    show({ latest: vi.fn().mockResolvedValue({ node: bare }) });
+    await userEvent.type(screen.getByLabelText("Tag key"), "zone");
+    await userEvent.type(screen.getByLabelText("Tag value"), "a1");
+    await userEvent.click(screen.getByRole("button", { name: "Add tag" }));
+    await vi.waitFor(() => expect(api.setNodeTags).toHaveBeenCalled());
+    expect(api.setNodeTags.mock.calls[0].slice(0, 2)).toEqual(["n1", { zone: "a1" }]); // not { rack: "r1", zone: "a1" }
+  });
+
+  it("saves nothing when the controller did not answer the fresh read, and says so", async () => {
+    show({ latest: vi.fn().mockResolvedValue({ node: undefined, unavailable: true }) });
+    await userEvent.click(screen.getByRole("button", { name: "Remove tag rack" }));
+    expect(await screen.findByText(/Tags not saved: .*unavailable/i)).toBeInTheDocument();
+    expect(api.setNodeTags).not.toHaveBeenCalled();
+    expect(api.clearNodeTags).not.toHaveBeenCalled();
   });
 
   it("names an operator's tag as set by an operator, for a screen reader", () => {

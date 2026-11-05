@@ -133,7 +133,11 @@ export function FleetPage() {
   const live = instances.find((i) => i.instance === q.sel);
   const shown = useRef(false);
   // The tag editor builds its PUT from this fresh read, not from the list that is up to one poll old.
-  const latest = async () => (await nodes.refetch()).data?.items.find((n) => n.instance === q.sel);
+  // (A failed refetch keeps the previous data, so the editor then falls back to the list it already had.)
+  const latest = async () => {
+    const page = (await nodes.refetch()).data;
+    return { node: page?.items.find((n) => n.instance === q.sel), unavailable: page?.operatorTagsUnavailable };
+  };
   const addTag = (tag: string) => update((cur) => ({ tags: [...new Set([...cur.tags, tag])] }));
   useEffect(() => {
     if (shown.current && !inspector.current && q.sel) {

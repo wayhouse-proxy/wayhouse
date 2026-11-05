@@ -31,7 +31,7 @@ export function NodeInspector({
   live?: FleetInstanceView;
   onTag: (tag: string) => void;
   tagsUnavailable?: boolean;
-  latest?: () => Promise<FleetNode | undefined>;
+  latest?: () => Promise<{ node?: FleetNode; unavailable?: boolean } | undefined>;
 }) {
   const canOperate = useCan("operator");
   const toast = useToast();
