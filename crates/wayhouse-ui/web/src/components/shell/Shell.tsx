@@ -21,13 +21,13 @@ export function Shell({ onSignOut, nav = NAV, banner }: { onSignOut: () => void;
   return (
     <InspectorProvider>
       <div className="flex min-h-screen flex-col min-[760px]:h-screen min-[760px]:flex-row">
-        <div className="flex items-center justify-between bg-rail px-3 py-2 text-rail-ink min-[760px]:hidden" data-rail>
+        <div className="flex items-center justify-between border-b border-line bg-rail px-3 py-2 text-rail-ink min-[760px]:hidden" data-rail>
           <span className="text-sm font-semibold">wayhouse</span>
           <Button variant="ghost" size="sm" aria-expanded={menu} aria-controls="rail" onClick={() => setMenu(!menu)} className="text-rail-ink hover:bg-rail-hover">
             <Menu aria-hidden size={16} strokeWidth={1.5} /> Menu
           </Button>
         </div>
-        <div id="rail" className={`${menu ? "block" : "hidden"} w-full shrink-0 min-[760px]:block min-[760px]:w-(--rail-width)`}>
+        <div id="rail" className={`${menu ? "block" : "hidden"} w-full shrink-0 border-b border-line min-[760px]:block min-[760px]:border-b-0 min-[760px]:w-(--rail-width)`}>
           <Rail nav={nav} onSignOut={onSignOut} />
         </div>
         <div className="flex min-w-0 flex-1 flex-col min-[1100px]:flex-row min-[760px]:overflow-hidden">

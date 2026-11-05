@@ -1352,7 +1352,7 @@
           "type": "boolean"
         },
         "sniffers": {
-          "description": "Routes with `sniffer:` never match, so players can land on the default or another pool.",
+          "description": "Routes with `sniffer:` never match, so players can land on the default or another pool, and sniffer rejects stop dropping connections.",
           "type": "boolean"
         }
       },

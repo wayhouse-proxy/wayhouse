@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use serde::Deserialize;
-use wayhouse_config::plugin_routes::{merge_text, PluginRoute, PortProto};
+use wayhouse_config::plugin_routes::{merge_text, PluginRoute, PortProto, RouteKey};
 use wayhouse_core::RuntimeHandle;
 
 const RECONNECT_MIN: Duration = Duration::from_secs(1);
@@ -79,10 +79,22 @@ fn lock() -> std::sync::MutexGuard<'static, Vec<PluginRoute>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The overlay's routes minus the entry-port ones while the `port_routes` flag is off.
+fn in_force(routes: &[PluginRoute], ports: bool) -> Vec<PluginRoute> {
+    routes
+        .iter()
+        .filter(|r| ports || !matches!(r.key, RouteKey::Port { .. }))
+        .cloned()
+        .collect()
+}
+
 /// `text` with the current overlay applied. Falls back to `text` itself when the merge
 /// fails, so a plugin can never take a valid operator config down.
 pub fn merge(text: &str) -> String {
-    let routes = lock().clone();
+    let routes = in_force(
+        &lock(),
+        wayhouse_core::flags::on(wayhouse_config::features::PORT_ROUTES),
+    );
     match merge_text(text, &routes) {
         Ok(m) => {
             for s in &m.skipped {
@@ -233,6 +245,17 @@ mod tests {
             r,
             vec![PluginRoute::port(30003, PortProto::Both, "10.0.0.1:7777")]
         );
+    }
+
+    #[test]
+    fn port_routes_off_leaves_the_port_routes_out_of_the_merge() {
+        let routes = vec![
+            PluginRoute::host("a.example.com", "10.0.1.1:1"),
+            PluginRoute::port(30003, PortProto::Udp, "10.0.0.1:7777"),
+        ];
+        assert_eq!(in_force(&routes, true).len(), 2);
+        let off = in_force(&routes, false);
+        assert_eq!(off, vec![PluginRoute::host("a.example.com", "10.0.1.1:1")]);
     }
 
     #[test]

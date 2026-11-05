@@ -177,7 +177,7 @@ pub(crate) async fn apply_config(
     }
     metrics::counter!(m::CONFIG_RELOAD, "result" => "ok").increment(1);
     metrics::gauge!(m::CONFIG_VERSION).set(unix_now());
-    crate::features::publish(&cfg.features);
+    crate::features::publish(&cfg.features, handle);
     // Always reconcile, not only when the listener definitions changed: the
     // snapshot above is already stored, so after a failed (re)bind the running
     // group no longer matches it, and only a reconcile on a later reload — even

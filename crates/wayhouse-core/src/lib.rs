@@ -11,6 +11,7 @@
 pub mod discovery;
 pub mod drain;
 pub mod error;
+pub mod flags;
 pub mod geo;
 #[cfg(feature = "gossip")]
 pub mod gossip;

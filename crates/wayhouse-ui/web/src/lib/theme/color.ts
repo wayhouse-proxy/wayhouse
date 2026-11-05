@@ -65,10 +65,17 @@ function toLab(rgb: Rgb): [number, number, number] {
   return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
 }
 
-/** CIEDE2000 colour difference (Sharma, Wu, Dalal 2005). */
+export type Lab = number[]; // [L, a, b]
+
+/** CIEDE2000 colour difference of two sRGB colours (Sharma, Wu, Dalal 2005). */
 export function deltaE00(a: Rgb, b: Rgb): number {
-  const [L1, a1, b1] = toLab(a);
-  const [L2, a2, b2] = toLab(b);
+  return deltaE00Lab(toLab(a), toLab(b));
+}
+
+/** The same on CIELAB values, so the published test data can be checked directly. */
+export function deltaE00Lab(lab1: Lab, lab2: Lab): number {
+  const [L1, a1, b1] = lab1;
+  const [L2, a2, b2] = lab2;
   const rad = Math.PI / 180;
   const C1 = Math.hypot(a1, b1);
   const C2 = Math.hypot(a2, b2);
@@ -116,4 +123,15 @@ export function deltaE00(a: Rgb, b: Rgb): number {
   return Math.sqrt(
     (dLp / Sl) ** 2 + (dCp / Sc) ** 2 + (dHp / Sh) ** 2 + Rt * (dCp / Sc) * (dHp / Sh),
   );
+}
+
+/** Hue in degrees (0..360), saturation and lightness (0..1) of an sRGB colour. */
+export function hsl([r, g, b]: Rgb): [number, number, number] {
+  const [max, min] = [Math.max(r, g, b), Math.min(r, g, b)];
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = d / (1 - Math.abs(2 * l - 1));
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [(60 * h + 360) % 360, s, l];
 }
