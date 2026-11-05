@@ -37,7 +37,9 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/plugin-registries/{id}/plugins", get(list_plugins))
 }
 
-pub fn operator_router() -> Router<AppState> {
+/// Admin only: a fetch ends in the controller's module upload, which is an admin action
+/// (`POST /api/plugins/modules`), and adding a registry decides where fetches come from.
+pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route("/api/plugin-registries", post(add_registry))
         .route("/api/plugin-registries/{id}/fetch", post(fetch))
@@ -357,6 +359,7 @@ mod tests {
     struct Harness {
         app: Router,
         cookie: String,
+        operator_cookie: String,
         registry_id: String,
     }
 
@@ -372,12 +375,17 @@ mod tests {
             .with_registries(regs, false)
             .with_registry_client(RegistryClient::for_tests().with_rewrite(registry_base));
         let session = state.sessions.create(crate::session::Session {
+            role: crate::role::Role::Admin,
+            username: None,
+        });
+        let operator = state.sessions.create(crate::session::Session {
             role: crate::role::Role::Operator,
             username: None,
         });
         Harness {
             app: crate::api::router(state),
             cookie: format!("{}={session}", crate::api::SESSION_COOKIE),
+            operator_cookie: format!("{}={operator}", crate::api::SESSION_COOKIE),
             registry_id: reg.id,
         }
     }
@@ -428,6 +436,33 @@ mod tests {
 
     fn module() -> Vec<u8> {
         wat::parse_str(MODULE_WAT).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_operator_can_neither_fetch_nor_add_a_plugin_registry() {
+        let registry = fake_registry(module(), "0.2", None).await;
+        let (controller, calls) = fake_controller().await;
+        let mut h = harness(&registry, &controller, false).await;
+        h.cookie = h.operator_cookie.clone();
+        let (status, _) = h
+            .fetch(json!({ "name": "demo", "allow_unsigned": true }))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = h
+            .call(
+                "POST",
+                "/api/plugin-registries",
+                Some(json!({ "url": "https://example.test/index.json" })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "nothing reached the controller"
+        );
+        // Reading the list stays open to a viewer-level session.
+        let (status, _) = h.call("GET", "/api/plugin-registries", None).await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     #[tokio::test]

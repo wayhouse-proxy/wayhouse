@@ -536,4 +536,29 @@ mod tests {
             Ok(PluginVerified { signed: false })
         );
     }
+
+    #[test]
+    fn a_valid_signature_gives_signed_and_tampered_bytes_under_it_fail() {
+        let m = module(r"\00\00\02\00");
+        let v = version_for(&m);
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let sig = minisign::sign(Some(&kp.pk), &kp.sk, std::io::Cursor::new(&m), None, None)
+            .unwrap()
+            .to_string()
+            .into_bytes();
+        let key = minisign_verify::PublicKey::decode(&kp.pk.to_box().unwrap().to_string()).unwrap();
+        assert_eq!(
+            verify_plugin_artifact(&v, &m, Some(&sig), Some(&key)),
+            Ok(PluginVerified { signed: true })
+        );
+        // Same size, hash fixed up to match: only the signature can catch it now.
+        let mut other = m.clone();
+        *other.last_mut().unwrap() ^= 1;
+        let mut v2 = version_for(&other);
+        v2.abi = v.abi.clone();
+        assert!(matches!(
+            verify_plugin_artifact(&v2, &other, Some(&sig), Some(&key)),
+            Err(PluginVerifyError::Signature(_))
+        ));
+    }
 }
