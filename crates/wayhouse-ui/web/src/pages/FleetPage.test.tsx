@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -177,6 +177,31 @@ describe("Fleet page with 500 nodes", () => {
     expect(await screen.findByText("Showing 1 to 25 of 50")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Remove tag filter gpu=a100" }));
     expect(await screen.findByText("Showing 1 to 25 of 500")).toBeInTheDocument();
+  });
+
+  it("waits for a pause before the region filter asks the aggregator, like the search box", async () => {
+    show();
+    await screen.findByText("Showing 1 to 25 of 500");
+    const before = api.getFleetNodes.mock.calls.length;
+    await userEvent.type(screen.getByLabelText("Region"), "eu");
+    expect(api.getFleetNodes.mock.calls.length).toBe(before); // no request per keystroke
+    await waitFor(() => expect(where().get("region")).toBe("eu"));
+    expect(api.getFleetNodes.mock.calls.length - before).toBeLessThanOrEqual(1);
+  });
+
+  it("says the list is not updating when a poll fails with the old rows still on screen", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      show();
+      await screen.findByText("Showing 1 to 25 of 500");
+      api.getFleetNodes.mockRejectedValue(new Error("aggregator unreachable"));
+      await act(async () => void vi.advanceTimersByTime(5_100));
+      expect(await screen.findByText(/list is not updating/i)).toBeInTheDocument();
+      expect(screen.getByText(/aggregator unreachable/)).toBeInTheDocument();
+      expect(screen.getByText("Showing 1 to 25 of 500")).toBeInTheDocument(); // the old rows stay
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says when nothing matches and offers to clear the filter", async () => {
@@ -426,6 +451,23 @@ describe("Fleet page saved filters", () => {
     await userEvent.type(screen.getByLabelText("Filter name"), "eu prod{Enter}");
     await waitFor(() => expect(api.saveFilter).toHaveBeenCalled());
     expect(api.saveFilter.mock.calls[0][0]).toEqual({ name: "eu prod", region: "eu", tags: ["env=prod", "gpu"] });
+  });
+
+  it("shows 'none applied' once the filters no longer match the applied saved filter", async () => {
+    api.listFilters.mockResolvedValue([{ name: "prod gpus", tags: ["env=prod", "gpu"], region: "eu" }]);
+    show();
+    await screen.findByRole("option", { name: "prod gpus" });
+    await userEvent.selectOptions(screen.getByLabelText("Saved filters"), "prod gpus");
+    await waitFor(() => expect(where().get("region")).toBe("eu"));
+    expect(screen.getByLabelText("Saved filters")).toHaveValue("prod gpus");
+    await userEvent.selectOptions(screen.getByLabelText("State"), "stale");
+    expect(screen.getByLabelText("Saved filters")).toHaveValue("");
+  });
+
+  it("says when the saved filters could not be loaded", async () => {
+    api.listFilters.mockRejectedValue(new Error("store unreachable"));
+    show();
+    expect(await screen.findByText(/saved filters could not be loaded/i)).toBeInTheDocument();
   });
 
   it("deleting asks first", async () => {

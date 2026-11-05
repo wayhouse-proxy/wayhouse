@@ -46,7 +46,7 @@ export function PoolsPage() {
               <TBody>
                 {pools.map((p) => {
                   // A pool whose instances stopped reporting keeps its last point; that is history, not "now".
-                  const age = p.last_sample_ms === null ? Infinity : stats.generated_at_ms - p.last_sample_ms;
+                  const age = p.last_sample_ms === null ? Infinity : (stats?.generated_at_ms ?? 0) - p.last_sample_ms;
                   const last = age <= STALE_MS ? p.points[p.points.length - 1] : undefined;
                   return (
                     <TR key={p.name} selected={p === current}>
