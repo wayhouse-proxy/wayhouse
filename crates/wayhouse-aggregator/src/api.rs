@@ -172,6 +172,7 @@ pub fn router(state: AppState) -> Router {
         .route("/fleet/healthz", get(fleet_healthz))
         .route("/fleet/stats", get(fleet_stats))
         .route("/fleet/nodes", get(fleet_nodes))
+        .route("/fleet/features", get(fleet_features))
         .route(
             "/fleet/nodes/query",
             post(fleet_nodes_with_tags).layer(DefaultBodyLimit::max(NODE_TAGS_BODY_LIMIT)),
@@ -341,6 +342,11 @@ struct StatsQuery {
     range: Option<String>,
 }
 
+/// `GET /fleet/features`: the per-flag roll-up of what the proxies report ([`crate::features`]).
+async fn fleet_features(State(state): State<AppState>) -> Response {
+    Json(crate::features::rollup(&state.store.snapshot())).into_response()
+}
+
 /// `GET /fleet/stats?range=5m|15m|1h` (default `15m`) — fleet-wide rates and
 /// gauges per minute from the rolling history ([`crate::history`]); aggregates
 /// only, never a per-instance series.
@@ -439,6 +445,9 @@ struct FleetInstanceView {
     group: Option<String>,
     version: String,
     protocol: String,
+    /// The controller revision the instance runs, if it reports one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_revision: Option<u64>,
     /// Against the newest version in the fleet (see [`crate::skew`]).
     skew: Skew,
 }
@@ -474,6 +483,7 @@ fn fleet_view(store: &IngestStore) -> Vec<FleetInstanceView> {
                 group: s.payload.group,
                 version: s.payload.version,
                 protocol: s.payload.protocol,
+                config_revision: s.payload.config_revision,
                 skew,
             }
         })
@@ -565,6 +575,8 @@ mod tests {
             region: None,
             tags: std::collections::BTreeMap::default(),
             listeners: vec![],
+            config_revision: None,
+            features: vec![],
         })
         .unwrap()
     }
@@ -715,6 +727,8 @@ mod tests {
             region: None,
             tags: std::collections::BTreeMap::default(),
             listeners: vec![],
+            config_revision: None,
+            features: vec![],
         }
     }
 
@@ -1030,6 +1044,8 @@ mod tests {
                     region: None,
                     tags: std::collections::BTreeMap::default(),
                     listeners: vec![],
+                    config_revision: None,
+                    features: vec![],
                 })
                 .unwrap(),
             ))
@@ -1210,6 +1226,53 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         p
+    }
+
+    #[tokio::test]
+    async fn the_fleet_view_carries_each_instances_revision_and_flags_roll_up() {
+        let state = test_state();
+        let mut a = full_payload("a");
+        a.config_revision = Some(7);
+        a.features = vec![crate::ingest::FeatureReport {
+            name: "acl".into(),
+            value: false,
+            source: "override".into(),
+            available: true,
+        }];
+        state.store.ingest(a);
+        state.store.ingest(full_payload("old"));
+        let app = router(state);
+        let (_, v) = get_json(&app, "/fleet/pools").await;
+        let _ = v;
+        let (status, v) = get_json(&app, "/fleet/features").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            (v["reporting"].as_u64(), v["total"].as_u64()),
+            (Some(1), Some(2))
+        );
+        assert_eq!(v["flags"][0]["off_instances"][0], "a");
+        let view = serde_json::to_value(fleet_view(&test_state().store)).unwrap();
+        assert!(view.as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_instance_view_reports_the_applied_revision() {
+        let store = IngestStore::default();
+        let mut a = full_payload("a");
+        a.config_revision = Some(7);
+        store.ingest(a);
+        store.ingest(full_payload("old"));
+        let view = serde_json::to_value(fleet_view(&store)).unwrap();
+        let rev = |n: &str| {
+            view.as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["instance"] == n)
+                .unwrap()["config_revision"]
+                .clone()
+        };
+        assert_eq!(rev("a"), 7);
+        assert!(rev("old").is_null(), "an older proxy reports none");
     }
 
     #[tokio::test]

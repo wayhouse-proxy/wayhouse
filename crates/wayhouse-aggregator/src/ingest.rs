@@ -66,6 +66,25 @@ pub struct IngestPayload {
     /// ([`crate::history`]). Empty from a build that predates the field.
     #[serde(default)]
     pub listeners: Vec<ListenerStats>,
+    /// The controller revision the instance has applied; `None` from a build that predates
+    /// the field or a proxy that reads a file (feeds the Config rollout widget).
+    #[serde(default)]
+    pub config_revision: Option<u64>,
+    /// The instance's effective feature flags (`GET /features` of the proxy, trimmed), so the
+    /// Features page can show how many nodes run each flag off. Empty from an older build.
+    #[serde(default)]
+    pub features: Vec<FeatureReport>,
+}
+
+/// One flag as an instance reports it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FeatureReport {
+    pub name: String,
+    pub value: bool,
+    /// `default` | `config` | `override` | `build`.
+    pub source: String,
+    /// `false`: the instance's build lacks the code behind the flag.
+    pub available: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -128,7 +147,7 @@ pub struct InstanceState {
 
 /// Most distinct instances the store holds; an instance silent for
 /// [`STALE_AFTER_MS`] is evicted to make room once it is full.
-const DEFAULT_MAX_INSTANCES: usize = 10_000;
+pub(crate) const DEFAULT_MAX_INSTANCES: usize = 10_000;
 /// How long an instance may stay silent before a full store may drop it.
 const STALE_AFTER_MS: u64 = 60 * 60 * 1000;
 /// Longest any self-reported string (instance, URL, names, version) may be.
@@ -137,6 +156,7 @@ const MAX_FIELD_BYTES: usize = 1024;
 const MAX_POOLS: usize = 1024;
 const MAX_BACKENDS_PER_POOL: usize = 4096;
 const MAX_LISTENERS: usize = 1024;
+const MAX_FEATURES: usize = 64;
 
 /// A push the store will not take.
 #[derive(Debug, PartialEq, Eq)]
@@ -165,6 +185,16 @@ impl IngestPayload {
         }
         if self.listeners.len() > MAX_LISTENERS {
             return Err(format!("more than {MAX_LISTENERS} listeners"));
+        }
+        if self.features.len() > MAX_FEATURES {
+            return Err(format!("more than {MAX_FEATURES} feature flags"));
+        }
+        if self
+            .features
+            .iter()
+            .any(|f| long(&f.name) || long(&f.source))
+        {
+            return Err(format!("a field is longer than {MAX_FIELD_BYTES} bytes"));
         }
         if self.listeners.iter().any(|l| long(&l.name)) {
             return Err(format!("a field is longer than {MAX_FIELD_BYTES} bytes"));
@@ -316,6 +346,8 @@ mod tests {
             region: None,
             tags: std::collections::BTreeMap::default(),
             listeners: vec![],
+            config_revision: None,
+            features: vec![],
         }
     }
 

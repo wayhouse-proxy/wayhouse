@@ -558,7 +558,14 @@ un-namespaced names.
   answer, the list is served from declared tags and the reply carries `X-Operator-Tags:
   unavailable`; `resolve` answers `502` instead, so a bulk action never acts on a set the
   operator did not see. With no controller configured there are no operator tags and the PUT
-  answers `503`.
+  answers `503`. Tags of nodes that went away stay until an operator removes them:
+  `POST /api/fleet/node-tags/prune` (`?dry_run=true` lists first) deletes those of every node the
+  aggregator no longer lists, and refuses when it lists none.
+- `GET /fleet/features` — how each feature flag stands across the fleet, from the flags every
+  proxy reports in its push: per flag the number of nodes with it on, off or not in their build,
+  and the (first 50) node names that run it off or by override. `reporting` of `total` nodes is how
+  many reported at all (an older build reports none). Each instance in the `GET /fleet/subscribe` feed also carries
+  `config_revision`, the controller revision it applies (absent for a proxy that reads a file).
 - `GET /fleet/stats?range=5m|15m|1h` (default `15m`) — fleet rates and gauges
   from a rolling in-memory history: one-minute points, an hour deep, aggregates
   only (fleet, per listener, per pool, per region; never per node). Proxies push

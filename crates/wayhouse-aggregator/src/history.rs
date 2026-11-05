@@ -7,19 +7,22 @@
 //! restarted, so its new value is the whole increase. A gap between pushes
 //! spreads the increase over the minutes it spans, so a silent instance never
 //! shows as a spike. Series are aggregates only (listener, pool, region, fleet);
-//! there is no per-node series, which keeps memory independent of fleet size.
+//! there is no per-node series, so the buckets do not grow with the fleet (only the
+//! one counter baseline per instance does, bounded by the instance limit). A bucket
+//! holds at most 1,024 series of each kind; past that new names are dropped, and the
+//! fleet total, the sum of the listener series, undercounts until the names age out.
 //! Gauges (pool backends, sessions) are sampled once per instance per minute,
 //! from its first push in that minute.
 //!
 //! Memory only, like the rest of the aggregator: a restart starts the charts
 //! empty.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, PoisonError};
 
 use serde::Serialize;
 
-use crate::ingest::{IngestPayload, ListenerStats};
+use crate::ingest::{IngestPayload, ListenerStats, DEFAULT_MAX_INSTANCES};
 
 pub const BUCKET_MS: u64 = 60_000;
 /// An hour of closed minutes plus the open one.
@@ -67,7 +70,8 @@ struct Bucket {
     /// pool -> (healthy backends, backends) summed over the sampled instances.
     pools: HashMap<String, (u32, u32)>,
     sessions: (u64, u64),
-    sampled: HashSet<String>,
+    /// Whether any instance's gauges landed in this minute.
+    sampled: bool,
 }
 
 impl Bucket {
@@ -78,13 +82,15 @@ impl Bucket {
             regions: HashMap::new(),
             pools: HashMap::new(),
             sessions: (0, 0),
-            sampled: HashSet::new(),
+            sampled: false,
         }
     }
 }
 
 struct Last {
     at_ms: u64,
+    /// The minute this instance's gauges were last folded in: one sample per minute.
+    gauge_minute: u64,
     counters: HashMap<String, ListenerStats>,
 }
 
@@ -162,6 +168,7 @@ impl History {
         h.last_record_ms = h.last_record_ms.max(now);
         let region = p.region.as_deref();
         let prev = h.last.remove(&p.instance);
+        let sampled_minute = prev.as_ref().map(|l| l.gauge_minute);
         if let Some(prev) = prev.filter(|l| now > l.at_ms && now - l.at_ms <= MAX_SPREAD_MS) {
             for l in &p.listeners {
                 // A listener new since the last push has no baseline yet.
@@ -182,6 +189,7 @@ impl History {
             p.instance.clone(),
             Last {
                 at_ms: now,
+                gauge_minute: sampled_minute.unwrap_or(0),
                 counters: p
                     .listeners
                     .iter()
@@ -189,12 +197,17 @@ impl History {
                     .collect(),
             },
         );
-        if h.last.len() > 2 * MAX_SERIES {
+        if h.last.len() > DEFAULT_MAX_INSTANCES {
             h.last
                 .retain(|_, l| now.saturating_sub(l.at_ms) <= MAX_SPREAD_MS);
         }
-        if let Some(b) = h.bucket(minute(now)) {
-            if b.sampled.insert(p.instance.clone()) {
+        let this_minute = minute(now);
+        if sampled_minute != Some(this_minute) {
+            if let Some(l) = h.last.get_mut(&p.instance) {
+                l.gauge_minute = this_minute;
+            }
+            if let Some(b) = h.bucket(this_minute) {
+                b.sampled = true;
                 for pool in &p.pools {
                     if b.pools.len() < MAX_SERIES || b.pools.contains_key(&pool.name) {
                         let e = b.pools.entry(pool.name.clone()).or_default();
@@ -313,7 +326,7 @@ impl History {
                 let mut f = Flow::default();
                 b.listeners.values().for_each(|l| f.add(l));
                 let s = secs(b);
-                let sampled = !b.sampled.is_empty();
+                let sampled = b.sampled;
                 FleetPoint {
                     t_ms: b.start_ms,
                     partial: partial(b),
@@ -445,6 +458,8 @@ mod tests {
                 bytes_c2s: bytes,
                 ..Default::default()
             }],
+            config_revision: None,
+            features: vec![],
         }
     }
 
@@ -599,6 +614,21 @@ mod tests {
         assert_eq!((p.healthy_backends, p.backends), (2, 4));
         let f = &s.fleet.points[0];
         assert_eq!((f.tcp_sessions, f.udp_sessions), (Some(4), Some(2)));
+    }
+
+    #[test]
+    fn counter_baselines_are_pruned_only_above_the_instance_limit() {
+        let h = History::default();
+        h.record(&push("gone", 0, 0), M);
+        let late = 100 * M;
+        for i in 0..(DEFAULT_MAX_INSTANCES - 1) {
+            h.record(&push(&format!("n{i}"), 0, 0), late);
+        }
+        let kept = |h: &History| h.0.lock().unwrap().last.contains_key("gone");
+        assert!(kept(&h), "no scan below the store limit");
+        h.record(&push("one-more", 0, 0), late);
+        h.record(&push("and-another", 0, 0), late);
+        assert!(!kept(&h), "stale baselines go once past the limit");
     }
 
     #[test]
