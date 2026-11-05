@@ -55,6 +55,22 @@ describe("DataTable", () => {
   });
 });
 
+describe("DataTable grouped and sorted", () => {
+  it("sorts the rows inside each group when a header is clicked", async () => {
+    const groups = [
+      { key: "eu", label: "eu", rows: NODES.slice(0, 2) },
+      { key: "us", label: "us", rows: NODES.slice(2) },
+    ];
+    render(<DataTable columns={COLS} data={[]} groups={groups} getRowId={(n) => n.id} />);
+    const order = () => screen.getAllByRole("row").slice(1).map((r) => r.textContent!.replace(/\d+$/, "").replace(/^(eu|us)$/, "[$1]"));
+    expect(order()).toEqual(["[eu]", "b-node", "a-node", "[us]", "c-node"]); // the order the caller gave
+    await userEvent.click(screen.getByRole("button", { name: "Node" }));
+    expect(order()).toEqual(["[eu]", "a-node", "b-node", "[us]", "c-node"]);
+    await userEvent.click(screen.getByRole("button", { name: "Node" }));
+    expect(order()).toEqual(["[eu]", "b-node", "a-node", "[us]", "c-node"]);
+  });
+});
+
 describe("Pager", () => {
   it("says which rows are shown, pages and changes size", async () => {
     const onPage = vi.fn(), onSize = vi.fn();
