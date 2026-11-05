@@ -53,7 +53,7 @@ mod tests {
             bind: "127.0.0.1:0".parse().unwrap(),
             seeds: vec![],
             quorum_fraction: 0.66,
-            psk: "test-psk".to_string(),
+            psk: "test-psk".into(),
         };
         let (_tx, rx) = watch::channel(false);
         assert!(spawn(cfg, rx).is_none());

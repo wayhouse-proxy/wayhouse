@@ -68,7 +68,10 @@ listeners:
 "#,
     )
     .expect("should parse");
-    assert_eq!(cfg.admin_auth_token, Some(crate::SecretOr::plain("secret123")));
+    assert_eq!(
+        cfg.admin_auth_token,
+        Some(crate::SecretOr::plain("secret123"))
+    );
 }
 
 #[test]

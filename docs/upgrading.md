@@ -83,9 +83,9 @@ The config schema moves to **4**: the `features:` section (feature flags, see
 [configuration](05-configuration.md)) needs `schema_version: 4`. Declare it only once every proxy
 that will receive the document runs 0.4.0; an older proxy refuses the document.
 
-The config schema moves to **4**: the `features:` section (feature flags, see
-[configuration](05-configuration.md)) needs `schema_version: 4`. Declare it only once every proxy
-that will receive the document runs 0.4.0; an older proxy refuses the document.
+`settings.admin.auth_token` and `settings.gossip.psk` also accept `{ secret: <name> }` at schema 4
+(see [configuration](05-configuration.md)); plaintext values keep working and are warned about.
+An older proxy refuses a document that uses a reference, so the same rule applies.
 
 ## Upgrading from 0.2.0 to 0.3.0
 

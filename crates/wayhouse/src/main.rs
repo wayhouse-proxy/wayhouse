@@ -288,6 +288,12 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
         }
     }
 
+    // `{ secret: name }` becomes its value here, once, so nothing below sees a reference. No
+    // store exists yet (the controller-backed one comes with K1c), so a reference stops the start
+    // with a message naming the secret rather than running with an empty token.
+    let cfg = cfg
+        .resolve_secrets(None)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     check_admin_auth(&cfg, args.insecure_no_auth)?;
     check_gossip_feature(&cfg)?;
 
@@ -523,7 +529,7 @@ async fn run(
         admin_tls.map(|cert| (cert, admin::handshake_limits(cfg.admin_tls.as_ref()))),
         handle.clone(),
         prometheus.clone(),
-        cfg.admin_auth_token.clone(),
+        admin_token(&cfg)?,
         cfg.sniffers.as_ref().map(|sc| PathBuf::from(&sc.dir)),
         sniffers.clone(),
         sniffer_pins,
@@ -655,14 +661,26 @@ async fn run(
 /// given (an `http`/`https` base URL, optionally with a path prefix; trailing
 /// slashes are trimmed because the fan-out appends absolute paths), else this
 /// instance's own admin listener.
+/// The admin token as plaintext. A reference that was not resolved is an error, never `None`:
+/// `None` means an open API.
+fn admin_token(cfg: &wayhouse_config::Config) -> anyhow::Result<Option<String>> {
+    cfg.admin_auth_token
+        .as_ref()
+        .map(|t| t.resolve(None))
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
 /// Refuse an open admin API on a routable address and weak admin/gossip
 /// secrets.
 fn check_admin_auth(cfg: &wayhouse_config::Config, insecure_no_auth: bool) -> anyhow::Result<()> {
-    let token = cfg.admin_auth_token.as_deref();
+    let token = admin_token(cfg)?;
+    let token = token.as_deref();
     wayhouse_http::policy::check_optional_secret("settings.admin.auth_token", token)
         .map_err(|e| anyhow::anyhow!(e))?;
     if let Some(g) = &cfg.gossip {
-        wayhouse_http::policy::check_secret("settings.gossip.psk", &g.psk)
+        let psk = g.psk.resolve(None).map_err(|e| anyhow::anyhow!("{e}"))?;
+        wayhouse_http::policy::check_secret("settings.gossip.psk", &psk)
             .map_err(|e| anyhow::anyhow!(e))?;
     }
     wayhouse_http::policy::check_exposure(
@@ -732,7 +750,7 @@ async fn wait_for_shutdown() {
 
 #[cfg(test)]
 mod tests {
-    use super::{aggregator_admin_url, check_admin_auth, check_gossip_feature};
+    use super::{admin_token, aggregator_admin_url, check_admin_auth, check_gossip_feature};
 
     fn cfg(settings: &str) -> wayhouse_config::Config {
         wayhouse_config::parse_str(&format!(
@@ -740,6 +758,25 @@ mod tests {
              listeners:\n  - name: l\n    bind: \"0.0.0.0:7777\"\n    pool: p\n"
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn a_secret_reference_never_turns_into_an_open_admin_api() {
+        let sealed = wayhouse_config::parse_str(
+            "schema_version: 4\nsettings:\n  admin:\n    listen: \"127.0.0.1:9900\"\n    auth_token: { secret: admin-token }\n\
+             pools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\nlisteners:\n  - name: l\n    bind: \"0.0.0.0:7777\"\n    pool: p\n",
+        )
+        .unwrap();
+        // Unresolved: the token is an error, not `None` (which would mean no auth).
+        let e = admin_token(&sealed).unwrap_err().to_string();
+        assert!(
+            e.contains("`admin-token`") && e.contains("no secret store"),
+            "{e}"
+        );
+        assert!(check_admin_auth(&sealed, true).is_err());
+        // Resolving without a store stops the start with the same message.
+        let e = sealed.resolve_secrets(None).unwrap_err().to_string();
+        assert!(e.contains("`admin-token`"), "{e}");
     }
 
     #[test]

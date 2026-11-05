@@ -119,7 +119,10 @@ pub(crate) fn validate(
     if schema_version < 4 {
         let refs = [
             ("settings.admin.auth_token", admin_auth_token.as_ref()),
-            ("settings.gossip.psk", raw.settings.gossip.as_ref().map(|g| &g.psk)),
+            (
+                "settings.gossip.psk",
+                raw.settings.gossip.as_ref().map(|g| &g.psk),
+            ),
         ];
         if let Some((path, _)) = refs.iter().find(|(_, v)| v.is_some_and(|v| !v.is_plain())) {
             return Err(Invalid(format!(

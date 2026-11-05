@@ -169,13 +169,28 @@ mod tests {
 
     #[test]
     fn a_string_is_plaintext_and_a_mapping_is_a_reference() {
-        assert_eq!(parse("hunter2hunter2").unwrap(), SecretOr::plain("hunter2hunter2"));
-        assert_eq!(parse("{ secret: gossip-psk }").unwrap(), SecretOr::Ref("gossip-psk".into()));
+        assert_eq!(
+            parse("hunter2hunter2").unwrap(),
+            SecretOr::plain("hunter2hunter2")
+        );
+        assert_eq!(
+            parse("{ secret: gossip-psk }").unwrap(),
+            SecretOr::Ref("gossip-psk".into())
+        );
     }
 
     #[test]
     fn a_reference_with_a_bad_name_or_extra_keys_is_refused() {
-        for bad in ["{ secret: Gossip }", "{ secret: '' }", "{ secret: -a }", "{ secret: a, other: b }", "{ other: a }", "{}", "[a]", "5"] {
+        for bad in [
+            "{ secret: Gossip }",
+            "{ secret: '' }",
+            "{ secret: -a }",
+            "{ secret: a, other: b }",
+            "{ other: a }",
+            "{}",
+            "[a]",
+            "5",
+        ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
     }
@@ -196,14 +211,19 @@ mod tests {
     #[test]
     fn a_missing_or_empty_secret_never_becomes_an_empty_value() {
         let r: &dyn SecretResolver = &Fixed("value-of-it");
-        assert_eq!(SecretOr::Ref("known".into()).resolve(Some(r)).unwrap(), "value-of-it");
+        assert_eq!(
+            SecretOr::Ref("known".into()).resolve(Some(r)).unwrap(),
+            "value-of-it"
+        );
         assert_eq!(
             SecretOr::Ref("other".into()).resolve(Some(r)).unwrap_err(),
             SecretError::Missing("other".into())
         );
         let empty: &dyn SecretResolver = &Fixed("");
         assert_eq!(
-            SecretOr::Ref("known".into()).resolve(Some(empty)).unwrap_err(),
+            SecretOr::Ref("known".into())
+                .resolve(Some(empty))
+                .unwrap_err(),
             SecretError::Empty("known".into())
         );
     }
@@ -233,14 +253,20 @@ mod in_config {
             "  admin:\n    auth_token: { secret: admin-token }\n  failure_domain: eu\n  gossip:\n    bind: \"10.0.0.1:7946\"\n    psk: { secret: gossip-psk }\n",
         ))
         .unwrap();
-        assert_eq!(cfg.admin_auth_token, Some(SecretOr::Ref("admin-token".into())));
+        assert_eq!(
+            cfg.admin_auth_token,
+            Some(SecretOr::Ref("admin-token".into()))
+        );
         assert_eq!(cfg.gossip.unwrap().psk, SecretOr::Ref("gossip-psk".into()));
     }
 
     #[test]
     fn plaintext_still_parses_at_any_schema() {
         let cfg = parse_str(&doc("", "  admin:\n    auth_token: a-long-enough-token\n")).unwrap();
-        assert_eq!(cfg.admin_auth_token, Some(SecretOr::plain("a-long-enough-token")));
+        assert_eq!(
+            cfg.admin_auth_token,
+            Some(SecretOr::plain("a-long-enough-token"))
+        );
     }
 
     #[test]
@@ -259,9 +285,12 @@ mod in_config {
 
     #[test]
     fn a_bad_secret_name_is_refused_with_the_rule() {
-        let e = parse_str(&doc("schema_version: 4\n", "  admin:\n    auth_token: { secret: Admin_Token }\n"))
-            .unwrap_err()
-            .to_string();
+        let e = parse_str(&doc(
+            "schema_version: 4\n",
+            "  admin:\n    auth_token: { secret: Admin_Token }\n",
+        ))
+        .unwrap_err()
+        .to_string();
         assert!(e.contains("not valid") && e.contains("a-z"), "{e}");
     }
 
@@ -274,5 +303,57 @@ mod in_config {
         .unwrap_err()
         .to_string();
         assert!(e.contains("must not be empty"), "{e}");
+    }
+
+    struct Store;
+    impl crate::SecretResolver for Store {
+        fn resolve(&self, name: &str) -> Result<String, crate::SecretError> {
+            Ok(format!("value-of-{name}-value"))
+        }
+    }
+
+    const GOSSIP: &str = "  failure_domain: eu\n  gossip:\n    bind: \"10.0.0.1:7946\"\n    psk: ";
+
+    #[test]
+    fn plaintext_secrets_are_warned_about_and_references_are_not() {
+        let plain = parse_str(&doc(
+            "",
+            &format!("  admin:\n    auth_token: a-long-enough-token\n{GOSSIP}a-long-enough-psk\n"),
+        ))
+        .unwrap();
+        let w = plain.warnings().join("\n");
+        assert!(
+            w.contains("settings.admin.auth_token")
+                && w.contains("settings.gossip.psk")
+                && w.contains("secret:"),
+            "{w}"
+        );
+        assert!(!w.contains("a-long-enough"), "{w}");
+        let sealed = parse_str(&doc(
+            "schema_version: 4\n",
+            &format!("  admin:\n    auth_token: {{ secret: t }}\n{GOSSIP}{{ secret: p }}\n"),
+        ))
+        .unwrap();
+        assert!(sealed.warnings().is_empty(), "{:?}", sealed.warnings());
+    }
+
+    #[test]
+    fn resolving_replaces_references_with_values_and_fails_without_a_store() {
+        let cfg = parse_str(&doc(
+            "schema_version: 4\n",
+            &format!("  admin:\n    auth_token: {{ secret: t }}\n{GOSSIP}{{ secret: p }}\n"),
+        ))
+        .unwrap();
+        let e = cfg.clone().resolve_secrets(None).unwrap_err();
+        assert_eq!(e, crate::SecretError::NoStore("t".into()));
+        let done = cfg.resolve_secrets(Some(&Store)).unwrap();
+        assert_eq!(
+            done.admin_auth_token,
+            Some(SecretOr::plain("value-of-t-value"))
+        );
+        assert_eq!(
+            done.gossip.unwrap().psk,
+            SecretOr::plain("value-of-p-value")
+        );
     }
 }

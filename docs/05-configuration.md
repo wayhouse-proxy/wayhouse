@@ -12,7 +12,7 @@
   listener whose definition is unchanged keeps running untouched. `backend_sources`
   discovery refresh tasks are reconciled the same way (added / removed /
   re-parameterised → started / stopped / restarted).
-- Secrets (`settings.admin.auth_token`, `settings.gossip.psk`) are plain strings in the document. There is no `${VAR}` interpolation, and the loader does not read environment variables. Keep the file readable only by the service user.
+- Secrets (`settings.admin.auth_token`, `settings.gossip.psk`) are either a plain string or, with `schema_version: 4`, a reference `{ secret: <name> }` to a sealed cluster secret (names are 1 to 63 of `a-z`, `0-9` and `-`). A plain string works as before but is warned about at start and on `--check`, because it sits in the document and in every stored revision. A reference is turned into its value once, at start; a reference that cannot be resolved (no secret store reachable, no such secret, no key to open it) stops the start with a message naming the secret, and the value never defaults to empty. This build has no secret store yet, so a reference is refused until the controller-backed store lands in the same release; write the value in plaintext until then. There is no `${VAR}` interpolation, and the loader does not read environment variables. Keep the file readable only by the service user.
 
 ## Schema (reference)
 
