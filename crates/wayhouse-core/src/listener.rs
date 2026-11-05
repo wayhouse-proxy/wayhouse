@@ -11,6 +11,7 @@ use wayhouse_config::ListenerConfig;
 
 use crate::drain::ConnTracker;
 use crate::error::ListenerError;
+use crate::flags::on;
 use crate::geo::GeoDb;
 use crate::limits::GlobalLimits;
 use crate::metrics_defs as m;
@@ -20,6 +21,7 @@ use crate::route_hint::RouteHints;
 use crate::snapshot::Snapshot;
 use crate::sniff::Sniffers;
 use crate::src_conns::SourceLimiter;
+use wayhouse_config::features::{ACL, GEO};
 
 /// How long to wait for a client's first bytes when a route needs to peek them.
 /// A client that connects but stays silent past this routes as if nothing was
@@ -153,7 +155,7 @@ pub async fn run_tcp_listener(
 
                 // Filter chain (phase 7): drop connections from a denied source
                 // IP before any bookkeeping or task spawn.
-                if !cfg.acl.permits(peer.ip()) {
+                if on(ACL) && !cfg.acl.permits(peer.ip()) {
                     metrics::counter!(
                         m::FILTER_BLOCKED,
                         "listener" => listener_name.clone(), "filter" => "acl",
@@ -161,7 +163,7 @@ pub async fn run_tcp_listener(
                     tracing::debug!(listener = %listener_name, peer = %peer, "connection blocked by acl");
                     continue;
                 }
-                if let Some(geo_acl) = &cfg.geo {
+                if let Some(geo_acl) = cfg.geo.as_ref().filter(|_| on(GEO)) {
                     let admitted = geo
                         .as_deref()
                         .map(|db| geo_acl.permits(db.country_code(peer.ip())))

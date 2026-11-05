@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Mutex, PoisonError};
 
+use wayhouse_config::features::RATE_LIMIT;
 use wayhouse_config::{RateLimit, TokenBucket as BucketCfg};
 
 use crate::util::mono_ms;
@@ -133,7 +134,7 @@ impl RateLimiter {
     /// the bucket that refused (for the `wayhouse_filter_blocked_total` label). On
     /// refusal no tokens are consumed from either bucket.
     pub fn permit(&self, ip: IpAddr) -> Option<&'static str> {
-        if !self.is_enabled() {
+        if !self.is_enabled() || !crate::flags::on(RATE_LIMIT) {
             return None;
         }
         let now = mono_ms();
@@ -263,6 +264,20 @@ mod tests {
         for _ in 0..1000 {
             assert_eq!(l.permit("1.2.3.4".parse().unwrap()), None);
         }
+    }
+
+    #[test]
+    fn rate_limit_off_admits_everyone_and_back_on_limits_again() {
+        let l = rl(Some((1, 1)), None);
+        let ip: IpAddr = "9.9.9.9".parse().unwrap();
+        {
+            let _off = crate::flags::off(&["rate_limit"]);
+            for _ in 0..50 {
+                assert_eq!(l.permit(ip), None);
+            }
+        }
+        assert_eq!(l.permit(ip), None, "the first permit of the burst");
+        assert_eq!(l.permit(ip), Some("rate_ip"));
     }
 
     #[test]

@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 
+use wayhouse_config::features::SNIFFERS;
 use wayhouse_config::RouteHint;
 
 /// A read-only first-bytes inspector. Implemented by loaded sniffers. `name` is
@@ -98,6 +99,9 @@ pub fn sniff_first<'a>(
     sniffers: &Sniffers,
     first: &[u8],
 ) -> Option<(&'a str, RouteHint)> {
+    if !crate::flags::on(SNIFFERS) {
+        return None;
+    }
     names.iter().find_map(|n| {
         let hint = sniffers.get(n)?.sniff(first)?;
         Some((n.as_str(), hint))
@@ -175,6 +179,16 @@ pub(crate) mod tests {
 
     fn names(n: &[&str]) -> Vec<String> {
         n.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn sniffers_off_recognise_nothing_not_even_a_reject() {
+        let reg = test_registry();
+        let n = names(&["test-reject", "test-host"]);
+        assert!(sniff_first(&n, &reg, b"BAD").is_some());
+        let _off = crate::flags::off(&["sniffers"]);
+        assert!(sniff_first(&n, &reg, b"BAD").is_none());
+        assert!(sniff_first(&n, &reg, b"HOST:a\n").is_none());
     }
 
     #[test]
