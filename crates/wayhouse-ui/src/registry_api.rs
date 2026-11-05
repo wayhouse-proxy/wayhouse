@@ -51,11 +51,11 @@ pub fn operator_router() -> Router<AppState> {
         .route("/api/registries/updates/check", post(check_updates))
 }
 
-fn error(status: StatusCode, msg: impl Into<String>) -> Response {
+pub(crate) fn error(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(json!({ "error": msg.into() }))).into_response()
 }
 
-fn risk(r: &RegistryRef) -> &'static str {
+pub(crate) fn risk(r: &RegistryRef) -> &'static str {
     if r.official {
         "official"
     } else {
@@ -63,7 +63,7 @@ fn risk(r: &RegistryRef) -> &'static str {
     }
 }
 
-fn registry_json(r: &RegistryRef) -> serde_json::Value {
+pub(crate) fn registry_json(r: &RegistryRef) -> serde_json::Value {
     json!({ "id": r.id, "name": r.name, "url": r.url, "official": r.official, "risk": risk(r) })
 }
 
@@ -98,7 +98,7 @@ async fn remove_registry(State(state): State<AppState>, Path(id): Path<String>) 
     }
 }
 
-fn fetch_failure(e: &FetchError) -> Response {
+pub(crate) fn fetch_failure(e: &FetchError) -> Response {
     error(StatusCode::BAD_GATEWAY, format!("registry: {e}"))
 }
 

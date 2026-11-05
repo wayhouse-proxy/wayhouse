@@ -16,8 +16,22 @@ use sha2::{Digest, Sha256};
 pub const DEFAULT_REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/wayhouse-proxy/sniffers/main/index.json";
 
+/// Where the official plugin registry's `index.json` lives.
+pub const DEFAULT_PLUGIN_REGISTRY_URL: &str =
+    "https://raw.githubusercontent.com/wayhouse-proxy/plugins/main/index.json";
+
 /// Most registries kept at once.
 pub const MAX_REGISTRIES: usize = 32;
+
+/// What a registry serves. A file written before plugin registries existed has no kind,
+/// and its entries are sniffer registries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RegistryKind {
+    #[default]
+    Sniffer,
+    Plugin,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistryRef {
@@ -26,6 +40,8 @@ pub struct RegistryRef {
     pub name: String,
     pub url: String,
     pub official: bool,
+    #[serde(default)]
+    pub kind: RegistryKind,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -48,11 +64,14 @@ struct Stored {
     registries: Vec<RegistryRef>,
     #[serde(default)]
     default_removed: bool,
+    #[serde(default)]
+    plugin_default_removed: bool,
 }
 
 struct Inner {
     added: Vec<RegistryRef>,
     default_removed: bool,
+    plugin_default_removed: bool,
 }
 
 pub struct Registries {
@@ -72,6 +91,17 @@ fn default_ref() -> RegistryRef {
         name: "Official wayhouse sniffers".into(),
         url: DEFAULT_REGISTRY_URL.into(),
         official: true,
+        kind: RegistryKind::Sniffer,
+    }
+}
+
+fn default_plugin_ref() -> RegistryRef {
+    RegistryRef {
+        id: id_for(DEFAULT_PLUGIN_REGISTRY_URL),
+        name: "Official wayhouse plugins".into(),
+        url: DEFAULT_PLUGIN_REGISTRY_URL.into(),
+        official: true,
+        kind: RegistryKind::Plugin,
     }
 }
 
@@ -103,6 +133,7 @@ impl Registries {
             inner: Mutex::new(Inner {
                 added: stored.registries,
                 default_removed: stored.default_removed,
+                plugin_default_removed: stored.plugin_default_removed,
             }),
         })
     }
@@ -112,20 +143,47 @@ impl Registries {
         if self.include_default && !inner.default_removed {
             all.push(default_ref());
         }
+        if self.include_default && !inner.plugin_default_removed {
+            all.push(default_plugin_ref());
+        }
         all.extend(inner.added.iter().cloned());
         all
     }
 
+    /// The sniffer registries.
     pub fn list(&self) -> Vec<RegistryRef> {
-        let inner = self.inner.lock().unwrap();
-        self.snapshot(&inner)
+        self.list_kind(RegistryKind::Sniffer)
     }
 
+    /// The plugin registries.
+    pub fn list_plugins(&self) -> Vec<RegistryRef> {
+        self.list_kind(RegistryKind::Plugin)
+    }
+
+    fn list_kind(&self, kind: RegistryKind) -> Vec<RegistryRef> {
+        let inner = self.inner.lock().unwrap();
+        self.snapshot(&inner)
+            .into_iter()
+            .filter(|r| r.kind == kind)
+            .collect()
+    }
+
+    /// A registry of either kind by id; callers check `kind` for the one they serve.
     pub fn get(&self, id: &str) -> Option<RegistryRef> {
-        self.list().into_iter().find(|r| r.id == id)
+        let inner = self.inner.lock().unwrap();
+        self.snapshot(&inner).into_iter().find(|r| r.id == id)
     }
 
     pub fn add(&self, url: &str, name: Option<&str>) -> Result<RegistryRef, RegistriesError> {
+        self.add_kind(url, name, RegistryKind::Sniffer)
+    }
+
+    pub fn add_kind(
+        &self,
+        url: &str,
+        name: Option<&str>,
+        kind: RegistryKind,
+    ) -> Result<RegistryRef, RegistriesError> {
         let url = normalise(url)?;
         let id = id_for(&url);
         let mut inner = self.inner.lock().unwrap();
@@ -147,12 +205,17 @@ impl Registries {
                 .map_or(host, |n| n.chars().take(80).collect()),
             url,
             official: false,
+            kind,
         };
         // Write first, change memory after: a failed write must not leave the list
         // showing something that would be gone after a restart.
         let mut candidate = inner.added.clone();
         candidate.push(entry.clone());
-        self.persist(&candidate, inner.default_removed)?;
+        self.persist(
+            &candidate,
+            inner.default_removed,
+            inner.plugin_default_removed,
+        )?;
         inner.added = candidate;
         Ok(entry)
     }
@@ -161,11 +224,22 @@ impl Registries {
     /// server can stand in for one.
     #[cfg(test)]
     pub(crate) fn add_unchecked(&self, url: &str, official: bool) -> RegistryRef {
+        self.add_unchecked_kind(url, official, RegistryKind::Sniffer)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn add_unchecked_kind(
+        &self,
+        url: &str,
+        official: bool,
+        kind: RegistryKind,
+    ) -> RegistryRef {
         let entry = RegistryRef {
             id: id_for(url),
             name: "test registry".into(),
             url: url.into(),
             official,
+            kind,
         };
         self.inner.lock().unwrap().added.push(entry.clone());
         entry
@@ -177,25 +251,36 @@ impl Registries {
             inner.added.iter().filter(|r| r.id != id).cloned().collect();
         let removed_default =
             self.include_default && !inner.default_removed && id == default_ref().id;
-        let changed = candidate.len() != inner.added.len() || removed_default;
+        let removed_plugin_default =
+            self.include_default && !inner.plugin_default_removed && id == default_plugin_ref().id;
+        let changed =
+            candidate.len() != inner.added.len() || removed_default || removed_plugin_default;
         if changed {
             let default_removed = inner.default_removed || removed_default;
-            self.persist(&candidate, default_removed)?;
+            let plugin_default_removed = inner.plugin_default_removed || removed_plugin_default;
+            self.persist(&candidate, default_removed, plugin_default_removed)?;
             inner.added = candidate;
             inner.default_removed = default_removed;
+            inner.plugin_default_removed = plugin_default_removed;
         }
         Ok(changed)
     }
 
     /// Write the file atomically (temp file in the same directory, then rename),
     /// mode 0600. In-memory only when no path was configured.
-    fn persist(&self, added: &[RegistryRef], default_removed: bool) -> Result<(), RegistriesError> {
+    fn persist(
+        &self,
+        added: &[RegistryRef],
+        default_removed: bool,
+        plugin_default_removed: bool,
+    ) -> Result<(), RegistriesError> {
         let Some(path) = &self.path else {
             return Ok(());
         };
         let stored = Stored {
             registries: added.to_vec(),
             default_removed,
+            plugin_default_removed,
         };
         let json =
             serde_json::to_vec_pretty(&stored).map_err(|e| RegistriesError::File(e.to_string()))?;
@@ -225,6 +310,45 @@ mod tests {
 
     fn fresh() -> Registries {
         Registries::load(None, true).unwrap()
+    }
+
+    #[test]
+    fn plugin_registries_are_a_separate_list_with_their_own_official_default() {
+        let r = fresh();
+        let plugins = r.list_plugins();
+        assert_eq!(plugins.len(), 1);
+        assert!(plugins[0].official && plugins[0].kind == RegistryKind::Plugin);
+        assert_eq!(plugins[0].url, DEFAULT_PLUGIN_REGISTRY_URL);
+        // The sniffer list is unchanged by it.
+        assert_eq!(r.list().len(), 1);
+        assert!(r.list().iter().all(|x| x.kind == RegistryKind::Sniffer));
+        let added = r
+            .add_kind("https://example.com/p.json", None, RegistryKind::Plugin)
+            .unwrap();
+        assert_eq!(r.list_plugins().len(), 2);
+        assert_eq!(r.list().len(), 1);
+        assert_eq!(r.get(&added.id).unwrap().kind, RegistryKind::Plugin);
+    }
+
+    #[test]
+    fn removing_the_plugin_default_is_remembered_and_old_files_load_as_sniffer_registries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("registries.json");
+        std::fs::write(
+            &path,
+            r#"{"registries":[{"id":"abc","name":"old","url":"https://old.example/i.json","official":false}],"default_removed":false}"#,
+        )
+        .unwrap();
+        let r = Registries::load(Some(path.clone()), true).unwrap();
+        let old = r.get("abc").unwrap();
+        assert_eq!(old.kind, RegistryKind::Sniffer);
+        assert_eq!(r.list().len(), 2);
+        let id = r.list_plugins()[0].id.clone();
+        assert!(r.remove(&id).unwrap());
+        assert!(r.list_plugins().is_empty());
+        let again = Registries::load(Some(path), true).unwrap();
+        assert!(again.list_plugins().is_empty(), "the removal persists");
+        assert_eq!(again.list().len(), 2, "sniffer registries are untouched");
     }
 
     #[test]
