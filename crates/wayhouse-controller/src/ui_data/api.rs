@@ -206,7 +206,12 @@ async fn put_override(
                 "send expires_at or ttl_secs, not both",
             )
         }
-        (_, Some(0)) => return err(StatusCode::UNPROCESSABLE_ENTITY, "ttl_secs must be positive"),
+        (_, Some(0)) => {
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "ttl_secs must be positive",
+            )
+        }
         (_, Some(ttl)) => Some(set_at.saturating_add(ttl)),
         (e, None) => e,
     };
@@ -216,8 +221,7 @@ async fn put_override(
             "expires_at is already past",
         );
     }
-    if let Err(why) =
-        wayhouse_config::features::check_override(&name, b.value, set_at, expires_at)
+    if let Err(why) = wayhouse_config::features::check_override(&name, b.value, set_at, expires_at)
     {
         return err(StatusCode::UNPROCESSABLE_ENTITY, why);
     }
@@ -585,7 +589,8 @@ mod tests {
         assert_eq!(st, StatusCode::OK, "{got}");
         let exp = got["expires_at"].as_u64().unwrap();
         assert!((before + 600..=now() + 600).contains(&exp), "{exp}");
-        let both = json!({"value": false, "reason": "r", "ttl_secs": 60, "expires_at": before + 60});
+        let both =
+            json!({"value": false, "reason": "r", "ttl_secs": 60, "expires_at": before + 60});
         assert_eq!(put(both).await.0, StatusCode::UNPROCESSABLE_ENTITY);
         let zero = json!({"value": false, "reason": "r", "ttl_secs": 0});
         assert_eq!(put(zero).await.0, StatusCode::UNPROCESSABLE_ENTITY);
@@ -627,10 +632,20 @@ mod tests {
         );
         let (app, _s, _d) = app(None);
         let uri = "/features/overrides/plugin_webhooks";
-        call(&app, "PUT", uri, json!({"value": false, "reason": "storm"}), None).await;
+        call(
+            &app,
+            "PUT",
+            uri,
+            json!({"value": false, "reason": "storm"}),
+            None,
+        )
+        .await;
         call(&app, "DELETE", uri, Value::Null, None).await;
         let out = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
-        assert!(out.contains("feature override set") && out.contains("storm"), "{out}");
+        assert!(
+            out.contains("feature override set") && out.contains("storm"),
+            "{out}"
+        );
         assert!(out.contains("feature override deleted"), "{out}");
     }
 

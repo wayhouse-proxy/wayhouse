@@ -234,6 +234,27 @@ pub fn check_override(
     Ok(())
 }
 
+/// The JSON schema of `features:`: the proxy flag names as known properties (so editors can
+/// offer them), any other key still a boolean (the validator names the known ones).
+#[cfg(feature = "json-schema")]
+pub(crate) fn schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let props: serde_json::Map<String, serde_json::Value> = REGISTRY
+        .iter()
+        .filter(|f| f.scope == Scope::Proxy)
+        .map(|f| {
+            (
+                f.name.to_string(),
+                serde_json::json!({ "type": "boolean", "description": f.risk, "default": f.default }),
+            )
+        })
+        .collect();
+    schemars::json_schema!({
+        "type": "object",
+        "properties": props,
+        "additionalProperties": { "type": "boolean" },
+    })
+}
+
 /// Checks a `features:` section: every name is a known proxy flag. Controller flags are
 /// refused here because the proxy does not read them; they are set by an override.
 pub(crate) fn validate(raw: BTreeMap<String, bool>) -> Result<BTreeMap<String, bool>, ConfigError> {
@@ -458,6 +479,18 @@ mod tests {
             |_| true,
         );
         assert!(ctl.iter().all(|r| r.scope == Scope::Controller) && ctl.len() == 4);
+    }
+
+    #[cfg(feature = "json-schema")]
+    #[test]
+    fn the_json_schema_lists_the_proxy_flag_names() {
+        let mut g = schemars::SchemaGenerator::default();
+        let schema = serde_json::to_value(schema(&mut g)).unwrap();
+        let props = schema["properties"].as_object().unwrap();
+        for f in REGISTRY.iter().filter(|f| f.scope == Scope::Proxy) {
+            assert_eq!(props[f.name]["type"], "boolean", "{}", f.name);
+        }
+        assert!(!props.contains_key("plugin_webhooks"), "a controller flag");
     }
 
     #[test]

@@ -693,6 +693,7 @@ async fn put_config_inner(
                 return Err((
                     StatusCode::CONFLICT,
                     Json(serde_json::json!({
+                        "reason": "needs_approval",
                         "error": "the new options change the approved capabilities; send them as `approved` to confirm",
                         "approved": record.approved,
                         "effective": effective,
@@ -710,6 +711,12 @@ async fn put_config_inner(
     } else {
         record.approved.clone()
     };
+    // Refused here with its reason: under HA a replica's refusal travels back without one.
+    let mut next = record.clone();
+    next.config = config.clone();
+    next.approved = approved.clone();
+    next.validate()
+        .map_err(|why| err(StatusCode::BAD_REQUEST, why))?;
     if let Some(ha) = &st.ha {
         super::peer::check_support(ha)
             .await
@@ -773,10 +780,15 @@ async fn put_config_inner(
             }
         }
         Applied::NoSuchInstall => Err(err(StatusCode::NOT_FOUND, "no such install")),
-        Applied::Stale => Err(err(
+        Applied::Stale => Err((
             StatusCode::CONFLICT,
-            "the install changed while you edited it; reload and try again",
-        )),
+            Json(serde_json::json!({
+                "reason": "stale",
+                "error": "the install changed while you edited it; reload and try again",
+            })),
+        )
+            .into_response()),
+        Applied::Invalid(why) if !why.is_empty() => Err(err(StatusCode::BAD_REQUEST, why)),
         _ => Err(err(StatusCode::BAD_REQUEST, "the config was refused")),
     }
 }
@@ -1447,6 +1459,7 @@ mod tests {
         let id = install_bound(&app, r#"{"panel":"p.example"}"#).await;
         let (status, needs) = put_config(&app, &id, r#"{"config":{"panel":"q.example"}}"#).await;
         assert_eq!(status, StatusCode::CONFLICT, "{needs}");
+        assert_eq!(needs["reason"], "needs_approval");
         assert_eq!(needs["approved"]["http"]["hosts"][0]["host"], "p.example");
         assert_eq!(needs["effective"]["http"]["hosts"][0]["host"], "q.example");
         assert_eq!(

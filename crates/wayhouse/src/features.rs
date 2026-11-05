@@ -119,7 +119,9 @@ pub async fn run(
     let mut note = |problem: Option<String>| {
         if problem != failing {
             match &problem {
-                Some(p) => tracing::warn!(problem = %p, "feature overrides not read; keeping the last ones"),
+                Some(p) => {
+                    tracing::warn!(problem = %p, "feature overrides not read; keeping the last ones")
+                }
                 None => tracing::info!("feature overrides are being read again"),
             }
             failing = problem;
@@ -187,7 +189,9 @@ mod tests {
 
     #[test]
     fn overrides_survive_a_restart_with_the_controller_down() {
-        let _t = TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _t = TURN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("overrides.json");
         assert!(!restore(&file), "no file, nothing to restore");
@@ -198,7 +202,10 @@ mod tests {
         assert!(restore(&file));
         assert_eq!(overrides().get("acl"), Some(&false));
         // An override that ran out while the proxy was down is not revived.
-        save(&file, &BTreeMap::from([("acl".to_string(), (false, Some(1)))]));
+        save(
+            &file,
+            &BTreeMap::from([("acl".to_string(), (false, Some(1)))]),
+        );
         set_overrides(BTreeMap::new());
         restore(&file);
         assert!(overrides().is_empty());
@@ -209,7 +216,9 @@ mod tests {
 
     #[test]
     fn the_controllers_overrides_are_read_and_an_expired_one_is_ignored() {
-        let _t = TURN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _t = TURN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let body = br#"{"items":[{"name":"sniffers","value":false,"reason":"r","set_at":1},{"name":"acl","value":false,"expires_at":2}]}"#;
         let got = parse_overrides(body).unwrap();
         assert_eq!(got["sniffers"], (false, None));
