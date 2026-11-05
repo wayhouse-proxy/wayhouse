@@ -46,6 +46,26 @@ fn counter_module() -> Vec<u8> {
     .expect("the counter module assembles")
 }
 
+/// A module whose `http` host comes from its `panel` option (a hostname binding).
+fn bound_module() -> Vec<u8> {
+    let caps = r#"{"log":true,"http":{"hosts":[{"host":"${opt:panel}"}]}}"#;
+    let manifest = r#"{"name":"bound","options":{"type":"object","required":["panel"],"properties":{"panel":{"type":"string"}}},"bindings":[{"option":"panel","kind":"hostname"}]}"#;
+    let esc = |s: &str| s.replace('"', "\\\"");
+    wat::parse_str(format!(
+        r#"(module
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-caps" "{}")
+  (@custom "wayhouse.plugin-manifest" "{}")
+  (import "wayhouse" "log" (func $log (param i32 i32 i32)))
+  (memory (export "memory") 1)
+  (func (export "alloc") (param i32) (result i32) (i32.const 0))
+  (func (export "init") (param i32 i32)))"#,
+        esc(caps),
+        esc(manifest)
+    ))
+    .expect("the bound module assembles")
+}
+
 async fn leader_id(http: &reqwest::Client, base: &str) -> Option<u64> {
     let r = http
         .get(format!("{base}/admin/ha/members"))
@@ -210,6 +230,120 @@ async fn plugins_replicate_through_a_follower_and_the_new_leader_keeps_ticking()
             },
             Duration::from_secs(15),
             "the new config is on every replica",
+        )
+        .await?;
+    }
+
+    // Switching a capability off and on through the follower replicates too, and the
+    // approval is untouched (so resuming needs none).
+    let suspend = |names: Value| {
+        let (http, url) = (
+            http.clone(),
+            format!("{}/plugins/{id}/suspended", bases[follower]),
+        );
+        async move {
+            http.put(url)
+                .bearer_auth(AUTH_TOKEN)
+                .json(&json!({ "suspended": names }))
+                .send()
+                .await
+        }
+    };
+    let done = suspend(json!(["log"])).await?;
+    ensure!(
+        done.status() == 200,
+        "suspend via follower: {}",
+        done.status()
+    );
+    for base in &bases {
+        wait_until(
+            || async {
+                let v: Value = http
+                    .get(format!("{base}/plugins/{id}"))
+                    .bearer_auth(AUTH_TOKEN)
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                Ok(v["suspended"] == json!(["log"]) && v["approved"]["log"] == true)
+            },
+            Duration::from_secs(15),
+            "the suspension is on every replica, approval untouched",
+        )
+        .await?;
+    }
+    let resumed = suspend(json!([])).await?;
+    ensure!(
+        resumed.status() == 200,
+        "resume via follower: {}",
+        resumed.status()
+    );
+
+    // A bound edit (an option that moves the approved http host) through the follower:
+    // 409 with both sets, then the confirmed edit is replicated to every replica (#507).
+    let bound = bound_module();
+    let up = http
+        .post(format!("{}/plugins/modules", bases[follower]))
+        .bearer_auth(AUTH_TOKEN)
+        .body(bound)
+        .send()
+        .await?;
+    ensure!(up.status() == 201, "bound upload: {}", up.status());
+    let bound_sha = up.json::<Value>().await?["sha256"]
+        .as_str()
+        .context("sha256")?
+        .to_string();
+    let bound_caps = json!({"log": true, "http": {"hosts": [{"host": "p.example"}]}});
+    let inst = http
+        .post(format!("{}/plugins", bases[follower]))
+        .bearer_auth(AUTH_TOKEN)
+        .json(
+            &json!({"name": "bound", "sha256": bound_sha, "approved": bound_caps,
+                      "config": {"panel": "p.example"}}),
+        )
+        .send()
+        .await?;
+    ensure!(inst.status() == 201, "bound install: {}", inst.status());
+    let bound_id = inst.json::<Value>().await?["id"]
+        .as_str()
+        .context("id")?
+        .to_string();
+    let edit_url = format!("{}/plugins/{bound_id}/config", bases[follower]);
+    let needs = http
+        .put(&edit_url)
+        .bearer_auth(AUTH_TOKEN)
+        .json(&json!({"config": {"panel": "q.example"}}))
+        .send()
+        .await?;
+    ensure!(needs.status() == 409, "bound edit: {}", needs.status());
+    let needs: Value = needs.json().await?;
+    ensure!(needs["reason"] == "needs_approval", "{needs}");
+    let confirmed = http
+        .put(&edit_url)
+        .bearer_auth(AUTH_TOKEN)
+        .json(&json!({"config": {"panel": "q.example"}, "approved": needs["effective"]}))
+        .send()
+        .await?;
+    ensure!(
+        confirmed.status() == 200,
+        "confirmed bound edit: {}",
+        confirmed.status()
+    );
+    for base in &bases {
+        wait_until(
+            || async {
+                let v: Value = http
+                    .get(format!("{base}/plugins/{bound_id}"))
+                    .bearer_auth(AUTH_TOKEN)
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                Ok(v["config"]["panel"] == "q.example"
+                    && v["approved"]["http"]["hosts"][0]["host"] == "q.example")
+            },
+            Duration::from_secs(15),
+            "the confirmed bound edit is on every replica",
         )
         .await?;
     }

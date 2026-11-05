@@ -233,6 +233,7 @@ mod tests {
             created_at: at,
             created_by: None,
             webhook: None,
+            suspended: std::collections::BTreeSet::default(),
         }
     }
 

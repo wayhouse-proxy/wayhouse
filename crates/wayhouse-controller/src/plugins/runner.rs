@@ -426,6 +426,8 @@ impl Runner {
                 Err(Fail::Other(why)) => return Outcome::Failed(why),
             },
         };
+        // Not part of `LoadKey`: suspending or resuming must not reload (and re-`init`) the plugin.
+        plugin.set_suspended(rec.suspended.iter().cloned());
         let (rev, snapshot) = match self.store.state(&rec.id) {
             Ok(s) => s,
             Err(e) => return Outcome::Failed(e.to_string()),
@@ -489,6 +491,7 @@ impl Runner {
         {
             plugin = plugin.with_http(engine);
         }
+        plugin.set_suspended(rec.suspended.iter().cloned());
         let plugin = Arc::new(plugin);
         let (rev, snapshot) = self
             .store
@@ -863,6 +866,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
     }
@@ -1091,6 +1095,7 @@ mod tests {
             created_at: 1,
             created_by: None,
             webhook: None,
+            suspended: std::collections::BTreeSet::default(),
         };
         let done = handle
             .raft
@@ -1271,6 +1276,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         let done = store.set_webhook(HID, Some(&"0".repeat(64))).unwrap();
@@ -1315,6 +1321,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         store.set_webhook(HID, Some(&"0".repeat(64))).unwrap();
@@ -1358,6 +1365,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         let t0 = Instant::now();
@@ -1378,6 +1386,24 @@ mod tests {
             r.run_hook(HID, Hook::Webhook(request())).await,
             Err(HookError::NotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn a_suspended_capability_fails_the_next_call_and_resuming_needs_no_reload() {
+        let (r, store, _d) = fixture(1, 4);
+        hooked_install(&store);
+        r.run_hook(HID, Hook::Webhook(request())).await.unwrap();
+        assert_eq!(counter_value(&store, HID), Some(1));
+        let state: std::collections::BTreeSet<String> = ["state".to_string()].into();
+        store.set_suspended(HID, &state).unwrap();
+        // The cached plugin is reused (suspending is not part of the load key) and refuses.
+        assert!(r.run_hook(HID, Hook::Webhook(request())).await.is_err());
+        assert_eq!(counter_value(&store, HID), Some(1), "nothing was written");
+        store
+            .set_suspended(HID, &std::collections::BTreeSet::default())
+            .unwrap();
+        r.run_hook(HID, Hook::Webhook(request())).await.unwrap();
+        assert_eq!(counter_value(&store, HID), Some(2));
     }
 
     #[tokio::test]
@@ -1443,6 +1469,7 @@ mod tests {
                 created_at: 2,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
         crate::plugins::events::deliver(
@@ -1576,6 +1603,7 @@ mod tests {
             created_at: 1,
             created_by: None,
             webhook: None,
+            suspended: std::collections::BTreeSet::default(),
         };
         let base = LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({})));
         assert!(base == LoadKey::of(&rec(r#"{"log":true}"#, serde_json::json!({}))));
@@ -1626,6 +1654,7 @@ mod tests {
                 created_at: 1,
                 created_by: None,
                 webhook: None,
+                suspended: std::collections::BTreeSet::default(),
             })
             .unwrap();
     }
