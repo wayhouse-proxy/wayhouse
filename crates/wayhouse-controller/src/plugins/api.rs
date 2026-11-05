@@ -52,7 +52,7 @@ pub struct PluginsState {
 
 type ApiError = Response;
 
-fn err(status: StatusCode, msg: impl std::fmt::Display) -> Response {
+pub(super) fn err(status: StatusCode, msg: impl std::fmt::Display) -> Response {
     (
         status,
         Json(serde_json::json!({ "error": msg.to_string() })),
@@ -278,11 +278,31 @@ struct InstallRequest {
     dry_run: bool,
 }
 
+/// An install the plugins file created is edited in the file, not through the API: a
+/// change made here would be undone by the next reconcile. Only the reconciler's own
+/// calls (its actor) pass. Secrets, the webhook and suspending stay open.
+fn managed_refusal(st: &PluginsState, headers: &HeaderMap, id: &str) -> Option<Response> {
+    if actor(headers).as_deref() == Some(super::declared::FILE_ACTOR) {
+        return None;
+    }
+    let record = st.store.get(id).ok().flatten()?;
+    (record.created_by.as_deref() == Some(super::declared::FILE_ACTOR)).then(|| {
+        (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "reason": "managed_by_file",
+                "error": "this install is managed by the plugins file: change it there",
+            })),
+        )
+            .into_response()
+    })
+}
+
 fn yes() -> bool {
     true
 }
 
-fn actor(headers: &HeaderMap) -> Option<String> {
+pub(super) fn actor(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-actor")
         .and_then(|v| v.to_str().ok())
@@ -306,7 +326,7 @@ async fn install(State(st): State<PluginsState>, headers: HeaderMap, body: Bytes
 }
 
 /// `Err` carries an error answer or a forwarded one; both are just the response.
-async fn install_inner(
+pub(super) async fn install_inner(
     st: &PluginsState,
     headers: &HeaderMap,
     body: Bytes,
@@ -565,7 +585,7 @@ async fn status(
     }
 }
 
-async fn set_enabled(
+pub(super) async fn set_enabled(
     st: &PluginsState,
     headers: &HeaderMap,
     id: String,
@@ -573,6 +593,9 @@ async fn set_enabled(
 ) -> Response {
     if !valid_id(&id) {
         return err(StatusCode::NOT_FOUND, "no such install");
+    }
+    if let Some(refused) = managed_refusal(st, headers, &id) {
+        return refused;
     }
     if let Some(ha) = &st.ha {
         let path = format!(
@@ -715,12 +738,15 @@ async fn put_config(
     if !valid_id(&id) {
         return err(StatusCode::NOT_FOUND, "no such install");
     }
+    if let Some(refused) = managed_refusal(&st, &headers, &id) {
+        return refused;
+    }
     match put_config_inner(&st, &headers, &id, body).await {
         Ok(r) | Err(r) => r,
     }
 }
 
-async fn put_config_inner(
+pub(super) async fn put_config_inner(
     st: &PluginsState,
     headers: &HeaderMap,
     id: &str,
@@ -873,13 +899,16 @@ async fn put_config_inner(
     }
 }
 
-async fn remove(
+pub(super) async fn remove(
     State(st): State<PluginsState>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
     if !valid_id(&id) {
         return err(StatusCode::NOT_FOUND, "no such install");
+    }
+    if let Some(refused) = managed_refusal(&st, &headers, &id) {
+        return refused;
     }
     if let Some(ha) = &st.ha {
         let path = format!("/plugins/{id}");
@@ -2758,5 +2787,147 @@ mod tests {
         .await;
         let (_, v) = call(&app, "GET", "/plugin-routes", vec![], None).await;
         assert!(v["routes"].as_array().unwrap().is_empty());
+    }
+
+    // ---- the plugins file (P6) ----
+
+    use super::super::declared::{caps_hash, Reconciler, FILE_ACTOR};
+
+    /// The hash the dry run would print for `bound_module` with this panel.
+    fn panel_hash(panel: &str) -> String {
+        let caps = format!(r#"{{"log":true,"http":{{"hosts":[{{"host":"{panel}"}}]}}}}"#);
+        caps_hash(&Capabilities::parse(caps.as_bytes()).unwrap())
+    }
+
+    fn file_text(sha: &str, panel: &str, enabled: bool) -> String {
+        format!(
+            "plugins:\n  - name: bound\n    sha256: {sha}\n    enabled: {enabled}\n    approved_sha256: {}\n    config: {{ panel: {panel} }}\n",
+            panel_hash(panel)
+        )
+    }
+
+    #[tokio::test]
+    async fn the_plugins_file_creates_updates_and_removes_only_what_it_owns() {
+        let (st, dir) = state(None);
+        let app = router(st.clone());
+        let sha = upload(&app, &bound_module()).await;
+        let path = dir.path().join("plugins.yaml");
+        let rec = Reconciler::new(st.clone(), path.clone());
+
+        // Create, then a second run is a no-op.
+        std::fs::write(&path, file_text(&sha, "p.example", true)).unwrap();
+        let rows = rec.reconcile().await.unwrap();
+        assert_eq!(
+            (rows[0].action, rows[0].error.as_deref()),
+            ("create", None),
+            "{rows:?}"
+        );
+        let installs = st.store.list().unwrap();
+        assert_eq!(installs.len(), 1);
+        assert_eq!(installs[0].created_by.as_deref(), Some(FILE_ACTOR));
+        let id = installs[0].id.clone();
+        assert_eq!(rec.reconcile().await.unwrap()[0].action, "unchanged");
+
+        // The API cannot change a managed install; secrets-style routes stay open.
+        let (status, v) = put_config(&app, &id, r#"{"config":{"panel":"q.example"}}"#).await;
+        assert_eq!(
+            (status, v["reason"].as_str()),
+            (StatusCode::CONFLICT, Some("managed_by_file"))
+        );
+        for (m, u) in [
+            ("POST", format!("/plugins/{id}/disable")),
+            ("DELETE", format!("/plugins/{id}")),
+        ] {
+            let (status, v) = call(&app, m, &u, Vec::new(), None).await;
+            assert_eq!(
+                (status, v["reason"].as_str()),
+                (StatusCode::CONFLICT, Some("managed_by_file")),
+                "{m} {u}"
+            );
+        }
+        assert_eq!(st.store.list().unwrap().len(), 1);
+
+        // A config that moves the capabilities, with its new hash, and a disable.
+        std::fs::write(&path, file_text(&sha, "q.example", false)).unwrap();
+        let rows = rec.reconcile().await.unwrap();
+        assert_eq!(
+            (rows[0].action, rows[0].error.as_deref()),
+            ("update", None),
+            "{rows:?}"
+        );
+        let now = st.store.get(&id).unwrap().unwrap();
+        assert_eq!(now.config["panel"], "q.example");
+        assert!(!now.enabled);
+        assert_eq!(
+            now.approved.http.as_ref().unwrap().hosts[0].host,
+            "q.example"
+        );
+
+        // A wrong hash changes nothing and names the right one.
+        let bad = file_text(&sha, "r.example", true)
+            .replace(&panel_hash("r.example"), &panel_hash("q.example"));
+        std::fs::write(&path, bad).unwrap();
+        let rows = rec.reconcile().await.unwrap();
+        assert_eq!(rows[0].action, "refused");
+        assert_eq!(
+            rows[0].effective_sha256.as_deref(),
+            Some(panel_hash("r.example").as_str())
+        );
+        assert_eq!(
+            st.store.get(&id).unwrap().unwrap().config["panel"],
+            "q.example"
+        );
+
+        // A broken file changes nothing, including no removals.
+        std::fs::write(&path, "plugins: [ not yaml").unwrap();
+        assert!(rec.reconcile().await.is_err());
+        assert_eq!(st.store.list().unwrap().len(), 1);
+
+        // An install made through the API is never touched, even by a clashing name.
+        let (status, ui) = call(&app, "POST", "/plugins", format!(r#"{{"name":"mine","sha256":"{sha}","approved":{PANEL_CAPS},"config":{{"panel":"p.example"}}}}"#).into_bytes(), None).await;
+        assert_eq!(status, StatusCode::CREATED, "{ui}");
+        std::fs::write(&path, "plugins: []").unwrap();
+        let rows = rec.reconcile().await.unwrap();
+        assert_eq!(rows[0].action, "remove");
+        let left = st.store.list().unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].name, "mine");
+        std::fs::write(
+            &path,
+            file_text(&sha, "p.example", true).replace("name: bound", "name: mine"),
+        )
+        .unwrap();
+        assert_eq!(rec.reconcile().await.unwrap()[0].action, "refused");
+        assert_eq!(st.store.list().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_module_that_is_not_stored_is_refused_by_the_file() {
+        let (st, dir) = state(None);
+        let path = dir.path().join("plugins.yaml");
+        let missing = "c".repeat(64);
+        std::fs::write(&path, file_text(&missing, "p.example", true)).unwrap();
+        let rows = Reconciler::new(st.clone(), path).reconcile().await.unwrap();
+        assert_eq!(rows[0].action, "refused");
+        assert!(st.store.list().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_dry_run_endpoint_shows_the_plan_and_changes_nothing() {
+        let (st, dir) = state(None);
+        let app = router(st.clone());
+        let sha = upload(&app, &bound_module()).await;
+        let path = dir.path().join("plugins.yaml");
+        std::fs::write(&path, file_text(&sha, "p.example", true)).unwrap();
+        let rec = Reconciler::new(st.clone(), path.clone());
+        let plan = super::super::declared::router(rec, None);
+        let (status, v) = call(&plan, "GET", "/plugins/file/plan", Vec::new(), None).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["applied"], false);
+        assert_eq!(v["plugins"][0]["action"], "create");
+        assert!(st.store.list().unwrap().is_empty());
+        std::fs::write(&path, "plugins: [ broken").unwrap();
+        let (status, _) = call(&plan, "GET", "/plugins/file/plan", Vec::new(), None).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

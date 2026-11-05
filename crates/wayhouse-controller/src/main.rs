@@ -161,6 +161,14 @@ struct Args {
     #[arg(long)]
     plugins: bool,
 
+    /// Reconcile the plugin installs with this YAML file (`plugins:` list of name, module
+    /// sha256, config, enabled and the sha256 of the approved capability set), at start,
+    /// on SIGHUP and every 30 s; under `--ha-peers` only the leader does. The file owns
+    /// only the installs it creates; `GET /plugins/file/plan` is the dry run
+    /// (docs/plugins.md). Needs `--plugins`.
+    #[arg(long, requires = "plugins", value_name = "FILE")]
+    plugins_file: Option<PathBuf>,
+
     /// Keyring for plugin secrets: one base64 key of 32 random bytes per line (generate
     /// each with `openssl rand -base64 32`), the last line active, readable by the owner
     /// only. Every controller of a tier needs the same file; the file is re-read when it
@@ -754,16 +762,29 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }));
                 }
-                let mut plugin_routes = wayhouse_controller::plugins::api::router(
-                    wayhouse_controller::plugins::api::PluginsState {
-                        store: store.clone(),
-                        pool,
-                        runner: runner.clone(),
-                        auth_token: admin_token.clone(),
-                        ha: ha.clone(),
-                        keyring: plugin_keys.clone(),
-                    },
-                );
+                let plugins_state = wayhouse_controller::plugins::api::PluginsState {
+                    store: store.clone(),
+                    pool,
+                    runner: runner.clone(),
+                    auth_token: admin_token.clone(),
+                    ha: ha.clone(),
+                    keyring: plugin_keys.clone(),
+                };
+                let reconciler = args.plugins_file.clone().map(|path| {
+                    wayhouse_controller::plugins::declared::Reconciler::new(
+                        plugins_state.clone(),
+                        path,
+                    )
+                });
+                let mut plugin_routes = wayhouse_controller::plugins::api::router(plugins_state);
+                if let Some(reconciler) = reconciler {
+                    plugin_routes =
+                        plugin_routes.merge(wayhouse_controller::plugins::declared::router(
+                            reconciler.clone(),
+                            admin_token.as_deref(),
+                        ));
+                    drop(wayhouse_controller::plugins::declared::spawn(reconciler));
+                }
                 if let Some(handle) = &ha {
                     // Replicas hand each other the module bytes the Raft log leaves out.
                     plugin_routes = plugin_routes
