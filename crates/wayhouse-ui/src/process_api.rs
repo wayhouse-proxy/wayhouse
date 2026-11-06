@@ -91,10 +91,10 @@ fn file_json(f: &File) -> serde_json::Value {
 
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, Response> {
+) -> Result<T, Box<Response>> {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "internal error"))
+        .map_err(|_| Box::new(error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")))
 }
 
 async fn list(State(state): State<AppState>) -> Response {
@@ -120,7 +120,7 @@ async fn list(State(state): State<AppState>) -> Response {
     .await;
     match programs {
         Ok(p) => Json(json!({ "dir_configured": true, "programs": p })).into_response(),
-        Err(r) => r,
+        Err(r) => *r,
     }
 }
 
@@ -166,7 +166,7 @@ async fn apply(
             Json(file_json(&file)).into_response()
         }
         Ok(Err(e)) => refusal(e),
-        Err(r) => r,
+        Err(r) => *r,
     }
 }
 
@@ -210,7 +210,7 @@ async fn finish(state: &AppState, program: &str, actor: &Actor, confirm: bool) -
             Json(file_json(&file)).into_response()
         }
         Ok(Err(e)) => refusal(e),
-        Err(r) => r,
+        Err(r) => *r,
     }
 }
 

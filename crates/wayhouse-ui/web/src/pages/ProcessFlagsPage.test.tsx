@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionProvider, type Role } from "../lib/session";
@@ -105,7 +105,9 @@ describe("ProcessFlagsPage", () => {
       const box = await screen.findByLabelText("--listen", { selector: "input:not([disabled])" });
       await user.type(box, "0.0.0.0:1");
       const calls = api.listProcess.mock.calls.length;
-      await vi.advanceTimersByTimeAsync(3500);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3500);
+      });
       expect(api.listProcess.mock.calls.length).toBeGreaterThan(calls);
       expect(box).toHaveValue("0.0.0.0:1");
     } finally {
