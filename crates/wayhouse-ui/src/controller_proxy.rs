@@ -107,6 +107,15 @@ pub fn admin_router() -> Router<AppState> {
             "/api/plugins/{id}/webhook",
             post(enable_plugin_webhook).delete(revoke_plugin_webhook),
         )
+        // Names, key ids and times only. The sealed form (`/secrets/{name}/sealed`) is for
+        // proxies and is not reachable through the UI.
+        .route("/api/secrets", get(list_secrets))
+        .route(
+            "/api/secrets/{name}",
+            put(put_secret)
+                .delete(delete_secret)
+                .layer(DefaultBodyLimit::max(SECRET_BODY_BYTES)),
+        )
         .route(
             "/api/features/overrides/{name}",
             put(put_feature_override)
@@ -117,6 +126,9 @@ pub fn admin_router() -> Router<AppState> {
 
 /// A reason, a boolean and an expiry; the controller reads little more.
 const FEATURE_OVERRIDE_BODY_BYTES: usize = 8 * 1024;
+
+/// The controller refuses a bigger cluster secret body (8 KiB of value plus the JSON wrapper).
+const SECRET_BODY_BYTES: usize = 16 * 1024;
 
 /// A site names at most 100 names of at most 253 bytes, plus a few short fields.
 const ACME_SITE_BODY_BYTES: usize = 64 * 1024;
@@ -291,6 +303,59 @@ async fn delete_feature_override(
         actor,
     )
     .await
+}
+
+async fn list_secrets(State(state): State<AppState>) -> Response {
+    proxy(&state, Method::GET, "/secrets".to_string(), None, None).await
+}
+
+/// The value rides in the body to the controller, which seals it; the BFF never logs or keeps it.
+async fn put_secret(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(name): Path<String>,
+    body: Bytes,
+) -> Response {
+    let Some(name) = crate::proxy_util::path_segment(&name) else {
+        return bad_secret_name();
+    };
+    proxy_typed(
+        &state,
+        Method::PUT,
+        format!("/secrets/{name}"),
+        Some(body),
+        Some("application/json"),
+        actor,
+    )
+    .await
+}
+
+async fn delete_secret(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(name): Path<String>,
+) -> Response {
+    let Some(name) = crate::proxy_util::path_segment(&name) else {
+        return bad_secret_name();
+    };
+    proxy(
+        &state,
+        Method::DELETE,
+        format!("/secrets/{name}"),
+        None,
+        actor,
+    )
+    .await
+}
+
+fn bad_secret_name() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: "invalid secret name".into(),
+        }),
+    )
+        .into_response()
 }
 
 fn bad_feature_name() -> Response {
@@ -1450,6 +1515,49 @@ mod tests {
         );
         assert_eq!(seen[2].2.as_deref(), Some("application/json"));
         assert_eq!(seen[2].3, body.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn cluster_secret_calls_reach_the_controller_and_the_sealed_form_stays_behind() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        let body = r#"{"value":"hunter2"}"#;
+        for (method, path, send, want) in [
+            ("GET", "/api/secrets", "", StatusCode::OK),
+            ("PUT", "/api/secrets/gossip-psk", body, StatusCode::OK),
+            ("DELETE", "/api/secrets/gossip-psk", "", StatusCode::OK),
+            (
+                "GET",
+                "/api/secrets/gossip-psk/sealed",
+                "",
+                StatusCode::NOT_FOUND,
+            ),
+            ("PUT", "/api/secrets/..", body, StatusCode::BAD_REQUEST),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::from(send))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), want, "{method} {path}");
+        }
+        let seen = seen.lock().unwrap();
+        let calls: Vec<_> = seen.iter().map(|(m, p, _, _)| format!("{m} {p}")).collect();
+        assert_eq!(
+            calls,
+            [
+                "GET /secrets",
+                "PUT /secrets/gossip-psk",
+                "DELETE /secrets/gossip-psk"
+            ]
+        );
+        assert_eq!(seen[1].3, body.as_bytes());
     }
 
     #[tokio::test]

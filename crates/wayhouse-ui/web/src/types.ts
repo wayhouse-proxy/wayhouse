@@ -374,3 +374,11 @@ export interface FeatureOverride {
   set_at: number;
   expires_at?: number;
 }
+
+/** One row of the controller's `GET /secrets`: a name and when it was set, never a value. */
+export interface ClusterSecret {
+  name: string;
+  key_id: string;
+  set_at: number;
+  actor?: string;
+}

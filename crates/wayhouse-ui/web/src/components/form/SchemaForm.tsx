@@ -14,6 +14,8 @@ import type {
   WidgetProps,
 } from "@rjsf/utils";
 import { Plus } from "lucide-react";
+import { putClusterSecret } from "../../api";
+import { suggestSecretName, validSecretName } from "../../lib/secretName";
 import { diff } from "../../lib/config/patch";
 import { get, set, type Path } from "../../lib/form/path";
 import { DEFAULT_LAYOUT, patternOf, type FieldLayout, type Layout } from "../../lib/form/layout";
@@ -87,20 +89,70 @@ const Text = (p: WidgetProps) =>
     />
   );
 
-const Secret = (p: WidgetProps) =>
-  notText(p.value) ? (
-    <RefShown {...p} />
-  ) : (
-    <Input
-      id={p.id}
-      type="password"
-      autoComplete="off"
-      value={p.value ?? ""}
-      mono
-      onChange={(e) => p.onChange(e.target.value === "" ? undefined : e.target.value)}
-      {...describe(p)}
-    />
+function Secret(p: WidgetProps) {
+  if (notText(p.value)) return <RefShown {...p} />;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Input
+        id={p.id}
+        type="password"
+        autoComplete="off"
+        value={p.value ?? ""}
+        mono
+        onChange={(e) => p.onChange(e.target.value === "" ? undefined : e.target.value)}
+        {...describe(p)}
+      />
+      {typeof p.value === "string" && p.value !== "" && !p.disabled && !p.readonly && (
+        <MoveToStore field={p.name ?? p.label} value={p.value} onMoved={(name) => p.onChange({ secret: name })} />
+      )}
+    </div>
   );
+}
+
+/** Stores a plaintext value in the cluster secret store and swaps the field for a reference to it. */
+function MoveToStore({ field, value, onMoved }: { field: string; value: string; onMoved: (name: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(suggestSecretName(field));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!open)
+    return (
+      <div>
+        <Button type="button" variant="ghost" onClick={() => setOpen(true)}>
+          Move to secret store
+        </Button>
+      </div>
+    );
+  async function move() {
+    setBusy(true);
+    setError(null);
+    try {
+      await putClusterSecret(name, value);
+      onMoved(name);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="flex flex-col gap-1.5 rounded-sm border border-line p-2">
+      <label className="flex flex-col gap-1 text-sm text-ink-muted">
+        Secret name
+        <Input mono value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <p className="text-sm text-ink-muted">Saves the value to the controller and puts {"{ secret: name }"} here. A reference needs schema_version 4 and replaces a stored secret of the same name.</p>
+      {error && <p role="alert" className="text-sm text-bad">{error}</p>}
+      <div className="flex gap-2">
+        <Button type="button" variant="primary" loading={busy} disabled={!validSecretName(name)} onClick={move}>
+          Store and replace
+        </Button>
+        <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * A number is edited as text. A draft that is empty or not yet a number (a cleared field, a lone "-") writes nothing,

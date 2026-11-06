@@ -15,6 +15,7 @@ import type {
   PluginDetail,
   PluginInstall,
   PluginSecretSlot,
+  ClusterSecret,
   PluginStatus,
   PluginModule,
   PluginRouteOverlay,
@@ -580,4 +581,17 @@ export function getFleetFeatures(): Promise<FeatureRollup> {
 }
 export function clearFeatureOverride(name: string): Promise<void> {
   return requestJson(`/api/features/overrides/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+export async function listClusterSecrets(): Promise<ClusterSecret[]> {
+  return (await requestJson<{ items: ClusterSecret[] }>("/api/secrets")).items;
+}
+
+/** Write-only: the value goes to the controller, which seals it; it is never read back or kept here. */
+export function putClusterSecret(name: string, value: string): Promise<void> {
+  return requestJson(`/api/secrets/${encodeURIComponent(name)}`, jsonInit("PUT", { value }));
+}
+
+export function deleteClusterSecret(name: string): Promise<void> {
+  return requestJson(`/api/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
