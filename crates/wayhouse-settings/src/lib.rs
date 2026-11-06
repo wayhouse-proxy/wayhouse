@@ -1160,6 +1160,14 @@ mod tests {
             "tls-cert",
             "tls-key",
             "plugin-webhook-tls-cert",
+            "config",
+            "static-dir",
+            "ha-peers",
+            "ha-join",
+            "ha-import-source",
+            "instance-url-allow",
+            "acme-ca",
+            "acme-challenge-upstream",
         ] {
             assert!(not_editable(n).is_some(), "{n} must be locked");
         }
