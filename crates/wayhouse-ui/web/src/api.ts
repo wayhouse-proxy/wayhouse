@@ -21,6 +21,7 @@ import type {
   PluginStatus,
   PluginModule,
   PluginRouteOverlay,
+  PluginsFilePlan,
   PluginCapabilities,
   RegistryList,
   RegistryRef,
@@ -243,6 +244,11 @@ export function checkUpdates(): Promise<UpdateCheck> {
 
 export function listPlugins(): Promise<PluginInstall[]> {
   return requestJson("/api/plugins");
+}
+
+/** The plugins-file dry run: what the next reconcile would do (admin; 404 when no file is configured). */
+export function getPluginsFilePlan(): Promise<PluginsFilePlan> {
+  return requestJson("/api/plugins/file/plan");
 }
 
 /** The route overlay enabled plugins publish, with the entry ports of their port routes. */

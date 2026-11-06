@@ -239,6 +239,22 @@ export interface PluginInstall {
   webhook?: unknown;
 }
 
+/** One line of the plugins-file dry run (`GET /api/plugins/file/plan`). */
+export interface PluginsFileRow {
+  name: string;
+  id: string | null;
+  action: "create" | "update" | "remove" | "unchanged" | "refused";
+  reason?: string;
+  /** For a refusal over the approval hash: the real hash, to paste into the file. */
+  effective_sha256?: string;
+  error?: string;
+}
+
+export interface PluginsFilePlan {
+  applied: boolean;
+  plugins: PluginsFileRow[];
+}
+
 /** `GET /api/plugins/{id}`: the install with its module's manifest. */
 export interface PluginDetail extends PluginInstall {
   manifest: PluginManifest | null;

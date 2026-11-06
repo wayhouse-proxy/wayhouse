@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   listPluginRoutes: vi.fn(),
   setPluginEnabled: vi.fn(),
   deletePlugin: vi.fn(),
+  getPluginsFilePlan: vi.fn(),
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
 
@@ -44,6 +45,7 @@ beforeEach(() => {
   api.listPluginRoutes.mockReset().mockResolvedValue({ routes: [], conflicts: [] });
   api.setPluginEnabled.mockReset().mockResolvedValue(install({ enabled: false }));
   api.deletePlugin.mockReset().mockResolvedValue(undefined);
+  api.getPluginsFilePlan.mockReset().mockResolvedValue({ applied: false, plugins: [] });
 });
 
 describe("PluginsPage list", () => {
@@ -176,5 +178,53 @@ describe("PluginsPage enable, disable and delete", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Disable pelican-sync" }));
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Disable" }));
     expect(await screen.findByText(/no such install/)).toBeInTheDocument();
+  });
+});
+
+describe("installs managed by the plugins file", () => {
+  const managed = () => install({ name: "from-file", created_by: "plugins-file" });
+
+  it("badges them and leaves enable, disable and delete to the file", async () => {
+    api.listPlugins.mockResolvedValue([managed(), install({ id: "ffff", name: "by-hand" })]);
+    render(<MemoryRouter><PluginsPage /></MemoryRouter>);
+    const file = (await screen.findByText("from-file")).closest("tr")!;
+    expect(within(file).getByText("managed by file")).toBeInTheDocument();
+    expect(within(file).getByRole("button", { name: "Disable from-file" })).toHaveAttribute("aria-disabled", "true");
+    expect(within(file).getByRole("button", { name: "Delete from-file" })).toHaveAttribute("aria-disabled", "true");
+    const hand = screen.getByText("by-hand").closest("tr")!;
+    expect(within(hand).queryByText("managed by file")).not.toBeInTheDocument();
+    expect(within(hand).getByRole("button", { name: "Delete by-hand" })).not.toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("shows what the next reconcile would do, with the real hash for a refused entry", async () => {
+    api.listPlugins.mockResolvedValue([managed()]);
+    api.getPluginsFilePlan.mockResolvedValue({
+      applied: false,
+      plugins: [
+        { name: "from-file", id: "0123456789abcdef", action: "unchanged" },
+        { name: "new-one", id: null, action: "refused", reason: "the approval hash does not match", effective_sha256: "cd".repeat(32) },
+      ],
+    });
+    render(<MemoryRouter><PluginsPage /></MemoryRouter>);
+    await userEvent.click(await screen.findByRole("button", { name: "Show file plan" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("new-one")).toBeInTheDocument();
+    expect(within(dialog).getByText("refused")).toBeInTheDocument();
+    expect(within(dialog).getByText(/approval hash does not match/)).toBeInTheDocument();
+    expect(within(dialog).getByText("cd".repeat(32))).toBeInTheDocument();
+  });
+
+  it("offers no plan button when nothing is managed", async () => {
+    render(<MemoryRouter><PluginsPage /></MemoryRouter>);
+    await screen.findByText("pelican-sync");
+    expect(screen.queryByRole("button", { name: "Show file plan" })).not.toBeInTheDocument();
+  });
+
+  it("says why the plan is unavailable instead of showing an empty one", async () => {
+    api.listPlugins.mockResolvedValue([managed()]);
+    api.getPluginsFilePlan.mockRejectedValue(new ApiError(422, "plugins file: expected a list"));
+    render(<MemoryRouter><PluginsPage /></MemoryRouter>);
+    await userEvent.click(await screen.findByRole("button", { name: "Show file plan" }));
+    expect(await screen.findByText(/expected a list/)).toBeInTheDocument();
   });
 });

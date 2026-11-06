@@ -96,6 +96,8 @@ pub fn admin_router() -> Router<AppState> {
             "/api/plugins/{id}/config",
             put(put_plugin_config).layer(DefaultBodyLimit::max(PLUGIN_CONFIG_BODY_BYTES)),
         )
+        // The plugins-file dry run: it prints the approval hashes to paste into the file.
+        .route("/api/plugins/file/plan", get(plugins_file_plan))
         .route("/api/plugins/{id}/secrets", get(list_plugin_secrets))
         .route(
             "/api/plugins/{id}/secrets/{slot}",
@@ -451,6 +453,10 @@ async fn get_plugin(State(state): State<AppState>, Path(id): Path<String>) -> Re
 
 async fn plugin_status(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     plugin_action(&state, Method::GET, &id, "/status", None).await
+}
+
+async fn plugins_file_plan(State(state): State<AppState>) -> Response {
+    proxy(&state, Method::GET, "/plugins/file/plan".to_string(), None, None).await
 }
 
 async fn list_plugin_secrets(State(state): State<AppState>, Path(id): Path<String>) -> Response {
