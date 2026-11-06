@@ -475,6 +475,7 @@ registry) first, and set secrets through the API.
 - **Read-only in the API.** Config edits, enable, disable and delete of a managed install answer
   `409` with `reason: managed_by_file`. Secrets, the webhook and suspending capabilities stay
   available.
+  The web UI shows such installs with a "managed by file" badge, keeps their options read-only, and an admin can open "Show file plan" on the Plugins page for the dry run (`GET /plugins/file/plan`).
 
 ## The Plugins page (web UI)
 

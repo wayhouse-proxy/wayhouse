@@ -456,7 +456,14 @@ async fn plugin_status(State(state): State<AppState>, Path(id): Path<String>) ->
 }
 
 async fn plugins_file_plan(State(state): State<AppState>) -> Response {
-    proxy(&state, Method::GET, "/plugins/file/plan".to_string(), None, None).await
+    proxy(
+        &state,
+        Method::GET,
+        "/plugins/file/plan".to_string(),
+        None,
+        None,
+    )
+    .await
 }
 
 async fn list_plugin_secrets(State(state): State<AppState>, Path(id): Path<String>) -> Response {
