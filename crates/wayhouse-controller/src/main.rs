@@ -204,7 +204,7 @@ struct Args {
     #[arg(long, requires = "acme_eab_kid", value_name = "FILE")]
     acme_eab_hmac_key_file: Option<PathBuf>,
 
-    /// Allow `--plugins` with a secret key, or `--acme`, on a plain-HTTP, non-loopback
+    /// Allow a secret key (plugin or cluster secrets), or `--acme`, on a plain-HTTP, non-loopback
     /// listener, where secret values and the admin token would cross the network in clear
     /// text. Off by default.
     #[arg(long)]
@@ -293,9 +293,9 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("plugin secret key: {e}"))?;
     if let Some(keys) = &plugin_keys {
         let plain_remote = tls_cert.is_none() && !args.listen.ip().is_loopback();
-        if args.plugins && plain_remote && !args.allow_insecure_secrets {
+        if plain_remote && !args.allow_insecure_secrets {
             anyhow::bail!(
-                "--plugins with a plugin secret key on a plain-HTTP, non-loopback --listen would \
+                "a secret key on a plain-HTTP, non-loopback --listen would \
                  send secret values in clear text: serve TLS (--tls-cert/--tls-key), listen on \
                  loopback behind a TLS terminator, or pass --allow-insecure-secrets"
             );
@@ -306,7 +306,7 @@ async fn main() -> anyhow::Result<()> {
                 path.clone(),
             ));
         }
-        tracing::info!(keys = ?keys.current().key_ids(), "plugin secret keyring loaded");
+        tracing::info!(keys = ?keys.current().key_ids(), "secret keyring loaded");
     }
     let plugin_keys = plugin_keys.unwrap_or_default();
     let webhook_tls = match (&args.plugin_webhook_tls_cert, &args.plugin_webhook_tls_key) {
@@ -909,11 +909,13 @@ async fn main() -> anyhow::Result<()> {
             store: ui_store,
             auth_token: admin_token.clone(),
             ha: ui_ha,
+            keyring: plugin_keys.clone(),
         },
     ));
     if let Some((handle, _, _, _, _)) = ha_handle {
         app = app
             .merge(ha::members::router(handle.clone(), admin_token))
+            .merge(wayhouse_controller::plugins::peer::secret_router(&handle))
             .merge(ha::routes::router(handle));
     }
 

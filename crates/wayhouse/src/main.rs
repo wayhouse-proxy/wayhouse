@@ -30,6 +30,7 @@ mod procinfo;
 mod proxy_register;
 mod reload;
 mod resolver;
+mod secrets;
 #[cfg(feature = "wasm-sniffers")]
 mod sniffer_loader;
 #[cfg(not(feature = "wasm-sniffers"))]
@@ -86,6 +87,13 @@ struct Args {
     /// own `--auth-token`).
     #[arg(long)]
     controller_token: Option<String>,
+
+    /// Key file for `{ secret: name }` config values: one base64 32-byte key per line, the last
+    /// one active (the same file format as the controller's `--plugin-secret-key-file`), or the
+    /// `WAYHOUSE_PLUGIN_SECRET_KEY` environment variable. Needed only when the config uses a
+    /// secret reference, which a proxy fetches (sealed) from `--controller`.
+    #[arg(long, value_name = "FILE")]
+    secret_key_file: Option<PathBuf>,
 
     /// Validate the config and exit without starting anything. Works with
     /// `--controller` too — fetches its current config and validates that.
@@ -288,12 +296,17 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
         }
     }
 
-    // `{ secret: name }` becomes its value here, once, so nothing below sees a reference. No
-    // store exists yet (the controller-backed one comes with K1c), so a reference stops the start
-    // with a message naming the secret rather than running with an empty token.
-    let cfg = cfg
-        .resolve_secrets(None)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // `{ secret: name }` becomes its value here, once, so nothing below sees a reference. A
+    // reference that cannot be resolved stops the start with a message naming the secret rather
+    // than running with an empty token. A proxy on a file config has no store yet (S2).
+    let cfg = secrets::resolve_config(
+        cfg,
+        args.controller
+            .as_deref()
+            .map(|url| (url, args.controller_token.as_deref())),
+        args.secret_key_file.as_deref(),
+    )
+    .await?;
     check_admin_auth(&cfg, args.insecure_no_auth)?;
     check_gossip_feature(&cfg)?;
 

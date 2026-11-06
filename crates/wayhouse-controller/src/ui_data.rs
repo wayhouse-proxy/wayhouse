@@ -29,6 +29,9 @@ pub enum Kind {
     FeatureOverride,
     /// An operator's tags for one node, named by its instance id.
     NodeTags,
+    /// A cluster secret (K1): ciphertext only, named by the secret. The controller seals the
+    /// value before it proposes the entry, so no log entry or snapshot holds plaintext.
+    ClusterSecret,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -140,6 +143,19 @@ const MAX_NAME: usize = 64;
 const MAX_WIDGETS: usize = 100;
 
 impl Kind {
+    /// Every kind, for the HA snapshot: a kind missing here is lost to a replica that catches up
+    /// from a snapshot (the test below fails to compile when a variant is added).
+    pub const ALL: [Kind; 8] = [
+        Kind::Dashboard,
+        Kind::Theme,
+        Kind::SavedFilter,
+        Kind::FormLayout,
+        Kind::Defaults,
+        Kind::FeatureOverride,
+        Kind::NodeTags,
+        Kind::ClusterSecret,
+    ];
+
     fn tag(self) -> &'static str {
         match self {
             Kind::Dashboard => "dashboards",
@@ -149,6 +165,7 @@ impl Kind {
             Kind::Defaults => "defaults",
             Kind::FeatureOverride => "feature_overrides",
             Kind::NodeTags => "node_tags",
+            Kind::ClusterSecret => "cluster_secrets",
         }
     }
 
@@ -159,6 +176,7 @@ impl Kind {
             Kind::NodeTags => 4 << 10,
             Kind::SavedFilter => 4 << 10,
             Kind::Defaults | Kind::FeatureOverride => 1 << 10,
+            Kind::ClusterSecret => 8 << 10,
         }
     }
 
@@ -171,6 +189,7 @@ impl Kind {
             Kind::FeatureOverride => Some(64),
             // Sized for a fleet of about 500 nodes with room to spare.
             Kind::NodeTags => Some(1000),
+            Kind::ClusterSecret => Some(64),
             Kind::FormLayout | Kind::Defaults => None,
         }
     }
@@ -187,6 +206,11 @@ fn key(kind: Kind, name: &str) -> Vec<u8> {
 fn check_name(kind: Kind, name: &str) -> Result<(), String> {
     if kind.is_single() {
         return Ok(());
+    }
+    if kind == Kind::ClusterSecret && !wayhouse_secrets::valid_cluster_name(name) {
+        return Err(
+            "a secret name is 1 to 63 of a-z, 0-9 and '-', not starting or ending with '-'".into(),
+        );
     }
     if kind == Kind::FeatureOverride
         && !name
@@ -350,6 +374,23 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                 if !e.as_u64().is_some_and(|e| e > set_at) {
                     return Err("expires_at must be a unix time after set_at".into());
                 }
+            }
+            Ok(())
+        }
+        Kind::ClusterSecret => {
+            only_keys(
+                obj,
+                "",
+                &["key_id", "nonce", "ciphertext", "set_at", "actor"],
+            )?;
+            for k in ["key_id", "nonce", "ciphertext"] {
+                string_max(obj.get(k).unwrap_or(&Value::Null), k, 6 << 10)?;
+            }
+            if !obj.get("set_at").is_some_and(Value::is_u64) {
+                return Err("set_at must be a unix time".into());
+            }
+            if let Some(a) = obj.get("actor") {
+                string_max(a, "actor", 128)?;
             }
             Ok(())
         }
@@ -559,13 +600,7 @@ impl UiStore {
     pub fn snapshot(&self) -> Result<UiSnapshot, UiStoreError> {
         let _guard = self.lock();
         let mut records = Vec::new();
-        for kind in [
-            Kind::Dashboard,
-            Kind::Theme,
-            Kind::SavedFilter,
-            Kind::FormLayout,
-            Kind::Defaults,
-        ] {
+        for kind in Kind::ALL {
             for (name, v) in self.list(kind)? {
                 records.push((kind, name, v));
             }
@@ -611,6 +646,70 @@ impl UiStore {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_snapshot_covers_every_kind() {
+        // One record per kind, built by an exhaustive match that does not use `Kind::ALL`:
+        // a new kind will not compile here, and the snapshot must then hold it.
+        let literal = [
+            Kind::Dashboard,
+            Kind::Theme,
+            Kind::SavedFilter,
+            Kind::FormLayout,
+            Kind::Defaults,
+            Kind::FeatureOverride,
+            Kind::NodeTags,
+            Kind::ClusterSecret,
+        ];
+        let (store, _d) = store();
+        for kind in literal {
+            let value = match kind {
+                Kind::Dashboard
+                | Kind::Theme
+                | Kind::SavedFilter
+                | Kind::FormLayout
+                | Kind::Defaults
+                | Kind::FeatureOverride
+                | Kind::NodeTags
+                | Kind::ClusterSecret => json!({}),
+            };
+            // Validation may refuse a bare `{}`; write the record directly.
+            store
+                .records
+                .insert(key(kind, "x"), serde_json::to_vec(&value).unwrap())
+                .unwrap();
+        }
+        let snap = store.snapshot().unwrap();
+        for kind in literal {
+            assert!(
+                snap.records.iter().any(|(k, _, _)| *k == kind),
+                "the snapshot misses {}",
+                kind.tag()
+            );
+        }
+        let tags: std::collections::BTreeSet<_> = Kind::ALL.iter().map(|k| k.tag()).collect();
+        assert_eq!(tags.len(), Kind::ALL.len(), "a kind is listed twice");
+    }
+
+    #[test]
+    fn the_rolling_upgrade_gate_refuses_a_member_without_this_levels_kinds() {
+        use crate::ha::routes::{Whoami, UI_SUPPORT};
+        let who = |ui_support| Whoami {
+            node_id: 2,
+            log_empty: false,
+            pre_ha: crate::ha::import::PreHaSummary::default(),
+            plugin_support: 0,
+            secret_key_ids: Vec::new(),
+            acme_support: 0,
+            confirm_support: 0,
+            ui_support,
+        };
+        assert!(check_support_answers(&[(2, Ok(who(UI_SUPPORT)))]).is_ok());
+        assert!(
+            check_support_answers(&[(2, Ok(who(3)))]).is_err(),
+            "level 3 cannot decode cluster secrets"
+        );
+    }
+
     use super::*;
     use serde_json::json;
 

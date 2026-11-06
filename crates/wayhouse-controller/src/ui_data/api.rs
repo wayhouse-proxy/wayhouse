@@ -22,6 +22,8 @@ pub struct UiState {
     pub auth_token: Option<Arc<str>>,
     /// `Some` under HA: writes go through Raft and `store` is the state machine's.
     pub ha: Option<Arc<HaHandle>>,
+    /// Seals cluster secrets (the same key file as plugin secrets); empty without a key.
+    pub keyring: wayhouse_secrets::KeyringHandle,
 }
 
 fn err(status: StatusCode, msg: impl std::fmt::Display) -> Response {
@@ -106,6 +108,35 @@ pub fn router(state: UiState) -> Router {
         );
     }
     r = r
+        .route(
+            "/secrets",
+            get(|State(st): State<UiState>| async move { list_secrets(&st) }),
+        )
+        .route(
+            "/secrets/{name}",
+            axum::routing::put(
+                |State(st): State<UiState>,
+                 headers: HeaderMap,
+                 Path(name): Path<String>,
+                 body: Bytes| async move { put_secret(&st, name, &headers, body).await },
+            )
+            .delete(
+                |State(st): State<UiState>,
+                 OriginalUri(uri): OriginalUri,
+                 headers: HeaderMap,
+                 Path(name): Path<String>| async move {
+                    delete_secret(&st, name, uri.path(), &headers).await
+                },
+            ),
+        )
+        .route(
+            "/secrets/{name}/sealed",
+            get(
+                |State(st): State<UiState>, Path(name): Path<String>| async move {
+                    read_sealed(&st, &name)
+                },
+            ),
+        )
         .route(
             "/features",
             get(|State(st): State<UiState>| async move { flags(&st) }),
@@ -244,6 +275,135 @@ async fn put_override(
         let (flag, on, reason, expires_at) = audit;
         tracing::warn!(%flag, value = on, ?reason, ?expires_at, actor = actor.as_deref().unwrap_or("-"), "feature override set");
         Json(reply).into_response()
+    })
+    .await
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecretBody {
+    value: String,
+}
+
+/// `GET /secrets`: what is stored, by name, with when and under which key. Never a value and
+/// never the ciphertext.
+fn list_secrets(st: &UiState) -> Response {
+    match st.store.list(Kind::ClusterSecret) {
+        Ok(items) => {
+            let items: Vec<Value> = items
+                .into_iter()
+                .map(|(name, v)| {
+                    let mut out =
+                        json!({ "name": name, "key_id": v["key_id"], "set_at": v["set_at"] });
+                    if let Some(a) = v.get("actor") {
+                        out["actor"] = a.clone();
+                    }
+                    out
+                })
+                .collect();
+            Json(json!({ "items": items })).into_response()
+        }
+        Err(e) => internal(e),
+    }
+}
+
+/// `GET /secrets/{name}/sealed`: the ciphertext a proxy opens with its own key file. The
+/// controller token gates it, like every route here.
+fn read_sealed(st: &UiState, name: &str) -> Response {
+    match st.store.get(Kind::ClusterSecret, name) {
+        Ok(Some(v)) => Json(json!({
+            "key_id": v["key_id"], "nonce": v["nonce"], "ciphertext": v["ciphertext"]
+        }))
+        .into_response(),
+        Ok(None) => err(StatusCode::NOT_FOUND, "no such secret"),
+        Err(e) => internal(e),
+    }
+}
+
+/// `PUT /secrets/{name}` with `{"value": "..."}`: seals the value here and replicates only the
+/// ciphertext. Under HA the entry reaches the leader over the peer channel as ciphertext, so the
+/// request that carried the value is never forwarded.
+async fn put_secret(st: &UiState, name: String, headers: &HeaderMap, body: Bytes) -> Response {
+    use wayhouse_secrets::SealError;
+    // Never the parser's message: it can quote the submitted text.
+    let Ok(parsed) = serde_json::from_slice::<SecretBody>(&body) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "the body must be {\"value\": \"...\"}",
+        );
+    };
+    let value = zeroize::Zeroizing::new(parsed.value.into_bytes());
+    let sealed = match st.keyring.current().seal_cluster(&name, &value) {
+        Ok(s) => s,
+        Err(SealError::NoKey) => {
+            return err(
+                StatusCode::CONFLICT,
+                "no secret key configured on this controller (--secret-key-file)",
+            )
+        }
+        Err(SealError::Size) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "a secret must be {} to {} bytes",
+                    wayhouse_secrets::MIN_SECRET_BYTES,
+                    wayhouse_secrets::MAX_SECRET_BYTES
+                ),
+            )
+        }
+        Err(e @ SealError::Name) => return err(StatusCode::BAD_REQUEST, e.to_string()),
+    };
+    drop(value);
+    let (set_at, who) = (now(), actor(headers));
+    let mut record = json!({
+        "key_id": sealed.key_id, "nonce": sealed.nonce, "ciphertext": sealed.ciphertext, "set_at": set_at
+    });
+    if let Some(a) = &who {
+        record["actor"] = a.as_str().into();
+    }
+    let key_id = sealed.key_id;
+    let op = UiOp::Put {
+        kind: Kind::ClusterSecret,
+        name: name.clone(),
+        value: record,
+    };
+    let done = move || {
+        tracing::warn!(secret = %name, %key_id, actor = who.as_deref().unwrap_or("-"), "cluster secret set");
+        Json(json!({ "name": name, "set": true, "key_id": key_id, "set_at": set_at }))
+            .into_response()
+    };
+    let Some(ha) = &st.ha else {
+        return match st.store.apply_local(&op) {
+            Ok(applied) => answer(&applied, done),
+            Err(e) => internal(e),
+        };
+    };
+    if let Err(why) = super::check_support(ha).await {
+        return err(StatusCode::CONFLICT, why);
+    }
+    match crate::plugins::peer::propose_ciphertext(ha, WriteRequest::Ui(op)).await {
+        Ok(WriteResponse::UiResult(applied)) => answer(&applied, done),
+        Ok(other) => internal(format!("unexpected answer {other:?}")),
+        Err(why) => err(StatusCode::SERVICE_UNAVAILABLE, why),
+    }
+}
+
+/// `DELETE /secrets/{name}`, with the audit line and, under HA, a log purge so the superseded
+/// ciphertext does not linger.
+async fn delete_secret(st: &UiState, name: String, path: &str, headers: &HeaderMap) -> Response {
+    let who = actor(headers);
+    let secret = name.clone();
+    let ha = st.ha.clone();
+    let op = UiOp::Delete {
+        kind: Kind::ClusterSecret,
+        name,
+    };
+    write(st, op, Method::DELETE, path, headers, Bytes::new(), move || {
+        tracing::warn!(%secret, actor = who.as_deref().unwrap_or("-"), "cluster secret deleted");
+        if let Some(ha) = &ha {
+            crate::plugins::peer::request_purge(ha);
+        }
+        StatusCode::NO_CONTENT.into_response()
     })
     .await
 }
@@ -400,7 +560,17 @@ mod tests {
 
     use super::*;
 
+    /// A key for the tests: 32 bytes, base64.
+    const KEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+
     fn app(token: Option<&str>) -> (Router, UiStore, tempfile::TempDir) {
+        app_with(token, wayhouse_secrets::Keyring::parse(KEY).unwrap())
+    }
+
+    fn app_with(
+        token: Option<&str>,
+        keyring: wayhouse_secrets::Keyring,
+    ) -> (Router, UiStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = UiStore::open(&db).unwrap();
@@ -408,6 +578,7 @@ mod tests {
             store: store.clone(),
             auth_token: token.map(Arc::from),
             ha: None,
+            keyring: wayhouse_secrets::KeyringHandle::new(keyring),
         };
         (router(state), store, dir)
     }
@@ -819,5 +990,163 @@ mod tests {
                 .0,
             StatusCode::OK
         );
+    }
+
+    const VALUE: &str = "correct-horse-battery-staple";
+
+    #[tokio::test]
+    async fn a_cluster_secret_is_stored_as_ciphertext_and_listed_by_name_only() {
+        let (app, store, _d) = app(None);
+        let (st, got) = call(
+            &app,
+            "PUT",
+            "/secrets/gossip-psk",
+            json!({"value": VALUE}),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{got}");
+        assert_eq!(got["name"], "gossip-psk");
+        assert!(!got.to_string().contains(VALUE));
+        let (_, list) = call(&app, "GET", "/secrets", Value::Null, None).await;
+        assert_eq!(list["items"][0]["name"], "gossip-psk");
+        assert!(
+            list["items"][0].get("ciphertext").is_none() && list["items"][0].get("nonce").is_none()
+        );
+        assert!(!list.to_string().contains(VALUE));
+        // Nothing the store keeps holds the plaintext.
+        let stored = store
+            .get(Kind::ClusterSecret, "gossip-psk")
+            .unwrap()
+            .unwrap()
+            .to_string();
+        assert!(!stored.contains(VALUE), "{stored}");
+    }
+
+    #[tokio::test]
+    async fn the_sealed_form_opens_with_the_key_and_only_under_its_own_name() {
+        let (app, _s, _d) = app(None);
+        call(
+            &app,
+            "PUT",
+            "/secrets/gossip-psk",
+            json!({"value": VALUE}),
+            None,
+        )
+        .await;
+        let (st, sealed) = call(&app, "GET", "/secrets/gossip-psk/sealed", Value::Null, None).await;
+        assert_eq!(st, StatusCode::OK, "{sealed}");
+        let sealed: wayhouse_secrets::Sealed = serde_json::from_value(sealed).unwrap();
+        let ring = wayhouse_secrets::Keyring::parse(KEY).unwrap();
+        assert_eq!(
+            ring.open_cluster("gossip-psk", &sealed).unwrap().expose(),
+            VALUE.as_bytes()
+        );
+        assert!(ring.open_cluster("admin-token", &sealed).is_err());
+        let (st, _) = call(&app, "GET", "/secrets/nope/sealed", Value::Null, None).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_secret_can_be_replaced_and_deleted() {
+        let (app, _s, _d) = app(None);
+        call(
+            &app,
+            "PUT",
+            "/secrets/admin-token",
+            json!({"value": VALUE}),
+            None,
+        )
+        .await;
+        let (st, _) = call(
+            &app,
+            "PUT",
+            "/secrets/admin-token",
+            json!({"value": "another-long-value"}),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let (_, list) = call(&app, "GET", "/secrets", Value::Null, None).await;
+        assert_eq!(list["items"].as_array().unwrap().len(), 1);
+        let (st, _) = call(&app, "DELETE", "/secrets/admin-token", Value::Null, None).await;
+        assert_eq!(st, StatusCode::NO_CONTENT);
+        let (_, list) = call(&app, "GET", "/secrets", Value::Null, None).await;
+        assert!(list["items"].as_array().unwrap().is_empty());
+        let (st, _) = call(&app, "DELETE", "/secrets/admin-token", Value::Null, None).await;
+        assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn bad_requests_are_refused_without_echoing_the_value() {
+        let (app, _s, _d) = app(None);
+        let (st, _) = call(
+            &app,
+            "PUT",
+            "/secrets/Bad_Name",
+            json!({"value": VALUE}),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        let (st, got) = call(
+            &app,
+            "PUT",
+            "/secrets/short",
+            json!({"value": "tiny"}),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        assert!(got.to_string().contains("to 4096 bytes"));
+        let (st, got) = call(
+            &app,
+            "PUT",
+            "/secrets/x1",
+            json!({"value": VALUE, "extra": 1}),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        assert!(!got.to_string().contains(VALUE), "{got}");
+    }
+
+    #[tokio::test]
+    async fn without_a_key_a_secret_cannot_be_stored() {
+        let (app, store, _d) = app_with(None, wayhouse_secrets::Keyring::default());
+        let (st, got) = call(
+            &app,
+            "PUT",
+            "/secrets/gossip-psk",
+            json!({"value": VALUE}),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT, "{got}");
+        assert!(store.list(Kind::ClusterSecret).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_secret_routes_need_the_controller_token() {
+        let (app, _s, _d) = app(Some("tok-tok-tok-tok"));
+        for (m, uri) in [
+            ("GET", "/secrets"),
+            ("PUT", "/secrets/a1"),
+            ("GET", "/secrets/a1/sealed"),
+            ("DELETE", "/secrets/a1"),
+        ] {
+            let (st, _) = call(&app, m, uri, json!({"value": VALUE}), None).await;
+            assert_eq!(st, StatusCode::UNAUTHORIZED, "{m} {uri}");
+        }
+    }
+
+    #[test]
+    fn the_store_refuses_a_cluster_secret_record_of_the_wrong_shape() {
+        let bad =
+            json!({"key_id": "k", "nonce": "n", "ciphertext": "c", "set_at": 1, "plaintext": "x"});
+        assert!(crate::ui_data::validate(Kind::ClusterSecret, "ok-name", &bad).is_err());
+        let good = json!({"key_id": "k", "nonce": "n", "ciphertext": "c", "set_at": 1});
+        assert!(crate::ui_data::validate(Kind::ClusterSecret, "ok-name", &good).is_ok());
+        assert!(crate::ui_data::validate(Kind::ClusterSecret, "Not Ok", &good).is_err());
     }
 }

@@ -724,6 +724,27 @@ Things to know before relying on it:
 - Every set and clear writes a `warn` audit line on the controller with the flag, value, reason,
   end time and actor.
 
+### Cluster secrets (the admin token and the gossip key)
+
+`settings.admin.auth_token` and `settings.gossip.psk` can be `{ secret: <name> }` instead of the
+value (see [05-configuration.md](05-configuration.md)). The values live in the controller, sealed
+with XChaCha20-Poly1305 under the controller's key file (`--secret-key-file`, the same keyring
+plugin secrets use); only ciphertext is stored, replicated and put in Raft snapshots, and no log
+line prints a value. A config revision holds the name only.
+
+- `PUT /secrets/{name}` with `{"value": "..."}` seals and stores a secret (`409` without a key,
+  `400` for a bad name or a value outside 8 to 4096 bytes). Under HA the sealed entry reaches the
+  leader over the peer channel, so the request that carried the value is never forwarded.
+- `GET /secrets` lists names with the key id, time and actor; never a value or ciphertext.
+- `DELETE /secrets/{name}` removes one (and, under HA, asks Raft to purge the superseded log; a replacing `PUT` does not purge, the old ciphertext leaves the log with normal compaction).
+- `GET /secrets/{name}/sealed` returns the ciphertext a proxy opens with its own key file.
+
+Every call is audited with a `warn` line (secret name, key id, actor). A controller with a key
+refuses to listen on plain HTTP on a non-loopback address unless `--allow-insecure-secrets` is
+given, because the `PUT` body is the value. To rotate: `PUT` the new value, then restart the
+proxies that use it (the admin token and gossip key are read at start). During a rolling upgrade
+of an HA tier, upgrade every controller before the first `PUT`.
+
 ### Fronting layer: anycast vs. L4 load balancer
 
 | | **BGP anycast** (same VIP announced from every site) | **L4 LB / NLB** (per-region VIP, flow hashing) |
