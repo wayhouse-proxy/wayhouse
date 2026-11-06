@@ -45,6 +45,10 @@ Colour-vision check (2026-10-28, `src/lib/theme` in the web project): `--good`, 
 
 Treat the table as a regression test: `validate.test.ts` checks the built-in themes against the same rules (and the values in `builtin.ts` against `tokens.css`), so a token change that breaks one fails CI. Recompute the table when a token changes.
 
+The automated part of this list runs in CI: `e2e/a11y.spec.ts` in the web project scans 17 pages in both
+themes with axe (WCAG 2.1 A and AA) and fails on a serious or critical violation. It does not replace the
+checklist below, which needs a person (reading order, focus, zoom, screen reader).
+
 ## Review checklist
 
 - [ ] Tab through the page: order is logical, focus is always visible, nothing is skipped or trapped.

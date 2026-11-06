@@ -94,6 +94,12 @@ and drives it in Chromium. The wayhouse-ui backend is stubbed per test with
 `npx playwright install chromium`, or set `PW_CHROMIUM` to an existing
 Chromium binary.
 
+`e2e/a11y.spec.ts` runs axe (`@axe-core/playwright`, WCAG 2.1 A and AA) over 17 pages in the light and
+dark theme and fails on a serious or critical violation or a page without exactly one level-1
+heading. It opens the single-file demo build (`dist-demo/wayhouse-demo.html`, so run
+`npm run build:demo` first; CI does), because the demo's mock backend gives every page real content.
+`e2e/first-run.spec.ts` is the sign-in and empty-box journey a solo install starts with.
+
 ## Design system
 
 The look is [Switchboard](../../../docs/design-system/DESIGN.md). `src/tokens.css` is a copy of
