@@ -657,10 +657,6 @@ async fn run(
     Ok(())
 }
 
-/// The admin URL to report in aggregator pushes: `--aggregator-admin-url` if
-/// given (an `http`/`https` base URL, optionally with a path prefix; trailing
-/// slashes are trimmed because the fan-out appends absolute paths), else this
-/// instance's own admin listener.
 /// The admin token as plaintext. A reference that was not resolved is an error, never `None`:
 /// `None` means an open API.
 fn admin_token(cfg: &wayhouse_config::Config) -> anyhow::Result<Option<String>> {
@@ -679,6 +675,8 @@ fn check_admin_auth(cfg: &wayhouse_config::Config, insecure_no_auth: bool) -> an
     wayhouse_http::policy::check_optional_secret("settings.admin.auth_token", token)
         .map_err(|e| anyhow::anyhow!(e))?;
     if let Some(g) = &cfg.gossip {
+        // `resolve_secrets` already ran, so this only reads the value for the strength check;
+        // the gossip runner reads it again and refuses a reference that slipped through.
         let psk = g.psk.resolve(None).map_err(|e| anyhow::anyhow!("{e}"))?;
         wayhouse_http::policy::check_secret("settings.gossip.psk", &psk)
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -709,6 +707,10 @@ fn check_gossip_feature(cfg: &wayhouse_config::Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The admin URL to report in aggregator pushes: `--aggregator-admin-url` if
+/// given (an `http`/`https` base URL, optionally with a path prefix; trailing
+/// slashes are trimmed because the fan-out appends absolute paths), else this
+/// instance's own admin listener.
 fn aggregator_admin_url(
     override_url: Option<&str>,
     admin_tls: bool,

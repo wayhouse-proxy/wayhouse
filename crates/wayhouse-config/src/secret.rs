@@ -92,37 +92,68 @@ impl fmt::Debug for SecretOr {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Repr {
-    Plain(String),
-    Ref(std::collections::BTreeMap<String, String>),
-}
-
 impl<'de> Deserialize<'de> for SecretOr {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        match Repr::deserialize(d).map_err(|_| {
-            de::Error::custom("expected a string, or a mapping `{ secret: <name> }`")
-        })? {
-            Repr::Plain(v) => Ok(Self::Plain(v)),
-            Repr::Ref(map) => {
-                let mut it = map.into_iter();
-                match (it.next(), it.next()) {
-                    (Some((k, name)), None) if k == "secret" => {
-                        if wayhouse_secrets::valid_cluster_name(&name) {
-                            Ok(Self::Ref(name))
-                        } else {
-                            Err(de::Error::custom(format!(
-                                "secret name {name:?} is not valid: use 1 to 63 of a-z, 0-9 and `-`, not starting or ending with `-`"
-                            )))
-                        }
-                    }
-                    _ => Err(de::Error::custom(
-                        "a secret reference is exactly `{ secret: <name> }`",
-                    )),
-                }
-            }
+        d.deserialize_any(Visit)
+    }
+}
+
+struct Visit;
+
+/// A number or boolean is refused with an instruction instead of being turned into text: the
+/// parser has already read `0123456789012345` as the number 123456789012345 and `1.5e3` as 1500,
+/// so the value would silently differ from what was written.
+fn unquoted<E: de::Error>(what: &str) -> E {
+    de::Error::custom(format!(
+        "a {what} here must be quoted so it is read as written: write it as a string, e.g. \"...\""
+    ))
+}
+
+impl<'de> de::Visitor<'de> for Visit {
+    type Value = SecretOr;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a string, or a mapping `{ secret: <name> }`")
+    }
+
+    fn visit_str<E: de::Error>(self, v: &str) -> Result<SecretOr, E> {
+        Ok(SecretOr::Plain(v.to_owned()))
+    }
+
+    fn visit_string<E: de::Error>(self, v: String) -> Result<SecretOr, E> {
+        Ok(SecretOr::Plain(v))
+    }
+
+    fn visit_bool<E: de::Error>(self, _: bool) -> Result<SecretOr, E> {
+        Err(unquoted("boolean"))
+    }
+
+    fn visit_i64<E: de::Error>(self, _: i64) -> Result<SecretOr, E> {
+        Err(unquoted("number"))
+    }
+
+    fn visit_u64<E: de::Error>(self, _: u64) -> Result<SecretOr, E> {
+        Err(unquoted("number"))
+    }
+
+    fn visit_f64<E: de::Error>(self, _: f64) -> Result<SecretOr, E> {
+        Err(unquoted("number"))
+    }
+
+    fn visit_map<A: de::MapAccess<'de>>(self, mut m: A) -> Result<SecretOr, A::Error> {
+        let bad = || de::Error::custom("a secret reference is exactly `{ secret: <name> }`");
+        let (Some((key, name)), true) = (m.next_entry::<String, String>()?, true) else {
+            return Err(bad());
+        };
+        if key != "secret" || m.next_key::<String>()?.is_some() {
+            return Err(bad());
         }
+        if !wayhouse_secrets::valid_cluster_name(&name) {
+            return Err(de::Error::custom(format!(
+                "secret name {name:?} is not valid: use 1 to 63 of a-z, 0-9 and `-`, not starting or ending with `-`"
+            )));
+        }
+        Ok(SecretOr::Ref(name))
     }
 }
 
@@ -193,6 +224,23 @@ mod tests {
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn an_unquoted_number_or_boolean_is_refused_with_an_instruction_to_quote_it() {
+        for v in ["1234567890123456", "true", "1.5e3"] {
+            let e = parse(v).unwrap_err().to_string();
+            assert!(e.contains("must be quoted"), "{v}: {e}");
+        }
+        assert_eq!(
+            parse("\"1234567890123456\"").unwrap(),
+            SecretOr::plain("1234567890123456")
+        );
+        // Not a number to the parser, so it is read as written.
+        assert_eq!(
+            parse("0123456789012345").unwrap(),
+            SecretOr::plain("0123456789012345")
+        );
     }
 
     #[test]
