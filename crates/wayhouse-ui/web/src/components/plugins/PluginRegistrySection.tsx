@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, fetchRegistryPlugin, listPluginRegistries, listRegistryPlugins } from "../../api";
 import type { PluginFetchResult, RegistryPlugin, RegistryPlugins, RegistryRef } from "../../types";
 import { RegistryRiskDialog } from "../RegistryRiskDialog";
@@ -28,6 +28,14 @@ export function PluginRegistrySection({ onFetched }: { onFetched: (result: Plugi
   const [listing, setListing] = useState<RegistryPlugins | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // A result that arrives after the section was dropped (Start over) must not reach the wizard.
+  const alive = useRef(true);
+  useEffect(
+    () => () => {
+      alive.current = false;
+    },
+    [],
+  );
   const [confirming, setConfirming] = useState<{ plugin: string; version: string; risk: "official" | "external" } | null>(null);
 
   useEffect(() => {
@@ -58,13 +66,17 @@ export function PluginRegistrySection({ onFetched }: { onFetched: (result: Plugi
   }, [registryId, load]);
 
   async function fetchIt(plugin: string, version: string, allowUnsigned: boolean) {
+    if (!listing || busy) return;
+    const registry = listing.registry;
     setBusy(plugin);
     setError(null);
     try {
-      const result = await fetchRegistryPlugin(registryId, plugin, version, allowUnsigned);
+      const result = await fetchRegistryPlugin(registry.id, plugin, version, allowUnsigned);
+      if (!alive.current) return;
       setConfirming(null);
-      onFetched(result, listing!.registry);
+      onFetched(result, registry);
     } catch (err) {
+      if (!alive.current) return;
       if (err instanceof ApiError && err.status === 409 && err.body?.needs_confirm) {
         setConfirming({ plugin, version, risk: err.body.risk === "official" ? "official" : "external" });
       } else {
@@ -72,7 +84,7 @@ export function PluginRegistrySection({ onFetched }: { onFetched: (result: Plugi
         setError(errorText(err));
       }
     } finally {
-      setBusy(null);
+      if (alive.current) setBusy(null);
     }
   }
 
@@ -84,7 +96,7 @@ export function PluginRegistrySection({ onFetched }: { onFetched: (result: Plugi
       {registries && registries.length > 1 && (
         <label className="flex flex-col gap-1 text-sm text-ink-muted">
           Registry
-          <Select value={registryId} onChange={(e) => setRegistryId(e.target.value)}>
+          <Select value={registryId} disabled={busy !== null} onChange={(e) => setRegistryId(e.target.value)}>
             {registries.map((r) => (
               <option key={r.id} value={r.id}>
                 {r.name}
@@ -106,11 +118,11 @@ export function PluginRegistrySection({ onFetched }: { onFetched: (result: Plugi
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-ink">{p.name}</span>
                   {v && <span className="text-xs text-ink-muted">{v.version}</span>}
-                  {v && (v.verifiable ? <Badge tone="good">signed</Badge> : <Badge tone="warn">signature not verified</Badge>)}
+                  {v && (v.verifiable ? <Badge tone="neutral">signature checked on fetch</Badge> : <Badge tone="warn">signature not verified</Badge>)}
                   <span className="ml-auto" />
                   <Button
                     variant="primary"
-                    disabled={!v}
+                    disabled={!v || busy !== null}
                     loading={busy === p.name}
                     aria-label={`Fetch ${p.name}`}
                     onClick={() => v && fetchIt(p.name, v.version, false)}

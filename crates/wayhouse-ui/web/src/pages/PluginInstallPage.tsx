@@ -198,7 +198,12 @@ export function PluginInstallPage() {
         </div>
       )}
 
-      {step === "upload" && source === "registry" && <PluginRegistrySection onFetched={fetched} />}
+      {step === "upload" && source === "registry" && (
+        <>
+          <PluginRegistrySection key={session.current} onFetched={fetched} />
+          {error && <ErrorState>{error}</ErrorState>}
+        </>
+      )}
 
       {step === "upload" && source === "file" && (
         <form className="flex flex-col gap-3" onSubmit={inspect}>

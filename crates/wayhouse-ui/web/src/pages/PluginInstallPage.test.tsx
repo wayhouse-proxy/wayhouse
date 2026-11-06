@@ -149,6 +149,13 @@ describe("PluginInstallPage from a registry", () => {
     expect(api.installPlugin).toHaveBeenCalledWith(expect.objectContaining({ name: "pelican-sync", sha256: SHA }));
   });
 
+  it("shows the error when the review step fails after a fetch", async () => {
+    api.fetchRegistryPlugin.mockResolvedValue(fetched(true));
+    api.resolvePluginCapabilities.mockRejectedValue(new ApiError(422, "a plugin named pelican-sync already exists"));
+    await fromRegistry();
+    expect(await screen.findByText(/already exists/)).toBeInTheDocument();
+  });
+
   it("does not claim a signature the controller did not check", async () => {
     api.fetchRegistryPlugin.mockResolvedValue(fetched(false));
     await fromRegistry();

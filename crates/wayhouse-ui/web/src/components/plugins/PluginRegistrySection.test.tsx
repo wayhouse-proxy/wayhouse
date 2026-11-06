@@ -61,6 +61,7 @@ describe("PluginRegistrySection", () => {
     section();
     const card = (await screen.findByText("pelican-sync")).closest("li")!;
     expect(within(card).getByText("signature not verified")).toBeInTheDocument();
+    expect(screen.queryByText(/^signed$/)).toBeNull();
     const old = screen.getByText("old-thing").closest("li")!;
     expect(within(old).getByText(/plugin ABI 0\.1/)).toBeInTheDocument();
     expect(within(old).getByRole("button", { name: "Fetch old-thing" })).toHaveAttribute("aria-disabled", "true");
@@ -111,6 +112,32 @@ describe("PluginRegistrySection", () => {
     await screen.findByText("pelican-sync");
     await user.click(screen.getByRole("button", { name: "Fetch pelican-sync" }));
     expect(await screen.findByText(/does not match its hash/)).toBeInTheDocument();
+    expect(done).not.toHaveBeenCalled();
+  });
+
+  it("disables every Fetch and the registry choice while one fetch runs", async () => {
+    const user = userEvent.setup();
+    let release!: (v: unknown) => void;
+    api.fetchRegistryPlugin.mockReturnValue(new Promise((r) => (release = r)));
+    section();
+    await screen.findByText("pelican-sync");
+    await user.click(screen.getByRole("button", { name: "Fetch pelican-sync" }));
+    expect(screen.getByLabelText("Registry")).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Fetch old-thing" }));
+    expect(api.fetchRegistryPlugin).toHaveBeenCalledTimes(1);
+    release({ plugin: "pelican-sync", version: "0.2.0", signed: true, risk: "official", upload: MODULE });
+  });
+
+  it("drops a result that arrives after the section is gone", async () => {
+    const user = userEvent.setup();
+    let release!: (v: unknown) => void;
+    api.fetchRegistryPlugin.mockReturnValue(new Promise((r) => (release = r)));
+    const { unmount } = section();
+    await screen.findByText("pelican-sync");
+    await user.click(screen.getByRole("button", { name: "Fetch pelican-sync" }));
+    unmount();
+    release({ plugin: "pelican-sync", version: "0.2.0", signed: true, risk: "official", upload: MODULE });
+    await Promise.resolve();
     expect(done).not.toHaveBeenCalled();
   });
 
