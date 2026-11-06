@@ -6,7 +6,7 @@ in [`docs/09-technology-choices.md`](docs/09-technology-choices.md). Per-slice
 implementation history lives in `git log` and [`docs/08-roadmap.md`](docs/08-roadmap.md),
 not here.
 
-Last updated: 2026-10-24.
+Last updated: 2026-11-06 (0.4.0 built, not yet released).
 
 ## Current state
 
@@ -16,6 +16,25 @@ blocks except the two informational security scans, `trivy` and `audit` (2026-10
 owner's call).
 
 ### Resume here
+
+**0.4.0 (built, release is Wueschli's call):** the UI overhaul and the ops items are merged; the plans and
+decisions are `plan-0.4.0*.md` in the project files and the design docs under `docs/design-system/`.
+In short: the web UI is React 19 + TypeScript + Vite + Tailwind 4 + shadcn/Radix (`crates/wayhouse-ui/web`,
+direction "Switchboard", light and dark, design system in `docs/design-system/`), with a Dashboard,
+schema-generated config forms, the Features page (per-node flags and the kill-switch runbook), Secrets,
+Plugins (upload, registry install, managed-by-file) and stored UI data (dashboards, themes, layout
+override, node tags; `docs/ui-data.md`). Backend: feature flags with a runtime override layer, `enabled:`
+on config items, confirm-and-revert for risky config changes, plugin ABI 0.2 with options and capability
+bindings, the plugin registry (`kind = plugin`, minisign key built in) and `--plugins-file`, the sealed
+cluster secret store (`{ secret: name }` for the admin token and gossip PSK; `--secret-key-file`, and
+`--secrets-file` for a file-config proxy), and the solo bundle (`deploy/compose/compose.solo.yml`,
+`deploy/systemd/`). The operator checklist is [`docs/migrating-0.3-to-0.4.md`](docs/migrating-0.3-to-0.4.md).
+Traps: upgrade every controller replica before the first write of any new kind (the UI data level is 4, the
+plugin level 5); the `CodeQL` check flags names that look like secrets in log lines, so keep names out of
+messages; the container disk can fill (`target/debug/incremental` is safe to delete). Left for 0.4.1: one
+tracker issue lists the review nits (reload does not re-check secret references, key rotation for cluster
+secrets, a token-file option so tokens stay out of `ps`, and the UI nits). Not yet: the supervisor binary
+(decision: compose and systemd only), proxy-local plugin overlay file and config validate endpoints (S2b, S2c).
 
 **Releases:** the workspace is at 0.3.0. Releases are published to GHCR (six public images,
 amd64 + arm64) by `release.yml` on a `vX.Y.Z` tag. Tags stay manual (release-please runs with
