@@ -111,3 +111,40 @@ mod without_tunnel {
         );
     }
 }
+
+#[test]
+fn a_plugin_overlay_url_goes_with_a_config_file_and_its_token_needs_it() {
+    // A file config may take plugin routes from a controller.
+    let out = check(BASE, &["--plugin-overlay-url", "http://127.0.0.1:9"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // A token alone is a mistake, and so is a second config source.
+    let out = check(BASE, &["--plugin-overlay-token", "x"]);
+    assert!(!out.status.success());
+    let out = check(
+        BASE,
+        &[
+            "--plugin-overlay-url",
+            "http://127.0.0.1:9",
+            "--controller",
+            "http://127.0.0.1:9",
+        ],
+    );
+    assert!(!out.status.success());
+}
+
+#[test]
+fn a_plugin_overlay_url_is_checked_at_startup() {
+    // No scheme (the typo that would otherwise only show up as "no plugin routes").
+    let out = check(BASE, &["--plugin-overlay-url", "controller:9901"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("--plugin-overlay-url"),
+        "{}",
+        stderr(&out)
+    );
+    // A trailing slash is trimmed, a query is refused.
+    let out = check(BASE, &["--plugin-overlay-url", "http://127.0.0.1:9/"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = check(BASE, &["--plugin-overlay-url", "http://127.0.0.1:9/?x=1"]);
+    assert!(!out.status.success());
+}

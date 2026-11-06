@@ -1,8 +1,9 @@
 //! Routes that controller plugins declare (`docs/plugins.md` "Routes", #236), merged into
 //! the operator's config for listeners that opted in with `plugin_routes:`.
 //!
-//! Only meaningful with `--controller`: the controller publishes the overlay on
-//! `GET /plugin-routes/subscribe` (a full document on connect and on every change). The
+//! The controller publishes the overlay on `GET /plugin-routes/subscribe` (a full document on
+//! connect and on every change). A proxy takes it with `--controller`, or, running from a
+//! config file, with `--plugin-overlay-url` ([`load`] is the file-mode read). The
 //! last overlay received is kept here; every place that turns controller config text into a
 //! `Config` runs it through [`merge`], and a change asks for a re-fetch with
 //! `RuntimeHandle::request_reload` (which `controller_client::watch_admin_reloads` serves).
@@ -17,6 +18,7 @@
 //! change (`controller_client::watch_admin_reloads`), it is repeated with a growing delay
 //! until it succeeds, so a withdrawn route does not linger until the next unrelated change.
 
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -95,7 +97,34 @@ pub fn merge(text: &str) -> String {
         &lock(),
         wayhouse_core::flags::on(wayhouse_config::features::PORT_ROUTES),
     );
-    match merge_text(text, &routes) {
+    merge_routes(text, &routes)
+}
+
+/// A config file read like `wayhouse_config::load`, with the current overlay applied (file
+/// mode with `--plugin-overlay-url`; with no overlay it is the file as written).
+pub fn load(path: &Path) -> Result<wayhouse_config::Config, wayhouse_config::ConfigError> {
+    let routes = in_force(
+        &lock(),
+        wayhouse_core::flags::on(wayhouse_config::features::PORT_ROUTES),
+    );
+    load_with(path, &routes)
+}
+
+/// `load` with the routes given, already filtered by `in_force`.
+fn load_with(
+    path: &Path,
+    routes: &[PluginRoute],
+) -> Result<wayhouse_config::Config, wayhouse_config::ConfigError> {
+    let text =
+        std::fs::read_to_string(path).map_err(|source| wayhouse_config::ConfigError::Read {
+            path: path.display().to_string(),
+            source,
+        })?;
+    wayhouse_config::parse_str(&merge_routes(&text, routes))
+}
+
+fn merge_routes(text: &str, routes: &[PluginRoute]) -> String {
+    match merge_text(text, routes) {
         Ok(m) => {
             for s in &m.skipped {
                 tracing::warn!("plugin route skipped: {s}");
@@ -151,10 +180,25 @@ fn withdraws_routes(status: reqwest::StatusCode) -> bool {
 /// Runs forever: subscribe, keep the overlay, ask for a rebuild on every change.
 pub async fn run(base_url: String, token: Option<String>, handle: RuntimeHandle) {
     let mut backoff = RECONNECT_MIN;
+    let mut last_error = String::new();
     loop {
         match subscribe_once(&base_url, token.as_deref(), &handle).await {
             Ok(()) => backoff = RECONNECT_MIN,
-            Err(e) => tracing::debug!(error = %format_args!("{e:#}"), "plugin route stream ended"),
+            Err(e) => {
+                // A wrong URL or token must leave a trace at the default log level, once per
+                // distinct failure rather than on every retry. A controller without plugins
+                // (404/501) stays quiet on purpose.
+                let msg = format!("{e:#}");
+                if msg != last_error
+                    && !msg.contains("answered 404")
+                    && !msg.contains("answered 501")
+                {
+                    tracing::warn!(error = %msg, "plugin route stream failed; retrying");
+                } else {
+                    tracing::debug!(error = %msg, "plugin route stream ended");
+                }
+                last_error = msg;
+            }
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(RECONNECT_MAX);
@@ -265,6 +309,21 @@ mod tests {
         assert!(withdraws_routes(S::NOT_FOUND));
         assert!(!withdraws_routes(S::SERVICE_UNAVAILABLE));
         assert!(!withdraws_routes(S::UNAUTHORIZED));
+    }
+
+    #[test]
+    fn a_config_file_is_loaded_with_the_routes_merged_in() {
+        let text = "schema_version: 2\npools:\n  - name: p\n    targets: [\"10.9.0.1:1\"]\nlisteners:\n  - name: l\n    bind: \"0.0.0.0:1\"\n    protocol: tcp\n    pool: p\n    plugin_routes: { type: sni }\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        std::fs::write(&path, text).unwrap();
+        let routes = [PluginRoute::host("b.example.com", "10.0.1.2:1")];
+        let cfg = load_with(&path, &routes).unwrap();
+        assert!(format!("{:?}", cfg.listeners).contains("b.example.com"));
+        // No routes: the file as written. A missing file is still a read error.
+        let plain = load_with(&path, &[]).unwrap();
+        assert!(!format!("{:?}", plain.listeners).contains("b.example.com"));
+        assert!(load_with(&dir.path().join("nope.yaml"), &routes).is_err());
     }
 
     #[test]
