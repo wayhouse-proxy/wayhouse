@@ -648,9 +648,21 @@ impl UiStore {
 mod tests {
     #[test]
     fn the_snapshot_covers_every_kind() {
-        // An exhaustive match: adding a variant breaks this until `Kind::ALL` is updated too.
-        for k in Kind::ALL {
-            match k {
+        // One record per kind, built by an exhaustive match that does not use `Kind::ALL`:
+        // a new kind will not compile here, and the snapshot must then hold it.
+        let literal = [
+            Kind::Dashboard,
+            Kind::Theme,
+            Kind::SavedFilter,
+            Kind::FormLayout,
+            Kind::Defaults,
+            Kind::FeatureOverride,
+            Kind::NodeTags,
+            Kind::ClusterSecret,
+        ];
+        let (store, _d) = store();
+        for kind in literal {
+            let value = match kind {
                 Kind::Dashboard
                 | Kind::Theme
                 | Kind::SavedFilter
@@ -658,11 +670,44 @@ mod tests {
                 | Kind::Defaults
                 | Kind::FeatureOverride
                 | Kind::NodeTags
-                | Kind::ClusterSecret => {}
-            }
+                | Kind::ClusterSecret => json!({}),
+            };
+            // Validation may refuse a bare `{}`; write the record directly.
+            store
+                .records
+                .insert(key(kind, "x"), serde_json::to_vec(&value).unwrap())
+                .unwrap();
+        }
+        let snap = store.snapshot().unwrap();
+        for kind in literal {
+            assert!(
+                snap.records.iter().any(|(k, _, _)| *k == kind),
+                "the snapshot misses {}",
+                kind.tag()
+            );
         }
         let tags: std::collections::BTreeSet<_> = Kind::ALL.iter().map(|k| k.tag()).collect();
         assert_eq!(tags.len(), Kind::ALL.len(), "a kind is listed twice");
+    }
+
+    #[test]
+    fn the_rolling_upgrade_gate_refuses_a_member_without_this_levels_kinds() {
+        use crate::ha::routes::{Whoami, UI_SUPPORT};
+        let who = |ui_support| Whoami {
+            node_id: 2,
+            log_empty: false,
+            pre_ha: crate::ha::import::PreHaSummary::default(),
+            plugin_support: 0,
+            secret_key_ids: Vec::new(),
+            acme_support: 0,
+            confirm_support: 0,
+            ui_support,
+        };
+        assert!(check_support_answers(&[(2, Ok(who(UI_SUPPORT)))]).is_ok());
+        assert!(
+            check_support_answers(&[(2, Ok(who(3)))]).is_err(),
+            "level 3 cannot decode cluster secrets"
+        );
     }
 
     use super::*;

@@ -736,7 +736,7 @@ line prints a value. A config revision holds the name only.
   `400` for a bad name or a value outside 8 to 4096 bytes). Under HA the sealed entry reaches the
   leader over the peer channel, so the request that carried the value is never forwarded.
 - `GET /secrets` lists names with the key id, time and actor; never a value or ciphertext.
-- `DELETE /secrets/{name}` removes one (and, under HA, asks Raft to purge the superseded log).
+- `DELETE /secrets/{name}` removes one (and, under HA, asks Raft to purge the superseded log; a replacing `PUT` does not purge, the old ciphertext leaves the log with normal compaction).
 - `GET /secrets/{name}/sealed` returns the ciphertext a proxy opens with its own key file.
 
 Every call is audited with a `warn` line (secret name, key id, actor). A controller with a key
