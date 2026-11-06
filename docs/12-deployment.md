@@ -149,7 +149,7 @@ change in a directory it cannot write does not try it: it starts with the previo
 not watch the file.
 
 Not settable here: token, password and PSK flags, the flags that say where tokens go or what is
-trusted (`*-url`, `*-file`, `--controller`, `--aggregator`, TLS certificate and key paths) and the
+trusted (`*-url`, `*-file`, `--controller`, `--aggregator`, `--config`, `--static-dir`, `--ha-peers`, `--ha-join`, `--ha-import-source`, `--instance-url-allow`, `--acme-ca`, TLS certificate and key paths) and the
 safety overrides (`--insecure-*`, `--allow-insecure-*`): set them on the command line or in the unit,
 `--settings-dir` itself, and flags that run once and exit (`--check`, `--hash-password`,
 `--secret-set`, `--secret-delete`, `--secret-list`). A key the running build does not know is

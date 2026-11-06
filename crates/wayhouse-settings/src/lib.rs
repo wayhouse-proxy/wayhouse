@@ -212,7 +212,19 @@ fn is_secret(name: &str) -> bool {
 fn is_destination(name: &str) -> bool {
     name.ends_with("-url")
         || name.ends_with("-file")
-        || matches!(name, "controller" | "aggregator")
+        || matches!(
+            name,
+            "controller"
+                | "aggregator"
+                | "config"
+                | "static-dir"
+                | "ha-peers"
+                | "ha-join"
+                | "ha-import-source"
+                | "instance-url-allow"
+                | "acme-ca"
+                | "acme-challenge-upstream"
+        )
         || name.contains("tls-cert")
         || name.contains("tls-key")
 }
