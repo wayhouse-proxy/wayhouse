@@ -14,7 +14,7 @@ use serde::Deserialize;
 /// the missing piece, and never contains a value.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SecretError {
-    #[error("secret `{0}` is referenced, but this process has no secret store to read it from (a proxy without a controller cannot resolve `secret:` values yet; write the value in plaintext or connect the proxy to a controller)")]
+    #[error("secret `{0}` is referenced, but this process has no secret store to read it from (a proxy resolves `secret:` values from its controller, `--controller`, or from its own store, `--secrets-file` with `--secret-key-file`)")]
     NoStore(String),
     #[error("secret `{0}` is not in the secret store")]
     Missing(String),
