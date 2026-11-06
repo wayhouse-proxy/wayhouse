@@ -366,6 +366,15 @@ pub async fn run(
     mut inbox: GossipInbox,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    // The binary resolves `{ secret: ... }` before it starts the mesh; a reference that reaches
+    // here is a bug, and the mesh must not run on an empty or guessed key.
+    let psk = match cfg.psk.resolve(None) {
+        Ok(psk) => psk,
+        Err(error) => {
+            tracing::error!(%error, "gossip: the pre-shared key was not resolved, mesh disabled");
+            return;
+        }
+    };
     let socket = match UdpSocket::bind(cfg.bind).await {
         Ok(s) => s,
         Err(error) => {
@@ -395,7 +404,7 @@ pub async fn run(
             tracing::warn!(%seed, ?error, "gossip: announce failed");
         }
     }
-    drain_to_wire(&mut runtime, &socket, &cfg.psk, &mut timers).await;
+    drain_to_wire(&mut runtime, &socket, &psk, &mut timers).await;
     publish_member_count(&foca, &handle, identity);
 
     loop {
@@ -416,7 +425,7 @@ pub async fn run(
             }
             recv = socket.recv_from(&mut recv_buf) => {
                 match recv {
-                    Ok((len, from)) => match verify_and_strip(&cfg.psk, &recv_buf[..len], wall_ms()) {
+                    Ok((len, from)) => match verify_and_strip(&psk, &recv_buf[..len], wall_ms()) {
                         Ok(payload) => {
                             metrics::counter!(m::GOSSIP_MESSAGES_TOTAL, "direction" => "received")
                                 .increment(1);
@@ -477,7 +486,7 @@ pub async fn run(
                 }
             }
         }
-        drain_to_wire(&mut runtime, &socket, &cfg.psk, &mut timers).await;
+        drain_to_wire(&mut runtime, &socket, &psk, &mut timers).await;
         publish_member_count(&foca, &handle, identity);
     }
 }
@@ -853,13 +862,13 @@ mod tests {
             bind: addr_a,
             seeds: vec![addr_b],
             quorum_fraction: 0.66,
-            psk: psk.clone(),
+            psk: wayhouse_config::SecretOr::plain(psk.clone()),
         };
         let cfg_b = GossipConfig {
             bind: addr_b,
             seeds: vec![],
             quorum_fraction: 0.66,
-            psk,
+            psk: wayhouse_config::SecretOr::plain(psk),
         };
 
         let (handle_a, inbox_a) = GossipHandle::new();
@@ -907,13 +916,13 @@ mod tests {
             bind: addr_a,
             seeds: vec![addr_b],
             quorum_fraction: 0.66,
-            psk: "psk-a".to_string(),
+            psk: "psk-a".into(),
         };
         let cfg_b = GossipConfig {
             bind: addr_b,
             seeds: vec![],
             quorum_fraction: 0.66,
-            psk: "psk-b".to_string(),
+            psk: "psk-b".into(),
         };
 
         let (handle_a, inbox_a) = GossipHandle::new();
@@ -1140,13 +1149,13 @@ mod tests {
             bind: addr_a,
             seeds: vec![addr_b],
             quorum_fraction: 0.66,
-            psk: psk.clone(),
+            psk: wayhouse_config::SecretOr::plain(psk.clone()),
         };
         let cfg_b = GossipConfig {
             bind: addr_b,
             seeds: vec![],
             quorum_fraction: 0.66,
-            psk,
+            psk: wayhouse_config::SecretOr::plain(psk),
         };
 
         let (handle_a, inbox_a) = GossipHandle::new();

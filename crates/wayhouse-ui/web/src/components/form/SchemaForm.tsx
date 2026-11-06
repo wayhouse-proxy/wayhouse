@@ -61,30 +61,46 @@ function describe(p: WidgetProps) {
   return { "aria-describedby": p.options.help ? `${p.id}-help` : undefined };
 }
 
-const Text = (p: WidgetProps) => (
-  <Input
-    id={p.id}
-    value={p.value ?? ""}
-    mono={isMono(p.name ?? p.label)}
-    placeholder={p.schema["x-wayhouse-default"] !== undefined ? String(p.schema["x-wayhouse-default"]) : undefined}
-    disabled={p.disabled || p.readonly}
-    onChange={(e) => p.onChange(e.target.value === "" ? undefined : e.target.value)}
-    onBlur={() => p.onBlur(p.id, p.value)}
-    {...describe(p)}
-  />
+/** `{ secret: name }` as written in the YAML; the form shows it but does not edit it until the secret picker exists. */
+const secretRefName = (v: unknown): string | undefined =>
+  typeof v === "object" && v !== null && typeof (v as { secret?: unknown }).secret === "string" ? (v as { secret: string }).secret : undefined;
+
+/** A value that is not text (today only a `{ secret }` reference) is shown, not edited: typing would overwrite it. */
+const notText = (v: unknown) => v !== undefined && v !== null && typeof v !== "string";
+const RefShown = (p: WidgetProps) => (
+  <Input id={p.id} readOnly mono value={secretRefName(p.value) ? `secret: ${secretRefName(p.value)}` : "(set in the YAML)"} {...describe(p)} />
 );
 
-const Secret = (p: WidgetProps) => (
-  <Input
-    id={p.id}
-    type="password"
-    autoComplete="off"
-    value={p.value ?? ""}
-    mono
-    onChange={(e) => p.onChange(e.target.value === "" ? undefined : e.target.value)}
-    {...describe(p)}
-  />
-);
+const Text = (p: WidgetProps) =>
+  notText(p.value) ? (
+    <RefShown {...p} />
+  ) : (
+    <Input
+      id={p.id}
+      value={p.value ?? ""}
+      mono={isMono(p.name ?? p.label)}
+      placeholder={p.schema["x-wayhouse-default"] !== undefined ? String(p.schema["x-wayhouse-default"]) : undefined}
+      disabled={p.disabled || p.readonly}
+      onChange={(e) => p.onChange(e.target.value === "" ? undefined : e.target.value)}
+      onBlur={() => p.onBlur(p.id, p.value)}
+      {...describe(p)}
+    />
+  );
+
+const Secret = (p: WidgetProps) =>
+  notText(p.value) ? (
+    <RefShown {...p} />
+  ) : (
+    <Input
+      id={p.id}
+      type="password"
+      autoComplete="off"
+      value={p.value ?? ""}
+      mono
+      onChange={(e) => p.onChange(e.target.value === "" ? undefined : e.target.value)}
+      {...describe(p)}
+    />
+  );
 
 /**
  * A number is edited as text. A draft that is empty or not yet a number (a cleared field, a lone "-") writes nothing,

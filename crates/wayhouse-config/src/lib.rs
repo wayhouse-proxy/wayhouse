@@ -20,6 +20,7 @@ mod parse;
 pub mod plugin_routes;
 mod resolved;
 mod schema;
+mod secret;
 mod validate;
 pub mod version;
 mod web;
@@ -39,6 +40,7 @@ pub use resolved::{
     SniffersConfig, SourceConfig, SourceKind, TokenBucket,
 };
 pub use schema::AdminTls;
+pub use secret::{SecretError, SecretOr, SecretResolver};
 pub use web::view::{
     UpstreamTlsView, WebListenView, WebSiteTlsView, WebSiteView, WebUpstreamView, WebView,
 };

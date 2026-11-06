@@ -68,7 +68,10 @@ listeners:
 "#,
     )
     .expect("should parse");
-    assert_eq!(cfg.admin_auth_token.as_deref(), Some("secret123"));
+    assert_eq!(
+        cfg.admin_auth_token,
+        Some(crate::SecretOr::plain("secret123"))
+    );
 }
 
 #[test]
@@ -1983,7 +1986,7 @@ fn parses_gossip_settings_with_defaults() {
     assert_eq!(g.bind, "10.0.0.9:7946".parse().unwrap());
     assert!(g.seeds.is_empty());
     assert_eq!(g.quorum_fraction, 0.66);
-    assert_eq!(g.psk, "secret");
+    assert_eq!(g.psk, crate::SecretOr::plain("secret"));
 }
 
 #[test]

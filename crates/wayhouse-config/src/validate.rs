@@ -116,6 +116,21 @@ pub(crate) fn validate(
         ))
     })?;
     let admin_auth_token = raw.settings.admin.auth_token.clone();
+    if schema_version < 4 {
+        let refs = [
+            ("settings.admin.auth_token", admin_auth_token.as_ref()),
+            (
+                "settings.gossip.psk",
+                raw.settings.gossip.as_ref().map(|g| &g.psk),
+            ),
+        ];
+        if let Some((path, _)) = refs.iter().find(|(_, v)| v.is_some_and(|v| !v.is_plain())) {
+            return Err(Invalid(format!(
+                "`{path}: {{ secret: ... }}` needs schema_version 4 or higher (the document declares {schema_version}); \
+                 set `schema_version: 4` once every proxy that will receive it supports it"
+            )));
+        }
+    }
     let admin_tls = raw.settings.admin.tls.clone();
     if let Some(t) = &admin_tls {
         if t.max_pending == Some(0) || t.max_pending_per_source == Some(0) {
@@ -1204,7 +1219,7 @@ fn validate_gossip(rg: RawGossip) -> Result<GossipConfig, ConfigError> {
             "settings.gossip.quorum_fraction must be > 0.5 and <= 1.0".into(),
         ));
     }
-    if rg.psk.is_empty() {
+    if matches!(&rg.psk, crate::SecretOr::Plain(p) if p.is_empty()) {
         return Err(Invalid("settings.gossip.psk must not be empty".into()));
     }
     Ok(GossipConfig {

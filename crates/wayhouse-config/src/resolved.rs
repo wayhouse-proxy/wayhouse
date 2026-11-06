@@ -226,7 +226,7 @@ pub struct Config {
     pub admin_listen: SocketAddr,
     /// Bearer token every admin API request (except `GET /healthz`) must
     /// present; `None` leaves the API open.
-    pub admin_auth_token: Option<String>,
+    pub admin_auth_token: Option<crate::SecretOr>,
     /// `settings.admin.tls`: serve the admin API over HTTPS. Startup-only.
     pub admin_tls: Option<AdminTls>,
     pub pools: Vec<PoolConfig>,
@@ -259,10 +259,41 @@ pub struct Config {
 const HANDSHAKE_MIN_IDLE: Duration = Duration::from_secs(60);
 
 impl Config {
+    /// Replaces each `{ secret: name }` with its value, so everything downstream sees one kind
+    /// of value. Fails on the first reference that cannot be resolved; nothing is half-resolved.
+    pub fn resolve_secrets(
+        mut self,
+        resolver: Option<&dyn crate::SecretResolver>,
+    ) -> Result<Self, crate::SecretError> {
+        if let Some(token) = &self.admin_auth_token {
+            self.admin_auth_token = Some(crate::SecretOr::Plain(token.resolve(resolver)?));
+        }
+        if let Some(g) = &mut self.gossip {
+            g.psk = crate::SecretOr::Plain(g.psk.resolve(resolver)?);
+        }
+        Ok(self)
+    }
+
     /// Non-fatal findings about a valid config, for the caller to log (startup,
     /// reload) or print (`--check`). Empty for a clean config.
     pub fn warnings(&self) -> Vec<String> {
         let mut out = Vec::new();
+        let plain_admin = self
+            .admin_auth_token
+            .as_ref()
+            .is_some_and(crate::SecretOr::is_plain);
+        let plain_psk = self.gossip.as_ref().is_some_and(|g| g.psk.is_plain());
+        for (path, plain) in [
+            ("settings.admin.auth_token", plain_admin),
+            ("settings.gossip.psk", plain_psk),
+        ] {
+            if plain {
+                out.push(format!(
+                    "{path} is written in plaintext, so it sits in the config and in every stored revision; \
+                     use `{{ secret: <name> }}` and keep the value in the secret store"
+                ));
+            }
+        }
         if let Some(web) = &self.web {
             let routed = self.listeners.iter().any(|l| {
                 l.protocol == Protocol::Tcp
@@ -339,7 +370,7 @@ pub struct GossipConfig {
     pub bind: SocketAddr,
     pub seeds: Vec<SocketAddr>,
     pub quorum_fraction: f64,
-    pub psk: String,
+    pub psk: crate::SecretOr,
 }
 
 /// Resolved `settings.sniffers` (phase 9). The loader itself (`wasmtime`, the

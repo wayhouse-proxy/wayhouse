@@ -13,6 +13,7 @@ base64 = "0.22"
 serde.workspace = true
 serde_norway.workspace = true
 sha2.workspace = true
+wayhouse-secrets = { path = "../wayhouse-secrets" }
 thiserror.workspace = true
 schemars = { version = "1", optional = true }
 serde_json = { workspace = true, optional = true }

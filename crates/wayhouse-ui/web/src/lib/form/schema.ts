@@ -6,7 +6,7 @@ type S = Record<string, any>;
  * Reshapes what `schemars` emits into what the form renders well, without changing meaning:
  * "or null" becomes an optional field, a `oneOf` of string constants becomes one `enum`, and a
  * port that is an integer or a string becomes a string field marked `x-wayhouse-int-or-string`
- * (see `coerce`), and `default` moves to `x-wayhouse-default`. Every `x-wayhouse-*` annotation is kept.
+ * (see `coerce`), a string-or-`{ secret }` value becomes a string field marked `x-wayhouse-secret-ref`, and `default` moves to `x-wayhouse-default`. Every `x-wayhouse-*` annotation is kept.
  */
 export function simplify(node: any): any {
   if (Array.isArray(node)) return node.map(simplify);
@@ -17,7 +17,10 @@ export function simplify(node: any): any {
     const rest = n.anyOf.filter((x: S) => x?.type !== "null");
     const { anyOf, ...siblings } = n;
     if (rest.length === 1) n = { ...rest[0], ...siblings };
-    else if (rest.every((x: S) => x.type === "integer" || x.type === "string"))
+    else if (rest.length === 2 && rest.some((x: S) => x.type === "string") && rest.some(isSecretRef)) {
+      // A plaintext value or a `{ secret: name }` reference: one text field now; K1-UI adds the secret picker.
+      n = { ...siblings, type: "string", "x-wayhouse-secret-ref": true };
+    } else if (rest.every((x: S) => x.type === "integer" || x.type === "string"))
       n = { ...siblings, type: "string", "x-wayhouse-int-or-string": true };
   }
   if (Array.isArray(n.oneOf) && n.oneOf.every((x: S) => x?.type === "string" && ("const" in x || x.enum))) {
@@ -43,6 +46,8 @@ export function simplify(node: any): any {
   if (ap && typeof ap === "object" && ap.type === "integer" && ap.default === undefined) n.additionalProperties = { ...ap, default: Math.max(ap.minimum ?? 1, 1) };
   return n;
 }
+
+const isSecretRef = (x: S) => x?.type === "object" && Array.isArray(x.required) && x.required.length === 1 && x.required[0] === "secret";
 
 export const sinceOf = (schema: S): number | undefined => schema["x-wayhouse-since"];
 
