@@ -90,7 +90,8 @@ In this order: size equals the index, sha256 equals the index, the signature (wh
 published and the official key is known) verifies, and the module itself passes the
 requirements above and declares the ABI the index says. A signature that is present but
 invalid is an error, never a quiet downgrade to "unsigned". Signatures (minisign) are
-optional for now, and an unsigned sniffer is shown as unsigned. The sha256 comes from the
+optional for now, and an unsigned sniffer is shown as unsigned. The official key (minisign key id
+`C44491B8C8BF6083`, shared with the official plugins) is built in; a release signed with it shows as signed. The sha256 comes from the
 same index as the URL, so for an unsigned sniffer it only protects against corruption.
 
 ## Generating an index

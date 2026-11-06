@@ -45,6 +45,7 @@ thiserror.workspace = true
 wayhouse-config = { path = "../wayhouse-config", features = ["test-util"] }
 tokio-tungstenite = "0.29"
 futures-util = { version = "0.3", default-features = false }
+base64 = "0.22"
 tempfile.workspace = true
 wat.workspace = true
 # HTTP/2 WebSocket (extended CONNECT) test client; all already in the lockfile.
