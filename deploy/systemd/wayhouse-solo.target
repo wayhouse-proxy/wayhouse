@@ -1,0 +1,6 @@
+[Unit]
+Description=wayhouse solo box (controller, aggregator, UI, proxy)
+Wants=wayhouse-controller.service wayhouse-aggregator.service wayhouse-ui.service wayhouse.service
+
+[Install]
+WantedBy=multi-user.target

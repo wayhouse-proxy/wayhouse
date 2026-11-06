@@ -1,0 +1,32 @@
+[Unit]
+Description=wayhouse proxy (solo box, config from the local controller)
+Wants=wayhouse-controller.service wayhouse-aggregator.service
+After=wayhouse-controller.service wayhouse-aggregator.service
+PartOf=wayhouse-solo.target
+
+[Service]
+User=wayhouse
+EnvironmentFile=/etc/wayhouse/solo.env
+ExecStart=/usr/local/bin/wayhouse \
+  --controller=http://127.0.0.1:9901 \
+  --controller-token=${WAYHOUSE_CONTROLLER_TOKEN} \
+  --aggregator=http://127.0.0.1:9902 \
+  --aggregator-token=${WAYHOUSE_INGEST_TOKEN} \
+  --aggregator-instance=solo \
+  --secret-key-file=/var/lib/wayhouse/secret.keys
+# The game ports are usually above 1024; keep this line only if a listener binds below it.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=wayhouse-solo.target

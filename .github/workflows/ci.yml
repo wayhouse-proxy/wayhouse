@@ -481,6 +481,8 @@ jobs:
           retention-days: 1
       - name: Compose smoke test
         run: make deploy-smoke
+      - name: Solo bundle smoke test
+        run: make deploy-solo-smoke
       - name: Validate Kubernetes manifests (schema only)
         run: |
           curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar -xz kubeconform

@@ -1,0 +1,30 @@
+[Unit]
+Description=wayhouse web UI (solo box)
+Wants=wayhouse-controller.service wayhouse-aggregator.service
+After=wayhouse-controller.service wayhouse-aggregator.service
+PartOf=wayhouse-solo.target
+
+[Service]
+User=wayhouse
+EnvironmentFile=/etc/wayhouse/solo.env
+ExecStart=/usr/local/bin/wayhouse-ui \
+  --listen=127.0.0.1:9903 \
+  --ui-password=${WAYHOUSE_UI_PASSWORD} \
+  --controller-url=http://127.0.0.1:9901 \
+  --controller-token=${WAYHOUSE_CONTROLLER_TOKEN} \
+  --aggregator-url=http://127.0.0.1:9902 \
+  --aggregator-token=${WAYHOUSE_AGGREGATOR_TOKEN}
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=wayhouse-solo.target

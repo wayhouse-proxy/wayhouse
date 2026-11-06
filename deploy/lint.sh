@@ -18,6 +18,8 @@ base=$(docker compose -f $C/docker-compose.yml config --format json)
 tunnel=$(docker compose -f $C/docker-compose.yml -f $C/compose.tunnel.yml \
          --profile origin-demo config --format json)
 web=$(docker compose -f $C/docker-compose.yml -f $C/compose.web.yml config --format json)
+solo=$(docker compose -f $C/docker-compose.yml -f $C/compose.solo.yml config --format json)
+solo_acme=$(docker compose -f $C/docker-compose.yml -f $C/compose.solo.yml -f $C/compose.solo-acme.yml config --format json)
 smoke_plan=$(make -n deploy-smoke)
 # Every overlay must build; the Ruby below checks the rendered DaemonSets, not the source files.
 if command -v kubectl >/dev/null 2>&1; then kz="kubectl kustomize"; else kz="kustomize build"; fi
@@ -26,11 +28,13 @@ for o in single ha web-gateway; do
 done
 export K8S_RENDERED="${TMPDIR:-/tmp}/wayhouse-k8s"
 
-BASE="$base" TUNNEL="$tunnel" WEB="$web" SMOKE_PLAN="$smoke_plan" ruby -rjson -ryaml -e '
+BASE="$base" TUNNEL="$tunnel" WEB="$web" SOLO="$solo" SOLO_ACME="$solo_acme" SMOKE_PLAN="$smoke_plan" ruby -rjson -ryaml -e '
 errs = []
 base   = JSON.parse(ENV["BASE"])["services"]
 tunnel = JSON.parse(ENV["TUNNEL"])["services"]
 web    = JSON.parse(ENV["WEB"])["services"]
+solo   = JSON.parse(ENV["SOLO"])["services"]
+solo_acme = JSON.parse(ENV["SOLO_ACME"])["services"]
 
 # curl 8.11.1 (the pinned seed image) rejects `--opt=value`; values must be
 # separate arguments or `seed` exits 2 and wayhouse never starts.
@@ -127,6 +131,25 @@ errs << "wayhouse-caddy must replace /usr/bin/caddy with the patched build (COPY
 errs << "wayhouse-caddy must run as 65532" unless caddy_stage.include?("USER 65532:65532")
 errs << "wayhouse image must carry wayhouse-web-sync" unless wayhouse_stage.include?("/out/wayhouse-web-sync /usr/local/bin/wayhouse-web-sync")
 errs << "wayhouse image must carry wayhouse-certsync" unless wayhouse_stage.include?("/out/wayhouse-certsync /usr/local/bin/wayhouse-certsync")
+
+# Solo bundle: plugins and a sealed secret store on the controller, a keyring that is created once
+# and mounted read-only, and nothing published beyond the host loopback.
+sc = solo["controller"]["command"]
+errs << "solo: controller needs --plugins and --secret-key-file=/keys/secret.keys" unless sc.include?("--plugins") && sc.include?("--secret-key-file=/keys/secret.keys")
+errs << "solo: controller listens on 0.0.0.0, which its plain-HTTP guard refuses unless --allow-insecure-secrets is set" if sc.include?("--listen=0.0.0.0:9901") && !sc.include?("--allow-insecure-secrets")
+errs << "solo: controller must wait for the keys step" unless solo["controller"]["depends_on"].dig("keys", "condition") == "service_completed_successfully"
+errs << "solo: the keyring must be mounted read-only into the controller" unless solo["controller"]["volumes"].any? { |v| v["target"] == "/keys" && v["read_only"] == true }
+errs << "solo: keys step must never overwrite an existing keyring" unless solo["keys"]["command"].join(" ").include?("[ -s /keys/secret.keys ] ||")
+errs << "solo: ports must stay on the host loopback" unless solo.values.flat_map { |x| x["ports"] || [] }.all? { |pt| pt["host_ip"] == "127.0.0.1" }
+errs << "solo: tokens must be required (${VAR:?}), not defaulted" if sc.grep(/\A--auth-token=/).any? { |a| a.empty? || a == "--auth-token=" }
+errs << "solo-acme: must keep every solo flag and add --acme with a staging default" unless (sc - solo_acme["controller"]["command"]).empty? && solo_acme["controller"]["command"].include?("--acme") && solo_acme["controller"]["command"].include?("--acme-ca=letsencrypt-staging") && solo_acme["controller"]["command"].include?("--acme-accept-tos")
+# systemd units: tokens come from the env file, never written into a unit.
+Dir["deploy/systemd/*.service"].each do |f|
+  t = File.read(f)
+  errs << "#{f}: must read its tokens from EnvironmentFile=/etc/wayhouse/solo.env" if t =~ /--[a-z-]*(token|password)=/ && !t.include?("EnvironmentFile=/etc/wayhouse/solo.env")
+  errs << "#{f}: puts a literal token on the command line" if t =~ /--[a-z-]*(token|password)=(?!\$\{)\S/
+  errs << "#{f}: NoNewPrivileges missing" unless t.include?("NoNewPrivileges=yes")
+end
 
 if errs.empty? then puts "deploy lint: ok" else warn errs.map { |e| "LINT FAIL: #{e}" }; exit 1 end
 '

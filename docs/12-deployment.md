@@ -92,6 +92,35 @@ gets a `400` and a warning in the aggregator's log. A hostname entry trusts
 whoever controls DNS for that name, so prefer CIDRs where the addresses are stable. See `docs/10`, "The
 aggregator".
 
+## One box (the solo bundle)
+
+Every feature works on a single instance: nothing here needs a second node. The solo bundle is the
+compose demo plus what a single box needs for plugins and sealed secrets, all on the host's
+loopback:
+
+```sh
+cd deploy/compose
+sh ../solo/init.sh                  # once: random tokens into .env (mode 0600); prints no value
+docker compose -f docker-compose.yml -f compose.solo.yml up -d --build
+```
+
+Open <http://127.0.0.1:9903>; the password is `WAYHOUSE_UI_PASSWORD` in `.env`. `compose.solo.yml`
+adds a one-shot `keys` step that creates the sealed-secret keyring on first start and never
+replaces it, and starts the controller with `--plugins` and `--secret-key-file`, so plugin secrets
+and `{ secret: name }` config references work (UI: Settings, Secrets). **Back up the `solo-keys`
+volume with the controller's data**: without the key every stored secret is unreadable. The
+controller listens on `0.0.0.0` inside the compose network, which its plain-HTTP guard refuses
+once it holds a key, so the overlay sets `--allow-insecure-secrets`; the network is private to the
+host and the published ports are loopback only. Add `compose.web.yml` for the Caddy front door and
+`compose.solo-acme.yml` for certificates ([`acme.md`](acme.md#one-box)).
+
+Without containers, [`deploy/systemd/`](../deploy/systemd/) has the same bundle as units
+(`systemctl enable --now wayhouse-solo.target`). There is no supervisor binary: systemd or Docker's
+restart policy does that job. Both forms take their tokens as command-line flags, which any local
+user can read in `ps` or `docker inspect`; run them on a box you control. CI runs
+`make deploy-solo-smoke` (keyring mode and owner, a sealed secret that is listed but never shown,
+a config pushed through the UI, a clean restart, no token in any log).
+
 ## Networking: a proxy that binds many, changing ports
 
 `wayhouse` is designed to add and remove listeners live — `ListenerManager`

@@ -1,7 +1,7 @@
 # Convenience wrapper around the cargo commands CI runs.
 # Requires `cargo` on PATH (rustup: `source "$HOME/.cargo/env"`).
 
-.PHONY: check fmt lint test test-minimal audit build run fuzz bench bench-udp-batch sniffers-fetch ui ui-test ui-e2e tunnel-ns-check tunnel-e2e tunnel-e2e-ci deploy-images deploy-scan deploy-lint deploy-smoke docs-fmt docs-fmt-check docs-links help
+.PHONY: check fmt lint test test-minimal audit build run fuzz bench bench-udp-batch sniffers-fetch ui ui-test ui-e2e tunnel-ns-check tunnel-e2e tunnel-e2e-ci deploy-images deploy-scan deploy-lint deploy-smoke deploy-solo-smoke docs-fmt docs-fmt-check docs-links help
 
 ## check: everything CI runs — format check, clippy (deny warnings), tests
 check: fmt-check lint test test-minimal
@@ -150,6 +150,18 @@ deploy-smoke:
 	$(DEPLOY_COMPOSE) up -d --build && sh deploy/smoke.sh || rc=$$?; \
 	[ $$rc -eq 0 ] || $(DEPLOY_COMPOSE) logs; \
 	$(DEPLOY_COMPOSE) down -v; \
+	exit $$rc
+
+## deploy-solo-smoke: the solo bundle (compose.solo.yml): demo smoke plus keyring, sealing, UI push, restart (needs Docker)
+DEPLOY_SOLO := docker compose -p wayhouse-solo-smoke --env-file deploy/compose/.env -f deploy/compose/docker-compose.yml -f deploy/compose/compose.solo.yml
+deploy-solo-smoke:
+	test -f deploy/compose/.env || sh deploy/solo/init.sh
+	rc=0; \
+	sha="$${WAYHOUSE_GIT_SHA:-$$(git rev-parse HEAD 2>/dev/null)}"; export WAYHOUSE_GIT_SHA=$$(printf %.12s "$$sha"); \
+	$(DEPLOY_SOLO) up -d --build || rc=$$?; \
+	[ $$rc -ne 0 ] || { sh deploy/smoke.sh && COMPOSE="$(DEPLOY_SOLO)" SOLO_PROJECT=wayhouse-solo-smoke sh deploy/solo-smoke.sh; } || rc=$$?; \
+	[ $$rc -eq 0 ] || $(DEPLOY_SOLO) logs; \
+	$(DEPLOY_SOLO) down -v; \
 	exit $$rc
 
 ## help: list targets

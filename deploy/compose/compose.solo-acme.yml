@@ -1,0 +1,18 @@
+# Certificates on a single box (docs/acme.md, "One box"). Overlay on compose.solo.yml:
+#   docker compose -f docker-compose.yml -f compose.solo.yml -f compose.solo-acme.yml up -d
+#
+# Including this file is your agreement to the CA's terms of service (`--acme-accept-tos`).
+# WAYHOUSE_ACME_CA defaults to Let's Encrypt staging, so nobody gets production rate limits
+# by accident; set it to `letsencrypt` once the staging run works.
+services:
+  controller:
+    command:
+      - --listen=0.0.0.0:9901
+      - --data-dir=/data
+      - --auth-token=${WAYHOUSE_CONTROLLER_TOKEN:?set WAYHOUSE_CONTROLLER_TOKEN in .env (sh ../solo/init.sh writes it)}
+      - --plugins
+      - --secret-key-file=/keys/secret.keys
+      - --allow-insecure-secrets
+      - --acme
+      - --acme-ca=${WAYHOUSE_ACME_CA:-letsencrypt-staging}
+      - --acme-accept-tos

@@ -1,0 +1,2 @@
+# systemd-sysusers: the one user the solo units run as.
+u wayhouse - "wayhouse proxy" /var/lib/wayhouse
