@@ -47,7 +47,6 @@ const TRANSFER_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 struct PeerState {
     store: PluginStore,
-    ha: Arc<HaHandle>,
 }
 
 /// `GET` and `PUT /raft/plugin-blob/{sha256}`, behind the same peer token and protocol
@@ -60,6 +59,17 @@ pub fn router(ha: &Arc<HaHandle>, store: PluginStore) -> Router {
                 .put(put_blob)
                 .layer(DefaultBodyLimit::max(MAX_MODULE_BYTES)),
         )
+        .route_layer(axum::middleware::from_fn_with_state(
+            wayhouse_http::server::BearerAuth::new(ha.ha_token.as_deref()),
+            wayhouse_http::server::require_bearer,
+        ));
+    wayhouse_http::protocol::gate(routes, "raft").with_state(PeerState { store })
+}
+
+/// `POST /raft/plugin-secret`: a follower hands the leader a secret entry it already encrypted
+/// (plugin secrets and cluster secrets). Mounted whenever HA is on, with or without plugins.
+pub fn secret_router(ha: &Arc<HaHandle>) -> Router {
+    let routes = Router::new()
         .route(
             "/raft/plugin-secret",
             axum::routing::post(propose_secret).layer(DefaultBodyLimit::max(64 * 1024)),
@@ -68,10 +78,12 @@ pub fn router(ha: &Arc<HaHandle>, store: PluginStore) -> Router {
             wayhouse_http::server::BearerAuth::new(ha.ha_token.as_deref()),
             wayhouse_http::server::require_bearer,
         ));
-    wayhouse_http::protocol::gate(routes, "raft").with_state(PeerState {
-        store,
-        ha: ha.clone(),
-    })
+    wayhouse_http::protocol::gate(routes, "raft").with_state(SecretPeerState { ha: ha.clone() })
+}
+
+#[derive(Clone)]
+struct SecretPeerState {
+    ha: Arc<HaHandle>,
 }
 
 fn internal(e: &PluginStoreError) -> Response {
@@ -115,17 +127,25 @@ async fn put_blob(
     }
 }
 
-/// A follower's secret entry, already encrypted, proposed on the leader. Only the three
-/// secret entry types are accepted here; the peer token gates the route.
-async fn propose_secret(State(st): State<PeerState>, Json(entry): Json<WriteRequest>) -> Response {
+/// A follower's secret entry, already encrypted, proposed on the leader. Only the plugin secret
+/// entries and a cluster secret's `Put` are accepted here; the peer token gates the route.
+async fn propose_secret(
+    State(st): State<SecretPeerState>,
+    Json(entry): Json<WriteRequest>,
+) -> Response {
+    use crate::ui_data::{Kind, UiOp};
     let secret_entry = matches!(
         entry,
         WriteRequest::PluginSecretSet { .. }
             | WriteRequest::PluginSecretDelete { .. }
             | WriteRequest::PluginSecretRewrap { .. }
+            | WriteRequest::Ui(UiOp::Put {
+                kind: Kind::ClusterSecret,
+                ..
+            })
     );
     if !secret_entry {
-        return (StatusCode::BAD_REQUEST, "not a plugin secret entry").into_response();
+        return (StatusCode::BAD_REQUEST, "not a secret entry").into_response();
     }
     if !st.ha.is_leader() {
         return (

@@ -4679,6 +4679,7 @@ dependencies = [
  "wayhouse-config",
  "wayhouse-core",
  "wayhouse-http",
+ "wayhouse-secrets",
 ]
 
 [[package]]

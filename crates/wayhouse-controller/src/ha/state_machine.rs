@@ -2598,6 +2598,55 @@ mod tests {
         assert!(c.ui().get(Kind::Dashboard, "old").unwrap().is_none());
     }
 
+    #[tokio::test]
+    async fn a_cluster_secret_applies_on_every_replica_and_travels_in_a_snapshot_as_ciphertext() {
+        use crate::ui_data::{Applied, Kind, UiOp};
+        let ring = wayhouse_secrets::Keyring::parse("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+            .unwrap();
+        let sealed = ring
+            .seal_cluster("gossip-psk", b"correct-horse-battery-staple")
+            .unwrap();
+        let record = serde_json::json!({
+            "key_id": sealed.key_id, "nonce": sealed.nonce, "ciphertext": sealed.ciphertext, "set_at": 5
+        });
+        let put = WriteRequest::Ui(UiOp::Put {
+            kind: Kind::ClusterSecret,
+            name: "gossip-psk".into(),
+            value: record,
+        });
+        let (mut a, _a) = test_sm();
+        let (mut b, _b) = test_sm();
+        let on_a = apply_one(&mut a, 1, put.clone()).await;
+        assert_eq!(on_a, WriteResponse::UiResult(Applied::Done));
+        assert_eq!(on_a, apply_one(&mut b, 1, put).await);
+        let snapshot = a
+            .get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&snapshot.snapshot.into_inner()).into_owned();
+        assert!(
+            text.contains("gossip-psk") && !text.contains("correct-horse"),
+            "the snapshot holds ciphertext only"
+        );
+        assert_eq!(a.ui().snapshot().unwrap(), b.ui().snapshot().unwrap());
+        let stored = b
+            .ui()
+            .get(Kind::ClusterSecret, "gossip-psk")
+            .unwrap()
+            .unwrap();
+        let back = wayhouse_secrets::Sealed {
+            key_id: stored["key_id"].as_str().unwrap().into(),
+            nonce: stored["nonce"].as_str().unwrap().into(),
+            ciphertext: stored["ciphertext"].as_str().unwrap().into(),
+        };
+        assert_eq!(
+            ring.open_cluster("gossip-psk", &back).unwrap().expose(),
+            b"correct-horse-battery-staple"
+        );
+    }
+
     #[test]
     fn a_snapshot_without_a_ui_section_decodes_as_no_ui_data() {
         let (sm, _d) = test_sm();

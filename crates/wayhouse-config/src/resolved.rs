@@ -259,6 +259,20 @@ pub struct Config {
 const HANDSHAKE_MIN_IDLE: Duration = Duration::from_secs(60);
 
 impl Config {
+    /// The names of the secrets this config refers to, sorted, each once.
+    #[must_use]
+    pub fn secret_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .admin_auth_token
+            .iter()
+            .chain(self.gossip.iter().map(|g| &g.psk))
+            .filter_map(|v| v.secret_name().map(str::to_owned))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// Replaces each `{ secret: name }` with its value, so everything downstream sees one kind
     /// of value. Fails on the first reference that cannot be resolved; nothing is half-resolved.
     pub fn resolve_secrets(

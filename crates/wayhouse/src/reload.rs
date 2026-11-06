@@ -143,6 +143,15 @@ pub(crate) async fn apply_config(
     for w in cfg.warnings() {
         tracing::warn!(source = source_desc, "{w}");
     }
+    // The admin token and the gossip key are read once, at start. A reload does not resolve
+    // secret references again, so a rotated secret takes effect at the next restart.
+    for name in cfg.secret_names() {
+        tracing::warn!(
+            source = source_desc,
+            secret = %name,
+            "settings.admin.auth_token and settings.gossip.psk are read at start only: a changed or rotated secret applies at the next restart"
+        );
+    }
     // Scan first: if a pinned module no longer validates, keep the previous config
     // and sniffer set together instead of activating routes that name sniffers the
     // old set cannot serve.

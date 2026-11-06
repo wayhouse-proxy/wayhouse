@@ -386,6 +386,23 @@ mod in_config {
     }
 
     #[test]
+    fn the_secret_names_of_a_config_are_listed_once_and_sorted() {
+        let both = parse_str(&doc(
+            "schema_version: 4\n",
+            &format!("  admin:\n    auth_token: {{ secret: zeta }}\n{GOSSIP}{{ secret: alpha }}\n"),
+        ))
+        .unwrap();
+        assert_eq!(both.secret_names(), ["alpha", "zeta"]);
+        let same = parse_str(&doc(
+            "schema_version: 4\n",
+            &format!("  admin:\n    auth_token: {{ secret: one }}\n{GOSSIP}{{ secret: one }}\n"),
+        ))
+        .unwrap();
+        assert_eq!(same.secret_names(), ["one"]);
+        assert!(parse_str(&doc("", "")).unwrap().secret_names().is_empty());
+    }
+
+    #[test]
     fn resolving_replaces_references_with_values_and_fails_without_a_store() {
         let cfg = parse_str(&doc(
             "schema_version: 4\n",
