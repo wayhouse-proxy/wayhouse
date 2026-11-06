@@ -737,6 +737,7 @@ line prints a value. A config revision holds the name only.
   leader over the peer channel, so the request that carried the value is never forwarded.
 - `GET /secrets` lists names with the key id, time and actor; never a value or ciphertext.
 - `DELETE /secrets/{name}` removes one (and, under HA, asks Raft to purge the superseded log; a replacing `PUT` does not purge, the old ciphertext leaves the log with normal compaction).
+- The UI has the same three calls under Settings, Secrets (admin role), and a "Move to secret store" button under a plaintext secret field in the config form. Values are write-only there too.
 - `GET /secrets/{name}/sealed` returns the ciphertext a proxy opens with its own key file.
 
 Every call is audited with a `warn` line (secret name, key id, actor). A controller with a key

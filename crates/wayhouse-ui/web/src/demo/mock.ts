@@ -65,6 +65,7 @@ const dashboards: any[] = [
 ];
 
 // --- features ---
+const secrets = new Map<string, { name: string; key_id: string; set_at: number; actor: string }>();
 const overrides = new Map<string, FeatureOverride>([
   ["geo", { name: "geo", value: false, reason: "GeoIP database refresh is broken, see INC-212", actor: "admin", set_at: sec() - 3600, expires_at: sec() + 7200 }],
 ]);
@@ -285,6 +286,16 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
   if (path === "/api/acme/gateways" && method === "GET") return ok({ gateways: GATEWAYS.map((g) => ({ ...g, created_at: sec() - 86400 * 40 })) });
   if (path === "/api/acme/gateways" && method === "POST") { const b = await json(); GATEWAYS.push({ name: b.name, sites: [] }); return ok({ name: b.name, token: "gwt_demo_" + Math.random().toString(36).slice(2, 22) }); }
   if (path === "/api/acme/account") return ok({ directory_url: "https://acme-v02.api.letsencrypt.org/directory", account_url: "https://acme-v02.api.letsencrypt.org/acme/acct/1948201337", key_id: "cluster-key-1" });
+
+  // cluster secrets (write-only: the demo keeps names, never values)
+  if (path === "/api/secrets" && method === "GET") return ok({ items: [...secrets.values()] });
+  if ((r = m(/^\/api\/secrets\/(.+)$/))) {
+    const name = decodeURIComponent(r[1]);
+    if (method === "DELETE") { secrets.delete(name); return ok(""); }
+    await json();
+    secrets.set(name, { name, key_id: "demo-key-1", set_at: sec(), actor: "demo" });
+    return ok({});
+  }
 
   // features
   if (path === "/api/features" && method === "GET") return ok({ flags: featureView("controller"), proxy_flags: featureView("proxy") });

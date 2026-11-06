@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs";
 import { useState } from "react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+const api = vi.hoisted(() => ({ putClusterSecret: vi.fn(), listClusterSecrets: vi.fn() }));
+vi.mock("../../api", async (orig) => ({ ...(await orig<typeof import("../../api")>()), ...api }));
+
 import { SchemaForm } from "./SchemaForm";
 import { DEFAULT_LAYOUT, mergeLayout } from "../../lib/form/layout";
 import { parseText, patchText } from "../../lib/config/patch";
@@ -152,6 +155,51 @@ describe("SchemaForm on the real schema", () => {
   it("a secret field is a password input", () => {
     render(<Harness path={["settings"]} initial={FILE.replace("listen:", "auth_token: s3cret\n    listen:")} />);
     expect(screen.getByLabelText(/Admin API token/)).toHaveAttribute("type", "password");
+  });
+
+  describe("moving a plaintext secret to the secret store", () => {
+    const plain = FILE.replace("listen:", "auth_token: s3cret-value\n    listen:");
+    beforeEach(() => {
+      api.putClusterSecret.mockReset();
+      api.putClusterSecret.mockResolvedValue(undefined);
+      api.listClusterSecrets.mockReset();
+      api.listClusterSecrets.mockResolvedValue([]);
+    });
+
+    it("says when the name is taken and what replacing it means, before anything is sent", async () => {
+      api.listClusterSecrets.mockResolvedValue([{ name: "auth-token", key_id: "k1", set_at: 1 }]);
+      render(<Harness path={["settings"]} initial={plain} />);
+      await userEvent.click(screen.getByRole("button", { name: "Move to secret store" }));
+      expect(await screen.findByText(/auth-token.* exists/)).toBeInTheDocument();
+      expect(api.putClusterSecret).not.toHaveBeenCalled();
+      await userEvent.click(screen.getByRole("button", { name: "Replace the stored secret" }));
+      expect(api.putClusterSecret).toHaveBeenCalledWith("auth-token", "s3cret-value");
+    });
+
+    it("stores the value and leaves only a reference in the YAML", async () => {
+      render(<Harness path={["settings"]} initial={plain} />);
+      await userEvent.click(screen.getByRole("button", { name: "Move to secret store" }));
+      const name = screen.getByLabelText("Secret name");
+      expect(name).toHaveValue("auth-token");
+      await userEvent.click(screen.getByRole("button", { name: "Store and replace" }));
+      expect(api.putClusterSecret).toHaveBeenCalledWith("auth-token", "s3cret-value");
+      expect(yaml()).toMatch(/auth_token:\s*(\{ ?secret: auth-token ?\}|\n\s+secret: auth-token)/);
+      expect(yaml()).not.toContain("s3cret-value");
+    });
+
+    it("keeps the plaintext when the store refuses", async () => {
+      api.putClusterSecret.mockRejectedValue(new Error("no key"));
+      render(<Harness path={["settings"]} initial={plain} />);
+      await userEvent.click(screen.getByRole("button", { name: "Move to secret store" }));
+      await userEvent.click(screen.getByRole("button", { name: "Store and replace" }));
+      expect(await screen.findByText(/no key/)).toBeInTheDocument();
+      expect(yaml()).toContain("auth_token: s3cret-value");
+    });
+
+    it("offers nothing for an empty field", () => {
+      render(<Harness path={["settings"]} />);
+      expect(screen.queryByRole("button", { name: "Move to secret store" })).toBeNull();
+    });
   });
 
   it("an enum is a select, and choosing sets it", async () => {
