@@ -1,0 +1,34 @@
+[Unit]
+Description=wayhouse controller (solo box)
+Documentation=https://github.com/wayhouse-proxy/wayhouse/blob/main/docs/12-deployment.md
+Wants=wayhouse-keygen.service
+After=wayhouse-keygen.service network.target
+PartOf=wayhouse-solo.target
+
+[Service]
+User=wayhouse
+StateDirectory=wayhouse
+# /etc/wayhouse/solo.env (mode 0600, root): WAYHOUSE_CONTROLLER_TOKEN=... (sh deploy/solo/init.sh <file>)
+EnvironmentFile=/etc/wayhouse/solo.env
+# Loopback only (the default listener), so the plain-HTTP guard needs no override.
+ExecStart=/usr/local/bin/wayhouse-controller \
+  --listen=127.0.0.1:9901 \
+  --data-dir=/var/lib/wayhouse/controller \
+  --auth-token=${WAYHOUSE_CONTROLLER_TOKEN} \
+  --plugins \
+  --secret-key-file=/var/lib/wayhouse/secret.keys
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+MemoryDenyWriteExecute=no
+
+[Install]
+WantedBy=wayhouse-solo.target

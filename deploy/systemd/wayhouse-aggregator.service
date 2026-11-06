@@ -1,0 +1,26 @@
+[Unit]
+Description=wayhouse aggregator (solo box)
+After=network.target
+PartOf=wayhouse-solo.target
+
+[Service]
+User=wayhouse
+EnvironmentFile=/etc/wayhouse/solo.env
+ExecStart=/usr/local/bin/wayhouse-aggregator \
+  --listen=127.0.0.1:9902 \
+  --auth-token=${WAYHOUSE_AGGREGATOR_TOKEN} \
+  --ingest-token=${WAYHOUSE_INGEST_TOKEN}
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=wayhouse-solo.target

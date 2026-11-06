@@ -1,0 +1,17 @@
+[Unit]
+Description=Create the wayhouse sealed-secret keyring on first start
+Before=wayhouse-controller.service
+# Never replaces an existing keyring: a lost key makes every stored secret unreadable.
+ConditionPathExists=!/var/lib/wayhouse/secret.keys
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=wayhouse
+StateDirectory=wayhouse
+UMask=0077
+ExecStart=/bin/sh -c 'head -c 32 /dev/urandom | base64 > /var/lib/wayhouse/secret.keys'
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes

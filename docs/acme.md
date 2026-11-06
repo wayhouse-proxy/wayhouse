@@ -305,6 +305,32 @@ and the secret slot `CLOUDFLARE_API_TOKEN`), set the slot with `PUT
 plugin finds the zone by trying the host and its parent names, adds the record with a 60 s TTL
 and removes only the record that carries the challenge value. It talks to no other host.
 
+## One box
+
+A single machine runs the whole thing ([`12-deployment.md`](12-deployment.md#one-box-the-solo-bundle)).
+Add the ACME overlay and the controller starts with `--acme`:
+
+```sh
+cd deploy/compose
+docker compose -f docker-compose.yml -f compose.solo.yml -f compose.solo-acme.yml up -d
+```
+
+Including `compose.solo-acme.yml` is your agreement to the CA's terms of service
+(`--acme-accept-tos`). `WAYHOUSE_ACME_CA` defaults to `letsencrypt-staging`; set it to
+`letsencrypt` in `.env` once a staging certificate has been issued, so a typo does not burn
+production rate limits.
+
+- **HTTP-01, no plugin.** Needs the name to resolve to this box and port 80 reachable from the
+  internet. Add `compose.web.yml` (Caddy and `wayhouse-web-sync`) and start the sync with
+  `--acme-challenge-upstream http://127.0.0.1:9901`; then create the site with
+  `"challenge": "http-01"` as [above](#http-01).
+- **DNS-01 with the Cloudflare plugin.** Needs no open port. Install the plugin from the registry
+  (Plugins, Install, From a registry), set its `CLOUDFLARE_API_TOKEN` slot under Secrets, and give
+  the site `"dns_plugin": "<id>"` ([Cloudflare](#cloudflare)).
+
+Certificates are served by the controller to gateways; [`wayhouse-certsync`](#wayhouse-certsync)
+writes them to disk for a Caddy that serves them.
+
 ## Failure behaviour
 
 - A failed order backs off from 5 minutes up to 6 hours and stops after 5 failures in an
