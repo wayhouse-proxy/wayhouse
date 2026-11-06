@@ -27,6 +27,11 @@ use wayhouse_ui::api::{self, AppState};
     about = "Operator dashboard BFF for a wayhouse fleet (docs/10 \"The admin GUI\")"
 )]
 struct Args {
+    /// Directory with this program's settings file (`<program>.json`, written by the UI): its
+    /// values fill in the flags this command line does not give. See `wayhouse-settings`.
+    #[arg(long, value_name = "DIR")]
+    settings_dir: Option<PathBuf>,
+
     /// Address this UI's own HTTP server listens on.
     #[arg(long, default_value = "127.0.0.1:9903")]
     listen: SocketAddr,
@@ -130,7 +135,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let layered = wayhouse_settings::layer(
+        "ui",
+        &<Args as clap::CommandFactory>::command(),
+        std::env::args_os().collect(),
+    );
+    let args = Args::parse_from(&layered.argv);
 
     if args.hash_password {
         // No server, no logging setup — a one-shot CLI utility mode.
@@ -151,6 +161,7 @@ async fn main() -> anyhow::Result<()> {
             EnvFilter::try_from_env("WAYHOUSE_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+    layered.start();
     let prometheus = wayhouse_http::metrics::install("wayhouse-ui", env!("CARGO_PKG_VERSION"))?;
     wayhouse_http::policy::check_exposure(
         "wayhouse-ui",

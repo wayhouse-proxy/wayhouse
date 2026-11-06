@@ -4681,6 +4681,7 @@ dependencies = [
  "wayhouse-core",
  "wayhouse-http",
  "wayhouse-secrets",
+ "wayhouse-settings",
 ]
 
 [[package]]
@@ -4750,6 +4751,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "wayhouse-http",
+ "wayhouse-settings",
 ]
 
 [[package]]
@@ -4832,6 +4834,7 @@ dependencies = [
  "wayhouse-http",
  "wayhouse-plugin-host",
  "wayhouse-secrets",
+ "wayhouse-settings",
  "zeroize",
 ]
 
@@ -4953,6 +4956,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayhouse-settings"
+version = "0.3.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "wayhouse-sniffer-abi"
 version = "0.3.0"
 
@@ -4991,6 +5006,7 @@ dependencies = [
  "wayhouse-http",
  "wayhouse-plugin-abi",
  "wayhouse-registry",
+ "wayhouse-settings",
  "wayhouse-sniffer-abi",
 ]
 

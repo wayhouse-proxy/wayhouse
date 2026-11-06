@@ -121,6 +121,42 @@ user can read in `ps` or `docker inspect`; run them on a box you control. CI run
 `make deploy-solo-smoke` (keyring mode and owner, a sealed secret that is listed but never shown,
 a config pushed through the UI, a clean restart, no token in any log).
 
+## Process flags from a settings file (`--settings-dir`)
+
+The proxy, the controller, the aggregator and the UI accept `--settings-dir DIR`. The program
+reads `DIR/<program>.json` (`wayhouse`, `controller`, `aggregator`, `ui`) and uses its values as
+flags the command line did not give: **the command line always wins**, and the programs read no
+environment variables for their flags. The UI writes these files (Settings → Process flags);
+the flag list it offers and the check of a new value come from each program's own `clap`
+definition, so a flag added to a program shows up there with no second list.
+
+A change is a **trial**. The file keeps the previous values and a `pending` mark, the program
+restarts through its restart policy, and:
+
+- if nobody confirms within 60 s of the start, the program puts the previous values back and
+  restarts again;
+- if the new values stop the program from starting, the next start goes back after three tries or
+  five minutes, whichever comes first.
+
+This needs a restart policy that restarts on exit status 75: systemd `Restart=on-failure` (the
+units in `deploy/systemd`) or a compose `restart: unless-stopped`. There is no supervisor process.
+The directory must be writable by the program and by the UI backend, and both must run as the **same
+user** (the file is owner-only and every writer becomes its owner), so on one box it is one shared
+volume; across hosts each program needs its own directory and the UI cannot reach it (use the
+command line there). The shipped systemd units use `ProtectSystem=strict`: give each unit
+`ReadWritePaths=` (or a `StateDirectory=`) for the directory. A program that finds a pending
+change in a directory it cannot write does not try it: it starts with the previous values and does
+not watch the file.
+
+Not settable here: token, password and PSK flags and the safety overrides (`--insecure-*`,
+`--allow-insecure-*`): set them on the command line or in the unit,
+`--settings-dir` itself, and flags that run once and exit (`--check`, `--hash-password`,
+`--secret-set`, `--secret-delete`, `--secret-list`). A key the running build does not know is
+ignored with a warning, so a file written by a newer build never stops an older one. `--check`,
+`--help` and the run-once modes do not use up a try. A file that is not valid JSON (a number
+written without quotes, for example) is ignored whole with one warning; a confirmed file that
+later stops parsing has no automatic undo, so remove `--settings-dir` or the file.
+
 ## Networking: a proxy that binds many, changing ports
 
 `wayhouse` is designed to add and remove listeners live — `ListenerManager`

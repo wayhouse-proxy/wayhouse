@@ -25,6 +25,7 @@ default = ["acme"]
 acme = ["wayhouse-acme/client", "dep:hickory-resolver"]
 
 [dependencies]
+wayhouse-settings = { path = "../wayhouse-settings" }
 wayhouse-http = { workspace = true, features = ["server"] }
 wayhouse-config = { path = "../wayhouse-config" }
 wayhouse-plugin-host = { path = "../wayhouse-plugin-host" }
