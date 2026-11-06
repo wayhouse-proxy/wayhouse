@@ -82,7 +82,7 @@ let pluginSeq = 3;
 const plugins: PluginInstall[] = [
   { id: "p1", name: "pelican-panel", sha256: MODULE_SHA, size: 412_330, approved: PLUGIN_CAPS.pelican, config: { panel_url: "https://panel.example.net", node_ids: [1, 2], port_range: "30000-30999", sync_allocations: true }, enabled: true, created_at: sec() - 86400 * 12, created_by: "admin", webhook: { path: "/hooks/p1" } },
   { id: "p2", name: "cloudflare-dns", sha256: MODULE_SHA.replace(/^9f/, "3a"), size: 298_114, approved: PLUGIN_CAPS.cloudflare, config: {}, enabled: true, created_at: sec() - 86400 * 30, created_by: "admin" },
-  { id: "p3", name: "hcloud-autoscale", sha256: MODULE_SHA.replace(/^9f/, "c7"), size: 355_902, approved: PLUGIN_CAPS.hcloud, config: {}, enabled: false, created_at: sec() - 86400 * 3, created_by: "admin" },
+  { id: "p3", name: "hcloud-autoscale", sha256: MODULE_SHA.replace(/^9f/, "c7"), size: 355_902, approved: PLUGIN_CAPS.hcloud, config: {}, enabled: false, created_at: sec() - 86400 * 3, created_by: "plugins-file" },
 ];
 const secretsSet = new Map<string, Set<string>>([["p1", new Set(["api_token"])], ["p2", new Set(["cf_token"])]]);
 const portRoutes = Array.from({ length: 9 }, (_, i) => ({ key: `srv-${1042 + i}`, port: 30010 + i * 7, proto: (i % 3 === 0 ? "udp" : "tcp") as "udp" | "tcp", backend: `10.20.4.${20 + i}:25565`, owner: `server-${1042 + i}`, plugin: "pelican-panel" }));
@@ -220,6 +220,7 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
 
   // plugins
   if (path === "/api/plugin-routes") return ok({ routes: [], conflicts: [], port_routes: portRoutes, exhausted: [{ key: "srv-1099", backend: "10.20.4.99:25565", owner: "server-1099", plugin: "pelican-panel" }] });
+  if (path === "/api/plugins/file/plan") return ok({ applied: false, plugins: [{ name: "hcloud-autoscale", id: "p3", action: "unchanged" }, { name: "dyndns", id: null, action: "refused", reason: "the approval hash does not match", effective_sha256: MODULE_SHA.replace(/^9f/, "5d") }] });
   if (path === "/api/plugins/modules") { const n = (await req.arrayBuffer()).byteLength; return ok({ sha256: MODULE_SHA, size: n, abi: "0.2", capabilities: { ...PLUGIN_CAPS.pelican, http: null, secrets: [], port_routes: null }, manifest: PELICAN_MANIFEST }); }
   if (path === "/api/plugins" && method === "GET") return ok(plugins);
   if (path === "/api/plugins" && method === "POST") {

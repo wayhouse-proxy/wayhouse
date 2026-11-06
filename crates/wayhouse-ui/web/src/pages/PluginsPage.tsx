@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { ApiError, deletePlugin, listPluginRoutes, listPlugins, setPluginEnabled } from "../api";
-import type { PluginInstall, PluginRouteOverlay } from "../types";
+import { ApiError, deletePlugin, getPluginsFilePlan, listPluginRoutes, listPlugins, setPluginEnabled } from "../api";
+import type { PluginInstall, PluginRouteOverlay, PluginsFilePlan } from "../types";
+import { managedByFile } from "../lib/plugins/managed";
+import { Dialog } from "../components/ui/Dialog";
 import { bytes, CapabilityList } from "../lib/plugins/capabilities";
 import { Badge } from "../components/ui/Badge";
 import { useCan } from "../lib/session";
@@ -34,6 +36,16 @@ export function PluginsPage() {
   const [notice, setNotice] = useState<string | null>((useLocation().state as { notice?: string } | null)?.notice ?? null);
   const [busy, setBusy] = useState(false);
   const { confirm, dialog } = useConfirm();
+  const [plan, setPlan] = useState<{ plan?: PluginsFilePlan; error?: string } | null>(null);
+
+  async function showPlan() {
+    setPlan({});
+    try {
+      setPlan({ plan: await getPluginsFilePlan() });
+    } catch (err) {
+      setPlan({ error: errorText(err) });
+    }
+  }
 
   async function refresh() {
     try {
@@ -103,12 +115,19 @@ export function PluginsPage() {
         summary="Modules that add integrations. A plugin runs only with the capabilities you approve."
         actions={
           canWrite && (
-            <Link
-              to="/plugins/new"
-              className="inline-flex min-h-(--control-height) items-center rounded-sm border border-primary bg-primary px-[11px] text-sm font-semibold text-primary-ink hover:opacity-90"
-            >
-              Install plugin
-            </Link>
+            <>
+              {plugins?.some(managedByFile) && (
+                <Button className="mr-2" onClick={showPlan}>
+                  Show file plan
+                </Button>
+              )}
+              <Link
+                to="/plugins/new"
+                className="inline-flex min-h-(--control-height) items-center rounded-sm border border-primary bg-primary px-[11px] text-sm font-semibold text-primary-ink hover:opacity-90"
+              >
+                Install plugin
+              </Link>
+            </>
           )
         }
       />
@@ -157,11 +176,17 @@ export function PluginsPage() {
                   </TD>
                   <TD>
                     {p.enabled ? <Badge tone="good">enabled</Badge> : <Badge tone="neutral">disabled</Badge>}
+                    {managedByFile(p) && (
+                      <div className="mt-1">
+                        <Badge tone="neutral">managed by file</Badge>
+                      </div>
+                    )}
                   </TD>
                   <TD className="text-right whitespace-nowrap">
                     <Button
                       className="mr-2"
-                      disabled={busy || !canWrite}
+                      disabled={busy || !canWrite || managedByFile(p)}
+                      title={managedByFile(p) ? "Managed by the plugins file: change it there" : undefined}
                       aria-label={`${p.enabled ? "Disable" : "Enable"} ${p.name}`}
                       onClick={() => toggle(p)}
                     >
@@ -169,7 +194,8 @@ export function PluginsPage() {
                     </Button>
                     <Button
                       variant="danger"
-                      disabled={busy || !canWrite}
+                      disabled={busy || !canWrite || managedByFile(p)}
+                      title={managedByFile(p) ? "Managed by the plugins file: remove its entry there" : undefined}
                       aria-label={`Delete ${p.name}`}
                       onClick={() => remove(p)}
                     >
@@ -189,6 +215,20 @@ export function PluginsPage() {
         A plugin can still misuse what you approve: it can read and act on whatever its capabilities
         reach. Approve only modules you trust.
       </p>
+
+      {plan && (
+        <Dialog
+          open
+          wide
+          onOpenChange={() => setPlan(null)}
+          title="Plugins file plan"
+          description="What the next reconcile would do. Nothing is applied by looking."
+        >
+          {plan.error && <ErrorState>{plan.error}</ErrorState>}
+          {!plan.error && !plan.plan && <Loading />}
+          {plan.plan && <PlanTable rows={plan.plan.plugins} />}
+        </Dialog>
+      )}
 
       {dialog}
     </div>
@@ -240,5 +280,38 @@ function PortRoutes({ overlay }: { overlay: PluginRouteOverlay }) {
         </div>
       )}
     </section>
+  );
+}
+
+function PlanTable({ rows }: { rows: PluginsFilePlan["plugins"] }) {
+  if (rows.length === 0) return <EmptyState>The file lists no plugins.</EmptyState>;
+  return (
+    <Table>
+      <THead>
+        <TR>
+          <TH>name</TH>
+          <TH>action</TH>
+          <TH>why</TH>
+        </TR>
+      </THead>
+      <TBody>
+        {rows.map((r) => (
+          <TR key={r.name} className="align-top">
+            <TD className="font-mono text-ink">{r.name}</TD>
+            <TD>
+              <Badge tone={r.action === "refused" ? "bad" : "neutral"}>{r.action}</Badge>
+            </TD>
+            <TD className="text-sm text-ink-muted">
+              {r.reason ?? r.error}
+              {r.effective_sha256 && (
+                <div>
+                  approved_sha256 to use: <span className="font-mono break-all text-ink">{r.effective_sha256}</span>
+                </div>
+              )}
+            </TD>
+          </TR>
+        ))}
+      </TBody>
+    </Table>
   );
 }

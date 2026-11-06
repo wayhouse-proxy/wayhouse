@@ -24,6 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/Tabs"
 import { CapabilityList } from "../lib/plugins/capabilities";
 import { optionsForm } from "../lib/plugins/options";
 import { useCan } from "../lib/session";
+import { managedByFile } from "../lib/plugins/managed";
 
 const errorText = (err: unknown) => (err instanceof ApiError ? err.message : String(err));
 
@@ -65,6 +66,7 @@ export function PluginDetailPage() {
         summary={
           <>
             {plugin.enabled ? <Badge tone="good">enabled</Badge> : <Badge tone="neutral">disabled</Badge>}{" "}
+            {managedByFile(plugin) && <><Badge tone="neutral">managed by file</Badge>{" "}</>}
             <Link to="/plugins" className="underline">
               All plugins
             </Link>
@@ -100,7 +102,9 @@ export function PluginDetailPage() {
 }
 
 function OptionsTab({ plugin, onSaved }: { plugin: PluginDetail; onSaved: () => void }) {
-  const canWrite = useCan("admin");
+  // The plugins file owns the options of its installs: a change here would be undone at the next reconcile.
+  const managed = managedByFile(plugin);
+  const canWrite = useCan("admin") && !managed;
   const form = optionsForm(plugin.manifest);
   const saved = (plugin.config ?? {}) as Record<string, unknown>;
   const [config, setConfig] = useState(saved);
@@ -138,6 +142,11 @@ function OptionsTab({ plugin, onSaved }: { plugin: PluginDetail; onSaved: () => 
     );
   return (
     <>
+      {managed && (
+        <p role="note" className="mb-3 text-sm text-ink-muted">
+          This install is managed by the plugins file. Change it in the plugins file; secrets and the webhook stay here.
+        </p>
+      )}
       <SchemaForm schema={form.schema} layout={form.layout} readonly={!canWrite} value={config} saved={saved} onChange={(v) => setConfig(v as Record<string, unknown>)} />
       {form.secrets.length > 0 && (
         <p className="mt-2 text-sm text-ink-muted">{form.secrets.join(", ")}: set under Secrets, not here.</p>

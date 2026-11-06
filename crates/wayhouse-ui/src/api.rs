@@ -836,6 +836,7 @@ mod tests {
             ("POST", "/api/plugins/abc/enable"),
             ("DELETE", "/api/plugins/abc"),
             ("PUT", "/api/plugins/abc/config"),
+            ("GET", "/api/plugins/file/plan"),
             ("GET", "/api/plugins/abc/secrets"),
             ("PUT", "/api/plugins/abc/secrets/TOKEN"),
             ("DELETE", "/api/plugins/abc/secrets/TOKEN"),

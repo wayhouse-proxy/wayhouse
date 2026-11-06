@@ -218,3 +218,16 @@ it("shows the controller's message for an unknown install", async () => {
   page();
   expect(await screen.findByText(/no such install/)).toBeInTheDocument();
 });
+
+describe("an install managed by the plugins file", () => {
+  it("says so, shows the options read-only and offers no save", async () => {
+    api.getPlugin.mockResolvedValue(detail({ created_by: "plugins-file" }));
+    page("admin");
+    expect(await screen.findByText("managed by file")).toBeInTheDocument();
+    expect(screen.getByText(/change it in the plugins file/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Panel host/)).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /apply/i })).not.toBeInTheDocument();
+    // Secrets stay with the operator: the file never carries them.
+    expect(screen.getByRole("tab", { name: "Secrets" })).toBeInTheDocument();
+  });
+});
