@@ -20,6 +20,11 @@ retry() { # <desc> <cmd...> up to 60 s
   done
   echo "ok: $desc"
 }
+# The env file is the one init.sh wrote: owner-only, random tokens, never overwritten.
+[ "$(stat -c %a "$ENV_FILE")" = 600 ] || fail "$ENV_FILE is not mode 0600"
+case "$WAYHOUSE_CONTROLLER_TOKEN$WAYHOUSE_UI_PASSWORD" in *change-me*) fail "an example token is in use" ;; esac
+if sh "$(dirname "$0")/solo/init.sh" "$ENV_FILE" >/dev/null 2>&1; then fail "init.sh overwrote an existing env file"; fi
+echo "ok: init.sh wrote a 0600 env file with random tokens and refuses to overwrite it"
 CTRL=http://127.0.0.1:9901
 UI=http://127.0.0.1:9903
 auth="Authorization: Bearer $WAYHOUSE_CONTROLLER_TOKEN"

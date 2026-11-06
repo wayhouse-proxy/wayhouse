@@ -153,15 +153,17 @@ deploy-smoke:
 	exit $$rc
 
 ## deploy-solo-smoke: the solo bundle (compose.solo.yml): demo smoke plus keyring, sealing, UI push, restart (needs Docker)
-DEPLOY_SOLO := docker compose -p wayhouse-solo-smoke --env-file deploy/compose/.env -f deploy/compose/docker-compose.yml -f deploy/compose/compose.solo.yml
+## It makes its own env file with init.sh (never the demo's change-me-* one), so the random
+## tokens, the 0600 mode and the refusal to overwrite are what the stack runs on and what is checked.
 deploy-solo-smoke:
-	test -f deploy/compose/.env || sh deploy/solo/init.sh
 	rc=0; \
+	dir=$$(mktemp -d); envf="$$dir/solo.env"; sh deploy/solo/init.sh "$$envf" >/dev/null || exit 1; \
+	solo="docker compose -p wayhouse-solo-smoke --env-file $$envf -f deploy/compose/docker-compose.yml -f deploy/compose/compose.solo.yml"; \
 	sha="$${WAYHOUSE_GIT_SHA:-$$(git rev-parse HEAD 2>/dev/null)}"; export WAYHOUSE_GIT_SHA=$$(printf %.12s "$$sha"); \
-	$(DEPLOY_SOLO) up -d --build || rc=$$?; \
-	[ $$rc -ne 0 ] || { sh deploy/smoke.sh && COMPOSE="$(DEPLOY_SOLO)" SOLO_PROJECT=wayhouse-solo-smoke sh deploy/solo-smoke.sh; } || rc=$$?; \
-	[ $$rc -eq 0 ] || $(DEPLOY_SOLO) logs; \
-	$(DEPLOY_SOLO) down -v; \
+	$$solo up -d --build || rc=$$?; \
+	[ $$rc -ne 0 ] || { COMPOSE_ENV_FILE="$$envf" sh deploy/smoke.sh && COMPOSE_ENV_FILE="$$envf" COMPOSE="$$solo" SOLO_PROJECT=wayhouse-solo-smoke sh deploy/solo-smoke.sh; } || rc=$$?; \
+	[ $$rc -eq 0 ] || $$solo logs; \
+	$$solo down -v; \
 	exit $$rc
 
 ## help: list targets

@@ -139,7 +139,11 @@ errs << "solo: controller needs --plugins and --secret-key-file=/keys/secret.key
 errs << "solo: controller listens on 0.0.0.0, which its plain-HTTP guard refuses unless --allow-insecure-secrets is set" if sc.include?("--listen=0.0.0.0:9901") && !sc.include?("--allow-insecure-secrets")
 errs << "solo: controller must wait for the keys step" unless solo["controller"]["depends_on"].dig("keys", "condition") == "service_completed_successfully"
 errs << "solo: the keyring must be mounted read-only into the controller" unless solo["controller"]["volumes"].any? { |v| v["target"] == "/keys" && v["read_only"] == true }
-errs << "solo: keys step must never overwrite an existing keyring" unless solo["keys"]["command"].join(" ").include?("[ -s /keys/secret.keys ] ||")
+sw = solo["wayhouse"]
+errs << "solo: the proxy needs --secret-key-file=/keys/secret.keys, or a { secret: name } config stops it at start" unless sw["command"].include?("--secret-key-file=/keys/secret.keys")
+errs << "solo: the proxy must keep every base flag" unless (base["wayhouse"]["command"] - sw["command"]).empty?
+errs << "solo: the keyring must be mounted read-only into the proxy, which must wait for the keys step" unless sw["volumes"].any? { |v| v["target"] == "/keys" && v["read_only"] == true } && sw["depends_on"].dig("keys", "condition") == "service_completed_successfully"
+errs << "solo: keys step must never overwrite an existing keyring, and writes it atomically" unless solo["keys"]["command"].join(" ").include?("[ -s /keys/secret.keys ] ||") && solo["keys"]["command"].join(" ").include?("mv /keys/secret.keys.tmp /keys/secret.keys")
 errs << "solo: ports must stay on the host loopback" unless solo.values.flat_map { |x| x["ports"] || [] }.all? { |pt| pt["host_ip"] == "127.0.0.1" }
 errs << "solo: tokens must be required (${VAR:?}), not defaulted" if sc.grep(/\A--auth-token=/).any? { |a| a.empty? || a == "--auth-token=" }
 errs << "solo-acme: must keep every solo flag and add --acme with a staging default" unless (sc - solo_acme["controller"]["command"]).empty? && solo_acme["controller"]["command"].include?("--acme") && solo_acme["controller"]["command"].include?("--acme-ca=letsencrypt-staging") && solo_acme["controller"]["command"].include?("--acme-accept-tos")

@@ -8,6 +8,7 @@
 #   keys        one-shot that creates the sealed-secret keyring on first start and leaves it alone
 #               after that (a lost keyring makes every stored secret unreadable: back up the volume)
 #   controller  --plugins and --secret-key-file, so plugin secrets and `{ secret: name }` work
+#   wayhouse    the same key file, read-only, to open `{ secret: name }` values at start
 #
 # Everything is published on the host's loopback only. The controller listens on 0.0.0.0 inside
 # the compose network, which its plain-HTTP guard refuses once it holds a key; the bridge network
@@ -21,7 +22,7 @@ services:
       - |
         set -eu
         umask 077
-        [ -s /keys/secret.keys ] || head -c 32 /dev/urandom | base64 > /keys/secret.keys
+        [ -s /keys/secret.keys ] || { head -c 32 /dev/urandom | base64 > /keys/secret.keys.tmp && mv /keys/secret.keys.tmp /keys/secret.keys; }
         chown 65532:65532 /keys /keys/secret.keys
         chmod 0700 /keys
         chmod 0600 /keys/secret.keys
@@ -38,6 +39,19 @@ services:
       - --allow-insecure-secrets
     volumes:
       - controller-data:/data
+      - solo-keys:/keys:ro
+    depends_on:
+      keys: { condition: service_completed_successfully }
+
+  wayhouse:
+    command:
+      - --controller=http://127.0.0.1:9901
+      - --controller-token=${WAYHOUSE_CONTROLLER_TOKEN}
+      - --aggregator=http://127.0.0.1:9902
+      - --aggregator-token=${WAYHOUSE_INGEST_TOKEN}
+      - --aggregator-instance=demo-wayhouse
+      - --secret-key-file=/keys/secret.keys
+    volumes:
       - solo-keys:/keys:ro
     depends_on:
       keys: { condition: service_completed_successfully }
