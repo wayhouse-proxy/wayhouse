@@ -382,3 +382,42 @@ export interface ClusterSecret {
   set_at: number;
   actor?: string;
 }
+
+/** One version in a plugin registry's index (`GET /api/plugin-registries/{id}/plugins`). */
+export interface RegistryPluginVersion {
+  version: string;
+  abi: string;
+  size: number;
+  signature_url?: string;
+  /** A display hint for the options form; the module's own manifest stays authoritative. */
+  options_schema?: { properties?: Record<string, { title?: string; description?: string; type?: string }> } | null;
+  /** Built for this controller's plugin ABI. */
+  compatible: boolean;
+  /** True when the fetch checks this version's signature (official registry with a key). */
+  verifiable: boolean;
+}
+
+export interface RegistryPlugin {
+  name: string;
+  description: string;
+  license: string;
+  homepage?: string;
+  versions: RegistryPluginVersion[];
+  compatible: boolean;
+}
+
+export interface RegistryPlugins {
+  registry: RegistryRef;
+  index_name: string;
+  host_abi: string;
+  plugins: RegistryPlugin[];
+}
+
+/** What a registry fetch answers: the module is uploaded and inspected, nothing is installed. */
+export interface PluginFetchResult {
+  plugin: string;
+  version: string;
+  signed: boolean;
+  risk: "official" | "external";
+  upload: PluginModule;
+}
