@@ -262,12 +262,17 @@ fn manage_secrets(args: &Args) -> anyhow::Result<bool> {
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut value)?;
         let value = value.strip_suffix('\n').unwrap_or(&value);
         secret_store::set(path, &ring, name, value.as_bytes())?;
-        eprintln!("sealed `{name}` into {}", path.display());
+        eprintln!("sealed the secret into {}", path.display());
     } else if let Some(name) = &args.secret_delete {
         let gone = secret_store::remove(path, name)?;
+        // No name in the message: the caller just typed it, and a name is not worth a log line.
         eprintln!(
-            "{} `{name}`",
-            if gone { "removed" } else { "no such secret:" }
+            "{}",
+            if gone {
+                "removed the secret"
+            } else {
+                "no such secret in the store"
+            }
         );
     } else if args.secret_list {
         for name in secret_store::read(path)?.keys() {
