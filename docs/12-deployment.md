@@ -140,15 +140,22 @@ restarts through its restart policy, and:
 
 This needs a restart policy that restarts on exit status 75: systemd `Restart=on-failure` (the
 units in `deploy/systemd`) or a compose `restart: unless-stopped`. There is no supervisor process.
-The directory must be writable by the program and by the UI backend, so on one box it is one shared
+The directory must be writable by the program and by the UI backend, and both must run as the **same
+user** (the file is owner-only and every writer becomes its owner), so on one box it is one shared
 volume; across hosts each program needs its own directory and the UI cannot reach it (use the
-command line there).
+command line there). The shipped systemd units use `ProtectSystem=strict`: give each unit
+`ReadWritePaths=` (or a `StateDirectory=`) for the directory. A program that finds a pending
+change in a directory it cannot write does not try it: it starts with the previous values and does
+not watch the file.
 
-Not settable here: token, password and PSK flags (set them on the command line or in the unit),
+Not settable here: token, password and PSK flags and the safety overrides (`--insecure-*`,
+`--allow-insecure-*`): set them on the command line or in the unit,
 `--settings-dir` itself, and flags that run once and exit (`--check`, `--hash-password`,
 `--secret-set`, `--secret-delete`, `--secret-list`). A key the running build does not know is
-ignored with a warning, so a file written by a newer build never stops an older one. `--check` and
-`--help` do not use up a try.
+ignored with a warning, so a file written by a newer build never stops an older one. `--check`,
+`--help` and the run-once modes do not use up a try. A file that is not valid JSON (a number
+written without quotes, for example) is ignored whole with one warning; a confirmed file that
+later stops parsing has no automatic undo, so remove `--settings-dir` or the file.
 
 ## Networking: a proxy that binds many, changing ports
 

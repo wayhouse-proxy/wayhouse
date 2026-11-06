@@ -18,7 +18,7 @@
 //! Token, password and PSK flags are never read from or written to the file (they are the
 //! bootstrap of the thing that edits them); flags that run once and exit are left out too.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -45,6 +45,19 @@ const NOT_EDITABLE: &[&str] = &[
     "secret-set",
     "secret-delete",
     "secret-list",
+];
+
+/// Flags that make a run something other than a start.
+const DRY_FLAGS: &[&str] = &[
+    "--check",
+    "--help",
+    "-h",
+    "--version",
+    "-V",
+    "--hash-password",
+    "--secret-set",
+    "--secret-delete",
+    "--secret-list",
 ];
 
 /// One flag's value in the file.
@@ -100,27 +113,37 @@ pub fn read(dir: &Path, program: &str) -> Result<Option<File>, String> {
         .map_err(|e| format!("{}: {e}", p.display()))
 }
 
-/// Writes the file whole: a temporary file in the same directory, synced, then renamed over
-/// the old one, owner-only.
+/// Writes the file whole: a temporary file in the same directory (its name is this process's
+/// own, so the UI backend and the program cannot tear each other's write), synced, then renamed
+/// over the old one, owner-only. The writer becomes the owner, so the UI backend and the programs
+/// must run as the same user.
 pub fn write(dir: &Path, program: &str, file: &File) -> Result<(), String> {
     use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
     let p = path(dir, program);
-    let tmp = dir.join(format!(".{program}.json.tmp"));
+    let tmp = dir.join(format!(
+        ".{program}.json.{}.{}.tmp",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
     let body = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
     let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let mut f = opts
+    let result = opts
         .open(&tmp)
-        .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    f.write_all(&body)
-        .and_then(|()| f.sync_all())
-        .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &p).map_err(|e| format!("{}: {e}", p.display()))
+        .and_then(|mut f| f.write_all(&body).and_then(|()| f.sync_all()))
+        .and_then(|()| std::fs::rename(&tmp, &p));
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("{}: {e}", p.display()));
+    }
+    Ok(())
 }
 
 pub fn now() -> u64 {
@@ -160,6 +183,8 @@ fn is_secret(name: &str) -> bool {
 fn not_editable(name: &str) -> Option<&'static str> {
     if NOT_EDITABLE.contains(&name) {
         Some("acts once or locates this file")
+    } else if name.starts_with("insecure-") || name.starts_with("allow-insecure-") {
+        Some("a safety override: set it on the command line or in the service unit")
     } else if is_secret(name) {
         Some("a credential: set it on the command line or in the service unit")
     } else {
@@ -206,7 +231,11 @@ pub fn schema(cmd: &Command) -> Vec<Flag> {
 /// The arguments `values` stand for. Flags the program does not know, or that cannot be set
 /// from the file, are returned in the second list (a newer file read by an older build must not
 /// stop it from starting).
-fn to_args(cmd: &Command, values: &Values) -> (Vec<OsString>, Vec<String>) {
+fn to_args(
+    cmd: &Command,
+    values: &Values,
+    given: &HashSet<String>,
+) -> (Vec<OsString>, Vec<String>) {
     let mut args = Vec::new();
     let mut skipped = Vec::new();
     for (name, value) in values {
@@ -217,6 +246,9 @@ fn to_args(cmd: &Command, values: &Values) -> (Vec<OsString>, Vec<String>) {
             skipped.push(name.clone());
             continue;
         };
+        if given.contains(arg.get_id().as_str()) {
+            continue;
+        }
         let flag = format!("--{name}");
         match (kind(arg), value) {
             (Kind::Bool, Value::Bool(true)) => args.push(flag.into()),
@@ -247,7 +279,7 @@ pub fn check(cmd: &Command, values: &Values) -> Result<(), String> {
             return Err(format!("--{name} cannot be set here: {why}"));
         }
     }
-    let (args, skipped) = to_args(cmd, values);
+    let (args, skipped) = to_args(cmd, values, &HashSet::new());
     if let Some(name) = skipped.first() {
         return Err(format!("--{name}: the value has the wrong shape"));
     }
@@ -277,18 +309,24 @@ fn flag_value(argv: &[OsString], name: &str) -> Option<PathBuf> {
     None
 }
 
-/// Whether the command line already gives `arg`.
-fn on_command_line(argv: &[OsString], arg: &clap::Arg) -> bool {
-    argv.iter().skip(1).any(|a| {
-        let s = a.to_string_lossy();
-        let long = arg
-            .get_long()
-            .is_some_and(|l| s == format!("--{l}") || s.starts_with(&format!("--{l}=")));
-        let short = arg
-            .get_short()
-            .is_some_and(|c| !s.starts_with("--") && s.starts_with(&format!("-{c}")));
-        long || short
-    })
+/// The ids of the arguments the command line gives, by clap's own reckoning (so aliases and
+/// combined short flags count). A command line clap cannot parse gives none: the real parse
+/// then reports the error.
+fn given_on_command_line(cmd: &Command, argv: &[OsString]) -> HashSet<String> {
+    let relaxed = cmd
+        .clone()
+        .mut_args(|a| a.required(false))
+        .ignore_errors(true);
+    let Ok(matches) = relaxed.try_get_matches_from(argv) else {
+        return HashSet::new();
+    };
+    cmd.get_arguments()
+        .filter(|a| {
+            matches.value_source(a.get_id().as_str())
+                == Some(clap::parser::ValueSource::CommandLine)
+        })
+        .map(|a| a.get_id().to_string())
+        .collect()
 }
 
 /// What to do with a file at a start.
@@ -306,7 +344,7 @@ fn decide_boot(file: &File, now: u64) -> Boot {
     let Some(p) = &file.pending else {
         return Boot::Plain;
     };
-    if p.attempts >= MAX_ATTEMPTS || now > p.applied_at + HARD_DEADLINE_SECS {
+    if p.attempts >= MAX_ATTEMPTS || now > p.applied_at.saturating_add(HARD_DEADLINE_SECS) {
         return Boot::Undo(undone(file));
     }
     let mut next = file.clone();
@@ -382,57 +420,58 @@ pub fn layer(program: &str, cmd: &Command, argv: Vec<OsString>) -> Layered {
         }
     };
     let at = now();
-    // A dry run (`--check`, `--help`, `--version`) is not a start: it must not use up a try.
+    // A dry run (`--check`, `--help`, `--version`, and the run-once modes) is not a start: it
+    // must not use up a try.
     let dry = argv.iter().skip(1).any(|a| {
-        matches!(
-            a.to_str(),
-            Some("--check" | "--help" | "-h" | "--version" | "-V")
-        )
+        let s = a.to_string_lossy();
+        DRY_FLAGS
+            .iter()
+            .any(|f| s == *f || s.starts_with(&format!("{f}=")))
     });
+    // Whether the file can be written. When a pending change cannot be counted or undone on
+    // disk, nothing could ever end the trial: use the previous values and watch nothing,
+    // rather than restart in a loop against a file that cannot be changed.
+    let mut writable = true;
     match decide_boot(&file, at) {
         Boot::Plain => {}
         Boot::Try(next) => {
-            if dry {
-                // Leave the counter alone.
-            } else if let Err(e) = write(&dir, program, &next) {
-                warn(format!("could not count this start: {e}"));
+            if !dry {
+                if let Err(e) = write(&dir, program, &next) {
+                    warn(format!(
+                        "a settings change is pending but this directory cannot be written ({e}); using the previous values"
+                    ));
+                    writable = false;
+                    file = undone(&file);
+                } else {
+                    file = next;
+                }
+            } else {
+                file = next;
             }
-            file = next;
         }
         Boot::Undo(next) => {
             warn("the last change did not hold; going back to the previous values".into());
-            if dry {
-                // Show the undone values, but leave the file for a real start.
-            } else if let Err(e) = write(&dir, program, &next) {
-                warn(format!("could not store the undo: {e}"));
+            if !dry {
+                if let Err(e) = write(&dir, program, &next) {
+                    warn(format!("could not store the undo ({e}); the settings directory must be writable by this program"));
+                    writable = false;
+                }
             }
             file = next;
         }
     }
-    let (args, skipped) = to_args(cmd, &file.values);
+    let given = given_on_command_line(cmd, &argv);
+    let (args, skipped) = to_args(cmd, &file.values, &given);
     for name in skipped {
         warn(format!(
             "--{name} ignored (unknown to this build, or not settable here)"
         ));
     }
-    // Judged against the command line as given, not against flags added a moment ago (a list
-    // flag adds several).
-    let mut out = argv.clone();
-    for a in args {
-        // `--name=value` or `--name`: the flag part decides whether the command line has it.
-        let s = a.to_string_lossy().into_owned();
-        let name = s.trim_start_matches("--").split('=').next().unwrap_or("");
-        let given = cmd
-            .get_arguments()
-            .find(|x| x.get_long() == Some(name))
-            .is_some_and(|x| on_command_line(&argv, x));
-        if !given {
-            out.push(a);
-        }
-    }
+    let mut out = argv;
+    out.extend(args);
     Layered {
         argv: out,
-        guard: Some(Guard {
+        guard: writable.then(|| Guard {
             dir,
             program: program.to_string(),
             booted: file,
@@ -490,15 +529,39 @@ impl Guard {
                     restart();
                 }
                 Action::Undo => {
-                    tracing::warn!(program = %self.program, "settings change not confirmed in time; undoing it");
-                    if let Some(cur) = current {
-                        if let Err(e) = write(&self.dir, &self.program, &undone(&cur)) {
-                            tracing::error!(error = %e, "could not undo the settings change");
+                    // The file is read again right before the write: a confirm that landed in
+                    // between must win.
+                    match self.undo_if_unchanged(current.as_ref()) {
+                        Ok(true) => {
+                            tracing::warn!(program = %self.program, "settings change not confirmed in time; undone");
+                            restart();
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            // Restarting would only find the same values again.
+                            tracing::error!(program = %self.program, error = %e,
+                                "could not undo the settings change; not restarting");
+                            return;
                         }
                     }
-                    restart();
                 }
             }
+        }
+    }
+
+    /// Puts the previous values back if the file is still exactly as `seen` (same revision,
+    /// still pending). `Ok(false)` when it moved meanwhile.
+    fn undo_if_unchanged(&self, seen: Option<&File>) -> Result<bool, String> {
+        let Some(seen) = seen else {
+            return Ok(false);
+        };
+        let latest = read(&self.dir, &self.program)?;
+        match latest {
+            Some(l) if l.rev == seen.rev && l.pending.is_some() => {
+                write(&self.dir, &self.program, &undone(&l))?;
+                Ok(true)
+            }
+            _ => Ok(false),
         }
     }
 }
@@ -586,6 +649,12 @@ mod tests {
         workers: Option<u32>,
         #[arg(long)]
         check: bool,
+        #[arg(long, alias = "old-name")]
+        renamed: Option<String>,
+        #[arg(long)]
+        insecure_no_auth: bool,
+        #[arg(long)]
+        allow_insecure_secrets: bool,
     }
 
     fn cmd() -> Command {
@@ -622,7 +691,13 @@ mod tests {
         assert_eq!(by("tag").kind, Kind::List);
         assert_eq!(by("config").default.as_deref(), Some("config.yaml"));
         assert!(by("listen").editable);
-        for locked in ["auth-token", "settings-dir", "check"] {
+        for locked in [
+            "auth-token",
+            "settings-dir",
+            "check",
+            "insecure-no-auth",
+            "allow-insecure-secrets",
+        ] {
             assert!(!by(locked).editable, "{locked}");
             assert!(by(locked).reason.is_some());
         }
@@ -820,6 +895,153 @@ mod tests {
             ..booted
         };
         assert_eq!(g.judge(Some(&newer), 101), Action::Restart);
+    }
+
+    /// Whether this process can write into a directory made read-only (root cannot be stopped).
+    fn read_only(dir: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            let blocked = std::fs::write(dir.join("probe"), "x").is_err();
+            if !blocked {
+                let _ = std::fs::remove_file(dir.join("probe"));
+                eprintln!("skipped: this user can write into a read-only directory");
+            }
+            blocked
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = dir;
+            false
+        }
+    }
+
+    #[test]
+    fn an_alias_on_the_command_line_beats_the_file_instead_of_clashing_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = File {
+            values: vals(&[("renamed", one("from-file"))]),
+            ..File::default()
+        };
+        write(dir.path(), "demo", &file).unwrap();
+        let d = dir.path().to_str().unwrap();
+        let l = layer(
+            "demo",
+            &cmd(),
+            argv(&["--settings-dir", d, "--listen=x", "--old-name=from-cli"]),
+        );
+        assert_eq!(parse(&l).renamed.as_deref(), Some("from-cli"));
+        let l = layer("demo", &cmd(), argv(&["--settings-dir", d, "--listen=x"]));
+        assert_eq!(parse(&l).renamed.as_deref(), Some("from-file"));
+    }
+
+    #[test]
+    fn run_once_modes_and_checks_do_not_use_up_a_try() {
+        let dir = tempfile::tempdir().unwrap();
+        apply(
+            dir.path(),
+            "demo",
+            &cmd(),
+            vals(&[("workers", one("9"))]),
+            0,
+            now(),
+        )
+        .unwrap();
+        let d = dir.path().to_str().unwrap();
+        for flag in [
+            "--check",
+            "--secret-list",
+            "--hash-password",
+            "--secret-set=a",
+        ] {
+            layer(
+                "demo",
+                &cmd(),
+                argv(&["--settings-dir", d, "--listen=x", flag]),
+            );
+        }
+        let f = read(dir.path(), "demo").unwrap().unwrap();
+        assert_eq!(f.pending.unwrap().attempts, 0);
+    }
+
+    #[test]
+    fn a_hostile_applied_at_does_not_overflow() {
+        let file = File {
+            values: vals(&[("workers", one("9"))]),
+            pending: Some(Pending {
+                applied_at: u64::MAX,
+                attempts: 0,
+            }),
+            ..File::default()
+        };
+        assert!(matches!(decide_boot(&file, 5), Boot::Try(_)));
+    }
+
+    #[test]
+    fn a_pending_change_in_a_directory_that_cannot_be_written_is_not_tried_and_not_watched() {
+        let dir = tempfile::tempdir().unwrap();
+        apply(
+            dir.path(),
+            "demo",
+            &cmd(),
+            vals(&[("workers", one("9"))]),
+            0,
+            now(),
+        )
+        .unwrap();
+        if !read_only(dir.path()) {
+            return;
+        }
+        let d = dir.path().to_str().unwrap();
+        let l = layer("demo", &cmd(), argv(&["--settings-dir", d, "--listen=x"]));
+        // The previous values (none) are used, and no guard is left to restart in a loop.
+        assert_eq!(parse(&l).workers, None);
+        assert!(l.guard.is_none());
+    }
+
+    #[test]
+    fn the_late_undo_does_not_overwrite_a_confirm_and_a_failed_undo_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let applied = apply(
+            dir.path(),
+            "demo",
+            &cmd(),
+            vals(&[("workers", one("9"))]),
+            0,
+            now(),
+        )
+        .unwrap();
+        let guard = Guard {
+            dir: dir.path().to_path_buf(),
+            program: "demo".into(),
+            booted: applied.clone(),
+            started: 0,
+        };
+        // The guard saw `applied`; the operator confirms a moment later.
+        confirm(dir.path(), "demo").unwrap();
+        assert_eq!(guard.undo_if_unchanged(Some(&applied)), Ok(false));
+        let f = read(dir.path(), "demo").unwrap().unwrap();
+        assert_eq!(
+            f.values,
+            vals(&[("workers", one("9"))]),
+            "the confirmed value stays"
+        );
+        // Unchanged and pending: undone.
+        let again = apply(
+            dir.path(),
+            "demo",
+            &cmd(),
+            vals(&[("workers", one("5"))]),
+            f.rev,
+            now(),
+        )
+        .unwrap();
+        assert_eq!(guard.undo_if_unchanged(Some(&again)), Ok(true));
+        assert_eq!(
+            read(dir.path(), "demo").unwrap().unwrap().values,
+            vals(&[("workers", one("9"))])
+        );
     }
 
     #[test]
