@@ -50,6 +50,15 @@ describe("schema helpers", () => {
     expect(s.$defs.B.enum).toEqual(["x", "y", "z"]);
   });
 
+  it("a value that is a string or a { secret } reference is one text field marked as a secret reference", () => {
+    const ref = { type: "object", properties: { secret: { type: "string" } }, required: ["secret"], additionalProperties: false };
+    const s = simplify({ description: "d", anyOf: [{ type: "string" }, ref] });
+    expect(s).toEqual({ description: "d", type: "string", "x-wayhouse-secret-ref": true });
+    // The real schema has it for the two settings that take one, and the form can render them.
+    const real = simplify(SCHEMA);
+    expect(Object.values<any>(real.$defs).filter((d) => d["x-wayhouse-secret-ref"])).toHaveLength(1);
+  });
+
   it("keeps since annotations through the simplification", () => {
     expect(simplify(JSON.parse(readFileSync(`${import.meta.dirname}/../../../../../wayhouse-config/schema/config.schema.json`, "utf8"))).properties.web["x-wayhouse-since"]).toBe(3);
   });
