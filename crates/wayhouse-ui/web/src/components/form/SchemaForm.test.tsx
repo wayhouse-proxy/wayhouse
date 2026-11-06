@@ -3,7 +3,7 @@ import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-const api = vi.hoisted(() => ({ putClusterSecret: vi.fn() }));
+const api = vi.hoisted(() => ({ putClusterSecret: vi.fn(), listClusterSecrets: vi.fn() }));
 vi.mock("../../api", async (orig) => ({ ...(await orig<typeof import("../../api")>()), ...api }));
 
 import { SchemaForm } from "./SchemaForm";
@@ -162,6 +162,18 @@ describe("SchemaForm on the real schema", () => {
     beforeEach(() => {
       api.putClusterSecret.mockReset();
       api.putClusterSecret.mockResolvedValue(undefined);
+      api.listClusterSecrets.mockReset();
+      api.listClusterSecrets.mockResolvedValue([]);
+    });
+
+    it("says when the name is taken and what replacing it means, before anything is sent", async () => {
+      api.listClusterSecrets.mockResolvedValue([{ name: "auth-token", key_id: "k1", set_at: 1 }]);
+      render(<Harness path={["settings"]} initial={plain} />);
+      await userEvent.click(screen.getByRole("button", { name: "Move to secret store" }));
+      expect(await screen.findByText(/auth-token.* exists/)).toBeInTheDocument();
+      expect(api.putClusterSecret).not.toHaveBeenCalled();
+      await userEvent.click(screen.getByRole("button", { name: "Replace the stored secret" }));
+      expect(api.putClusterSecret).toHaveBeenCalledWith("auth-token", "s3cret-value");
     });
 
     it("stores the value and leaves only a reference in the YAML", async () => {

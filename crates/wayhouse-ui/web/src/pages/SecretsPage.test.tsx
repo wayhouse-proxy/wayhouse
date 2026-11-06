@@ -49,6 +49,18 @@ describe("SecretsPage", () => {
     expect(screen.queryByDisplayValue("s3cret-value")).toBeNull();
   });
 
+  it("says a name is taken, and saving then replaces", async () => {
+    const user = userEvent.setup();
+    page();
+    await screen.findByText("gossip-psk");
+    await user.click(screen.getByRole("button", { name: "Add secret" }));
+    await user.type(screen.getByLabelText("Name"), "gossip-psk");
+    expect(screen.getByText(/gossip-psk.* exists/)).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Value"), "s3cret-value");
+    await user.click(screen.getByRole("button", { name: "Replace secret" }));
+    expect(api.putClusterSecret).toHaveBeenCalledWith("gossip-psk", "s3cret-value");
+  });
+
   it("refuses a name the controller would refuse, before sending", async () => {
     const user = userEvent.setup();
     page();

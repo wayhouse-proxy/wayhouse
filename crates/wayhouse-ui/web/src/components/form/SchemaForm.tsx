@@ -14,7 +14,7 @@ import type {
   WidgetProps,
 } from "@rjsf/utils";
 import { Plus } from "lucide-react";
-import { putClusterSecret } from "../../api";
+import { listClusterSecrets, putClusterSecret } from "../../api";
 import { suggestSecretName, validSecretName } from "../../lib/secretName";
 import { diff } from "../../lib/config/patch";
 import { get, set, type Path } from "../../lib/form/path";
@@ -115,6 +115,17 @@ function MoveToStore({ field, value, onMoved }: { field: string; value: string; 
   const [name, setName] = useState(suggestSecretName(field));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Names already in the store; if the list fails the store itself still decides.
+  const [taken, setTaken] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    listClusterSecrets().then((l) => live && setTaken(l.map((s) => s.name)), () => live && setTaken([]));
+    return () => {
+      live = false;
+    };
+  }, [open]);
+  const exists = taken?.includes(name) ?? false;
   if (!open)
     return (
       <div>
@@ -141,10 +152,15 @@ function MoveToStore({ field, value, onMoved }: { field: string; value: string; 
         <Input mono value={name} onChange={(e) => setName(e.target.value)} />
       </label>
       <p className="text-sm text-ink-muted">Saves the value to the controller and puts {"{ secret: name }"} here. A reference needs schema_version 4 and replaces a stored secret of the same name.</p>
+      {exists && (
+        <p className="text-sm text-bad">
+          {name} exists. Moving replaces its value; the old one cannot be recovered, and proxies using it pick up the new one at their next restart.
+        </p>
+      )}
       {error && <p role="alert" className="text-sm text-bad">{error}</p>}
       <div className="flex gap-2">
-        <Button type="button" variant="primary" loading={busy} disabled={!validSecretName(name)} onClick={move}>
-          Store and replace
+        <Button type="button" variant="primary" loading={busy} disabled={!validSecretName(name) || taken === null} onClick={move}>
+          {exists ? "Replace the stored secret" : "Store and replace"}
         </Button>
         <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
           Cancel

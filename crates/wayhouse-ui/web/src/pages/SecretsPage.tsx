@@ -102,6 +102,7 @@ export function SecretsPage() {
       </p>
       {adding && (
         <AddDialog
+          taken={new Set((items ?? []).map((s) => s.name))}
           onClose={(saved) => {
             setAdding(false);
             if (saved) load();
@@ -112,12 +113,13 @@ export function SecretsPage() {
   );
 }
 
-function AddDialog({ onClose }: { onClose: (saved: boolean) => void }) {
+function AddDialog({ taken, onClose }: { taken: Set<string>; onClose: (saved: boolean) => void }) {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const nameOk = validSecretName(name);
+  const exists = taken.has(name);
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -138,6 +140,11 @@ function AddDialog({ onClose }: { onClose: (saved: boolean) => void }) {
           <Input mono value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         {name !== "" && !nameOk && <p className="text-sm text-bad">Use 1 to 63 of a-z, 0-9 and "-", not starting or ending with "-".</p>}
+        {exists && (
+          <p className="text-sm text-bad">
+            {name} exists. Saving replaces its value; the old one cannot be recovered, and proxies using it pick up the new one at their next restart.
+          </p>
+        )}
         <label className="flex flex-col gap-1 text-sm text-ink-muted">
           Value
           <Input type="password" autoComplete="off" mono value={value} onChange={(e) => setValue(e.target.value)} />
@@ -149,7 +156,7 @@ function AddDialog({ onClose }: { onClose: (saved: boolean) => void }) {
             Cancel
           </Button>
           <Button type="submit" variant="primary" loading={busy} disabled={!nameOk || value === ""}>
-            Save secret
+            {exists ? "Replace secret" : "Save secret"}
           </Button>
         </div>
       </form>
