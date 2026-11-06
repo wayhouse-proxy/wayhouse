@@ -76,6 +76,8 @@ fn router(state: AdminState) -> Router {
                 )),
         )
         .route("/config", get(config))
+        .route("/config/schema", get(config_schema))
+        .route("/config/validate", post(validate_config))
         .route("/web", get(web))
         .route("/features", get(features))
         .route("/sessions", get(sessions))
@@ -251,6 +253,38 @@ async fn web(State(s): State<AdminState>) -> Response {
 async fn features(State(s): State<AdminState>) -> Response {
     let rows = crate::features::effective(&s.runtime.snapshot().features);
     axum::Json(serde_json::json!({ "flags": rows })).into_response()
+}
+
+/// `GET /config/schema`: the JSON Schema of a config document, as the controller serves it, so a
+/// UI on a file-config proxy (no controller) can build its forms from the proxy it talks to.
+async fn config_schema() -> Response {
+    (
+        [
+            ("Content-Type", "application/json".to_string()),
+            (
+                "X-Config-Schema-Version",
+                wayhouse_config::version::CONFIG_SCHEMA_VERSION.to_string(),
+            ),
+        ],
+        wayhouse_config::CONFIG_JSON_SCHEMA,
+    )
+        .into_response()
+}
+
+/// `POST /config/validate`: a raw YAML config document is parsed and validated and nothing is
+/// applied. `200 {"ok":true,"schema_version":N}` or `422 {"error":...}`, the controller's shapes.
+async fn validate_config(body: String) -> Response {
+    match wayhouse_config::parse_str(&body) {
+        Ok(cfg) => {
+            axum::Json(serde_json::json!({"ok": true, "schema_version": cfg.schema_version}))
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            axum::Json(serde_json::json!({"error": e.to_string()})),
+        )
+            .into_response(),
+    }
 }
 
 /// `GET /config` — a plaintext view of the active snapshot (listeners + pools).
@@ -2022,6 +2056,53 @@ mod tests {
         runtime
             .shutdown_with_grace(std::time::Duration::from_millis(100))
             .await;
+    }
+
+    #[tokio::test]
+    async fn the_config_schema_and_validate_endpoints_answer_like_the_controllers() {
+        let yaml = "pools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\n\
+                    listeners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    pool: p\n";
+        let (base, _runtime) = spawn_admin_with_token(yaml, Some("tok")).await;
+        let http = reqwest::Client::new();
+        // Behind the bearer like the rest of the gated API.
+        let r = http
+            .get(format!("{base}/config/schema"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let r = http
+            .get(format!("{base}/config/schema"))
+            .bearer_auth("tok")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            r.headers()["x-config-schema-version"],
+            wayhouse_config::version::CONFIG_SCHEMA_VERSION
+                .to_string()
+                .as_str()
+        );
+        let schema: serde_json::Value = r.json().await.unwrap();
+        assert!(schema.is_object());
+
+        let validate = |body: String| {
+            http.post(format!("{base}/config/validate"))
+                .bearer_auth("tok")
+                .body(body)
+                .send()
+        };
+        let ok = validate(format!("schema_version: 4\n{yaml}"))
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), reqwest::StatusCode::OK);
+        let v: serde_json::Value = ok.json().await.unwrap();
+        assert_eq!(v, serde_json::json!({"ok": true, "schema_version": 4}));
+        let bad = validate("listeners: nope".into()).await.unwrap();
+        assert_eq!(bad.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+        let v: serde_json::Value = bad.json().await.unwrap();
+        assert!(v["error"].as_str().is_some_and(|e| !e.is_empty()), "{v}");
     }
 
     #[tokio::test]
