@@ -20,8 +20,7 @@ export function simplify(node: any): any {
     else if (rest.length === 2 && rest.some((x: S) => x.type === "string") && rest.some(isSecretRef)) {
       // A plaintext value or a `{ secret: name }` reference: one text field now; K1-UI adds the secret picker.
       n = { ...siblings, type: "string", "x-wayhouse-secret-ref": true };
-    }
-    else if (rest.every((x: S) => x.type === "integer" || x.type === "string"))
+    } else if (rest.every((x: S) => x.type === "integer" || x.type === "string"))
       n = { ...siblings, type: "string", "x-wayhouse-int-or-string": true };
   }
   if (Array.isArray(n.oneOf) && n.oneOf.every((x: S) => x?.type === "string" && ("const" in x || x.enum))) {

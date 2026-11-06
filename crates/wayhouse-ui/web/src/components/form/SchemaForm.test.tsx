@@ -101,6 +101,21 @@ describe("SchemaForm on the real schema", () => {
     expect(workers).toHaveValue(2);
   });
 
+  it("a { secret } reference is shown read-only and typing elsewhere leaves it in the YAML", async () => {
+    const initial = FILE.replace('    listen: "127.0.0.1:9901"\n', '    listen: "127.0.0.1:9901"\n    auth_token: { secret: admin-token }\n');
+    render(<Harness path={["settings"]} initial={initial} showAdvanced />);
+    const token = screen.getByDisplayValue("secret: admin-token");
+    expect(token).toHaveAttribute("readonly");
+    await userEvent.type(token, "x");
+    expect(yaml()).toMatch(/auth_token: \{ ?secret: admin-token ?\}/);
+    expect(yaml()).not.toContain("[object Object]");
+    const workers = screen.getByLabelText(/Worker tasks per listener/);
+    await userEvent.clear(workers);
+    await userEvent.type(workers, "3");
+    expect(yaml()).toContain("workers: 3");
+    expect(yaml()).toMatch(/auth_token: \{ ?secret: admin-token ?\}/);
+  });
+
   it("blurring an emptied number field still removes the key", async () => {
     render(<Harness path={["settings"]} />);
     const workers = screen.getByLabelText(/Worker tasks per listener/);
