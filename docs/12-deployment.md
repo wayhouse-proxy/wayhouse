@@ -157,6 +157,13 @@ ignored with a warning, so a file written by a newer build never stops an older 
 written without quotes, for example) is ignored whole with one warning; a confirmed file that
 later stops parsing has no automatic undo, so remove `--settings-dir` or the file.
 
+The UI's **Process flags** page (Settings, admin to change) edits these files: it lists each
+program's flags, applies a change as a trial and shows Confirm and Undo while it waits. It needs
+the UI itself to run with the same `--settings-dir` and as the same user. The solo compose bundle
+sets this up (one `solo-settings` volume shared by all four programs); on systemd add
+`--settings-dir=/var/lib/wayhouse/settings` to each unit, give them one `User=`, and list the
+directory in `ReadWritePaths=` or `StateDirectory=`.
+
 ## Networking: a proxy that binds many, changing ports
 
 `wayhouse` is designed to add and remove listeners live — `ListenerManager`

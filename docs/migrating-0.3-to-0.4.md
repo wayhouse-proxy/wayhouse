@@ -8,6 +8,10 @@ Every change is additive or opt-in except the plugin ABI (rebuild your plugins) 
 for tokens (see Secrets). On a single box, the [solo bundle](12-deployment.md#one-box-the-solo-bundle)
 runs all of it with one command.
 
+Opt-in: `--settings-dir` on each program lets the UI's Process flags page change their command-line
+flags with a trial that goes back by itself ([how](12-deployment.md#process-flags-from-a-settings-file---settings-dir)).
+Without the flag nothing changes.
+
 ## Upgrade order, in one place
 
 1. Back up the controller's `--data-dir` (and, if you use sealed secrets, the key file: a lost

@@ -61,15 +61,15 @@ fn refusal(e: ApplyError) -> Response {
 }
 
 /// The settings directory and the program name, or the error answer.
-fn target(state: &AppState, program: &str) -> Result<(PathBuf, &'static str), Response> {
+fn target(state: &AppState, program: &str) -> Result<(PathBuf, &'static str), Box<Response>> {
     let Some(dir) = state.settings_dir.as_deref() else {
-        return Err(error(
+        return Err(Box::new(error(
             StatusCode::NOT_FOUND,
             "this UI was started without --settings-dir",
-        ));
+        )));
     };
     let Some((name, _)) = PROGRAMS.iter().find(|(n, _)| *n == program) else {
-        return Err(error(StatusCode::NOT_FOUND, "no such program"));
+        return Err(Box::new(error(StatusCode::NOT_FOUND, "no such program")));
     };
     Ok((dir.clone(), name))
 }
@@ -139,7 +139,7 @@ async fn apply(
 ) -> Response {
     let (dir, name) = match target(&state, &program) {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let result = blocking(move || {
         let Some(flags) = wayhouse_settings::read_schema(&dir, name) else {
@@ -189,7 +189,7 @@ async fn undo(
 async fn finish(state: &AppState, program: &str, actor: &Actor, confirm: bool) -> Response {
     let (dir, name) = match target(state, program) {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let result = blocking(move || {
         if confirm {

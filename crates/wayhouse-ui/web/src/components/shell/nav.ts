@@ -37,6 +37,7 @@ export const NAV: NavGroup[] = [
           { to: "/settings/appearance", label: "Appearance" },
           { to: "/settings/layout", label: "Layout" },
           { to: "/settings/secrets", label: "Secrets" },
+          { to: "/settings/process", label: "Process flags" },
         ],
       },
       { to: "/config/listeners", label: "Listeners and routes" },
