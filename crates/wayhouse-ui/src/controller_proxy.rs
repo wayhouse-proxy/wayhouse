@@ -1313,6 +1313,8 @@ mod tests {
             ("DELETE", "/api/plugins/0123abcd/secrets/PANEL_TOKEN"),
             ("POST", "/api/plugins/0123abcd/webhook"),
             ("DELETE", "/api/plugins/0123abcd/webhook"),
+            // The plugins-file dry run: its own path, not an install id.
+            ("GET", "/api/plugins/file/plan"),
         ] {
             let resp = app
                 .clone()
@@ -1344,6 +1346,7 @@ mod tests {
                 "DELETE /plugins/0123abcd/secrets/PANEL_TOKEN",
                 "POST /plugins/0123abcd/webhook",
                 "DELETE /plugins/0123abcd/webhook",
+                "GET /plugins/file/plan",
             ]
         );
     }
