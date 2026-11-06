@@ -1,0 +1,21 @@
+[package]
+name = "wayhouse-settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Process flags from a per-program settings file the UI writes: layering under the command line, a flag schema read from clap, and trial applies that revert unless confirmed."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["rt", "time"] }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -18,6 +18,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+wayhouse-settings = { path = "../wayhouse-settings" }
 wayhouse-http = { workspace = true, features = ["server"] }
 tokio.workspace = true
 axum = { workspace = true, features = ["ws"] }

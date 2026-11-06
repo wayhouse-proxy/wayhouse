@@ -43,6 +43,7 @@ workspace = true
 wayhouse-http = { workspace = true, features = ["server"] }
 wayhouse-config = { path = "../wayhouse-config" }
 wayhouse-secrets = { path = "../wayhouse-secrets" }
+wayhouse-settings = { path = "../wayhouse-settings" }
 wayhouse-core = { path = "../wayhouse-core", default-features = false }
 thiserror.workspace = true
 

@@ -30,6 +30,11 @@ use wayhouse_controller::store::Store;
     about = "Tier-1 config/intent controller for a wayhouse fleet (single standalone node — see docs/10)"
 )]
 struct Args {
+    /// Directory with this program's settings file (`<program>.json`, written by the UI): its
+    /// values fill in the flags this command line does not give. See `wayhouse-settings`.
+    #[arg(long, value_name = "DIR")]
+    settings_dir: Option<PathBuf>,
+
     /// Directory for the embedded revision store (created if missing).
     #[arg(long, default_value = "wayhouse-controller-data")]
     data_dir: PathBuf,
@@ -231,7 +236,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let layered = wayhouse_settings::layer(
+        "controller",
+        &<Args as clap::CommandFactory>::command(),
+        std::env::args_os().collect(),
+    );
+    let args = Args::parse_from(&layered.argv);
 
     if args.role == Role::Slave && args.parent_url.is_none() {
         anyhow::bail!("--role slave requires --parent-url");
@@ -265,6 +275,7 @@ async fn main() -> anyhow::Result<()> {
             EnvFilter::try_from_env("WAYHOUSE_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+    layered.start();
     let prometheus =
         wayhouse_http::metrics::install("wayhouse-controller", env!("CARGO_PKG_VERSION"))?;
     wayhouse_controller::features::publish(&std::collections::BTreeMap::new());

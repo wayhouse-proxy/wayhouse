@@ -68,6 +68,11 @@ use wayhouse_core::{Runtime, Snapshot};
     about = "Game-agnostic game server reverse proxy"
 )]
 struct Args {
+    /// Directory with this program's settings file (`<program>.json`, written by the UI): its
+    /// values fill in the flags this command line does not give. See `wayhouse-settings`.
+    #[arg(long, value_name = "DIR")]
+    settings_dir: Option<PathBuf>,
+
     /// Path to the YAML config file.
     #[arg(
         short,
@@ -295,7 +300,12 @@ fn manage_secrets(args: &Args) -> anyhow::Result<bool> {
 }
 
 fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let layered = wayhouse_settings::layer(
+        "wayhouse",
+        &<Args as clap::CommandFactory>::command(),
+        std::env::args_os().collect(),
+    );
+    let args = Args::parse_from(&layered.argv);
     if manage_secrets(&args)? {
         return Ok(());
     }
@@ -316,7 +326,10 @@ fn main() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(async_main(args))
+        .block_on(async {
+            layered.start();
+            async_main(args).await
+        })
 }
 
 async fn async_main(mut args: Args) -> anyhow::Result<()> {

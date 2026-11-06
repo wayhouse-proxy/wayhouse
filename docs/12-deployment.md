@@ -121,6 +121,35 @@ user can read in `ps` or `docker inspect`; run them on a box you control. CI run
 `make deploy-solo-smoke` (keyring mode and owner, a sealed secret that is listed but never shown,
 a config pushed through the UI, a clean restart, no token in any log).
 
+## Process flags from a settings file (`--settings-dir`)
+
+The proxy, the controller, the aggregator and the UI accept `--settings-dir DIR`. The program
+reads `DIR/<program>.json` (`wayhouse`, `controller`, `aggregator`, `ui`) and uses its values as
+flags the command line did not give: **the command line always wins**, and the programs read no
+environment variables for their flags. The UI writes these files (Settings → Process flags);
+the flag list it offers and the check of a new value come from each program's own `clap`
+definition, so a flag added to a program shows up there with no second list.
+
+A change is a **trial**. The file keeps the previous values and a `pending` mark, the program
+restarts through its restart policy, and:
+
+- if nobody confirms within 60 s of the start, the program puts the previous values back and
+  restarts again;
+- if the new values stop the program from starting, the next start goes back after three tries or
+  five minutes, whichever comes first.
+
+This needs a restart policy that restarts on exit status 75: systemd `Restart=on-failure` (the
+units in `deploy/systemd`) or a compose `restart: unless-stopped`. There is no supervisor process.
+The directory must be writable by the program and by the UI backend, so on one box it is one shared
+volume; across hosts each program needs its own directory and the UI cannot reach it (use the
+command line there).
+
+Not settable here: token, password and PSK flags (set them on the command line or in the unit),
+`--settings-dir` itself, and flags that run once and exit (`--check`, `--hash-password`,
+`--secret-set`, `--secret-delete`, `--secret-list`). A key the running build does not know is
+ignored with a warning, so a file written by a newer build never stops an older one. `--check` and
+`--help` do not use up a try.
+
 ## Networking: a proxy that binds many, changing ports
 
 `wayhouse` is designed to add and remove listeners live — `ListenerManager`

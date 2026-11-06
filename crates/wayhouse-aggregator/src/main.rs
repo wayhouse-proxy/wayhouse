@@ -25,6 +25,11 @@ use wayhouse_aggregator::parent_push;
     about = "Fleet read/operational-verb aggregator for a wayhouse fleet (single tier — see docs/10)"
 )]
 struct Args {
+    /// Directory with this program's settings file (`<program>.json`, written by the UI): its
+    /// values fill in the flags this command line does not give. See `wayhouse-settings`.
+    #[arg(long, value_name = "DIR")]
+    settings_dir: Option<PathBuf>,
+
     /// Address the aggregator's API listens on.
     #[arg(long, default_value = "127.0.0.1:9902")]
     listen: SocketAddr,
@@ -117,7 +122,12 @@ fn check_ingest_token(auth: Option<&str>, ingest: Option<&str>) -> Result<(), St
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let layered = wayhouse_settings::layer(
+        "aggregator",
+        &<Args as clap::CommandFactory>::command(),
+        std::env::args_os().collect(),
+    );
+    let args = Args::parse_from(&layered.argv);
 
     if args.parent_url.is_some() && args.tier_name.is_none() {
         anyhow::bail!("--parent-url requires --tier-name");
@@ -139,6 +149,7 @@ async fn main() -> anyhow::Result<()> {
             EnvFilter::try_from_env("WAYHOUSE_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+    layered.start();
     let prometheus =
         wayhouse_http::metrics::install("wayhouse-aggregator", env!("CARGO_PKG_VERSION"))?;
     wayhouse_http::policy::check_exposure(

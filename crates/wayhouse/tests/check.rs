@@ -148,3 +148,30 @@ fn a_plugin_overlay_url_is_checked_at_startup() {
     let out = check(BASE, &["--plugin-overlay-url", "http://127.0.0.1:9/?x=1"]);
     assert!(!out.status.success());
 }
+
+#[test]
+fn flags_come_from_the_settings_file_and_a_check_does_not_use_up_a_try() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("from-settings.yaml");
+    std::fs::write(&config, BASE).unwrap();
+    let file = serde_json::json!({
+        "rev": 1,
+        "values": { "config": config },
+        "previous": {},
+        "pending": { "applied_at": wayhouse_settings::now(), "attempts": 1 },
+    });
+    let settings = dir.path().join("wayhouse.json");
+    std::fs::write(&settings, file.to_string()).unwrap();
+    // No --config on the command line: the file supplies it (the default `config.yaml` is absent).
+    let out = Command::new(env!("CARGO_BIN_EXE_wayhouse"))
+        .current_dir(dir.path())
+        .args(["--check", "--settings-dir"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    // A check is not a start: the try counter is where it was.
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(after["pending"]["attempts"], 1);
+}
