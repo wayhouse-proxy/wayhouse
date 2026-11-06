@@ -89,6 +89,16 @@ struct Args {
     #[arg(long)]
     controller_token: Option<String>,
 
+    /// Controller base URL to take plugin routes from while running from `--config`: the
+    /// hostname and port routes its plugins declare are merged into listeners that opt in with
+    /// `plugin_routes:` (docs/plugins.md "Routes"). With `--controller` this is already so.
+    #[arg(long, value_name = "URL", conflicts_with = "controller")]
+    plugin_overlay_url: Option<String>,
+
+    /// Bearer token for `--plugin-overlay-url`, if the controller requires one.
+    #[arg(long, requires = "plugin_overlay_url")]
+    plugin_overlay_token: Option<String>,
+
     /// Key file for `{ secret: name }` config values: one base64 32-byte key per line, the last
     /// one active (the same file format as the controller's `--plugin-secret-key-file`), or the
     /// `WAYHOUSE_PLUGIN_SECRET_KEY` environment variable. Needed only when the config uses a
@@ -312,6 +322,11 @@ fn main() -> anyhow::Result<()> {
 async fn async_main(args: Args) -> anyhow::Result<()> {
     for (flag, url, token) in [
         ("--controller", &args.controller, &args.controller_token),
+        (
+            "--plugin-overlay-url",
+            &args.plugin_overlay_url,
+            &args.plugin_overlay_token,
+        ),
         ("--aggregator", &args.aggregator, &args.aggregator_token),
         (
             "--tunnel-controller-url",
@@ -338,7 +353,7 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
             )
         }
         None => {
-            let cfg = wayhouse_config::load(&args.config)?;
+            let cfg = plugin_overlay::load(&args.config)?;
             (ConfigSource::File(args.config.clone()), cfg, None)
         }
     };
@@ -481,6 +496,7 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
         sources,
         admin_tls,
         args.feature_overrides_file,
+        args.plugin_overlay_url.zip(Some(args.plugin_overlay_token)),
     )
     .await
 }
@@ -500,6 +516,7 @@ async fn run(
     sources: Vec<Arc<dyn wayhouse_core::BackendSource>>,
     admin_tls: Option<Arc<wayhouse_http::tls::ReloadingCert>>,
     feature_overrides_file: PathBuf,
+    file_mode_overlay: Option<(String, Option<String>)>,
 ) -> anyhow::Result<()> {
     let prometheus = metrics_exporter_prometheus::PrometheusBuilder::new().install_recorder()?;
 
@@ -646,15 +663,12 @@ async fn run(
     // mode, nothing otherwise rebuilds the snapshot after an admin-API or
     // intent-op backend overlay change (`reload::run`, which normally does,
     // only runs in file-config mode).
-    let plugin_overlay = if let ConfigSource::Controller(url, token) = &config_source {
-        Some(tokio::spawn(plugin_overlay::run(
-            url.clone(),
-            token.clone(),
-            handle.clone(),
-        )))
-    } else {
-        None
+    let overlay_source = match &config_source {
+        ConfigSource::Controller(url, token) => Some((url.clone(), token.clone())),
+        ConfigSource::File(_) => file_mode_overlay,
     };
+    let plugin_overlay = overlay_source
+        .map(|(url, token)| tokio::spawn(plugin_overlay::run(url, token, handle.clone())));
     let feature_overrides = if let ConfigSource::Controller(url, token) = &config_source {
         Some(tokio::spawn(features::run(
             url.clone(),

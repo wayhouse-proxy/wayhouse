@@ -106,7 +106,7 @@ async fn apply(
     sniffer_loader: Option<&SnifferLoader>,
     sniffers: &Sniffers,
 ) {
-    match wayhouse_config::load(path) {
+    match crate::plugin_overlay::load(path) {
         Ok(cfg) => {
             apply_config(
                 cfg,

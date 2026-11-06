@@ -213,7 +213,10 @@ Rules:
   last committed set, and so does one that stops calling `routes_set`: the set stays until the next successful tick replaces it or the install is deleted or disabled. (The spec's grace period with an alert is not built; see the follow-up issue.)
 - A controller started without `--plugins` answers `501` (`404` on an older build) and proxies drop
   the plugin routes at once, keeping their own config; a controller that is only unreachable leaves
-  the last overlay in place. A proxy without `--controller` ignores the overlay.
+  the last overlay in place. A proxy on a config file (no `--controller`) ignores the overlay
+  unless it is started with `--plugin-overlay-url <controller URL>` (and `--plugin-overlay-token`
+  when the controller needs one): the same stream, merged into the file's `plugin_routes:` listeners
+  on every reload. The two flags exclude `--controller`.
 
 ## Port routes
 

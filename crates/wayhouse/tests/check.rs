@@ -111,3 +111,23 @@ mod without_tunnel {
         );
     }
 }
+
+#[test]
+fn a_plugin_overlay_url_goes_with_a_config_file_and_its_token_needs_it() {
+    // A file config may take plugin routes from a controller.
+    let out = check(BASE, &["--plugin-overlay-url", "http://127.0.0.1:9"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // A token alone is a mistake, and so is a second config source.
+    let out = check(BASE, &["--plugin-overlay-token", "x"]);
+    assert!(!out.status.success());
+    let out = check(
+        BASE,
+        &[
+            "--plugin-overlay-url",
+            "http://127.0.0.1:9",
+            "--controller",
+            "http://127.0.0.1:9",
+        ],
+    );
+    assert!(!out.status.success());
+}
