@@ -71,6 +71,18 @@ pub fn warn_plaintext_bearer(flag: &str, url: &str, has_token: bool) {
     }
 }
 
+/// Warns when `url` is plain http to a non-loopback host, token or not, for a source whose
+/// *content* an on-path attacker could forge (the plugin route overlay: hostname -> backend).
+pub fn warn_plaintext_source(flag: &str, url: &str) {
+    if sends_bearer_in_clear(url) {
+        tracing::warn!(
+            flag,
+            url = %redact_userinfo(url),
+            "this source is read over plain http from a non-loopback host, so anyone on the path can change what it says; use https:// unless this network is trusted"
+        );
+    }
+}
+
 /// Only `scheme://host[:port]` of `url`: no userinfo, path, query or fragment,
 /// any of which may carry a credential. Safe to log.
 fn redact_userinfo(url: &str) -> String {

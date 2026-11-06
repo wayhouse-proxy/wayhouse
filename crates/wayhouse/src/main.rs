@@ -319,7 +319,7 @@ fn main() -> anyhow::Result<()> {
         .block_on(async_main(args))
 }
 
-async fn async_main(args: Args) -> anyhow::Result<()> {
+async fn async_main(mut args: Args) -> anyhow::Result<()> {
     for (flag, url, token) in [
         ("--controller", &args.controller, &args.controller_token),
         (
@@ -339,6 +339,11 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
         }
     }
     let tunnel_config = tunnel_boot::config(&args)?;
+    if let Some(raw) = &args.plugin_overlay_url {
+        let url = checked_http_url("--plugin-overlay-url", raw)?;
+        wayhouse_http::policy::warn_plaintext_source("--plugin-overlay-url", &url);
+        args.plugin_overlay_url = Some(url);
+    }
 
     let (config_source, cfg, initial_revision) = match &args.controller {
         Some(url) => {
@@ -812,7 +817,12 @@ fn aggregator_admin_url(
         let scheme = if admin_tls { "https" } else { "http" };
         return Ok(format!("{scheme}://{admin_listen}"));
     };
-    let bad = |why: &str| anyhow::anyhow!("--aggregator-admin-url {raw:?}: {why}");
+    checked_http_url("--aggregator-admin-url", raw)
+}
+
+/// `raw` as a base URL: http or https, a host, no query or fragment, no trailing slash.
+fn checked_http_url(flag: &str, raw: &str) -> anyhow::Result<String> {
+    let bad = |why: &str| anyhow::anyhow!("{flag} {raw:?}: {why}");
     let url = reqwest::Url::parse(raw).map_err(|e| bad(&e.to_string()))?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(bad("the scheme must be http or https"));

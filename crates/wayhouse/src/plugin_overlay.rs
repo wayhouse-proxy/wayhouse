@@ -180,10 +180,25 @@ fn withdraws_routes(status: reqwest::StatusCode) -> bool {
 /// Runs forever: subscribe, keep the overlay, ask for a rebuild on every change.
 pub async fn run(base_url: String, token: Option<String>, handle: RuntimeHandle) {
     let mut backoff = RECONNECT_MIN;
+    let mut last_error = String::new();
     loop {
         match subscribe_once(&base_url, token.as_deref(), &handle).await {
             Ok(()) => backoff = RECONNECT_MIN,
-            Err(e) => tracing::debug!(error = %format_args!("{e:#}"), "plugin route stream ended"),
+            Err(e) => {
+                // A wrong URL or token must leave a trace at the default log level, once per
+                // distinct failure rather than on every retry. A controller without plugins
+                // (404/501) stays quiet on purpose.
+                let msg = format!("{e:#}");
+                if msg != last_error
+                    && !msg.contains("answered 404")
+                    && !msg.contains("answered 501")
+                {
+                    tracing::warn!(error = %msg, "plugin route stream failed; retrying");
+                } else {
+                    tracing::debug!(error = %msg, "plugin route stream ended");
+                }
+                last_error = msg;
+            }
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(RECONNECT_MAX);
