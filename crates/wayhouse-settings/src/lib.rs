@@ -207,6 +207,16 @@ fn is_secret(name: &str) -> bool {
     name.ends_with("-token") || name == "token" || name.contains("password") || name.contains("psk")
 }
 
+/// Flags that say where the program sends its tokens or what it trusts: another program sharing
+/// the settings directory could otherwise redirect them. Set these on the command line.
+fn is_destination(name: &str) -> bool {
+    name.ends_with("-url")
+        || name.ends_with("-file")
+        || matches!(name, "controller" | "aggregator")
+        || name.contains("tls-cert")
+        || name.contains("tls-key")
+}
+
 fn not_editable(name: &str) -> Option<&'static str> {
     if NOT_EDITABLE.contains(&name) {
         Some("acts once or locates this file")
@@ -214,6 +224,8 @@ fn not_editable(name: &str) -> Option<&'static str> {
         Some("a safety override: set it on the command line or in the service unit")
     } else if is_secret(name) {
         Some("a credential: set it on the command line or in the service unit")
+    } else if is_destination(name) {
+        Some("says where tokens go or what is trusted: set it on the command line or in the service unit")
     } else {
         None
     }
@@ -597,6 +609,8 @@ impl Guard {
     /// [`RESTART_EXIT`]) when the file asks for it.
     pub async fn run(self, restart: impl Fn()) {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
+        // A refused file that cannot be undone (no pending mark) is logged once per revision.
+        let mut refused_rev = None;
         loop {
             tick.tick().await;
             let current = read(&self.dir, &self.program).ok().flatten();
@@ -607,7 +621,12 @@ impl Guard {
                     restart();
                 }
                 Action::Reject(why) => {
-                    tracing::warn!(program = %self.program, error = %why, "settings change refused; undoing it");
+                    let rev = current.as_ref().map(|c| c.rev);
+                    if refused_rev == rev {
+                        continue;
+                    }
+                    refused_rev = rev;
+                    tracing::warn!(program = %self.program, error = %why, "settings change refused; undoing it if it is a trial");
                     if let Err(e) = self.undo_if_unchanged(current.as_ref(), Some(why)) {
                         tracing::error!(program = %self.program, error = %e,
                             "could not undo the settings change; not watching any more");
@@ -1073,6 +1092,66 @@ mod tests {
             panic!("expected a rejection");
         };
         assert!(why.contains("workers"), "{why}");
+    }
+
+    #[test]
+    fn a_refused_trial_is_put_back_with_the_reason_and_a_confirmed_file_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let prev = vals(&[("workers", one("2"))]);
+        let trial = File {
+            rev: 7,
+            values: vals(&[("workers", one("many"))]),
+            previous: Some(prev.clone()),
+            pending: Some(Pending {
+                applied_at: 1,
+                attempts: 0,
+            }),
+            error: None,
+        };
+        write(dir.path(), "demo", &trial).unwrap();
+        let g = Guard {
+            dir: dir.path().to_path_buf(),
+            program: "demo".into(),
+            booted: File {
+                rev: 6,
+                values: prev.clone(),
+                ..File::default()
+            },
+            started: 100,
+            cmd: cmd(),
+        };
+        assert_eq!(
+            g.undo_if_unchanged(Some(&trial), Some("bad".into())),
+            Ok(true)
+        );
+        let back = read(dir.path(), "demo").unwrap().unwrap();
+        assert_eq!(
+            (&back.values, &back.pending, back.error.as_deref()),
+            (&prev, &None, Some("bad"))
+        );
+        // Now confirmed (no pending mark): nothing to undo.
+        assert_eq!(
+            g.undo_if_unchanged(Some(&back), Some("again".into())),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn flags_that_say_where_tokens_go_or_what_is_trusted_are_not_editable() {
+        for n in [
+            "controller-url",
+            "aggregator-admin-url",
+            "controller",
+            "aggregator",
+            "ca-file",
+            "users-file",
+            "tls-cert",
+            "tls-key",
+            "plugin-webhook-tls-cert",
+        ] {
+            assert!(not_editable(n).is_some(), "{n} must be locked");
+        }
+        assert!(not_editable("workers").is_none());
     }
 
     #[test]

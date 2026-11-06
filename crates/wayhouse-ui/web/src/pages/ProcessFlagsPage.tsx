@@ -73,7 +73,7 @@ export function ProcessFlagsPage() {
         </div>
       )}
       <p className="mt-2 text-sm text-ink-muted">
-        Tokens, passwords and safety overrides such as <code className="font-mono">--insecure-no-auth</code> are not editable here; set
+        Tokens, passwords and destinations (URLs, files), safety overrides such as <code className="font-mono">--insecure-no-auth</code> are not editable here; set
         them on the command line or in the service unit. Values you leave empty fall back to the program's default.
       </p>
     </>
