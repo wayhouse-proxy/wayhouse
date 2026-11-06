@@ -297,6 +297,16 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
   });
   if (path === "/api/plugin-registries/official-plugins/fetch" && method === "POST") { const b = await json(); if (!b.allow_unsigned) return err(409, "this module's signature could not be verified; confirm to fetch it anyway", { needs_confirm: true, risk: "official", signed: false }); return ok({ plugin: b.name, version: "0.2.0", signed: false, risk: "official", status: "uploaded, awaiting approval", upload: { sha256: MODULE_SHA, size: 412000, abi: "0.2", capabilities: { ...PLUGIN_CAPS.pelican, http: null, secrets: [], port_routes: null }, manifest: PELICAN_MANIFEST } }); }
 
+  // process flags (the demo keeps them in memory; a change is applied at once)
+  if (path === "/api/process" && method === "GET") return ok(processList());
+  if ((r = m(/^\/api\/process\/([a-z]+)$/)) && method === "PUT") {
+    const b = await json();
+    procValues[r[1]] = b.values;
+    procRev[r[1]] = (procRev[r[1]] ?? 1) + 1;
+    return ok({ rev: procRev[r[1]] });
+  }
+  if ((r = m(/^\/api\/process\/([a-z]+)\/(confirm|undo)$/)) && method === "POST") return ok({ rev: procRev[r[1]] ?? 1 });
+
   // cluster secrets (write-only: the demo keeps names, never values)
   if (path === "/api/secrets" && method === "GET") return ok({ items: [...secrets.values()] });
   if ((r = m(/^\/api\/secrets\/(.+)$/))) {
@@ -346,6 +356,23 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
 
 let siteState: ReturnType<typeof acmeSites> | null = null;
 const acmeSitesState = () => (siteState ??= acmeSites());
+
+const procValues: Record<string, Record<string, unknown>> = {};
+const procRev: Record<string, number> = {};
+const PROC_FLAGS = [
+  { name: "listen", kind: "text", value_name: "ADDR", default: "0.0.0.0:8080", help: "address to serve on", editable: true, reason: null },
+  { name: "log-level", kind: "text", value_name: "LEVEL", default: "info", help: "log filter", editable: true, reason: null },
+  { name: "auth-token", kind: "text", value_name: "TOKEN", default: null, help: "bearer token", editable: false, reason: "secret" },
+];
+function processList() {
+  return {
+    dir_configured: true,
+    programs: ["wayhouse", "controller", "aggregator", "ui"].map((p) => ({
+      program: p, label: p === "wayhouse" ? "Proxy" : p[0].toUpperCase() + p.slice(1), connected: true, flags: PROC_FLAGS,
+      file: { rev: procRev[p] ?? 1, values: procValues[p] ?? {}, previous: null, pending: null, error: null },
+    })),
+  };
+}
 
 export function installMock() {
   const real = window.fetch.bind(window);

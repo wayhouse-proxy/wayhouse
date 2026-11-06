@@ -36,6 +36,7 @@ pub mod fleet_feed;
 pub mod login_limit;
 pub mod origin_guard;
 pub mod plugin_registry_api;
+pub mod process_api;
 mod proxy_util;
 pub mod registries;
 pub mod registry_api;

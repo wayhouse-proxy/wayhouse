@@ -26,6 +26,7 @@ import { ConfigHistoryPage } from "./pages/ConfigHistoryPage";
 import { TunnelAddressesPage } from "./pages/TunnelAddressesPage";
 import { CertificatesPage } from "./pages/CertificatesPage";
 import { SecretsPage } from "./pages/SecretsPage";
+import { ProcessFlagsPage } from "./pages/ProcessFlagsPage";
 import { FeaturesPage } from "./pages/FeaturesPage";
 
 // The chart library is the heaviest dependency, so the pages that use it load on first visit.
@@ -82,6 +83,7 @@ export function App() {
         <Route path="/tunnel" element={<TunnelAddressesPage />} />
         <Route path="/certificates" element={<CertificatesPage />} />
         <Route path="/settings/secrets" element={<SecretsPage />} />
+        <Route path="/settings/process" element={<ProcessFlagsPage />} />
         <Route path="/features" element={<FeaturesPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>

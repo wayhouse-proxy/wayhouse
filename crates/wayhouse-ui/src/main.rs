@@ -205,6 +205,9 @@ async fn main() -> anyhow::Result<()> {
     let registries =
         wayhouse_ui::registries::Registries::load(args.registries_file, !args.no_default_registry)?;
     state = state.with_registries(std::sync::Arc::new(registries), persistent);
+    if let Some(dir) = &args.settings_dir {
+        state = state.with_settings_dir(dir.clone());
+    }
     let mut feed_task = None;
     if let Some(aggregator_url) = args.aggregator_url {
         state = state.with_aggregator(aggregator_url.clone(), args.aggregator_token.clone());

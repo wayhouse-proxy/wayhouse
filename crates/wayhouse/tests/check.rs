@@ -152,23 +152,36 @@ fn a_plugin_overlay_url_is_checked_at_startup() {
 #[test]
 fn flags_come_from_the_settings_file_and_a_check_does_not_use_up_a_try() {
     let dir = tempfile::tempdir().unwrap();
-    let config = dir.path().join("from-settings.yaml");
-    std::fs::write(&config, BASE).unwrap();
+    std::fs::write(dir.path().join("config.yaml"), BASE).unwrap();
     let file = serde_json::json!({
         "rev": 1,
-        "values": { "config": config },
+        // An editable flag the file supplies; it must be a number, so a bad value shows that the
+        // file's value reached the parser.
+        "values": { "aggregator-interval-sec": "soon" },
         "previous": {},
         "pending": { "applied_at": wayhouse_settings::now(), "attempts": 1 },
     });
     let settings = dir.path().join("wayhouse.json");
     std::fs::write(&settings, file.to_string()).unwrap();
-    // No --config on the command line: the file supplies it (the default `config.yaml` is absent).
-    let out = Command::new(env!("CARGO_BIN_EXE_wayhouse"))
-        .current_dir(dir.path())
-        .args(["--check", "--settings-dir"])
-        .arg(dir.path())
-        .output()
-        .unwrap();
+    let run = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_wayhouse"))
+            .current_dir(dir.path())
+            .args(["--check", "--settings-dir"])
+            .arg(dir.path())
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    // Not on the command line: the file supplies it, and the parser refuses it.
+    let out = run(&[]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("aggregator-interval-sec"),
+        "{}",
+        stderr(&out)
+    );
+    // The command line wins over the file.
+    let out = run(&["--aggregator-interval-sec", "5"]);
     assert!(out.status.success(), "{}", stderr(&out));
     // A check is not a start: the try counter is where it was.
     let after: serde_json::Value =

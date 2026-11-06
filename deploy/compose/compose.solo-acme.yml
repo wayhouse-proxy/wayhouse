@@ -13,6 +13,7 @@ services:
       - --plugins
       - --secret-key-file=/keys/secret.keys
       - --allow-insecure-secrets
+      - --settings-dir=/settings
       - --acme
       - --acme-ca=${WAYHOUSE_ACME_CA:-letsencrypt-staging}
       - --acme-accept-tos

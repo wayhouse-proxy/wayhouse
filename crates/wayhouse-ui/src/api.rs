@@ -22,6 +22,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -102,6 +103,8 @@ pub struct AppState {
     pub loopback_host_only: bool,
     /// One permit per open `/ws/fleet` socket ([`crate::ws`]).
     pub ws_slots: Arc<tokio::sync::Semaphore>,
+    /// `--settings-dir`: where the programs' process-flag files live ([`crate::process_api`]).
+    pub settings_dir: Option<Arc<PathBuf>>,
 }
 
 /// Longest username accepted at login; longer is rejected before any
@@ -139,7 +142,13 @@ impl AppState {
             registry_client: crate::registry_client::RegistryClient::new(),
             loopback_host_only: false,
             ws_slots: Arc::new(tokio::sync::Semaphore::new(crate::ws::DEFAULT_MAX_SOCKETS)),
+            settings_dir: None,
         }
+    }
+
+    pub fn with_settings_dir(mut self, dir: PathBuf) -> Self {
+        self.settings_dir = Some(Arc::new(dir));
+        self
     }
 
     pub fn with_max_ws_connections(mut self, max: usize) -> Self {
@@ -245,6 +254,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::ui_data_proxy::viewer_router())
         .merge(crate::registry_api::viewer_router())
         .merge(crate::plugin_registry_api::viewer_router())
+        .merge(crate::process_api::viewer_router())
         .merge(crate::ws::router())
         .route_layer(role_layer!(Role::Viewer));
 
@@ -255,6 +265,7 @@ pub fn router(state: AppState) -> Router {
 
     let admin = crate::controller_proxy::admin_router()
         .merge(crate::plugin_registry_api::admin_router())
+        .merge(crate::process_api::admin_router())
         .merge(crate::ui_data_proxy::admin_router())
         .route_layer(role_layer!(Role::Admin));
 
@@ -823,6 +834,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn process_flags_are_readable_by_a_viewer_and_changeable_only_by_an_admin() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = router(users_state().with_settings_dir(dir.path().to_path_buf()));
+        let resp = login_as(&app, "bob", "bob-pass").await; // bob is Operator
+        let cookie = cookie_header_from(&set_cookie_value(&resp));
+        let call = |method: &str, path: &str| {
+            let req = HttpRequest::builder()
+                .method(method)
+                .uri(path)
+                .header(header::COOKIE, cookie.clone())
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"values":{},"rev":0}"#))
+                .unwrap();
+            let app = app.clone();
+            async move { app.oneshot(req).await.unwrap().status() }
+        };
+        assert_eq!(call("GET", "/api/process").await, StatusCode::OK);
+        for (m, p) in [
+            ("PUT", "/api/process/controller"),
+            ("POST", "/api/process/controller/confirm"),
+            ("POST", "/api/process/controller/undo"),
+        ] {
+            assert_eq!(call(m, p).await, StatusCode::FORBIDDEN, "{m} {p}");
+        }
     }
 
     #[tokio::test]

@@ -147,6 +147,11 @@ errs << "solo: keys step must never overwrite an existing keyring, and writes it
 errs << "solo: ports must stay on the host loopback" unless solo.values.flat_map { |x| x["ports"] || [] }.all? { |pt| pt["host_ip"] == "127.0.0.1" }
 errs << "solo: tokens must be required (${VAR:?}), not defaulted" if sc.grep(/\A--auth-token=/).any? { |a| a.empty? || a == "--auth-token=" }
 errs << "solo-acme: must keep every solo flag and add --acme with a staging default" unless (sc - solo_acme["controller"]["command"]).empty? && solo_acme["controller"]["command"].include?("--acme") && solo_acme["controller"]["command"].include?("--acme-ca=letsencrypt-staging") && solo_acme["controller"]["command"].include?("--acme-accept-tos")
+# Process flags (G1): every program shares one settings volume, and the base flags stay.
+%w[controller aggregator ui wayhouse].each do |svc|
+  errs << "solo: #{svc} needs --settings-dir=/settings and the solo-settings volume" unless solo[svc]["command"].include?("--settings-dir=/settings") && solo[svc]["volumes"].any? { |v| v["target"] == "/settings" && v["source"] == "solo-settings" }
+  errs << "solo: #{svc} must keep every base flag" unless (base[svc]["command"] - solo[svc]["command"]).empty?
+end
 # systemd units: tokens come from the env file, never written into a unit.
 Dir["deploy/systemd/*.service"].each do |f|
   t = File.read(f)

@@ -437,3 +437,41 @@ export interface PluginFetchResult {
   risk: "official" | "external";
   upload: PluginModule;
 }
+
+/** One flag of a fleet program, as the program itself published it (`GET /api/process`). */
+export interface ProcessFlag {
+  name: string;
+  help: string;
+  kind: "bool" | "text" | "list";
+  value_name: string | null;
+  default: string | null;
+  editable: boolean;
+  /** Why it cannot be edited here. */
+  reason: string | null;
+}
+
+/** A settings value: a switch, one text, or a list. */
+export type ProcessValue = boolean | string | string[];
+
+export interface ProcessFile {
+  rev: number;
+  values: Record<string, ProcessValue>;
+  previous: Record<string, ProcessValue> | null;
+  pending: { applied_at: number; attempts: number; confirm_secs: number } | null;
+  /** Why the program itself refused the last change. */
+  error: string | null;
+}
+
+export interface ProcessProgram {
+  program: string;
+  label: string;
+  /** The program has started with `--settings-dir` and published its flags. */
+  connected: boolean;
+  flags: ProcessFlag[];
+  file: ProcessFile | null;
+}
+
+export interface ProcessList {
+  dir_configured: boolean;
+  programs: ProcessProgram[];
+}

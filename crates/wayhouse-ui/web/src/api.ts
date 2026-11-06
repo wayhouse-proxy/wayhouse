@@ -18,6 +18,9 @@ import type {
   PluginFetchResult,
   RegistryPlugins,
   ClusterSecret,
+  ProcessFile,
+  ProcessList,
+  ProcessValue,
   PluginStatus,
   PluginModule,
   PluginRouteOverlay,
@@ -618,4 +621,21 @@ export function listRegistryPlugins(id: string): Promise<RegistryPlugins> {
  */
 export function fetchRegistryPlugin(id: string, name: string, version: string | undefined, allowUnsigned: boolean): Promise<PluginFetchResult> {
   return requestJson(`/api/plugin-registries/${encodeURIComponent(id)}/fetch`, jsonInit("POST", { name, version, allow_unsigned: allowUnsigned }));
+}
+
+export function listProcess(): Promise<ProcessList> {
+  return requestJson("/api/process");
+}
+
+/** A trial: the program restarts with these values and goes back unless the change is confirmed. */
+export function applyProcess(program: string, values: Record<string, ProcessValue>, rev: number): Promise<ProcessFile> {
+  return requestJson(`/api/process/${encodeURIComponent(program)}`, jsonInit("PUT", { values, rev }));
+}
+
+export function confirmProcess(program: string): Promise<ProcessFile> {
+  return requestJson(`/api/process/${encodeURIComponent(program)}/confirm`, { method: "POST" });
+}
+
+export function undoProcess(program: string): Promise<ProcessFile> {
+  return requestJson(`/api/process/${encodeURIComponent(program)}/undo`, { method: "POST" });
 }

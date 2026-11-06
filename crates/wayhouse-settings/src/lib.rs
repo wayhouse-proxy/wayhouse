@@ -94,6 +94,10 @@ pub struct File {
     pub previous: Option<Values>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<Pending>,
+    /// Why the last change was refused by the program itself (it could not run with those
+    /// values, so they were put back without a restart). Cleared by the next write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 pub fn path(dir: &Path, program: &str) -> PathBuf {
@@ -118,16 +122,20 @@ pub fn read(dir: &Path, program: &str) -> Result<Option<File>, String> {
 /// over the old one, owner-only. The writer becomes the owner, so the UI backend and the programs
 /// must run as the same user.
 pub fn write(dir: &Path, program: &str, file: &File) -> Result<(), String> {
+    let body = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
+    write_atomic(dir, &format!("{program}.json"), &body)
+}
+
+fn write_atomic(dir: &Path, name: &str, body: &[u8]) -> Result<(), String> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
-    let p = path(dir, program);
+    let p = dir.join(name);
     let tmp = dir.join(format!(
-        ".{program}.json.{}.{}.tmp",
+        ".{name}.{}.{}.tmp",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    let body = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
@@ -137,13 +145,32 @@ pub fn write(dir: &Path, program: &str, file: &File) -> Result<(), String> {
     }
     let result = opts
         .open(&tmp)
-        .and_then(|mut f| f.write_all(&body).and_then(|()| f.sync_all()))
+        .and_then(|mut f| f.write_all(body).and_then(|()| f.sync_all()))
         .and_then(|()| std::fs::rename(&tmp, &p));
     if let Err(e) = result {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("{}: {e}", p.display()));
     }
     Ok(())
+}
+
+/// `DIR/<program>.schema.json`: the flags the running program offers, written by the program at
+/// each start so the UI backend (which does not link the other programs) can show and check them.
+pub fn schema_path(dir: &Path, program: &str) -> PathBuf {
+    dir.join(format!("{program}.schema.json"))
+}
+
+#[derive(Serialize, Deserialize)]
+struct SchemaFile {
+    flags: Vec<Flag>,
+}
+
+/// The flags the program last wrote, or `None` when it never started with this directory.
+pub fn read_schema(dir: &Path, program: &str) -> Option<Vec<Flag>> {
+    let text = std::fs::read_to_string(schema_path(dir, program)).ok()?;
+    serde_json::from_str::<SchemaFile>(&text)
+        .ok()
+        .map(|f| f.flags)
 }
 
 pub fn now() -> u64 {
@@ -154,7 +181,7 @@ pub fn now() -> u64 {
 
 // ---- schema -------------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Bool,
@@ -163,7 +190,7 @@ pub enum Kind {
 }
 
 /// One flag, as the UI shows it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Flag {
     pub name: String,
     pub help: String,
@@ -172,12 +199,34 @@ pub struct Flag {
     pub default: Option<String>,
     pub editable: bool,
     /// Why it cannot be edited here, when it cannot.
-    pub reason: Option<&'static str>,
+    pub reason: Option<String>,
 }
 
 /// Token, password and PSK flags: the credentials that guard the thing doing the editing.
 fn is_secret(name: &str) -> bool {
     name.ends_with("-token") || name == "token" || name.contains("password") || name.contains("psk")
+}
+
+/// Flags that say where the program sends its tokens or what it trusts: another program sharing
+/// the settings directory could otherwise redirect them. Set these on the command line.
+fn is_destination(name: &str) -> bool {
+    name.ends_with("-url")
+        || name.ends_with("-file")
+        || matches!(
+            name,
+            "controller"
+                | "aggregator"
+                | "config"
+                | "static-dir"
+                | "ha-peers"
+                | "ha-join"
+                | "ha-import-source"
+                | "instance-url-allow"
+                | "acme-ca"
+                | "acme-challenge-upstream"
+        )
+        || name.contains("tls-cert")
+        || name.contains("tls-key")
 }
 
 fn not_editable(name: &str) -> Option<&'static str> {
@@ -187,6 +236,8 @@ fn not_editable(name: &str) -> Option<&'static str> {
         Some("a safety override: set it on the command line or in the service unit")
     } else if is_secret(name) {
         Some("a credential: set it on the command line or in the service unit")
+    } else if is_destination(name) {
+        Some("says where tokens go or what is trusted: set it on the command line or in the service unit")
     } else {
         None
     }
@@ -219,7 +270,7 @@ pub fn schema(cmd: &Command) -> Vec<Flag> {
                     .first()
                     .map(|v| v.to_string_lossy().into_owned()),
                 editable: reason.is_none(),
-                reason,
+                reason: reason.map(str::to_string),
                 name,
             })
         })
@@ -262,6 +313,41 @@ fn to_args(
         }
     }
     (args, skipped)
+}
+
+/// The shape check the UI backend can make without the program's parser: every key is an
+/// editable flag in `flags` and its value has the flag's shape. The program itself runs the
+/// full parser on the change ([`Guard`]).
+pub fn check_flags(flags: &[Flag], values: &Values) -> Result<(), String> {
+    for (name, value) in values {
+        let flag = flags
+            .iter()
+            .find(|f| &f.name == name)
+            .ok_or_else(|| format!("no such flag: --{name}"))?;
+        if let Some(why) = &flag.reason {
+            return Err(format!("--{name} cannot be set here: {why}"));
+        }
+        let fits = matches!(
+            (flag.kind, value),
+            (Kind::Bool, Value::Bool(_))
+                | (Kind::Text, Value::One(_))
+                | (Kind::List, Value::One(_) | Value::Many(_))
+        );
+        if !fits {
+            return Err(format!("--{name}: the value has the wrong shape"));
+        }
+        let texts: Vec<&String> = match value {
+            Value::One(v) => vec![v],
+            Value::Many(vs) => vs.iter().collect(),
+            Value::Bool(_) => vec![],
+        };
+        if texts.iter().any(|t| t.is_empty() || t.contains('\n')) {
+            return Err(format!(
+                "--{name}: empty or multi-line values are not accepted"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Checks `values` for `program`: every key is an editable flag of `cmd`, has the right shape,
@@ -361,6 +447,7 @@ pub fn undone(file: &File) -> File {
         values: file.previous.clone().unwrap_or_default(),
         previous: None,
         pending: None,
+        error: None,
     }
 }
 
@@ -460,6 +547,13 @@ pub fn layer(program: &str, cmd: &Command, argv: Vec<OsString>) -> Layered {
             file = next;
         }
     }
+    if !dry {
+        let body =
+            serde_json::to_vec_pretty(&SchemaFile { flags: schema(cmd) }).unwrap_or_default();
+        if let Err(e) = write_atomic(&dir, &format!("{program}.schema.json"), &body) {
+            warn(format!("could not publish the flag list: {e}"));
+        }
+    }
     let given = given_on_command_line(cmd, &argv);
     let (args, skipped) = to_args(cmd, &file.values, &given);
     for name in skipped {
@@ -476,6 +570,7 @@ pub fn layer(program: &str, cmd: &Command, argv: Vec<OsString>) -> Layered {
             program: program.to_string(),
             booted: file,
             started: at,
+            cmd: cmd.clone(),
         }),
         notes,
     }
@@ -491,6 +586,9 @@ pub enum Action {
     Restart,
     /// Still unconfirmed after [`CONFIRM_SECS`]: put the previous values back, then restart.
     Undo,
+    /// The new values do not parse for this program: put the previous values back, say why,
+    /// and keep running.
+    Reject(String),
 }
 
 /// Watches the settings file of a running program.
@@ -499,6 +597,7 @@ pub struct Guard {
     program: String,
     booted: File,
     started: u64,
+    cmd: Command,
 }
 
 impl Guard {
@@ -507,7 +606,10 @@ impl Guard {
             return Action::Nothing;
         };
         if cur.values != self.booted.values {
-            return Action::Restart;
+            return match check(&self.cmd, &cur.values) {
+                Ok(()) => Action::Restart,
+                Err(e) => Action::Reject(e),
+            };
         }
         if cur.pending.is_some() && now >= self.started + CONFIRM_SECS {
             return Action::Undo;
@@ -519,6 +621,8 @@ impl Guard {
     /// [`RESTART_EXIT`]) when the file asks for it.
     pub async fn run(self, restart: impl Fn()) {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
+        // A refused file that cannot be undone (no pending mark) is logged once per revision.
+        let mut refused_rev = None;
         loop {
             tick.tick().await;
             let current = read(&self.dir, &self.program).ok().flatten();
@@ -528,10 +632,23 @@ impl Guard {
                     tracing::info!(program = %self.program, "settings changed; restarting to apply them");
                     restart();
                 }
+                Action::Reject(why) => {
+                    let rev = current.as_ref().map(|c| c.rev);
+                    if refused_rev == rev {
+                        continue;
+                    }
+                    refused_rev = rev;
+                    tracing::warn!(program = %self.program, error = %why, "settings change refused; undoing it if it is a trial");
+                    if let Err(e) = self.undo_if_unchanged(current.as_ref(), Some(why)) {
+                        tracing::error!(program = %self.program, error = %e,
+                            "could not undo the settings change; not watching any more");
+                        return;
+                    }
+                }
                 Action::Undo => {
                     // The file is read again right before the write: a confirm that landed in
                     // between must win.
-                    match self.undo_if_unchanged(current.as_ref()) {
+                    match self.undo_if_unchanged(current.as_ref(), None) {
                         Ok(true) => {
                             tracing::warn!(program = %self.program, "settings change not confirmed in time; undone");
                             restart();
@@ -551,14 +668,20 @@ impl Guard {
 
     /// Puts the previous values back if the file is still exactly as `seen` (same revision,
     /// still pending). `Ok(false)` when it moved meanwhile.
-    fn undo_if_unchanged(&self, seen: Option<&File>) -> Result<bool, String> {
+    fn undo_if_unchanged(
+        &self,
+        seen: Option<&File>,
+        error: Option<String>,
+    ) -> Result<bool, String> {
         let Some(seen) = seen else {
             return Ok(false);
         };
         let latest = read(&self.dir, &self.program)?;
         match latest {
             Some(l) if l.rev == seen.rev && l.pending.is_some() => {
-                write(&self.dir, &self.program, &undone(&l))?;
+                let mut back = undone(&l);
+                back.error = error;
+                write(&self.dir, &self.program, &back)?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -567,6 +690,31 @@ impl Guard {
 }
 
 // ---- the writer's side (the UI backend) --------------------------------------------------------
+
+/// Why a writer's request was not carried out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyError {
+    /// The values are not acceptable (unknown flag, wrong shape, refused by the parser).
+    Invalid(String),
+    /// The file is in a state that does not allow it (changed since read, a change is waiting,
+    /// nothing to do).
+    Conflict(String),
+    /// The file could not be read or written.
+    Io(String),
+}
+
+impl std::fmt::Display for ApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::Invalid(m) | Self::Conflict(m) | Self::Io(m)) = self;
+        f.write_str(m)
+    }
+}
+
+impl std::error::Error for ApplyError {}
+
+fn conflict(m: &str) -> ApplyError {
+    ApplyError::Conflict(m.into())
+}
 
 /// Starts a trial apply of `values`: they become the file's values, the old ones are kept as
 /// `previous`, and the change is pending. `expect_rev` is the revision the caller read; a file
@@ -578,17 +726,49 @@ pub fn apply(
     values: Values,
     expect_rev: u64,
     now: u64,
-) -> Result<File, String> {
-    check(cmd, &values)?;
-    let cur = read(dir, program)?.unwrap_or_default();
+) -> Result<File, ApplyError> {
+    let checked = check(cmd, &values).map_err(ApplyError::Invalid);
+    apply_with(dir, program, checked, values, expect_rev, now)
+}
+
+/// [`apply`] for a writer that has only the program's published flag list (the UI backend):
+/// the shapes are checked here, the full parser runs in the program ([`Guard`]).
+pub fn apply_flags(
+    dir: &Path,
+    program: &str,
+    flags: &[Flag],
+    values: Values,
+    expect_rev: u64,
+    now: u64,
+) -> Result<File, ApplyError> {
+    let checked = check_flags(flags, &values).map_err(ApplyError::Invalid);
+    apply_with(dir, program, checked, values, expect_rev, now)
+}
+
+fn apply_with(
+    dir: &Path,
+    program: &str,
+    checked: Result<(), ApplyError>,
+    values: Values,
+    expect_rev: u64,
+    now: u64,
+) -> Result<File, ApplyError> {
+    checked?;
+    let cur = read(dir, program)
+        .map_err(ApplyError::Io)?
+        .unwrap_or_default();
     if cur.rev != expect_rev {
-        return Err("the settings changed since you loaded them; reload and try again".into());
+        return Err(conflict(
+            "the settings changed since you loaded them; reload and try again",
+        ));
     }
     if cur.pending.is_some() {
-        return Err("a change is waiting for confirmation; confirm or undo it first".into());
+        return Err(conflict(
+            "a change is waiting for confirmation; confirm or undo it first",
+        ));
     }
     if cur.values == values {
-        return Err("nothing changed".into());
+        return Err(conflict("nothing changed"));
     }
     let next = File {
         rev: cur.rev + 1,
@@ -598,31 +778,37 @@ pub fn apply(
             applied_at: now,
             attempts: 0,
         }),
+        error: None,
     };
-    write(dir, program, &next)?;
+    write(dir, program, &next).map_err(ApplyError::Io)?;
     Ok(next)
 }
 
 /// Makes the pending change final.
-pub fn confirm(dir: &Path, program: &str) -> Result<File, String> {
-    let mut cur = read(dir, program)?.ok_or("no settings file")?;
+pub fn confirm(dir: &Path, program: &str) -> Result<File, ApplyError> {
+    let mut cur = read(dir, program)
+        .map_err(ApplyError::Io)?
+        .ok_or_else(|| conflict("no settings file"))?;
     if cur.pending.take().is_none() {
-        return Err("nothing is waiting for confirmation".into());
+        return Err(conflict("nothing is waiting for confirmation"));
     }
     cur.previous = None;
+    cur.error = None;
     cur.rev += 1;
-    write(dir, program, &cur)?;
+    write(dir, program, &cur).map_err(ApplyError::Io)?;
     Ok(cur)
 }
 
 /// Puts the previous values back (the running program notices and restarts).
-pub fn undo(dir: &Path, program: &str) -> Result<File, String> {
-    let cur = read(dir, program)?.ok_or("no settings file")?;
+pub fn undo(dir: &Path, program: &str) -> Result<File, ApplyError> {
+    let cur = read(dir, program)
+        .map_err(ApplyError::Io)?
+        .ok_or_else(|| conflict("no settings file"))?;
     if cur.pending.is_none() {
-        return Err("nothing is waiting for confirmation".into());
+        return Err(conflict("nothing is waiting for confirmation"));
     }
     let next = undone(&cur);
-    write(dir, program, &next)?;
+    write(dir, program, &next).map_err(ApplyError::Io)?;
     Ok(next)
 }
 
@@ -830,6 +1016,7 @@ mod tests {
                 applied_at: 1_000,
                 attempts: 0,
             }),
+            error: None,
         };
         assert!(matches!(
             decide_boot(&file, 1_000 + HARD_DEADLINE_SECS),
@@ -848,15 +1035,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let go = |v: Values, rev| apply(dir.path(), "demo", &cmd(), v, rev, 10);
         let v1 = vals(&[("workers", one("2"))]);
-        assert!(go(v1.clone(), 7).unwrap_err().contains("changed since"));
+        assert!(go(v1.clone(), 7)
+            .unwrap_err()
+            .to_string()
+            .contains("changed since"));
         go(v1.clone(), 0).unwrap();
-        let again = go(vals(&[("workers", one("3"))]), 1).unwrap_err();
+        let again = go(vals(&[("workers", one("3"))]), 1)
+            .unwrap_err()
+            .to_string();
         assert!(again.contains("waiting for confirmation"), "{again}");
         let f = confirm(dir.path(), "demo").unwrap();
         assert!(f.pending.is_none() && f.previous.is_none());
         assert_eq!(f.values, v1);
-        assert!(go(v1, f.rev).unwrap_err().contains("nothing changed"));
-        assert!(confirm(dir.path(), "demo").unwrap_err().contains("nothing"));
+        assert!(go(v1, f.rev)
+            .unwrap_err()
+            .to_string()
+            .contains("nothing changed"));
+        assert!(confirm(dir.path(), "demo")
+            .unwrap_err()
+            .to_string()
+            .contains("nothing"));
         assert!(go(vals(&[("workers", one("many"))]), f.rev).is_err());
     }
 
@@ -870,12 +1068,14 @@ mod tests {
                 applied_at: 100,
                 attempts: 1,
             }),
+            error: None,
         };
         let g = Guard {
             dir: PathBuf::new(),
             program: "demo".into(),
             booted: booted.clone(),
             started: 100,
+            cmd: cmd(),
         };
         assert_eq!(g.judge(None, 500), Action::Nothing);
         assert_eq!(
@@ -895,6 +1095,111 @@ mod tests {
             ..booted
         };
         assert_eq!(g.judge(Some(&newer), 101), Action::Restart);
+        // Values the program's own parser refuses are put back without a restart.
+        let bad = File {
+            values: vals(&[("workers", one("many"))]),
+            ..newer
+        };
+        let Action::Reject(why) = g.judge(Some(&bad), 101) else {
+            panic!("expected a rejection");
+        };
+        assert!(why.contains("workers"), "{why}");
+    }
+
+    #[test]
+    fn a_refused_trial_is_put_back_with_the_reason_and_a_confirmed_file_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let prev = vals(&[("workers", one("2"))]);
+        let trial = File {
+            rev: 7,
+            values: vals(&[("workers", one("many"))]),
+            previous: Some(prev.clone()),
+            pending: Some(Pending {
+                applied_at: 1,
+                attempts: 0,
+            }),
+            error: None,
+        };
+        write(dir.path(), "demo", &trial).unwrap();
+        let g = Guard {
+            dir: dir.path().to_path_buf(),
+            program: "demo".into(),
+            booted: File {
+                rev: 6,
+                values: prev.clone(),
+                ..File::default()
+            },
+            started: 100,
+            cmd: cmd(),
+        };
+        assert_eq!(
+            g.undo_if_unchanged(Some(&trial), Some("bad".into())),
+            Ok(true)
+        );
+        let back = read(dir.path(), "demo").unwrap().unwrap();
+        assert_eq!(
+            (&back.values, &back.pending, back.error.as_deref()),
+            (&prev, &None, Some("bad"))
+        );
+        // Now confirmed (no pending mark): nothing to undo.
+        assert_eq!(
+            g.undo_if_unchanged(Some(&back), Some("again".into())),
+            Ok(false)
+        );
+    }
+
+    #[test]
+    fn flags_that_say_where_tokens_go_or_what_is_trusted_are_not_editable() {
+        for n in [
+            "controller-url",
+            "aggregator-admin-url",
+            "controller",
+            "aggregator",
+            "ca-file",
+            "users-file",
+            "tls-cert",
+            "tls-key",
+            "plugin-webhook-tls-cert",
+            "config",
+            "static-dir",
+            "ha-peers",
+            "ha-join",
+            "ha-import-source",
+            "instance-url-allow",
+            "acme-ca",
+            "acme-challenge-upstream",
+        ] {
+            assert!(not_editable(n).is_some(), "{n} must be locked");
+        }
+        assert!(not_editable("workers").is_none());
+    }
+
+    #[test]
+    fn the_program_publishes_its_flag_list_and_the_writer_checks_shapes_against_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().to_str().unwrap();
+        assert_eq!(read_schema(dir.path(), "demo"), None);
+        // A dry run publishes nothing; a real start does.
+        layer("demo", &cmd(), argv(&["--settings-dir", d, "--check"]));
+        assert_eq!(read_schema(dir.path(), "demo"), None);
+        layer("demo", &cmd(), argv(&["--settings-dir", d, "--listen=x"]));
+        let flags = read_schema(dir.path(), "demo").unwrap();
+        assert_eq!(flags, schema(&cmd()));
+        let ok = vals(&[
+            ("workers", one("4")),
+            ("tag", Value::Many(vec!["a".into()])),
+        ]);
+        assert_eq!(check_flags(&flags, &ok), Ok(()));
+        for (bad, why) in [
+            (vals(&[("nope", one("x"))]), "no such flag"),
+            (vals(&[("auth-token", one("x"))]), "credential"),
+            (vals(&[("plugins", one("yes"))]), "wrong shape"),
+            (vals(&[("workers", one(""))]), "empty"),
+            (vals(&[("workers", one("1\n--check"))]), "multi-line"),
+        ] {
+            let e = check_flags(&flags, &bad).unwrap_err();
+            assert!(e.contains(why), "{e}");
+        }
     }
 
     /// Whether this process can write into a directory made read-only (root cannot be stopped).
@@ -1017,10 +1322,11 @@ mod tests {
             program: "demo".into(),
             booted: applied.clone(),
             started: 0,
+            cmd: cmd(),
         };
         // The guard saw `applied`; the operator confirms a moment later.
         confirm(dir.path(), "demo").unwrap();
-        assert_eq!(guard.undo_if_unchanged(Some(&applied)), Ok(false));
+        assert_eq!(guard.undo_if_unchanged(Some(&applied), None), Ok(false));
         let f = read(dir.path(), "demo").unwrap().unwrap();
         assert_eq!(
             f.values,
@@ -1037,7 +1343,7 @@ mod tests {
             now(),
         )
         .unwrap();
-        assert_eq!(guard.undo_if_unchanged(Some(&again)), Ok(true));
+        assert_eq!(guard.undo_if_unchanged(Some(&again), None), Ok(true));
         assert_eq!(
             read(dir.path(), "demo").unwrap().unwrap().values,
             vals(&[("workers", one("9"))])
