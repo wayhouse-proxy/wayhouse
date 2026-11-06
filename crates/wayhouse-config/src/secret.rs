@@ -142,7 +142,7 @@ impl<'de> de::Visitor<'de> for Visit {
 
     fn visit_map<A: de::MapAccess<'de>>(self, mut m: A) -> Result<SecretOr, A::Error> {
         let bad = || de::Error::custom("a secret reference is exactly `{ secret: <name> }`");
-        let (Some((key, name)), true) = (m.next_entry::<String, String>()?, true) else {
+        let Some((key, name)) = m.next_entry::<String, String>()? else {
             return Err(bad());
         };
         if key != "secret" || m.next_key::<String>()?.is_some() {

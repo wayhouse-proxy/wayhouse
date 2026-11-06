@@ -85,7 +85,9 @@ that will receive the document runs 0.4.0; an older proxy refuses the document.
 
 `settings.admin.auth_token` and `settings.gossip.psk` also accept `{ secret: <name> }` at schema 4
 (see [configuration](05-configuration.md)); plaintext values keep working and are warned about.
-An older proxy refuses a document that uses a reference, so the same rule applies.
+An older proxy refuses a document that uses a reference, so the same rule applies. One more
+change for existing documents: an all-digit or `true`/`false` token or PSK written without quotes
+(`auth_token: 1234567890123456`) is now refused with a "must be quoted" error; put quotes around it.
 
 ## Upgrading from 0.2.0 to 0.3.0
 
