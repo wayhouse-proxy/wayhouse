@@ -232,6 +232,10 @@ carried in the PROXY v2 TLV if the backend should correlate it.
   `source` (`default` | `config` | `override` | `build`), `default`, `scope`, `apply`, `override`
   (`both` | `off_only`), `protection`, `wired`, `available`, `since`, `risk`, `impact`. The controller
   serves the same shape for its own flags.
+- `GET /config/schema` and `POST /config/validate` – the JSON Schema of a config document
+  (`X-Config-Schema-Version` header) and a dry-run check of a raw YAML document (`200
+  {"ok":true,"schema_version":N}`, or `422 {"error":...}`; nothing is applied). Same shapes as the
+  controller's, so a UI can work against a file-config proxy with no controller.
 - `GET /web` – the resolved `web:` section as JSON for `wayhouse-web-sync`: `pool`,
   `listen.{http,https}`, `trusted_proxy`, `internal_bind`, and per site its `hosts` and
   `upstreams` in final form (`{addr}`, `{pool, via: "direct"}`, or `{pool, via: "wayhouse",
