@@ -42,3 +42,63 @@ test("install wizard: upload, options, review, approve, install", async ({ page 
   expect(installs).toHaveLength(1);
   expect(installs[0]).toMatchObject({ approved: PANEL, config: { panel: "p.example" } });
 });
+
+const ADMIN = { authenticated: true, username: "ana", role: "admin" };
+
+test("an install the plugins file owns is badged, read-only, and has a plan", async ({ page }) => {
+  await page.route("**/ui/session", (r) => r.fulfill({ json: ADMIN }));
+  await page.route("**/ws/**", (r) => r.abort());
+  await page.route("**/api/plugin-routes", (r) => r.fulfill({ json: { routes: [], conflicts: [] } }));
+  await page.route("**/api/plugins", (r) =>
+    r.fulfill({ json: [{ id: "0123456789abcdef", name: "from-file", sha256: SHA, size: 1, approved: CAPS, config: {}, enabled: true, created_at: 1, created_by: "plugins-file" }] }),
+  );
+  await page.route("**/api/plugins/file/plan", (r) =>
+    r.fulfill({ json: { applied: false, plugins: [{ name: "next-one", id: null, action: "refused", reason: "the approval hash does not match", effective_sha256: "cd".repeat(32) }] } }),
+  );
+
+  await page.goto("/plugins");
+  const row = page.getByRole("row", { name: /from-file/ });
+  await expect(row.getByText("managed by file")).toBeVisible();
+  await expect(row.getByRole("button", { name: "Delete from-file" })).toHaveAttribute("aria-disabled", "true");
+  await page.getByRole("button", { name: "Show file plan" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("next-one");
+  await expect(dialog).toContainText("cd".repeat(32));
+});
+
+test("registry install: list, fetch an unsigned module only after confirming, land in the wizard", async ({ page }) => {
+  const fetches: any[] = [];
+  const REG = { id: "r1", name: "wayhouse plugins", url: "https://example.test/index.json", official: true, risk: "official" };
+  await page.route("**/ui/session", (r) => r.fulfill({ json: ADMIN }));
+  await page.route("**/ws/**", (r) => r.abort());
+  await page.route("**/api/plugin-registries", (r) => r.fulfill({ json: { registries: [REG], persistent: true } }));
+  await page.route("**/api/plugin-registries/r1/plugins", (r) =>
+    r.fulfill({
+      json: {
+        registry: REG,
+        index_name: "plugins",
+        host_abi: "0.2",
+        plugins: [{ name: "bound", description: "Panel sync", license: "MIT", compatible: true, versions: [{ version: "0.2.0", abi: "0.2", size: 4096, compatible: true, verifiable: false }] }],
+      },
+    }),
+  );
+  await page.route("**/api/plugin-registries/r1/fetch", (r) => {
+    const body = r.request().postDataJSON();
+    fetches.push(body);
+    if (!body.allow_unsigned) return r.fulfill({ status: 409, json: { error: "signature could not be verified", needs_confirm: true, risk: "official", signed: false } });
+    return r.fulfill({ json: { plugin: "bound", version: "0.2.0", signed: false, risk: "official", upload: { sha256: SHA, size: 4, abi: "0.2", capabilities: CAPS, manifest: MANIFEST } } });
+  });
+
+  await page.goto("/plugins/new");
+  await page.getByText("From a registry").click();
+  await page.getByRole("button", { name: /Fetch/ }).first().click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  expect(fetches).toHaveLength(1);
+  // Nothing more is sent until the risk is accepted.
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Fetch anyway" })).toBeDisabled();
+  expect(fetches).toHaveLength(1);
+  await page.getByRole("dialog").getByRole("checkbox", { name: /accept this risk/ }).check();
+  await page.getByRole("dialog").getByRole("button", { name: "Fetch anyway" }).click();
+  await expect(page.getByLabel(/Panel host/)).toBeVisible();
+  expect(fetches.map((f) => f.allow_unsigned)).toEqual([false, true]);
+});
