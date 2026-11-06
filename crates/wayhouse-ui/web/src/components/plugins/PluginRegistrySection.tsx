@@ -30,12 +30,12 @@ export function PluginRegistrySection({ onFetched }: { onFetched: (result: Plugi
   const [busy, setBusy] = useState<string | null>(null);
   // A result that arrives after the section was dropped (Start over) must not reach the wizard.
   const alive = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    alive.current = true; // StrictMode runs the cleanup once before the real mount
+    return () => {
       alive.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
   const [confirming, setConfirming] = useState<{ plugin: string; version: string; risk: "official" | "external" } | null>(null);
 
   useEffect(() => {

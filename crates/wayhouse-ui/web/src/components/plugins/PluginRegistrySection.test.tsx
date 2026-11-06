@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -139,6 +140,18 @@ describe("PluginRegistrySection", () => {
     release({ plugin: "pelican-sync", version: "0.2.0", signed: true, risk: "official", upload: MODULE });
     await Promise.resolve();
     expect(done).not.toHaveBeenCalled();
+  });
+
+  it("still hands a result on under StrictMode, which mounts, cleans up and mounts again", async () => {
+    const user = userEvent.setup();
+    render(
+      <StrictMode>
+        <PluginRegistrySection onFetched={done} />
+      </StrictMode>,
+    );
+    await screen.findByText("pelican-sync");
+    await user.click(screen.getByRole("button", { name: "Fetch pelican-sync" }));
+    expect(done).toHaveBeenCalledTimes(1);
   });
 
   it("says so when there is no plugin registry", async () => {
