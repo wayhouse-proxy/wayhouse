@@ -22,6 +22,9 @@ for (const scheme of ["light", "dark"] as const) {
     const found: string[] = [];
     const titles = new Set<string>();
     for (const path of PAGES) {
+      // Leave the document first: a hash change alone keeps the old page (and its heading) on screen
+      // until the router re-renders, so the heading check below could be met by the previous page.
+      await page.goto("about:blank");
       await page.goto(`${DEMO}#${path}`);
       await expect(page.getByRole("heading", { level: 1 }).first(), path).toBeVisible();
       await page.waitForTimeout(300); // charts and tables settle
