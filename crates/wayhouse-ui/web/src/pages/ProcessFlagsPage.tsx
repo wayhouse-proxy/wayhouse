@@ -82,7 +82,11 @@ export function ProcessFlagsPage() {
 
 function ProgramSection({ program, canWrite, onChanged }: { program: ProcessProgram; canWrite: boolean; onChanged: () => void }) {
   const file = program.file;
-  const saved = useMemo<Draft>(() => file?.values ?? {}, [file]);
+  // Every poll hands over a new `file` object; keyed by content, so typing is not wiped by a
+  // reload that changed nothing here (another program's trial keeps the page polling).
+  const savedKey = JSON.stringify(file?.values ?? {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const saved = useMemo<Draft>(() => file?.values ?? {}, [savedKey]);
   const [draft, setDraft] = useState<Draft>(saved);
   const [filter, setFilter] = useState("");
   const [busy, setBusy] = useState(false);
@@ -191,7 +195,7 @@ function ProgramSection({ program, canWrite, onChanged }: { program: ProcessProg
           </Table>
           {locked.length > 0 && (
             <p className="text-sm text-ink-muted">
-              Not editable here: {locked.map((f) => `--${f.name}`).join(", ")}.
+              Not editable here: {locked.map((f) => `--${f.name}${f.reason ? ` (${f.reason})` : ""}`).join("; ")}.
             </p>
           )}
           {error && (
@@ -259,7 +263,8 @@ function ListInput({
   const lines = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
   const [text, setText] = useState(lines.join("\n"));
   const parse = (t: string) => t.split("\n").map((l) => l.trim()).filter((l) => l !== "");
-  // Take over a value that changed from outside (a discard, a newer file).
+  // Take over a value that changed from outside (a discard, a newer file). Keyed by content: the
+  // array is rebuilt on every render.
   useEffect(() => {
     setText((t) => (JSON.stringify(parse(t)) === JSON.stringify(lines) ? t : lines.join("\n")));
   }, [JSON.stringify(lines)]); // eslint-disable-line react-hooks/exhaustive-deps

@@ -53,7 +53,7 @@ describe("ProcessFlagsPage", () => {
     page();
     expect(await screen.findByLabelText("--listen")).toBeInTheDocument();
     expect(screen.queryByLabelText("--auth-token")).toBeNull();
-    expect(screen.getByText(/Not editable here: --auth-token/)).toBeInTheDocument();
+    expect(screen.getByText(/Not editable here: --auth-token \(a credential\)/)).toBeInTheDocument();
     const closed = screen.getAllByRole("button").find((b) => b.getAttribute("aria-expanded") === "false");
     expect(closed).toBeDefined();
     await userEvent.click(closed!);
@@ -81,6 +81,36 @@ describe("ProcessFlagsPage", () => {
     await user.click(screen.getByRole("button", { name: "Apply as a trial" }));
     await user.click(await screen.findByRole("button", { name: "Restart with the change" }));
     expect(api.applyProcess).toHaveBeenCalledWith("controller", { "ha-peers": ["10.0.0.1:7000", "10.0.0.2:7000"] }, 4);
+  });
+
+  it("keeps text typed in one program while another program's trial keeps the page polling", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      // A fresh object graph on every call, like a real reload.
+      api.listProcess.mockImplementation(async () => ({
+        dir_configured: true,
+        programs: [
+          {
+            program: "controller", label: "Controller", connected: true, flags: [...flags],
+            file: { rev: 5, values: {}, previous: {}, pending: { applied_at: 1, attempts: 1, confirm_secs: 60 }, error: null },
+          },
+          {
+            program: "aggregator", label: "Aggregator", connected: true, flags: [{ ...flags[0] }],
+            file: { rev: 2, values: {}, previous: null, pending: null, error: null },
+          },
+        ],
+      }));
+      page();
+      const box = await screen.findByLabelText("--listen", { selector: "input:not([disabled])" });
+      await user.type(box, "0.0.0.0:1");
+      const calls = api.listProcess.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(3500);
+      expect(api.listProcess.mock.calls.length).toBeGreaterThan(calls);
+      expect(box).toHaveValue("0.0.0.0:1");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("offers Confirm and Undo while a change is on trial, and blocks new edits", async () => {
