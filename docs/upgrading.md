@@ -89,6 +89,11 @@ An older proxy refuses a document that uses a reference, so the same rule applie
 change for existing documents: an all-digit or `true`/`false` token or PSK written without quotes
 (`auth_token: 1234567890123456`) is now refused with a "must be quoted" error; put quotes around it.
 
+The cluster secret store (`PUT /secrets/{name}`, the UI data level is now 4) follows the
+same rule: upgrade every controller before the first secret write; the leader answers `409`
+while a member runs an older build. A proxy that resolves `{ secret: name }` needs the same key
+file as its controller. The plugins file (`--plugins-file`) reconciles on the leader only under HA.
+
 ## Upgrading from 0.2.0 to 0.3.0
 
 0.3.0 replaces the controller's embedded database (`sled` to `redb`) **without a

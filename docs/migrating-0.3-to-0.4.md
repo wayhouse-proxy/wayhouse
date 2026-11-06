@@ -4,8 +4,21 @@ This is the operator's checklist for moving a running 0.3.0 deployment to 0.4.0.
 rules for any upgrade (compatibility window, order of operations, draining a proxy) are in
 [Upgrading a fleet](upgrading.md); this page covers what is specific to this release.
 
-> **Skeleton.** The 0.4.0 slices fill in their own sections as they land. Nothing is
-> final until the release notes say so.
+Every change is additive or opt-in except the plugin ABI (rebuild your plugins) and the quoting rule
+for tokens (see Secrets). On a single box, the [solo bundle](12-deployment.md#one-box-the-solo-bundle)
+runs all of it with one command.
+
+## Upgrade order, in one place
+
+1. Back up the controller's `--data-dir` (and, if you use sealed secrets, the key file: a lost
+   key makes every stored secret unreadable).
+2. Upgrade **every controller replica** (HA: one at a time, followers first). Until the last one
+   runs 0.4.0 the leader refuses plugin installs, confirm-and-revert windows, stored UI data
+   writes, feature-flag overrides, operator node tags and cluster secret writes (`409`).
+3. Upgrade the aggregator, then the UI backend, then the proxies.
+4. Only now write `schema_version: 4` into a config that uses `features:`, `enabled:` or
+   `{ secret: name }`: an older proxy refuses it.
+5. Rebuild and re-approve plugins (below).
 
 ## Config schema
 
@@ -61,7 +74,40 @@ The web UI now opens on a **Dashboard** (a 12-column grid of widgets) instead of
 
 ## Secrets
 
-Not yet filled in.
+`settings.admin.auth_token` and `settings.gossip.psk` can be `{ secret: <name> }` (config schema 4).
+The value lives sealed in the controller's cluster secret store (the Secrets page, or
+`PUT /secrets/{name}`; names are `a-z`, `0-9` and `-`, values 8 to 4096 bytes) and is never
+shown again. To use it:
+
+1. Give the controller a key: `--secret-key-file <file>` (the same file as `--plugin-secret-key-file`,
+   one base64 32-byte key per line, last one active, mode 0600). Without a key the controller
+   refuses secret writes, and refuses plain HTTP on a non-loopback address once it holds a key
+   (`--allow-insecure-secrets` overrides, for a private network).
+2. Give every proxy that fetches its config from a controller the **same key file**
+   (`--secret-key-file` or `WAYHOUSE_PLUGIN_SECRET_KEY`): the controller sends the value sealed and
+   the proxy opens it. A proxy on a file config keeps its own store instead:
+   `--secrets-file <path>` with `--secret-set NAME` (value on stdin), `--secret-delete NAME` and
+   `--secret-list`.
+3. Reference it: `auth_token: { secret: admin-token }`. The value is read once at start, so a
+   rotated secret applies at the next restart. A reference that cannot be resolved stops the
+   start with a message naming the secret; a reload does not check that it exists, so `PUT` the
+   secret first and run `--check`.
+
+Plaintext values still work and are warned about. An unquoted all-digit or `true`/`false` token
+(`auth_token: 1234567890123456`) is now refused with a "must be quoted" error: add quotes.
+
+## Plugin registry and the plugins file
+
+The Plugins page can install from a plugin registry ("From a registry" in the install wizard). A
+fetch checks size, SHA-256 and the ABI, and checks the minisign signature when the registry is the
+official one (the official key is built in); an unsigned module needs an explicit confirm. A fetch
+only uploads the module: capabilities are still approved by you. `registry_install` is a feature
+flag, so it can be switched off.
+
+Instead of clicking, a controller started with `--plugins --plugins-file plugins.yaml` can
+reconcile its installs from a file (at start, on `SIGHUP`, every 30 s). The installs the file
+creates are read-only in the UI and API (`409 managed_by_file`); the UI badges them and "Show file
+plan" prints the dry run. Details: [plugins](plugins.md#the-plugins-file---plugins-file).
 
 ## Feature flags
 
@@ -79,4 +125,17 @@ item"). Declare `schema_version: 4` only once every proxy that receives the docu
 
 ## Deploy layout
 
-Not yet filled in.
+`deploy/compose` gains overlays: `compose.solo.yml` (the controller with `--plugins` and a sealed
+secret key created once by a `keys` step, the proxy with the same key, nothing published beyond
+the host loopback), `compose.solo-acme.yml` (adds `--acme`, staging CA by default; including it is
+your acceptance of the CA's terms) and the existing `compose.web.yml` and `compose.tunnel.yml`.
+`sh deploy/solo/init.sh` writes random tokens and a UI password into `deploy/compose/.env` (mode
+0600, never overwrites). Without Docker, `deploy/systemd/` has the same units and a
+`wayhouse-solo.target`. Both forms pass tokens as command-line flags, so any local user can read
+them in `ps`: keep the box single-user. See [deployment](12-deployment.md).
+
+## What works on one instance
+
+Every 0.4.0 feature works on a single controller and a single proxy: feature flags and node tags,
+`enabled: false`, sealed secrets (key file on both), the plugin registry and the plugins file,
+the UI data store, confirm-and-revert. HA only changes the upgrade order above.
