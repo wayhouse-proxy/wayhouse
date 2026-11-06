@@ -85,37 +85,52 @@ pub fn load_keyring(file: Option<&Path>) -> anyhow::Result<Option<std::sync::Arc
     Ok(handle.map(|h| h.current()))
 }
 
+/// Where a proxy finds sealed secrets: the controller, or its own file (`--secrets-file`).
+pub enum Store<'a> {
+    None,
+    Controller(&'a str, Option<&'a str>),
+    File(&'a Path),
+}
+
 /// Turns the config's `{ secret: name }` values into their values, once, at start. With no
-/// reference in the config nothing is fetched and no key is needed. A reference needs a
-/// controller to fetch from and a key file to open it with; a file-config proxy has neither
-/// store yet, so it stops with the message that says so.
+/// reference in the config nothing is fetched and no key is needed. A reference needs a store
+/// (the controller, or the proxy's own file) and a key file to open it with; with neither the
+/// start stops with the message that says so.
 pub async fn resolve_config(
     cfg: wayhouse_config::Config,
-    controller: Option<(&str, Option<&str>)>,
+    store: Store<'_>,
     key_file: Option<&Path>,
 ) -> anyhow::Result<wayhouse_config::Config> {
     let names = cfg.secret_names();
-    let resolver = match (names.is_empty(), controller) {
-        (true, _) | (false, None) => None,
-        (false, Some((url, token))) => {
-            let keyring = load_keyring(key_file)?;
-            let mut fetched = HashMap::new();
-            if keyring.is_some() {
-                for name in &names {
-                    fetched.insert(
-                        name.clone(),
-                        fetch_sealed(url, token, name)
-                            .await
-                            .map_err(|e| anyhow::anyhow!("{e}"))?,
-                    );
-                }
+    let resolver = if names.is_empty() || matches!(store, Store::None) {
+        None
+    } else {
+        let keyring = load_keyring(key_file)?;
+        let mut fetched = HashMap::new();
+        if keyring.is_some() {
+            let local = match &store {
+                Store::File(path) => Some(crate::secret_store::read(path)?),
+                _ => None,
+            };
+            for name in &names {
+                let got = match (&store, &local) {
+                    (Store::Controller(url, token), _) => fetch_sealed(url, *token, name)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?,
+                    (_, Some(map)) => map
+                        .get(name)
+                        .cloned()
+                        .map_or(Fetched::Absent, Fetched::Sealed),
+                    _ => Fetched::Absent,
+                };
+                fetched.insert(name.clone(), got);
             }
-            let r = open_all(&names, keyring.as_deref(), |n| {
-                Ok(fetched.remove(n).unwrap_or(Fetched::Absent))
-            })
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-            Some(r)
         }
+        let r = open_all(&names, keyring.as_deref(), |n| {
+            Ok(fetched.remove(n).unwrap_or(Fetched::Absent))
+        })
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Some(r)
     };
     cfg.resolve_secrets(resolver.as_ref().map(|r| r as &dyn SecretResolver))
         .map_err(|e| anyhow::anyhow!("{e}"))
@@ -308,7 +323,7 @@ mod tests {
         let keys = key_file(KEY_A);
         let cfg = resolve_config(
             sealed_cfg(),
-            Some((&url, Some("ctl-token"))),
+            Store::Controller(&url, Some("ctl-token")),
             Some(keys.path()),
         )
         .await
@@ -341,10 +356,14 @@ mod tests {
         let good = key_file(KEY_A);
         let other = key_file(KEY_B);
         let run = |url: String, token: &'static str, keys: Option<std::path::PathBuf>| async move {
-            resolve_config(sealed_cfg(), Some((&url, Some(token))), keys.as_deref())
-                .await
-                .unwrap_err()
-                .to_string()
+            resolve_config(
+                sealed_cfg(),
+                Store::Controller(&url, Some(token)),
+                keys.as_deref(),
+            )
+            .await
+            .unwrap_err()
+            .to_string()
         };
         // No key file: the flag is named.
         std::env::remove_var(wayhouse_secrets::KEY_ENV);
@@ -368,11 +387,37 @@ mod tests {
             "{e}"
         );
         // No controller: a file-config proxy.
-        let e = resolve_config(sealed_cfg(), None, Some(good.path()))
+        let e = resolve_config(sealed_cfg(), Store::None, Some(good.path()))
             .await
             .unwrap_err()
             .to_string();
         assert!(e.contains("no secret store"), "{e}");
         assert!(!e.contains(VALUE) && !e.contains("the-admin-token-value"));
+    }
+
+    #[tokio::test]
+    async fn a_file_config_proxy_resolves_from_its_own_store() {
+        let keys = key_file(KEY_A);
+        let ring = ring(KEY_A);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        crate::secret_store::set(&path, &ring, "admin-token", b"the-admin-token-value").unwrap();
+        // One of the two is missing: named, and no value printed.
+        let e = resolve_config(sealed_cfg(), Store::File(&path), Some(keys.path()))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("`gossip-psk`") && !e.contains("the-admin-token-value"),
+            "{e}"
+        );
+        crate::secret_store::set(&path, &ring, "gossip-psk", VALUE.as_bytes()).unwrap();
+        let cfg = resolve_config(sealed_cfg(), Store::File(&path), Some(keys.path()))
+            .await
+            .unwrap();
+        assert_eq!(
+            cfg.admin_auth_token,
+            Some(wayhouse_config::SecretOr::plain("the-admin-token-value"))
+        );
     }
 }

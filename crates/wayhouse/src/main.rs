@@ -30,6 +30,7 @@ mod procinfo;
 mod proxy_register;
 mod reload;
 mod resolver;
+mod secret_store;
 mod secrets;
 #[cfg(feature = "wasm-sniffers")]
 mod sniffer_loader;
@@ -94,6 +95,29 @@ struct Args {
     /// secret reference, which a proxy fetches (sealed) from `--controller`.
     #[arg(long, value_name = "FILE")]
     secret_key_file: Option<PathBuf>,
+
+    /// The proxy's own sealed secret store, for `{ secret: name }` values on a file config
+    /// (no controller). Created with `--secret-set`; sealed under `--secret-key-file`.
+    #[arg(long, value_name = "FILE", conflicts_with = "controller")]
+    secrets_file: Option<PathBuf>,
+
+    /// Seal NAME into `--secrets-file` (the value is read from stdin, one trailing newline
+    /// dropped) and exit.
+    #[arg(long, value_name = "NAME", requires = "secrets_file", conflicts_with_all = ["secret_delete", "secret_list"])]
+    secret_set: Option<String>,
+
+    /// Remove NAME from `--secrets-file` and exit.
+    #[arg(
+        long,
+        value_name = "NAME",
+        requires = "secrets_file",
+        conflicts_with = "secret_list"
+    )]
+    secret_delete: Option<String>,
+
+    /// List the names in `--secrets-file` (never the values) and exit.
+    #[arg(long, requires = "secrets_file")]
+    secret_list: bool,
 
     /// Validate the config and exit without starting anything. Works with
     /// `--controller` too — fetches its current config and validates that.
@@ -224,8 +248,47 @@ enum ConfigSource {
     Controller(String, Option<String>),
 }
 
+/// `--secret-set` / `--secret-delete` / `--secret-list`: one-shot management of `--secrets-file`.
+/// Returns true when one ran (the proxy then exits without starting).
+fn manage_secrets(args: &Args) -> anyhow::Result<bool> {
+    let Some(path) = args.secrets_file.as_deref() else {
+        return Ok(false);
+    };
+    if let Some(name) = &args.secret_set {
+        let Some(ring) = secrets::load_keyring(args.secret_key_file.as_deref())? else {
+            anyhow::bail!("--secret-set needs a key: give --secret-key-file or set WAYHOUSE_PLUGIN_SECRET_KEY");
+        };
+        let mut value = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut value)?;
+        let value = value.strip_suffix('\n').unwrap_or(&value);
+        secret_store::set(path, &ring, name, value.as_bytes())?;
+        eprintln!("sealed the secret into {}", path.display());
+    } else if let Some(name) = &args.secret_delete {
+        let gone = secret_store::remove(path, name)?;
+        // No name in the message: the caller just typed it, and a name is not worth a log line.
+        eprintln!(
+            "{}",
+            if gone {
+                "removed the secret"
+            } else {
+                "no such secret in the store"
+            }
+        );
+    } else if args.secret_list {
+        for name in secret_store::read(path)?.keys() {
+            println!("{name}");
+        }
+    } else {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if manage_secrets(&args)? {
+        return Ok(());
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -298,12 +361,14 @@ async fn async_main(args: Args) -> anyhow::Result<()> {
 
     // `{ secret: name }` becomes its value here, once, so nothing below sees a reference. A
     // reference that cannot be resolved stops the start with a message naming the secret rather
-    // than running with an empty token. A proxy on a file config has no store yet (S2).
+    // than running with an empty token. A file-config proxy reads its own `--secrets-file`.
     let cfg = secrets::resolve_config(
         cfg,
-        args.controller
-            .as_deref()
-            .map(|url| (url, args.controller_token.as_deref())),
+        match (&args.controller, &args.secrets_file) {
+            (Some(url), _) => secrets::Store::Controller(url, args.controller_token.as_deref()),
+            (None, Some(path)) => secrets::Store::File(path),
+            (None, None) => secrets::Store::None,
+        },
         args.secret_key_file.as_deref(),
     )
     .await?;
