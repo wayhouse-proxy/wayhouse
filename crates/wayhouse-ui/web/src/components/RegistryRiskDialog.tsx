@@ -19,6 +19,7 @@ export function RegistryRiskDialog({
   confirmLabel,
   onConfirm,
   busy = false,
+  riskText = EXTERNAL_RISK_TEXT,
   children,
 }: {
   open: boolean;
@@ -27,6 +28,8 @@ export function RegistryRiskDialog({
   confirmLabel: string;
   onConfirm: () => void;
   busy?: boolean;
+  /** What the operator accepts; the sniffer wording by default. */
+  riskText?: string;
   children?: React.ReactNode;
 }) {
   const [accepted, setAccepted] = useState(false);
@@ -38,7 +41,7 @@ export function RegistryRiskDialog({
     <Dialog open={open} onOpenChange={onOpenChange} title={title}>
       <div className="flex flex-col gap-3 text-sm">
         {children}
-        <AlertBar>{EXTERNAL_RISK_TEXT}</AlertBar>
+        <AlertBar>{riskText}</AlertBar>
         <label className="flex items-start gap-2 text-ink-muted">
           <input type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} className="mt-1" />I
           understand and accept this risk

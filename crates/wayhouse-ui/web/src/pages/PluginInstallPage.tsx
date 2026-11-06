@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ApiError, installPlugin, resolvePluginCapabilities, uploadPluginModule } from "../api";
-import type { PluginCapabilities, PluginModule } from "../types";
+import type { PluginCapabilities, PluginFetchResult, PluginModule, RegistryRef } from "../types";
+import { PluginRegistrySection } from "../components/plugins/PluginRegistrySection";
 import { ApprovalDialog } from "../components/plugins/ApprovalDialog";
 import { SchemaForm } from "../components/form/SchemaForm";
 import { PageHeader } from "../components/shell/Page";
@@ -49,6 +50,9 @@ export function PluginInstallPage() {
   }, [step]);
   const [file, setFile] = useState<File | null>(null);
   const [module, setModule] = useState<PluginModule | null>(null);
+  const [source, setSource] = useState<"file" | "registry">("file");
+  // Where the module came from, once it has: nothing for a hand-picked file.
+  const [origin, setOrigin] = useState<{ registry: string; signed: boolean } | null>(null);
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [effective, setEffective] = useState<PluginCapabilities | null>(null);
   const [name, setName] = useState("");
@@ -68,6 +72,7 @@ export function PluginInstallPage() {
     setStep("upload");
     setFile(null);
     setModule(null);
+    setOrigin(null);
     setConfig({});
     setEffective(null);
     setAsking(false);
@@ -106,6 +111,24 @@ export function PluginInstallPage() {
     }
   }
 
+  /** A module the controller holds (uploaded or fetched): on to its options, or straight to the review. */
+  async function accept(m: PluginModule, suggested: string) {
+    setModule(m);
+    setName(suggested);
+    if (optionsForm(m.manifest).hasFields) {
+      setStep("options");
+      setBusy(false);
+    } else {
+      await review(m, {});
+    }
+  }
+
+  async function fetched(result: PluginFetchResult, registry: RegistryRef) {
+    setError(null);
+    setOrigin({ registry: registry.name, signed: result.signed });
+    await accept(result.upload, suggestName(result.plugin) || "plugin");
+  }
+
   async function inspect(e: React.FormEvent) {
     e.preventDefault();
     if (!file) return setError("choose a .wasm file");
@@ -116,14 +139,7 @@ export function PluginInstallPage() {
     try {
       const inspected = await uploadPluginModule(await file.arrayBuffer());
       if (mine !== session.current) return;
-      setModule(inspected);
-      setName(suggestName(file.name));
-      if (optionsForm(inspected.manifest).hasFields) {
-        setStep("options");
-        setBusy(false);
-      } else {
-        await review(inspected, {});
-      }
+      await accept(inspected, suggestName(file.name));
     } catch (err) {
       if (mine === session.current) setError(errorText(err));
     } finally {
@@ -172,6 +188,24 @@ export function PluginInstallPage() {
       </ol>
 
       {step === "upload" && (
+        <div className="mb-3 flex gap-2" role="group" aria-label="Where the module comes from">
+          <Button variant={source === "file" ? "primary" : "ghost"} aria-pressed={source === "file"} onClick={() => setSource("file")}>
+            Upload a file
+          </Button>
+          <Button variant={source === "registry" ? "primary" : "ghost"} aria-pressed={source === "registry"} onClick={() => setSource("registry")}>
+            From a registry
+          </Button>
+        </div>
+      )}
+
+      {step === "upload" && source === "registry" && (
+        <>
+          <PluginRegistrySection key={session.current} onFetched={fetched} />
+          {error && <ErrorState>{error}</ErrorState>}
+        </>
+      )}
+
+      {step === "upload" && source === "file" && (
         <form className="flex flex-col gap-3" onSubmit={inspect}>
           <label className="flex flex-col gap-1 text-sm text-ink-muted">
             .wasm file
@@ -189,7 +223,12 @@ export function PluginInstallPage() {
       {module && (
         <p className="mb-3 text-sm text-ink-muted">
           Module <span className="font-mono text-xs text-ink">{module.sha256.slice(0, 12)}…</span>, {bytes(module.size)}, plugin ABI{" "}
-          {module.abi}. Uploaded by hand: no registry vouches for it.{" "}
+          {module.abi}.{" "}
+          {origin
+            ? origin.signed
+              ? `From ${origin.registry}, signature verified.`
+              : `From ${origin.registry}; its signature was not verified.`
+            : "Uploaded by hand: no registry vouches for it."}{" "}
           <button type="button" className="underline" onClick={reset}>
             Start over
           </button>

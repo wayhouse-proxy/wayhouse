@@ -15,6 +15,8 @@ import type {
   PluginDetail,
   PluginInstall,
   PluginSecretSlot,
+  PluginFetchResult,
+  RegistryPlugins,
   ClusterSecret,
   PluginStatus,
   PluginModule,
@@ -594,4 +596,20 @@ export function putClusterSecret(name: string, value: string): Promise<void> {
 
 export function deleteClusterSecret(name: string): Promise<void> {
   return requestJson(`/api/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+export function listPluginRegistries(): Promise<RegistryList> {
+  return requestJson("/api/plugin-registries");
+}
+
+export function listRegistryPlugins(id: string): Promise<RegistryPlugins> {
+  return requestJson(`/api/plugin-registries/${encodeURIComponent(id)}/plugins`);
+}
+
+/**
+ * Fetches a module into the controller's upload slot (nothing is approved or installed). A module whose signature
+ * was not verified answers 409 with `body.needs_confirm`; send `allowUnsigned` once the operator accepted that.
+ */
+export function fetchRegistryPlugin(id: string, name: string, version: string | undefined, allowUnsigned: boolean): Promise<PluginFetchResult> {
+  return requestJson(`/api/plugin-registries/${encodeURIComponent(id)}/fetch`, jsonInit("POST", { name, version, allow_unsigned: allowUnsigned }));
 }

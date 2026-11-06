@@ -8,6 +8,9 @@ const api = vi.hoisted(() => ({
   uploadPluginModule: vi.fn(),
   resolvePluginCapabilities: vi.fn(),
   installPlugin: vi.fn(),
+  listPluginRegistries: vi.fn(),
+  listRegistryPlugins: vi.fn(),
+  fetchRegistryPlugin: vi.fn(),
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
 
@@ -47,6 +50,15 @@ beforeEach(() => {
   api.uploadPluginModule.mockReset().mockResolvedValue({ sha256: SHA, size: 2048, abi: "0.2", capabilities: CAPS, manifest: null });
   api.resolvePluginCapabilities.mockReset().mockResolvedValue({ effective: CAPS });
   api.installPlugin.mockReset().mockResolvedValue({});
+  const reg = { id: "r1", name: "wayhouse plugins", url: "https://example.test/index.json", official: true, risk: "official" };
+  api.listPluginRegistries.mockReset().mockResolvedValue({ registries: [reg], persistent: true });
+  api.listRegistryPlugins.mockReset().mockResolvedValue({
+    registry: reg,
+    index_name: "plugins",
+    host_abi: "0.2",
+    plugins: [{ name: "pelican-sync", description: "Syncs", license: "MIT", compatible: true, versions: [{ version: "0.2.0", abi: "0.2", size: 2048, compatible: true, verifiable: false }] }],
+  });
+  api.fetchRegistryPlugin.mockReset();
 });
 
 describe("suggestName", () => {
@@ -100,6 +112,56 @@ describe("PluginInstallPage without options", () => {
     api.uploadPluginModule.mockRejectedValue(new ApiError(400, "not a plugin module"));
     await upload();
     expect(await screen.findByText(/not a plugin module/)).toBeInTheDocument();
+  });
+});
+
+describe("PluginInstallPage from a registry", () => {
+  const fetched = (signed: boolean) => ({
+    plugin: "pelican-sync",
+    version: "0.2.0",
+    signed,
+    risk: "official",
+    upload: { sha256: SHA, size: 2048, abi: "0.2", capabilities: CAPS, manifest: null },
+  });
+  async function fromRegistry() {
+    page();
+    await userEvent.click(screen.getByRole("button", { name: "From a registry" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Fetch pelican-sync" }));
+  }
+
+  it("lands on the review with the fetched module, says where it came from, and installs nothing yet", async () => {
+    api.fetchRegistryPlugin.mockResolvedValue(fetched(true));
+    await fromRegistry();
+    await screen.findByRole("button", { name: "Install…" });
+    expect(screen.getByText(/From wayhouse plugins/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveValue("pelican-sync");
+    expect(api.installPlugin).not.toHaveBeenCalled();
+    expect(api.uploadPluginModule).not.toHaveBeenCalled();
+  });
+
+  it("still shows the approval prompt and installs the fetched module's hash", async () => {
+    api.fetchRegistryPlugin.mockResolvedValue(fetched(true));
+    await fromRegistry();
+    await userEvent.click(await screen.findByRole("button", { name: "Install…" }));
+    const dlg = screen.getByRole("dialog");
+    await userEvent.click(within(dlg).getByRole("checkbox", { name: /I approve/i }));
+    await userEvent.click(within(dlg).getByRole("button", { name: "Approve and install" }));
+    expect(api.installPlugin).toHaveBeenCalledWith(expect.objectContaining({ name: "pelican-sync", sha256: SHA }));
+  });
+
+  it("shows the error when the review step fails after a fetch", async () => {
+    api.fetchRegistryPlugin.mockResolvedValue(fetched(true));
+    api.resolvePluginCapabilities.mockRejectedValue(new ApiError(422, "a plugin named pelican-sync already exists"));
+    await fromRegistry();
+    expect(await screen.findByText(/already exists/)).toBeInTheDocument();
+  });
+
+  it("does not claim a signature the controller did not check", async () => {
+    api.fetchRegistryPlugin.mockResolvedValue(fetched(false));
+    await fromRegistry();
+    await screen.findByRole("button", { name: "Install…" });
+    expect(screen.getByText(/signature was not verified/)).toBeInTheDocument();
+    expect(screen.queryByText(/no registry vouches/)).toBeNull();
   });
 });
 

@@ -287,6 +287,15 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
   if (path === "/api/acme/gateways" && method === "POST") { const b = await json(); GATEWAYS.push({ name: b.name, sites: [] }); return ok({ name: b.name, token: "gwt_demo_" + Math.random().toString(36).slice(2, 22) }); }
   if (path === "/api/acme/account") return ok({ directory_url: "https://acme-v02.api.letsencrypt.org/directory", account_url: "https://acme-v02.api.letsencrypt.org/acme/acct/1948201337", key_id: "cluster-key-1" });
 
+  // plugin registries
+  if (path === "/api/plugin-registries" && method === "GET") return ok({ registries: [{ id: "official-plugins", name: "wayhouse plugins", url: "https://wayhouse-proxy.dev/plugins/index.json", official: true, risk: "official" }], persistent: true });
+  if (path === "/api/plugin-registries/official-plugins/plugins" && method === "GET") return ok({
+    registry: { id: "official-plugins", name: "wayhouse plugins", url: "https://wayhouse-proxy.dev/plugins/index.json", official: true, risk: "official" },
+    index_name: "wayhouse plugins", host_abi: "0.2",
+    plugins: [{ name: "pelican-sync", description: "Keeps pools in step with a Pelican panel", license: "MIT", compatible: true, versions: [{ version: "0.2.0", abi: "0.2", size: 412000, compatible: true, verifiable: false, options_schema: { properties: { panel: { title: "Panel host", description: "where Pelican runs" } } } }] }],
+  });
+  if (path === "/api/plugin-registries/official-plugins/fetch" && method === "POST") { const b = await json(); if (!b.allow_unsigned) return err(409, "this module's signature could not be verified; confirm to fetch it anyway", { needs_confirm: true, risk: "official", signed: false }); return ok({ plugin: b.name, version: "0.2.0", signed: false, risk: "official", status: "uploaded, awaiting approval", upload: { sha256: MODULE_SHA, size: 412000, abi: "0.2", capabilities: { ...PLUGIN_CAPS.pelican, http: null, secrets: [], port_routes: null }, manifest: PELICAN_MANIFEST } }); }
+
   // cluster secrets (write-only: the demo keeps names, never values)
   if (path === "/api/secrets" && method === "GET") return ok({ items: [...secrets.values()] });
   if ((r = m(/^\/api\/secrets\/(.+)$/))) {
