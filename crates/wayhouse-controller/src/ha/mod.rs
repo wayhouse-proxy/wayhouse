@@ -156,6 +156,12 @@ pub enum WriteRequest {
     /// to `true` in place — the same operation `AppState::promote_revision`
     /// does directly when HA is off.
     Promote(u64),
+    /// [`WriteRequest::Promote`] that also puts the revision on trial (`crate::confirm`). A
+    /// separate variant so a log that holds none of these still decodes on an older build.
+    PromoteTrial {
+        revision: u64,
+        trial: crate::confirm::Trial,
+    },
     /// An origin's registration as received (address optional), with the
     /// proposing leader's clock — so `first_seen`/`last_seen` are identical
     /// on every replica.

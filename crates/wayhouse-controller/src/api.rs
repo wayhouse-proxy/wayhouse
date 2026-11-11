@@ -103,7 +103,7 @@ impl Stage {
         }
     }
 
-    fn canary(group: String) -> Self {
+    pub(crate) fn canary(group: String) -> Self {
         Stage {
             promoted: false,
             canary_groups: vec![group],
@@ -215,16 +215,17 @@ impl AppState {
         self
     }
 
-    /// The revision on trial, if its trial is live: the record names the latest revision. Any
-    /// newer revision retires it, so there is nothing to clear.
+    /// The revision on trial, if its trial is live: the record names the newest revision every
+    /// subscriber sees (a canary revision above it reaches one group only, so it does not end the
+    /// trial). Any newer promoted revision retires it, so there is nothing to clear.
     pub fn pending(&self) -> Result<Option<Pending>, StoreError> {
         let Some(raw) = self.pending.get(PENDING_KEY)? else {
             return Ok(None);
         };
-        let latest = self.store.current_revision()?;
+        let live = self.current_for_group(None, None)?.map(|(rev, _)| rev);
         Ok(serde_json::from_slice::<Pending>(&raw)
             .ok()
-            .filter(|p| Some(p.revision) == latest))
+            .filter(|p| Some(p.revision) == live))
     }
 
     /// The Raft-apply form of [`Self::confirm`] for the entry at log `index`: the deletion and
@@ -246,7 +247,7 @@ impl AppState {
     }
 
     /// Brings the revision `revision` replaced back as a new revision, if `revision` is on trial
-    /// and still the latest, else `Ok(None)` (a confirm or a newer edit got there first).
+    /// and still the newest promoted one, else `Ok(None)` (a confirm or a newer edit got there first).
     pub fn revert_trial(
         &self,
         revision: u64,
@@ -260,7 +261,9 @@ impl AppState {
             return Ok(None);
         };
         let stage = stage_bytes(&Stage::promoted());
-        let new = match self.store.put_with_base(Some(revision), bytes, &|new| {
+        // Based on the newest revision, canary or not: the revert lands above it.
+        let latest = self.store.current_revision()?.unwrap_or(0);
+        let new = match self.store.put_with_base(Some(latest), bytes, &|new| {
             self.stage_and_actor_writes(new, &stage, actor, None)
         }) {
             Ok(new) => new,
@@ -374,6 +377,21 @@ impl AppState {
         Ok(revision)
     }
 
+    /// The record that puts `revision` on `trial`.
+    fn pending_write(&self, revision: u64, trial: &Trial) -> SiblingWrite<'_> {
+        SiblingWrite {
+            tree: &self.pending,
+            key: PENDING_KEY.to_vec(),
+            value: Some(
+                serde_json::to_vec(&Pending {
+                    revision,
+                    trial: trial.clone(),
+                })
+                .expect("Pending always serializes"),
+            ),
+        }
+    }
+
     /// The sibling-tree entries that join a revision's transaction: its
     /// stage, its actor if known and the trial it starts, if any.
     fn stage_and_actor_writes<'a>(
@@ -395,19 +413,7 @@ impl AppState {
                 value: Some(actor.as_bytes().to_vec()),
             });
         }
-        if let Some(trial) = trial {
-            writes.push(SiblingWrite {
-                tree: &self.pending,
-                key: PENDING_KEY.to_vec(),
-                value: Some(
-                    serde_json::to_vec(&Pending {
-                        revision,
-                        trial: trial.clone(),
-                    })
-                    .expect("Pending always serializes"),
-                ),
-            });
-        }
+        writes.extend(trial.map(|t| self.pending_write(revision, t)));
         writes
     }
 
@@ -526,7 +532,12 @@ impl AppState {
     /// transaction. `Ok(None)` = already applied (skipped); otherwise
     /// `Some(found)`, and `applied_index` advances even when the revision
     /// does not exist.
-    pub fn promote_entry(&self, index: u64, revision: u64) -> Result<Option<bool>, StoreError> {
+    pub fn promote_entry(
+        &self,
+        index: u64,
+        revision: u64,
+        trial: Option<&Trial>,
+    ) -> Result<Option<bool>, StoreError> {
         let found = self.store.get(revision)?.is_some();
         let mut writes = Vec::new();
         if found {
@@ -537,6 +548,7 @@ impl AppState {
                 key: encode_rev(revision).to_vec(),
                 value: Some(stage_bytes(&stage)),
             });
+            writes.extend(trial.map(|t| self.pending_write(revision, t)));
         }
         if !self.store.mark_applied_with(index, writes)? {
             return Ok(None);
@@ -552,12 +564,24 @@ impl AppState {
     /// module doc). `Ok(false)` if `revision` doesn't exist (the caller
     /// turns that into a `404`); never an error just for "already
     /// promoted" (promoting twice is a no-op, not a conflict).
-    pub fn promote_revision(&self, revision: u64) -> Result<bool, StoreError> {
+    pub fn promote_revision(
+        &self,
+        revision: u64,
+        trial: Option<&Trial>,
+    ) -> Result<bool, StoreError> {
         if self.store.get(revision)?.is_none() {
             return Ok(false);
         }
         let mut stage = self.stage_of(revision);
         stage.promoted = true;
+        if let Some(trial) = trial {
+            // Before the stage flip: until the revision is promoted the record is not live, so a
+            // crash between the two writes leaves nothing half-applied.
+            let w = self.pending_write(revision, trial);
+            self.pending
+                .insert(w.key, w.value.expect("a pending write has a value"))?;
+            self.pending.flush()?;
+        }
         self.set_stage(revision, &stage)?;
         let _ = self.updates.send(revision);
         Ok(true)
@@ -872,6 +896,18 @@ fn plan_trial(
             _ => Ok(None),
         };
     }
+    plan_against_live(state, parsed, window)
+}
+
+/// The trial `parsed` starts when it replaces the revision every subscriber sees now.
+fn plan_against_live(
+    state: &AppState,
+    parsed: &wayhouse_config::Config,
+    window: Window,
+) -> Result<Option<Trial>, Box<Response>> {
+    let bad_request = |error: String| {
+        Box::new((StatusCode::BAD_REQUEST, Json(ErrorResponse { error })).into_response())
+    };
     let live = state
         .current_for_group(None, None)
         .map_err(|e| Box::new(store_error_response(e)))?;
@@ -1222,6 +1258,37 @@ fn schema_floor_rejection(state: &AppState, cfg: &wayhouse_config::Config) -> Op
     )
 }
 
+#[derive(Deserialize)]
+struct PromoteParams {
+    /// As [`SubmitParams::confirm_within`], for the document being promoted.
+    confirm_within: Option<u64>,
+}
+
+/// The trial promoting `revision` starts, if any: none for a revision that is missing, already
+/// promoted or hidden behind a newer promoted one (nothing changes for any subscriber), else
+/// [`plan_against_live`] on its stored document.
+fn plan_promote_trial(
+    state: &AppState,
+    revision: u64,
+    window: Window,
+) -> Result<Option<Trial>, Box<Response>> {
+    let store_err = |e| Box::new(store_error_response(e));
+    let Some(bytes) = state.store.get(revision).map_err(store_err)? else {
+        return Ok(None);
+    };
+    let live_rev = state
+        .current_for_group(None, None)
+        .map_err(store_err)?
+        .map_or(0, |(rev, _)| rev);
+    if state.stage_of(revision).promoted || live_rev > revision {
+        return Ok(None);
+    }
+    match wayhouse_config::parse_str(&String::from_utf8_lossy(&bytes)) {
+        Ok(parsed) => plan_against_live(state, &parsed, window),
+        Err(_) => Ok(None), // a stored document that no longer parses cannot be risk-checked
+    }
+}
+
 /// `POST /config/promote/{revision}` — flips a previously-staged revision's
 /// `Stage::promoted` to `true` (see the module doc). `404` if the revision
 /// never existed; promoting an already-promoted revision is a harmless
@@ -1229,6 +1296,8 @@ fn schema_floor_rejection(state: &AppState, cfg: &wayhouse_config::Config) -> Op
 async fn promote(
     State(state): State<AppState>,
     Path(revision): Path<u64>,
+    Query(params): Query<PromoteParams>,
+    axum::extract::RawQuery(raw_query): axum::extract::RawQuery,
     headers: axum::http::HeaderMap,
 ) -> Response {
     let _gate = state.role.write_gate().await;
@@ -1267,11 +1336,29 @@ async fn promote(
         }
     }
 
+    // A promote reaches the whole fleet at once, so it gets the same lockout check and
+    // confirm-and-revert window as a plain submission.
+    let trial =
+        match plan_promote_trial(&state, revision, Window::from_param(params.confirm_within)) {
+            Ok(trial) => trial,
+            Err(rejection) => return *rejection,
+        };
+
     if let Some(ha) = &state.ha {
+        if trial.is_some() {
+            if let Err(why) = confirm::check_support(ha).await {
+                return (StatusCode::CONFLICT, Json(ErrorResponse { error: why })).into_response();
+            }
+        }
+        let request = match trial {
+            Some(trial) => crate::ha::WriteRequest::PromoteTrial { revision, trial },
+            None => crate::ha::WriteRequest::Promote(revision),
+        };
+        let query = raw_query.map(|q| format!("?{q}")).unwrap_or_default();
         return crate::ha::client::propose_write(
             ha,
-            crate::ha::WriteRequest::Promote(revision),
-            &format!("/config/promote/{revision}"),
+            request,
+            &format!("/config/promote/{revision}{query}"),
             String::new(),
             &crate::ha::client::ForwardHeaders::from_headers(&headers),
             crate::ha::client::revision_response,
@@ -1279,7 +1366,7 @@ async fn promote(
         .await;
     }
 
-    match state.promote_revision(revision) {
+    match state.promote_revision(revision, trial.as_ref()) {
         Ok(true) => {
             tracing::info!(revision, "promoted a config revision");
             (StatusCode::OK, Json(SubmitResponse { revision })).into_response()
