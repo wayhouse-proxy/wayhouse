@@ -22,62 +22,78 @@ use crate::ratelimit::NetKey;
 struct Counts {
     ips: HashMap<IpAddr, usize>,
     nets: HashMap<NetKey, usize>,
+    /// The live caps. Kept next to the counts so a reload swaps them without replacing
+    /// the limiter (a replaced limiter forgets the connections already admitted).
+    max_ip: Option<usize>,
+    max_net: Option<usize>,
 }
 
 #[derive(Debug)]
 pub struct SourceLimiter {
-    max_ip: Option<usize>,
-    max_net: Option<usize>,
     counts: Mutex<Counts>,
 }
 
 impl SourceLimiter {
     pub fn new(cfg: Option<&PerSourceLimit>) -> Arc<Self> {
-        Arc::new(Self {
-            max_ip: cfg.and_then(|c| c.max_per_ip),
-            max_net: cfg.and_then(|c| c.max_per_net),
+        let l = Arc::new(Self {
             counts: Mutex::new(Counts::default()),
-        })
+        });
+        l.reconfigure(cfg);
+        l
+    }
+
+    /// Applies new caps. Connections already admitted keep their slots and release them
+    /// on drop, so the cap holds across a reload instead of growing by one cap each time.
+    pub fn reconfigure(&self, cfg: Option<&PerSourceLimit>) {
+        let mut c = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        c.max_ip = cfg.and_then(|c| c.max_per_ip);
+        c.max_net = cfg.and_then(|c| c.max_per_net);
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.max_ip.is_some() || self.max_net.is_some()
+        let c = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        c.max_ip.is_some() || c.max_net.is_some()
     }
 
     /// Reserve a live slot for a connection / session from `ip`. `Err(reason)`
     /// when a cap is already reached (nothing is reserved); `Ok(guard)` releases
     /// the slot on drop.
     pub fn acquire(self: &Arc<Self>, ip: IpAddr) -> Result<SourceGuard, &'static str> {
-        if !self.is_enabled() || !crate::flags::on(PER_SOURCE) {
+        if !crate::flags::on(PER_SOURCE) {
             return Ok(SourceGuard { limiter: None });
         }
         let key = NetKey::of(ip);
         let mut c = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        if c.max_ip.is_none() && c.max_net.is_none() {
+            return Ok(SourceGuard { limiter: None });
+        }
 
-        if let Some(max) = self.max_ip {
+        if let Some(max) = c.max_ip {
             if c.ips.get(&ip).copied().unwrap_or(0) >= max {
                 return Err("src_conn_ip");
             }
         }
-        if let Some(max) = self.max_net {
+        if let Some(max) = c.max_net {
             if c.nets.get(&key).copied().unwrap_or(0) >= max {
                 return Err("src_conn_net");
             }
         }
-        if self.max_ip.is_some() {
+        let (by_ip, by_net) = (c.max_ip.is_some(), c.max_net.is_some());
+        if by_ip {
             *c.ips.entry(ip).or_insert(0) += 1;
         }
-        if self.max_net.is_some() {
+        if by_net {
             *c.nets.entry(key).or_insert(0) += 1;
         }
         Ok(SourceGuard {
-            limiter: Some((self.clone(), ip, key)),
+            limiter: Some((self.clone(), ip, key, by_ip, by_net)),
         })
     }
 
-    fn release(&self, ip: IpAddr, key: NetKey) {
+    /// Releases what the guard counted (not what the caps say now: they may have changed).
+    fn release(&self, ip: IpAddr, key: NetKey, by_ip: bool, by_net: bool) {
         let mut c = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.max_ip.is_some() {
+        if by_ip {
             if let Some(n) = c.ips.get_mut(&ip) {
                 *n -= 1;
                 if *n == 0 {
@@ -85,7 +101,7 @@ impl SourceLimiter {
                 }
             }
         }
-        if self.max_net.is_some() {
+        if by_net {
             if let Some(n) = c.nets.get_mut(&key) {
                 *n -= 1;
                 if *n == 0 {
@@ -100,13 +116,13 @@ impl SourceLimiter {
 /// unconfigured limiter carries nothing.
 #[derive(Debug)]
 pub struct SourceGuard {
-    limiter: Option<(Arc<SourceLimiter>, IpAddr, NetKey)>,
+    limiter: Option<(Arc<SourceLimiter>, IpAddr, NetKey, bool, bool)>,
 }
 
 impl Drop for SourceGuard {
     fn drop(&mut self) {
-        if let Some((limiter, ip, key)) = &self.limiter {
-            limiter.release(*ip, *key);
+        if let Some((limiter, ip, key, by_ip, by_net)) = &self.limiter {
+            limiter.release(*ip, *key, *by_ip, *by_net);
         }
     }
 }
@@ -130,6 +146,24 @@ mod tests {
         for _ in 0..1000 {
             g.push(l.acquire("1.2.3.4".parse().unwrap()).unwrap());
         }
+    }
+
+    #[test]
+    fn a_reload_keeps_the_admitted_connections_counted() {
+        let l = SourceLimiter::new(Some(&cfg(Some(2), None)));
+        let ip: IpAddr = "9.9.9.9".parse().unwrap();
+        let _a = l.acquire(ip).unwrap();
+        let _b = l.acquire(ip).unwrap();
+        l.reconfigure(Some(&cfg(Some(2), None)));
+        assert!(l.acquire(ip).is_err(), "still two live from this IP");
+        // Turned off and on again while connections are live: nothing leaks or underflows.
+        l.reconfigure(None);
+        let _free = l.acquire(ip).unwrap();
+        l.reconfigure(Some(&cfg(Some(2), None)));
+        drop((_a, _b, _free));
+        let _x = l.acquire(ip).unwrap();
+        let _y = l.acquire(ip).unwrap();
+        assert!(l.acquire(ip).is_err());
     }
 
     #[test]

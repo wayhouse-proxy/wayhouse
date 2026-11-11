@@ -262,7 +262,15 @@ async fn subscribe_once(
                     return Ok(());
                 }
             },
-            None => resp.chunk().await,
+            None => {
+                match tokio::time::timeout(wayhouse_http::sse::IDLE_TIMEOUT, resp.chunk()).await {
+                    Ok(read) => read,
+                    Err(_) => anyhow::bail!(
+                        "subscribe stream from {base_url} sent nothing for {:?}; reconnecting",
+                        wayhouse_http::sse::IDLE_TIMEOUT
+                    ),
+                }
+            }
         };
         let chunk = read.map_err(|e| {
             anyhow::anyhow!(

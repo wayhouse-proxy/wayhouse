@@ -6,8 +6,8 @@
 //! fleet upload, so a proxy never needs internet access and still re-validates
 //! what it is given.
 //!
-//! Reads need `Viewer`; changing the registry list and installing need
-//! `Operator`, the same level as uploading a module by hand.
+//! Reads need `Viewer`; installing needs `Operator`, the same level as uploading a module by
+//! hand; adding or removing a registry (the trust list) needs `Admin`.
 
 use axum::body::Bytes;
 use axum::extract::{Extension, Path, State};
@@ -43,10 +43,15 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/registries/{id}/sniffers", get(list_sniffers))
 }
 
-pub fn operator_router() -> Router<AppState> {
+/// Changing which registries are trusted is `Admin`; installing from one is `Operator`.
+pub fn admin_router() -> Router<AppState> {
     Router::new()
         .route("/api/registries", post(add_registry))
         .route("/api/registries/{id}", delete(remove_registry))
+}
+
+pub fn operator_router() -> Router<AppState> {
+    Router::new()
         .route("/api/registries/{id}/install", post(install))
         .route("/api/registries/updates/check", post(check_updates))
 }
@@ -177,6 +182,23 @@ fn version_verifiable(reg: &RegistryRef, version: &VersionEntry) -> bool {
     reg.official
         && crate::registry_keys::official_key().is_some()
         && version.signature_url.is_some()
+}
+
+/// The official registry with a configured key must list a signature for what it serves: the
+/// index is unauthenticated, so an index host must not be able to drop `signature_url` and
+/// have the module install unverified.
+fn require_signature(
+    reg: &RegistryRef,
+    key_configured: bool,
+    version: &VersionEntry,
+) -> Result<(), String> {
+    if reg.official && key_configured && version.signature_url.is_none() {
+        return Err(format!(
+            "version {} of this official sniffer lists no signature; refusing to install it unsigned",
+            version.version
+        ));
+    }
+    Ok(())
 }
 
 /// The same for the version an install without an explicit version would choose.
@@ -355,6 +377,13 @@ async fn install(
         },
     };
 
+    if let Err(why) = require_signature(
+        &reg,
+        crate::registry_keys::official_key().is_some(),
+        version,
+    ) {
+        return error(StatusCode::UNPROCESSABLE_ENTITY, why);
+    }
     let cap = version.size.min(MAX_MODULE_BYTES);
     let bytes = match state
         .registry_client
@@ -377,7 +406,13 @@ async fn install(
         },
         _ => None,
     };
-    let verified = match verify_artifact(version, &bytes, signature.as_deref(), key.as_ref()) {
+    let verified = match verify_artifact(
+        &entry.name,
+        version,
+        &bytes,
+        signature.as_deref(),
+        key.as_ref(),
+    ) {
         Ok(v) => v,
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
     };
@@ -926,12 +961,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_then_list_then_delete() {
+    async fn an_unsigned_version_of_the_official_registry_is_refused() {
+        let module = wat::parse_str(MODULE_WAT).unwrap();
+        // The fake index lists no signature_url, like an index host that dropped it.
+        let base = fake_registry(module, "0.1", None).await;
+        let h = harness(
+            &base,
+            "http://127.0.0.1:1",
+            true,
+            crate::role::Role::Operator,
+        )
+        .await;
+        let (status, body) = h.install().await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("signature"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_operator_cannot_delete_the_official_plugin_registry() {
         let h = harness(
             "http://127.0.0.1:1",
             "http://127.0.0.1:1",
             false,
             crate::role::Role::Operator,
+        )
+        .await;
+        let id = crate::registries::default_plugin_ref_id();
+        let (status, _) = h
+            .call("DELETE", &format!("/api/registries/{id}"), None)
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn an_operator_installs_but_cannot_change_the_registry_list() {
+        let h = harness(
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+            false,
+            crate::role::Role::Operator,
+        )
+        .await;
+        let add = Some(json!({ "url": "https://example.com/i.json" }));
+        let (status, _) = h.call("POST", "/api/registries", add).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let path = format!("/api/registries/{}", h.registry_id);
+        let (status, _) = h.call("DELETE", &path, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // The role gate lets the install through (it then fails on the dead registry).
+        let (status, _) = h.install().await;
+        assert_ne!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn the_official_registry_must_sign_every_version_once_its_key_is_known() {
+        let version = |signature_url: Option<&str>| -> VersionEntry {
+            serde_json::from_value(json!({
+                "version": "1.0.0", "abi": "1.0", "min_proxy": "0.1.0", "url": "https://x/a.wasm",
+                "size": 1, "sha256": "00", "signature_url": signature_url,
+                "limits": { "max_memory_bytes": 1, "call_timeout_ms": 1 },
+            }))
+            .unwrap()
+        };
+        let reg = |official| RegistryRef {
+            id: "r".into(),
+            name: "r".into(),
+            url: "https://x/i.json".into(),
+            official,
+            kind: crate::registries::RegistryKind::Sniffer,
+        };
+        // Official, key known, no signature listed: refused (an index host could drop it).
+        assert!(require_signature(&reg(true), true, &version(None)).is_err());
+        assert!(require_signature(&reg(true), true, &version(Some("https://x/a.minisig"))).is_ok());
+        // No key yet, or an external registry: unchanged.
+        assert!(require_signature(&reg(true), false, &version(None)).is_ok());
+        assert!(require_signature(&reg(false), true, &version(None)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn add_then_list_then_delete() {
+        let h = harness(
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+            false,
+            crate::role::Role::Admin,
         )
         .await;
         let (status, added) = h
@@ -962,7 +1078,7 @@ mod tests {
             "http://127.0.0.1:1",
             "http://127.0.0.1:1",
             false,
-            crate::role::Role::Operator,
+            crate::role::Role::Admin,
         )
         .await;
         let (status, body) = h

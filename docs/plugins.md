@@ -376,7 +376,7 @@ approved set.
 ## Limits
 
 Every call runs in a fresh `Store` with a memory cap, an epoch deadline
-(`Limits::call_timeout`), a table-element cap (`Limits::max_table_elements`, checked at instantiation and on growth) and the log and state-write limits above. Modules are capped at
+(`Limits::call_timeout`; it restarts after each `http_request` that went to the network, since that wait is bounded by the 10 s / 20 s HTTP limits instead, so a call's total time can be about the 20 s HTTP budget plus up to `call_timeout` of guest execution per segment between requests, at most 8 requests), a table-element cap (`Limits::max_table_elements`, checked at instantiation and on growth) and the log and state-write limits above. Modules are capped at
 8 MiB. A call returns its `Effects` (state writes, log lines) and applies nothing itself:
 the caller commits them as one entry, which is how the controller will tag them with the
 leader term (automation hooks spec, "Commit rule").

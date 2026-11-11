@@ -134,6 +134,13 @@ fn canonical(host: &str) -> String {
         .map_or_else(|_| host.to_string(), |ip| ip.to_string())
 }
 
+impl HttpCall {
+    /// Requests that got past the call budget so far (each may have waited on the network).
+    pub fn calls(&self) -> usize {
+        self.calls
+    }
+}
+
 impl HttpEngine {
     /// `cap` and `slots` are the plugin's capabilities as approved.
     pub fn new(

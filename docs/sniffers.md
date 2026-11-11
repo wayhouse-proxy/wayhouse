@@ -91,7 +91,12 @@ published and the official key is known) verifies, and the module itself passes 
 requirements above and declares the ABI the index says. A signature that is present but
 invalid is an error, never a quiet downgrade to "unsigned". Signatures (minisign) are
 optional for now, and an unsigned sniffer is shown as unsigned. The official key (minisign key id
-`C44491B8C8BF6083`, shared with the official plugins) is built in; a release signed with it shows as signed. The sha256 comes from the
+`C44491B8C8BF6083`, shared with the official plugins) is built in; a release signed with it shows as signed. The signature must also say what it signs: its minisign _trusted comment_ has to be exactly
+`wayhouse-v1 <kind> <name> <version> <abi> <sha256>` (`kind` is `sniffer` or `plugin`, `abi` is `major.minor`). A
+signature made for other bytes, another name or another version is refused, so an index host
+cannot replay an old signed module under a new version or someone else's name. Sign with
+`minisign -S -s <key> -t "wayhouse-v1 sniffer <name> <version> <abi> <sha256>" -m <name>.wasm`. Signatures
+made before this format (no claim) no longer verify; publish a new version instead. The sha256 comes from the
 same index as the URL, so for an unsigned sniffer it only protects against corruption.
 
 ## Generating an index
@@ -118,8 +123,11 @@ not a valid index, the run fails instead of overwriting it; fix or remove the fi
 `wayhouse-ui` fetches indexes and artifacts itself, runs every check above, and only then hands
 the verified bytes to the fleet upload, so a proxy needs no internet access and still re-validates
 what it receives. The routes are `GET /api/registries` and `GET /api/registries/{id}/sniffers`
-(viewer), `POST /api/registries`, `DELETE /api/registries/{id}` and
-`POST /api/registries/{id}/install` (operator, the same level as uploading a module by hand).
+(viewer), `POST /api/registries/{id}/install` (operator, the same level as uploading a module by
+hand), and `POST /api/registries` and `DELETE /api/registries/{id}` (admin: the registry list is
+the trust list). Once the official signing key is configured, the official registry must list a
+signature for every version it serves; an index that drops it is refused rather than installed
+unsigned. Re-adding the official URL after removing it restores the official entry.
 
 - **Flags.** `--registries-file <path>` keeps the list across restarts (JSON, written atomically,
   mode 0600; without it changes live in memory only). `--no-default-registry` hides the official

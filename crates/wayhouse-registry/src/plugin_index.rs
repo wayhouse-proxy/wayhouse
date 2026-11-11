@@ -262,6 +262,7 @@ pub enum PluginVerifyError {
 /// `signed: false`, which the caller must make the operator confirm. The module's ABI section
 /// is read without running anything; the controller validates the whole module on upload.
 pub fn verify_plugin_artifact(
+    name: &str,
     v: &PluginVersion,
     bytes: &[u8],
     signature: Option<&[u8]>,
@@ -285,12 +286,15 @@ pub fn verify_plugin_artifact(
     }
     let signed = match (signature, official_key) {
         (Some(sig), Some(key)) => {
-            let text = std::str::from_utf8(sig)
-                .map_err(|_| PluginVerifyError::Signature("signature is not UTF-8 text".into()))?;
-            let sig = minisign_verify::Signature::decode(text)
-                .map_err(|e| PluginVerifyError::Signature(e.to_string()))?;
-            key.verify(bytes, &sig, false)
-                .map_err(|e| PluginVerifyError::Signature(e.to_string()))?;
+            let claim = crate::verify::signed_claim(
+                "plugin",
+                name,
+                &v.version.to_string(),
+                &v.abi,
+                &v.sha256,
+            );
+            crate::verify::verify_claimed(key, sig, bytes, &claim)
+                .map_err(PluginVerifyError::Signature)?;
             true
         }
         _ => false,
@@ -480,7 +484,7 @@ mod tests {
         let good = module(r"\00\00\02\00");
         let v = version_for(&good);
         assert_eq!(
-            verify_plugin_artifact(&v, &good, None, None),
+            verify_plugin_artifact("demo", &v, &good, None, None),
             Ok(PluginVerified { signed: false })
         );
         // Same length, different bytes: the hash catches it.
@@ -488,14 +492,14 @@ mod tests {
         let last = tampered.len() - 1;
         tampered[last] ^= 1;
         assert!(matches!(
-            verify_plugin_artifact(&v, &tampered, None, None),
+            verify_plugin_artifact("demo", &v, &tampered, None, None),
             Err(PluginVerifyError::Sha256 { .. })
         ));
         // A different length: the size check goes first.
         let mut longer = good.clone();
         longer.push(0);
         assert!(matches!(
-            verify_plugin_artifact(&v, &longer, None, None),
+            verify_plugin_artifact("demo", &v, &longer, None, None),
             Err(PluginVerifyError::Size { .. })
         ));
     }
@@ -505,7 +509,7 @@ mod tests {
         let m = module(r"\00\00\01\00");
         let v = version_for(&m); // index says 0.2, module says 0.1
         assert!(matches!(
-            verify_plugin_artifact(&v, &m, None, None),
+            verify_plugin_artifact("demo", &v, &m, None, None),
             Err(PluginVerifyError::Module(_))
         ));
         let none = wat::parse_str("(module)").unwrap();
@@ -527,12 +531,12 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            verify_plugin_artifact(&v, &m, Some(b"not a signature"), Some(&key)),
+            verify_plugin_artifact("demo", &v, &m, Some(b"not a signature"), Some(&key)),
             Err(PluginVerifyError::Signature(_))
         ));
         // Without a key to check it with, a signature is ignored: unsigned.
         assert_eq!(
-            verify_plugin_artifact(&v, &m, Some(b"not a signature"), None),
+            verify_plugin_artifact("demo", &v, &m, Some(b"not a signature"), None),
             Ok(PluginVerified { signed: false })
         );
     }
@@ -542,22 +546,46 @@ mod tests {
         let m = module(r"\00\00\02\00");
         let v = version_for(&m);
         let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
-        let sig = minisign::sign(Some(&kp.pk), &kp.sk, std::io::Cursor::new(&m), None, None)
-            .unwrap()
-            .to_string()
-            .into_bytes();
+        let claim = crate::verify::signed_claim(
+            "plugin",
+            "demo",
+            &v.version.to_string(),
+            &v.abi,
+            &v.sha256,
+        );
+        let sig = minisign::sign(
+            Some(&kp.pk),
+            &kp.sk,
+            std::io::Cursor::new(&m),
+            Some(&claim),
+            None,
+        )
+        .unwrap()
+        .to_string()
+        .into_bytes();
         let key = minisign_verify::PublicKey::decode(&kp.pk.to_box().unwrap().to_string()).unwrap();
         assert_eq!(
-            verify_plugin_artifact(&v, &m, Some(&sig), Some(&key)),
+            verify_plugin_artifact("demo", &v, &m, Some(&sig), Some(&key)),
             Ok(PluginVerified { signed: true })
         );
+        // The same signature replayed under another plugin name or version is refused (#594).
+        assert!(matches!(
+            verify_plugin_artifact("other", &v, &m, Some(&sig), Some(&key)),
+            Err(PluginVerifyError::Signature(_))
+        ));
+        let mut newer = v.clone();
+        newer.version = "9.9.9".parse().unwrap();
+        assert!(matches!(
+            verify_plugin_artifact("demo", &newer, &m, Some(&sig), Some(&key)),
+            Err(PluginVerifyError::Signature(_))
+        ));
         // Same size, hash fixed up to match: only the signature can catch it now.
         let mut other = m.clone();
         *other.last_mut().unwrap() ^= 1;
         let mut v2 = version_for(&other);
         v2.abi = v.abi.clone();
         assert!(matches!(
-            verify_plugin_artifact(&v2, &other, Some(&sig), Some(&key)),
+            verify_plugin_artifact("demo", &v2, &other, Some(&sig), Some(&key)),
             Err(PluginVerifyError::Signature(_))
         ));
     }

@@ -111,12 +111,20 @@ async fn subscribe_once(
 
     let mut buf = wayhouse_http::sse::EventBuffer::new();
     loop {
-        let chunk = resp.chunk().await.map_err(|e| {
-            anyhow::anyhow!(
-                "reading intent subscribe stream from {base_url}: {}",
-                wayhouse_http::error_chain(&e)
-            )
-        })?;
+        let chunk = tokio::time::timeout(wayhouse_http::sse::IDLE_TIMEOUT, resp.chunk())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "intent subscribe stream from {base_url} sent nothing for {:?}; reconnecting",
+                    wayhouse_http::sse::IDLE_TIMEOUT
+                )
+            })?
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "reading intent subscribe stream from {base_url}: {}",
+                    wayhouse_http::error_chain(&e)
+                )
+            })?;
         let Some(bytes) = chunk else {
             return Ok(()); // server closed the stream
         };

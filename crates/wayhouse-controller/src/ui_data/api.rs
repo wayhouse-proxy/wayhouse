@@ -362,6 +362,7 @@ async fn put_secret(st: &UiState, name: String, headers: &HeaderMap, body: Bytes
         record["actor"] = a.as_str().into();
     }
     let key_id = sealed.key_id;
+    let active_id = key_id.clone();
     let op = UiOp::Put {
         kind: Kind::ClusterSecret,
         name: name.clone(),
@@ -380,6 +381,13 @@ async fn put_secret(st: &UiState, name: String, headers: &HeaderMap, body: Bytes
     };
     if let Err(why) = super::check_support(ha).await {
         return err(StatusCode::CONFLICT, why);
+    }
+    // As for a plugin secret: sealed under a key the other nodes and proxies may not hold yet.
+    if let Err(why) = crate::plugins::peer::check_active_key(ha, &active_id).await {
+        return err(
+            StatusCode::CONFLICT,
+            format!("every node needs the active key {active_id} first: {why}"),
+        );
     }
     match crate::plugins::peer::propose_ciphertext(ha, WriteRequest::Ui(op)).await {
         Ok(WriteResponse::UiResult(applied)) => answer(&applied, done),

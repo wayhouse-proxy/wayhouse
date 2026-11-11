@@ -141,16 +141,10 @@ impl RateLimiter {
         let ip = ip.to_canonical();
         let mut st = self.state.lock().unwrap_or_else(PoisonError::into_inner);
 
-        // At the hard cap a source with no bucket yet is refused (after one
-        // prune attempt) instead of growing the map.
-        if self.per_ip.is_some() && !st.ips.contains_key(&ip) && st.ips.len() >= HARD_CAP {
-            self.prune(&mut st, now, true);
-            if st.ips.len() >= HARD_CAP {
-                Self::warn_cap(&mut st, now, "per_ip");
-                return Some("rate_ip");
-            }
-        }
-        if self.per_net.is_some() {
+        // The net bucket decides first: a source refused there must leave nothing in the per-IP
+        // table, or spoofed sources inside one prefix could fill it. At the hard cap a source
+        // with no bucket yet is refused (after one prune attempt) instead of growing the map.
+        if let Some(cfg) = &self.per_net {
             let key = NetKey::of(ip);
             if !st.nets.contains_key(&key) && st.nets.len() >= HARD_CAP {
                 self.prune(&mut st, now, true);
@@ -159,35 +153,27 @@ impl RateLimiter {
                     return Some("rate_net");
                 }
             }
-        }
-
-        // Refill (creating a full bucket on first sight) and check affordability
-        // for both buckets before consuming from either.
-        let ip_ok = match &self.per_ip {
-            None => true,
-            Some(cfg) => {
-                let b = st.ips.entry(ip).or_insert_with(|| Bucket::full(cfg, now));
-                b.refill(cfg, now);
-                b.tokens >= 1.0
+            let b = st.nets.entry(key).or_insert_with(|| Bucket::full(cfg, now));
+            b.refill(cfg, now);
+            if b.tokens < 1.0 {
+                self.prune(&mut st, now, false);
+                return Some("rate_net");
             }
-        };
-        let net_ok = match &self.per_net {
-            None => true,
-            Some(cfg) => {
-                let key = NetKey::of(ip);
-                let b = st.nets.entry(key).or_insert_with(|| Bucket::full(cfg, now));
-                b.refill(cfg, now);
-                b.tokens >= 1.0
-            }
-        };
-
-        if !ip_ok {
-            self.prune(&mut st, now, false);
-            return Some("rate_ip");
         }
-        if !net_ok {
-            self.prune(&mut st, now, false);
-            return Some("rate_net");
+        if let Some(cfg) = &self.per_ip {
+            if !st.ips.contains_key(&ip) && st.ips.len() >= HARD_CAP {
+                self.prune(&mut st, now, true);
+                if st.ips.len() >= HARD_CAP {
+                    Self::warn_cap(&mut st, now, "per_ip");
+                    return Some("rate_ip");
+                }
+            }
+            let b = st.ips.entry(ip).or_insert_with(|| Bucket::full(cfg, now));
+            b.refill(cfg, now);
+            if b.tokens < 1.0 {
+                self.prune(&mut st, now, false);
+                return Some("rate_ip");
+            }
         }
 
         if self.per_ip.is_some() {
@@ -316,16 +302,15 @@ mod tests {
 
     #[test]
     fn refusal_consumes_nothing() {
-        // per_ip burst 1; per_net burst 1. First call drains both.
-        let l = rl(Some((1, 1)), Some((1, 1)));
+        // per_ip burst 1; per_net burst 2 for the /24. The first call takes one token from each.
+        let l = rl(Some((1, 1)), Some((1, 2)));
         let a: IpAddr = "172.16.5.5".parse().unwrap();
         assert_eq!(l.permit(a), None);
         assert_eq!(l.permit(a), Some("rate_ip"));
-        // The /24 bucket still has its single token: a fresh IP in another /24
-        // but same... no — use same /24, different ip: net refuses now too,
-        // proving the earlier refusal didn't also consume the net token twice.
-        let b: IpAddr = "172.16.5.6".parse().unwrap();
-        assert_eq!(l.permit(b), Some("rate_net"));
+        // The refusal left the /24's second token alone: a neighbour is still admitted, and then
+        // the shared bucket is empty.
+        assert_eq!(l.permit("172.16.5.6".parse().unwrap()), None);
+        assert_eq!(l.permit("172.16.5.7".parse().unwrap()), Some("rate_net"));
     }
 
     #[test]
@@ -405,5 +390,22 @@ mod tests {
         assert_eq!(st.cap_warnings, 2, "one line per bucket per interval");
         RateLimiter::warn_cap(&mut st, 1_000 + CAP_WARN_EVERY_MS, "per_ip");
         assert_eq!(st.cap_warnings, 3);
+    }
+
+    #[test]
+    fn a_source_refused_by_its_net_bucket_leaves_no_per_ip_entry() {
+        // One /64 with a burst of 1: after the first admit, every other /128 in it is refused.
+        let l = rl(Some((10, 10)), Some((1, 1)));
+        assert_eq!(l.permit("2001:db8::1".parse().unwrap()), None);
+        for i in 2..50u16 {
+            let ip = format!("2001:db8::{i:x}").parse().unwrap();
+            assert_eq!(l.permit(ip), Some("rate_net"));
+        }
+        let st = l.state.lock().unwrap();
+        assert_eq!(
+            st.ips.len(),
+            1,
+            "spoofed sources must not fill the per-IP table"
+        );
     }
 }

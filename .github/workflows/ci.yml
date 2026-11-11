@@ -485,7 +485,9 @@ jobs:
         run: make deploy-solo-smoke
       - name: Validate Kubernetes manifests (schema only)
         run: |
-          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar -xz kubeconform
+          curl -fsSL -o kubeconform.tgz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  kubeconform.tgz" | sha256sum -c -
+          tar -xzf kubeconform.tgz kubeconform
           for o in single ha web-gateway; do
             kubectl kustomize deploy/k8s/overlays/$o | ./kubeconform -strict -summary -
           done
