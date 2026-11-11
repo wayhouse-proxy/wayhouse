@@ -493,8 +493,9 @@ operational verbs, entirely separate from the controller's Tier-1 write path.
   self-reported `admin_url` is where the fan-out later sends `--instance-token`,
   so it is checked at ingest: with `--instance-url-allow` (CIDR, hostname or
   `*.suffix`, repeatable) its host must match an entry (a hostname entry trusts
-  whoever controls DNS for that name); without, it must be an
-  IP literal equal to the pushing connection's source address, i.e. an instance
+  whoever controls DNS for that name); without, it must be a non-loopback
+  IP literal equal to the pushing connection's source address (loopback needs an explicit
+  `--instance-url-allow=127.0.0.0/8`), i.e. an instance
   can only name itself (a push through NAT, a load balancer or a TLS terminator,
   or a tier relaying its children, needs the allowlist). A refused push is a
   `400`. The fan-out also refuses to forward a path parameter that is empty,
