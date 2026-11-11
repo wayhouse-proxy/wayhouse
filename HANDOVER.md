@@ -166,7 +166,7 @@ details are in `git log`.
   hierarchy (namespaced `tier/instance`), intent-verb fan-out (targeted
   drain/undrain + broadcast backend/route-hint edits), `--auth-token` (`/fleet/*`) /
   `--ingest-token` (`POST /ingest` only) / `--instance-token` (outbound) gates; a pushed
-  `admin_url` must be the pusher's own IP or match `--instance-url-allow`. No `wayhouse-core`/`wayhouse-config` dep; carries no durable state.
+  `admin_url` must be the pusher's own (non-loopback) IP or match `--instance-url-allow` (loopback only via an explicit allow entry, e.g. `127.0.0.0/8`). No `wayhouse-core`/`wayhouse-config` dep; carries no durable state.
 - **`wayhouse-ui`** — dedicated BFF process (not hosted in controller/aggregator).
   Session-cookie auth, proxies both upstream APIs forwarding response headers,
   `GET /ws/fleet` live feed off one shared aggregator SSE subscription, RBAC

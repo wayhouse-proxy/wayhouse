@@ -84,8 +84,8 @@ instances push with (`--aggregator-token` on `wayhouse`; it unlocks only
 `--auth-token` requires a different `--ingest-token`; the aggregator refuses to
 start otherwise.
 It only stores an `admin_url` whose host is the pushing connection's own source
-IP, or one covered by `--instance-url-allow` (CIDR, hostname or `*.suffix`,
-repeatable); set the allowlist when the aggregator sees a different source
+IP (never a loopback address), or one covered by `--instance-url-allow` (CIDR, hostname or `*.suffix`,
+repeatable); set the allowlist (`127.0.0.0/8` on a single box) when the aggregator sees a different source
 address than the one reported (NAT, a load balancer, a TLS terminator, the
 compose bridge, or a child tier relaying through `--parent-url`). A refused push
 gets a `400` and a warning in the aggregator's log. A hostname entry trusts
