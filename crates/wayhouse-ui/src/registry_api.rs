@@ -955,6 +955,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unsigned_version_of_the_official_registry_is_refused() {
+        let module = wat::parse_str(MODULE_WAT).unwrap();
+        // The fake index lists no signature_url, like an index host that dropped it.
+        let base = fake_registry(module, "0.1", None).await;
+        let h = harness(
+            &base,
+            "http://127.0.0.1:1",
+            true,
+            crate::role::Role::Operator,
+        )
+        .await;
+        let (status, body) = h.install().await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("signature"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_operator_cannot_delete_the_official_plugin_registry() {
+        let h = harness(
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+            false,
+            crate::role::Role::Operator,
+        )
+        .await;
+        let id = crate::registries::default_plugin_ref_id();
+        let (status, _) = h
+            .call("DELETE", &format!("/api/registries/{id}"), None)
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn an_operator_installs_but_cannot_change_the_registry_list() {
         let h = harness(
             "http://127.0.0.1:1",
@@ -989,6 +1025,7 @@ mod tests {
             name: "r".into(),
             url: "https://x/i.json".into(),
             official,
+            kind: crate::registries::RegistryKind::Sniffer,
         };
         // Official, key known, no signature listed: refused (an index host could drop it).
         assert!(require_signature(&reg(true), true, &version(None)).is_err());
