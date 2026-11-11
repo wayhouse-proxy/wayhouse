@@ -267,6 +267,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::plugin_registry_api::admin_router())
         .merge(crate::process_api::admin_router())
         .merge(crate::ui_data_proxy::admin_router())
+        .merge(crate::registry_api::admin_router())
         .route_layer(role_layer!(Role::Admin));
 
     Router::new()

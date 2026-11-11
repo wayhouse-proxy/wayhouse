@@ -190,6 +190,13 @@ impl Registries {
         if let Some(existing) = self.snapshot(&inner).into_iter().find(|r| r.id == id) {
             return Ok(existing);
         }
+        // Re-adding the official URL brings the official entry back; an unofficial copy would
+        // never get the signing key applied.
+        if self.include_default && id == default_ref().id {
+            self.persist(&inner.added, false)?;
+            inner.default_removed = false;
+            return Ok(default_ref());
+        }
         if self.snapshot(&inner).len() >= MAX_REGISTRIES {
             return Err(RegistriesError::TooMany);
         }
@@ -363,6 +370,19 @@ mod tests {
     #[test]
     fn no_default_flag_hides_it() {
         assert!(Registries::load(None, false).unwrap().list().is_empty());
+    }
+
+    #[test]
+    fn re_adding_the_official_url_after_removing_it_restores_the_official_entry() {
+        let r = fresh();
+        let id = default_ref().id;
+        assert!(r.remove(&id).unwrap());
+        assert!(r.list().is_empty());
+        let back = r.add(DEFAULT_REGISTRY_URL, Some("mine")).unwrap();
+        assert!(back.official, "the official key must apply again");
+        let l = r.list();
+        assert_eq!(l.len(), 1);
+        assert!(l[0].official && l[0].id == id);
     }
 
     #[test]

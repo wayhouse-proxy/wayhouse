@@ -118,8 +118,11 @@ not a valid index, the run fails instead of overwriting it; fix or remove the fi
 `wayhouse-ui` fetches indexes and artifacts itself, runs every check above, and only then hands
 the verified bytes to the fleet upload, so a proxy needs no internet access and still re-validates
 what it receives. The routes are `GET /api/registries` and `GET /api/registries/{id}/sniffers`
-(viewer), `POST /api/registries`, `DELETE /api/registries/{id}` and
-`POST /api/registries/{id}/install` (operator, the same level as uploading a module by hand).
+(viewer), `POST /api/registries/{id}/install` (operator, the same level as uploading a module by
+hand), and `POST /api/registries` and `DELETE /api/registries/{id}` (admin: the registry list is
+the trust list). Once the official signing key is configured, the official registry must list a
+signature for every version it serves; an index that drops it is refused rather than installed
+unsigned. Re-adding the official URL after removing it restores the official entry.
 
 - **Flags.** `--registries-file <path>` keeps the list across restarts (JSON, written atomically,
   mode 0600; without it changes live in memory only). `--no-default-registry` hides the official
