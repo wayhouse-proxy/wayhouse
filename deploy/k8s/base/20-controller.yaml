@@ -14,17 +14,19 @@ spec:
       containers:
         - name: controller
           image: wayhouse-deploy/wayhouse-controller:local
-          args: ["--listen=0.0.0.0:9901", "--data-dir=/data", "--auth-token=$(TOKEN)"]
-          env:
-            - name: TOKEN
-              valueFrom: { secretKeyRef: { name: wayhouse-tokens, key: controller-token } }
+          args: ["--listen=0.0.0.0:9901", "--data-dir=/data", "--auth-token-file=/run/secrets/wayhouse/auth-token"]
           ports: [{ containerPort: 9901 }]
           readinessProbe: { httpGet: { path: /healthz, port: 9901 } }
           livenessProbe: { httpGet: { path: /healthz, port: 9901 }, initialDelaySeconds: 10 }
-          volumeMounts: [{ name: data, mountPath: /data }]
+          volumeMounts: [{ name: data, mountPath: /data }, { name: tokens, mountPath: /run/secrets/wayhouse, readOnly: true }]
       volumes:
         - name: data
           persistentVolumeClaim: { claimName: wayhouse-controller-data }
+        - name: tokens
+          secret:
+            secretName: wayhouse-tokens
+            defaultMode: 0440   # group-readable; fsGroup gives the container its group
+            items: [{ key: controller-token, path: auth-token }]
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

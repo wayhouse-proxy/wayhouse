@@ -135,8 +135,26 @@ the host loopback), `compose.solo-acme.yml` (adds `--acme`, staging CA by defaul
 your acceptance of the CA's terms) and the existing `compose.web.yml` and `compose.tunnel.yml`.
 `sh deploy/solo/init.sh` writes random tokens and a UI password into `deploy/compose/.env` (mode
 0600, never overwrites). Without Docker, `deploy/systemd/` has the same units and a
-`wayhouse-solo.target`. Both forms pass tokens as command-line flags, so any local user can read
-them in `ps`: keep the box single-user. See [deployment](12-deployment.md).
+`wayhouse-solo.target`. Compose hands the tokens to each container as Docker secrets and the units
+use `LoadCredential=`, so no token is on a command line. See [deployment](12-deployment.md).
+
+## Tokens and passwords are no longer command-line flags (breaking)
+
+`--auth-token`, `--ingest-token`, `--metrics-token`, `--instance-token`, `--parent-token`,
+`--ha-token`, `--controller-token`, `--aggregator-token`, `--tunnel-controller-token`,
+`--plugin-overlay-token` and `--ui-password` are gone: a value on the command line is visible in
+`ps`, `/proc/<pid>/cmdline` and `docker inspect`. Each has a `--<name>-file PATH` flag instead (for
+example `--auth-token-file`). A program finds each secret `<name>` in this order:
+
+1. the file given with `--<name>-file`,
+2. `$CREDENTIALS_DIRECTORY/<name>` (what systemd's `LoadCredential=<name>:<path>` provides),
+3. the environment variable `WAYHOUSE_<NAME>` (`WAYHOUSE_AUTH_TOKEN`, `WAYHOUSE_UI_PASSWORD`, ...).
+
+A file's trailing newline is dropped, and an empty value is an error. The `-file` flags are not
+read from a settings file, like the other credentials. To migrate, write each value to a file (mode
+0400, readable by the service user) and replace `--auth-token=$X` with `--auth-token-file=/path`.
+Docker secrets (`/run/secrets/<name>`), Kubernetes secret volumes and `LoadCredential=` all produce
+such files. `wayhouse-web-sync` already read its tokens from the environment and is unchanged.
 
 ## What works on one instance
 

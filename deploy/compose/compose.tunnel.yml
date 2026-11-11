@@ -13,22 +13,24 @@ services:
     command:
       - --listen=0.0.0.0:9901
       - --data-dir=/data
-      - --auth-token=${WAYHOUSE_CONTROLLER_TOKEN:?set WAYHOUSE_CONTROLLER_TOKEN in .env}
+      - --auth-token-file=/run/secrets/auth-token
       - --tunnel-network=fd49:89c1:4b5e:60::/64
   wayhouse:
     user: "0"          # NET_ADMIN is only in the bounding set for non-root: run as root
     cap_add: [NET_ADMIN]
+    secrets:
+      - { source: controller-token, target: tunnel-controller-token }
     devices: ["/dev/net/tun:/dev/net/tun"]
     volumes: ["wayhouse-tunnel-data:/data"]
     command:
       - --controller=http://127.0.0.1:9901
-      - --controller-token=${WAYHOUSE_CONTROLLER_TOKEN}
+      - --controller-token-file=/run/secrets/controller-token
       - --aggregator=http://127.0.0.1:9902
-      - --aggregator-token=${WAYHOUSE_INGEST_TOKEN}
+      - --aggregator-token-file=/run/secrets/aggregator-token
       - --tunnel-iface=wayhouse-tun0
       - --tunnel-key-file=/data/wayhouse-tunnel.key
       - --tunnel-controller-url=http://127.0.0.1:9901
-      - --tunnel-controller-token=${WAYHOUSE_CONTROLLER_TOKEN}
+      - --tunnel-controller-token-file=/run/secrets/tunnel-controller-token
       - --tunnel-name=demo-proxy
       - --tunnel-endpoint=${WAYHOUSE_TUNNEL_ENDPOINT:?public ip:port origins dial}
       - --aggregator-instance=demo-wayhouse
@@ -47,12 +49,13 @@ services:
     image: wayhouse-deploy/wayhouse-agent:local
     network_mode: host
     cap_add: [NET_ADMIN]
+    secrets: [controller-token]
     devices: ["/dev/net/tun:/dev/net/tun"]
     volumes: ["agent-data:/data"]
     command:
       - --data-dir=/data
       - --controller-url=http://127.0.0.1:9901
-      - --controller-token=${WAYHOUSE_CONTROLLER_TOKEN}
+      - --controller-token-file=/run/secrets/controller-token
       - --name=demo-origin
       - --listen-port=51821   # wayhouse already owns UDP 51820 on this shared host network
       - --backends=:25565

@@ -67,7 +67,8 @@ cp .env.example .env        # then change every value
 docker compose up -d --build
 ```
 
-Open <http://127.0.0.1:9903> (password = `WAYHOUSE_UI_PASSWORD`). The `seed`
+Open <http://127.0.0.1:9903> (password = `WAYHOUSE_UI_PASSWORD`). The programs read their tokens from
+Docker secret files (`/run/secrets/...`, built from `.env`), not from flags. The `seed`
 one-shot posts `wayhouse.yaml` to the controller first; `wayhouse` then pulls it and
 pushes its state to the aggregator. `make deploy-smoke` (repo root) does the
 same and runs `smoke.sh` against it.

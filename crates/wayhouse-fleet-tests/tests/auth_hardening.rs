@@ -12,7 +12,9 @@ async fn refused(bin: &str, args: &[&str], needle: &str) -> Result<()> {
     let out = tokio::time::timeout(
         Duration::from_secs(30),
         Command::new(bin_path(bin))
-            .args(args)
+            .args(wayhouse_fleet_tests::secret_files(
+                &args.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ))
             .kill_on_drop(true)
             .output(),
     )

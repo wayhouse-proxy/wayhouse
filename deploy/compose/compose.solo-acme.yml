@@ -9,7 +9,7 @@ services:
     command:
       - --listen=0.0.0.0:9901
       - --data-dir=/data
-      - --auth-token=${WAYHOUSE_CONTROLLER_TOKEN:?set WAYHOUSE_CONTROLLER_TOKEN in .env (sh ../solo/init.sh writes it)}
+      - --auth-token-file=/run/secrets/auth-token
       - --plugins
       - --secret-key-file=/keys/secret.keys
       - --allow-insecure-secrets

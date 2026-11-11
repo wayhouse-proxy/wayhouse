@@ -304,10 +304,48 @@ impl Drop for Proc {
     }
 }
 
+/// The binaries take no token on the command line, only `--<name>-file`. Tests keep writing
+/// `--auth-token <value>`; this swaps each such pair for a file holding the value.
+pub fn secret_files(args: &[String]) -> Vec<String> {
+    const SECRETS: [&str; 11] = [
+        "--ha-token",
+        "--parent-token",
+        "--plugin-overlay-token",
+        "--auth-token",
+        "--ingest-token",
+        "--metrics-token",
+        "--instance-token",
+        "--controller-token",
+        "--aggregator-token",
+        "--tunnel-controller-token",
+        "--ui-password",
+    ];
+    let mut out = Vec::with_capacity(args.len());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match (SECRETS.contains(&a.as_str()), it.next()) {
+            (true, Some(value)) => {
+                let (mut f, path) = tempfile::NamedTempFile::new()
+                    .expect("secret file")
+                    .keep()
+                    .expect("keep secret file");
+                std::io::Write::write_all(&mut f, value.as_bytes()).expect("write secret file");
+                out.push(format!("{a}-file"));
+                out.push(path.display().to_string());
+            }
+            (_, next) => {
+                out.push(a.clone());
+                out.extend(next.cloned());
+            }
+        }
+    }
+    out
+}
+
 impl Proc {
     fn spawn(name: &'static str, args: &[String]) -> Result<Self> {
         let child = Command::new(bin_path(name))
-            .args(args)
+            .args(secret_files(args))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true)
@@ -342,7 +380,7 @@ impl Proc {
             None => Command::new(bin_path(name)),
         };
         let child = cmd
-            .args(args)
+            .args(secret_files(args))
             .stdout(Stdio::from(file))
             .stderr(Stdio::from(file2))
             .kill_on_drop(true)

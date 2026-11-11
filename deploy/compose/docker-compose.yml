@@ -1,9 +1,8 @@
 # Control-plane demo: controller + aggregator + ui on a bridge network, one
 # wayhouse (host networking, docs/12's default for an edge process) that pulls its
 # config from the controller and pushes state to the aggregator.
-# Tokens come from .env; `${VAR:?}` refuses to start if one is unset.
-# NB: tokens appear in `docker inspect` — fine for a demo; use Docker/K8s
-# secrets in production.
+# Tokens come from .env and reach each container as a Docker secret file (/run/secrets/...),
+# not on the command line. The `seed` job below still passes one to curl: demo only.
 name: wayhouse-demo
 
 x-build: &build
@@ -20,7 +19,8 @@ services:
     command:
       - --listen=0.0.0.0:9901
       - --data-dir=/data
-      - --auth-token=${WAYHOUSE_CONTROLLER_TOKEN:?set WAYHOUSE_CONTROLLER_TOKEN in .env}
+      - --auth-token-file=/run/secrets/auth-token
+    secrets: [{ source: controller-token, target: auth-token }]
     ports: ["127.0.0.1:9901:9901"]   # wayhouse (host network) dials it here
     volumes: ["controller-data:/data"]
     restart: unless-stopped
@@ -30,12 +30,15 @@ services:
     image: wayhouse-deploy/wayhouse-aggregator:local
     command:
       - --listen=0.0.0.0:9902
-      - --auth-token=${WAYHOUSE_AGGREGATOR_TOKEN:?set WAYHOUSE_AGGREGATOR_TOKEN in .env}
+      - --auth-token-file=/run/secrets/auth-token
       # wayhouse pushes with this one; it cannot read or drive /fleet/*.
-      - --ingest-token=${WAYHOUSE_INGEST_TOKEN:?set WAYHOUSE_INGEST_TOKEN in .env}
+      - --ingest-token-file=/run/secrets/ingest-token
       # wayhouse (host network) reports http://127.0.0.1:9900, which is not the
       # address the aggregator sees it connect from (the bridge gateway).
       - --instance-url-allow=127.0.0.0/8
+    secrets:
+      - { source: aggregator-token, target: auth-token }
+      - ingest-token
     ports: ["127.0.0.1:9902:9902"]
     restart: unless-stopped
 
@@ -44,11 +47,12 @@ services:
     image: wayhouse-deploy/wayhouse-ui:local
     command:
       - --listen=0.0.0.0:9903
-      - --ui-password=${WAYHOUSE_UI_PASSWORD:?set WAYHOUSE_UI_PASSWORD in .env}
+      - --ui-password-file=/run/secrets/ui-password
       - --controller-url=http://controller:9901
-      - --controller-token=${WAYHOUSE_CONTROLLER_TOKEN}
+      - --controller-token-file=/run/secrets/controller-token
       - --aggregator-url=http://aggregator:9902
-      - --aggregator-token=${WAYHOUSE_AGGREGATOR_TOKEN}
+      - --aggregator-token-file=/run/secrets/aggregator-token
+    secrets: [ui-password, controller-token, aggregator-token]
     ports: ["127.0.0.1:9903:9903"]
     depends_on: [controller, aggregator]
     restart: unless-stopped
@@ -82,14 +86,25 @@ services:
     network_mode: host
     command:
       - --controller=http://127.0.0.1:9901
-      - --controller-token=${WAYHOUSE_CONTROLLER_TOKEN}
+      - --controller-token-file=/run/secrets/controller-token
       - --aggregator=http://127.0.0.1:9902
-      - --aggregator-token=${WAYHOUSE_INGEST_TOKEN}
+      - --aggregator-token-file=/run/secrets/aggregator-token
       - --aggregator-instance=demo-wayhouse
+    secrets:
+      - controller-token
+      - { source: ingest-token, target: aggregator-token }
     depends_on:
       seed: { condition: service_completed_successfully }
       aggregator: { condition: service_started }
     restart: unless-stopped
+
+# The tokens reach each container as files under /run/secrets (tmpfs), never on a command line.
+# Compose builds them from the variables in .env.
+secrets:
+  controller-token: { environment: WAYHOUSE_CONTROLLER_TOKEN }
+  aggregator-token: { environment: WAYHOUSE_AGGREGATOR_TOKEN }
+  ingest-token: { environment: WAYHOUSE_INGEST_TOKEN }
+  ui-password: { environment: WAYHOUSE_UI_PASSWORD }
 
 volumes:
   controller-data:

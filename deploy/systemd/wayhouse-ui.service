@@ -6,14 +6,15 @@ PartOf=wayhouse-solo.target
 
 [Service]
 User=wayhouse
-EnvironmentFile=/etc/wayhouse/solo.env
+# The tokens arrive as files under $CREDENTIALS_DIRECTORY; the program reads them from there
+# (sh deploy/solo/init.sh --credentials /etc/wayhouse/credentials writes the sources).
+LoadCredential=ui-password:/etc/wayhouse/credentials/ui-password
+LoadCredential=controller-token:/etc/wayhouse/credentials/controller-token
+LoadCredential=aggregator-token:/etc/wayhouse/credentials/aggregator-token
 ExecStart=/usr/local/bin/wayhouse-ui \
   --listen=127.0.0.1:9903 \
-  --ui-password=${WAYHOUSE_UI_PASSWORD} \
   --controller-url=http://127.0.0.1:9901 \
-  --controller-token=${WAYHOUSE_CONTROLLER_TOKEN} \
-  --aggregator-url=http://127.0.0.1:9902 \
-  --aggregator-token=${WAYHOUSE_AGGREGATOR_TOKEN}
+  --aggregator-url=http://127.0.0.1:9902
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=yes

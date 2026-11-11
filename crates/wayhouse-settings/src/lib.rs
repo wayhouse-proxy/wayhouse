@@ -204,7 +204,11 @@ pub struct Flag {
 
 /// Token, password and PSK flags: the credentials that guard the thing doing the editing.
 fn is_secret(name: &str) -> bool {
-    name.ends_with("-token") || name == "token" || name.contains("password") || name.contains("psk")
+    name.ends_with("-token")
+        || name.ends_with("-token-file")
+        || name == "token"
+        || name.contains("password")
+        || name.contains("psk")
 }
 
 /// Flags that say where the program sends its tokens or what it trusts: another program sharing
