@@ -106,7 +106,7 @@ async fn drain_instance(
     Path(instance): Path<String>,
 ) -> Response {
     let actor = actor_header(&headers);
-    tracing::info!(%instance, ?actor, verb = "drain", "fan-out verb");
+    tracing::info!(instance = ?instance, ?actor, verb = "drain", "fan-out verb");
     proxy_to_instance(
         &state,
         &instance,
@@ -124,7 +124,7 @@ async fn undrain_instance(
     Path(instance): Path<String>,
 ) -> Response {
     let actor = actor_header(&headers);
-    tracing::info!(%instance, ?actor, verb = "undrain", "fan-out verb");
+    tracing::info!(instance = ?instance, ?actor, verb = "undrain", "fan-out verb");
     proxy_to_instance(
         &state,
         &instance,
@@ -147,7 +147,7 @@ async fn list_instance_sniffers(
     Path(instance): Path<String>,
 ) -> Response {
     let actor = actor_header(&headers);
-    tracing::info!(%instance, ?actor, verb = "list_sniffers", "fan-out verb");
+    tracing::info!(instance = ?instance, ?actor, verb = "list_sniffers", "fan-out verb");
     proxy_to_instance(
         &state,
         &instance,
@@ -166,7 +166,7 @@ async fn add_backend(
     body: Bytes,
 ) -> Response {
     let actor = actor_header(&headers);
-    tracing::info!(%pool, ?actor, verb = "add_backend", "fan-out verb");
+    tracing::info!(pool = ?pool, ?actor, verb = "add_backend", "fan-out verb");
     broadcast(
         &state,
         Method::POST,
@@ -184,7 +184,7 @@ async fn patch_backend(
     body: Bytes,
 ) -> Response {
     let actor = actor_header(&headers);
-    tracing::info!(%pool, %addr, ?actor, verb = "patch_backend", "fan-out verb");
+    tracing::info!(pool = ?pool, addr = ?addr, ?actor, verb = "patch_backend", "fan-out verb");
     broadcast(
         &state,
         Method::PATCH,
@@ -201,7 +201,7 @@ async fn delete_backend(
     Path((pool, addr)): Path<(String, String)>,
 ) -> Response {
     let actor = actor_header(&headers);
-    tracing::info!(%pool, %addr, ?actor, verb = "delete_backend", "fan-out verb");
+    tracing::info!(pool = ?pool, addr = ?addr, ?actor, verb = "delete_backend", "fan-out verb");
     broadcast(
         &state,
         Method::DELETE,
@@ -246,7 +246,7 @@ async fn upload_sniffer(
     body: Bytes,
 ) -> Response {
     let actor = actor_header(&headers);
-    tracing::info!(name = %q.name, ?actor, verb = "upload_sniffer", "fan-out verb");
+    tracing::info!(name = ?q.name, ?actor, verb = "upload_sniffer", "fan-out verb");
     broadcast_with_content_type(
         &state,
         Method::POST,
@@ -266,7 +266,7 @@ async fn delete_sniffer(
     Path(name): Path<String>,
 ) -> Response {
     let actor = actor_header(&headers);
-    tracing::info!(%name, ?actor, verb = "delete_sniffer", "fan-out verb");
+    tracing::info!(name = ?name, ?actor, verb = "delete_sniffer", "fan-out verb");
     broadcast(
         &state,
         Method::DELETE,
@@ -287,7 +287,7 @@ async fn rollback_sniffer(
     Path(name): Path<String>,
 ) -> Response {
     let actor = actor_header(&headers);
-    tracing::info!(%name, ?actor, verb = "rollback_sniffer", "fan-out verb");
+    tracing::info!(name = ?name, ?actor, verb = "rollback_sniffer", "fan-out verb");
     broadcast(
         &state,
         Method::POST,
@@ -351,22 +351,28 @@ async fn proxy_to_instance(
             let headers = forwardable_headers(resp.headers());
             match wayhouse_http::read_capped(resp, state.max_instance_response_bytes).await {
                 Ok(body) => (status, headers, body).into_response(),
-                Err(e) => (
-                    StatusCode::BAD_GATEWAY,
-                    Json(ErrorResponse {
-                        error: format!("{instance} ({url}): {e}"),
-                    }),
-                )
-                    .into_response(),
+                Err(e) => {
+                    tracing::warn!(instance = ?instance, %url, error = %e, "instance response unreadable");
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        Json(ErrorResponse {
+                            error: "the instance's answer could not be read".into(),
+                        }),
+                    )
+                        .into_response()
+                }
             }
         }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("{instance} ({url}): {}", wayhouse_http::error_chain(&e)),
-            }),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::warn!(instance = ?instance, %url, error = %wayhouse_http::error_chain(&e), "instance unreachable");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse {
+                    error: "instance unreachable".into(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -516,12 +522,16 @@ async fn broadcast_with_content_type(
                         detail,
                     }
                 }
-                Err(e) => InstanceResult {
-                    instance,
-                    status: None,
-                    error: Some(wayhouse_http::error_chain(&e)),
-                    detail: None,
-                },
+                Err(e) => {
+                    // reqwest's chain names the URL; the log has it, the browser does not.
+                    tracing::warn!(instance = ?instance, error = %wayhouse_http::error_chain(&e), "instance unreachable");
+                    InstanceResult {
+                        instance,
+                        status: None,
+                        error: Some("instance unreachable".into()),
+                        detail: None,
+                    }
+                }
             }
         });
     }
@@ -908,7 +918,11 @@ mod tests {
             .find(|r| r["instance"] == "unreachable")
             .unwrap();
         assert!(bad["status"].is_null());
-        assert!(bad["error"].is_string());
+        assert_eq!(bad["error"], "instance unreachable");
+        assert!(
+            !body.to_string().contains("127.0.0.1"),
+            "no URL in the answer"
+        );
     }
 
     #[tokio::test]
