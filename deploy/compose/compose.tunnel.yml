@@ -21,7 +21,7 @@ services:
     # Root only to hold NET_ADMIN; everything else is dropped. DAC_OVERRIDE lets root write
     # the /data volume, which the image owns as uid 65532.
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, DAC_OVERRIDE]
+    cap_add: [NET_ADMIN, DAC_OVERRIDE, NET_BIND_SERVICE]   # the last for game ports below 1024
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs: ["/tmp"]
