@@ -323,22 +323,19 @@ pub fn secret_files(args: &[String]) -> Vec<String> {
         "--ui-password",
     ];
     let mut out = Vec::with_capacity(args.len());
-    let mut it = args.iter();
+    let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
-        match (SECRETS.contains(&a.as_str()), it.next()) {
-            (true, Some(value)) => {
-                let (mut f, path) = tempfile::NamedTempFile::new()
-                    .expect("secret file")
-                    .keep()
-                    .expect("keep secret file");
-                std::io::Write::write_all(&mut f, value.as_bytes()).expect("write secret file");
-                out.push(format!("{a}-file"));
-                out.push(path.display().to_string());
-            }
-            (_, next) => {
-                out.push(a.clone());
-                out.extend(next.cloned());
-            }
+        if SECRETS.contains(&a.as_str()) && it.peek().is_some() {
+            let value = it.next().expect("peeked");
+            let (mut f, path) = tempfile::NamedTempFile::new()
+                .expect("secret file")
+                .keep()
+                .expect("keep secret file");
+            std::io::Write::write_all(&mut f, value.as_bytes()).expect("write secret file");
+            out.push(format!("{a}-file"));
+            out.push(path.display().to_string());
+        } else {
+            out.push(a.clone());
         }
     }
     out
