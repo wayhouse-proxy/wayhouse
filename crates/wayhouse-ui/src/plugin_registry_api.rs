@@ -71,7 +71,9 @@ async fn add_registry(State(state): State<AppState>, Json(req): Json<AddRegistry
         Err(e @ (RegistriesError::BadUrl | RegistriesError::Credentials)) => {
             error(StatusCode::BAD_REQUEST, e.to_string())
         }
-        Err(e @ RegistriesError::TooMany) => error(StatusCode::CONFLICT, e.to_string()),
+        Err(e @ (RegistriesError::TooMany | RegistriesError::OtherKind(_))) => {
+            error(StatusCode::CONFLICT, e.to_string())
+        }
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -135,7 +137,8 @@ struct FetchRequest {
     allow_unsigned: bool,
 }
 
-/// The newest version built for this controller's ABI, or the requested one.
+/// The newest release (not a pre-release) built for this controller's ABI, or the requested
+/// version.
 #[allow(clippy::result_large_err)] // the Err is the ready-made refusal the handler returns
 fn pick<'a>(
     entry: &'a PluginEntry,
@@ -164,12 +167,13 @@ fn pick<'a>(
         None => entry
             .versions
             .iter()
-            .filter(|v| abi_matches(&v.abi, host_abi).unwrap_or(false))
+            // A pre-release is only installed when asked for by version.
+            .filter(|v| v.version.pre.is_empty() && abi_matches(&v.abi, host_abi).unwrap_or(false))
             .max_by(|a, b| a.version.cmp(&b.version))
             .ok_or_else(|| {
                 error(
                     StatusCode::UNPROCESSABLE_ENTITY,
-                    format!("no version of this plugin is built for plugin ABI {host_abi}"),
+                    format!("no release of this plugin is built for plugin ABI {host_abi} (pre-releases are installed only by naming the version)"),
                 )
             }),
     }
@@ -296,6 +300,31 @@ mod tests {
 
     const MODULE_WAT: &str =
         r#"(module (memory (export "memory") 1) (@custom "wayhouse.plugin-abi" "\00\00\02\00"))"#;
+
+    #[test]
+    fn the_default_pick_skips_pre_releases_but_a_named_one_is_allowed() {
+        let version = |v: &str| {
+            serde_json::from_value::<PluginVersion>(json!({
+                "version": v, "abi": "0.2", "url": "https://x.example/m.wasm",
+                "sha256": "0".repeat(64), "size": 1
+            }))
+            .unwrap()
+        };
+        let entry = PluginEntry {
+            name: "demo".into(),
+            description: String::new(),
+            license: "MIT".into(),
+            homepage: None,
+            versions: vec![version("0.3.0-rc.1"), version("0.2.0")],
+        };
+        let picked = pick(&entry, None, "0.2").unwrap();
+        assert_eq!(picked.version.to_string(), "0.2.0");
+        let rc: semver::Version = "0.3.0-rc.1".parse().unwrap();
+        assert_eq!(
+            pick(&entry, Some(&rc), "0.2").unwrap().version.to_string(),
+            "0.3.0-rc.1"
+        );
+    }
 
     async fn serve(app: Router) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

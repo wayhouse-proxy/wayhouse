@@ -632,10 +632,11 @@ export function applyProcess(program: string, values: Record<string, ProcessValu
   return requestJson(`/api/process/${encodeURIComponent(program)}`, jsonInit("PUT", { values, rev }));
 }
 
-export function confirmProcess(program: string): Promise<ProcessFile> {
-  return requestJson(`/api/process/${encodeURIComponent(program)}/confirm`, { method: "POST" });
+/** `rev` is the revision the page showed: a stale click is refused instead of settling another trial. */
+export function confirmProcess(program: string, rev: number): Promise<ProcessFile> {
+  return requestJson(`/api/process/${encodeURIComponent(program)}/confirm`, jsonInit("POST", { rev }));
 }
 
-export function undoProcess(program: string): Promise<ProcessFile> {
-  return requestJson(`/api/process/${encodeURIComponent(program)}/undo`, { method: "POST" });
+export function undoProcess(program: string, rev: number): Promise<ProcessFile> {
+  return requestJson(`/api/process/${encodeURIComponent(program)}/undo`, jsonInit("POST", { rev }));
 }

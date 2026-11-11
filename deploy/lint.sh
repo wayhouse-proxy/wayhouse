@@ -107,6 +107,7 @@ errs << "tunnel override: controller needs --tunnel-network=fd49:89c1:4b5e:60::/
 # net.* sysctls ("not allowed in host network namespace"): `up` would fail.
 %w[wayhouse agent].each { |s| errs << "tunnel #{s} sets a net.* sysctl, which host networking refuses" if (tunnel[s]["sysctls"] || {}).keys.any? { |k| k.start_with?("net.") } }
 errs << "tunnel override: controller lost the base flags" unless %w[--listen=0.0.0.0:9901 --data-dir=/data].all? { |f| ctl_cmd.include?(f) } && ctl_cmd.any? { |a| a.start_with?("--auth-token-file=") }
+{ "wayhouse" => %w[DAC_OVERRIDE NET_ADMIN NET_BIND_SERVICE], "agent" => %w[DAC_OVERRIDE NET_ADMIN] }.each { |s, caps| errs << "tunnel #{s}: must drop all capabilities except #{caps.join("/")} and set no-new-privileges and read_only" unless tunnel[s]["cap_drop"] == ["ALL"] && (tunnel[s]["cap_add"] || []).sort == caps && tunnel[s]["read_only"] == true && tunnel[s]["security_opt"] == ["no-new-privileges:true"] }
 errs << "tunnel override: wayhouse must not hand-pick --tunnel-address" if tunnel["wayhouse"]["command"].any? { |a| a.start_with?("--tunnel-address") }
 agent_cmd = tunnel["agent"]["command"]
 errs << "tunnel override: agent must not hand-pick --address" if agent_cmd.any? { |a| a.start_with?("--address") }

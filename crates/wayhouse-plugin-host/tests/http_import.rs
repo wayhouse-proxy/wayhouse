@@ -228,3 +228,39 @@ fn a_guest_looping_on_http_requests_still_times_out() {
         Err(CallError::Timeout)
     ));
 }
+
+/// A refused (oversize) request must not leave the previous answer behind for `http_read`.
+#[test]
+fn a_refused_request_does_not_leave_the_previous_answer_to_read() {
+    let caps = CAPS.replace('"', "\\\"").replace('\n', " ");
+    let req = REQUEST.replace('"', "\\\"").replace('$', "\\24");
+    let len = REQUEST.len();
+    let m = wat::parse_str(format!(
+        r#"(module
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-caps" "{caps}")
+  (import "wayhouse" "log" (func $log (param i32 i32 i32)))
+  (import "wayhouse" "http_request" (func $req (param i32 i32) (result i32)))
+  (import "wayhouse" "http_read" (func $read (param i32 i32) (result i32)))
+  (memory (export "memory") 2)
+  (data (i32.const 0) "{req}")
+  (func (export "alloc") (param i32) (result i32) (i32.const 4096))
+  (func (export "init") (param i32 i32))
+  (func (export "on_timer") (local $n i32)
+    (drop (call $req (i32.const 0) (i32.const {len})))
+    ;; far over the request cap: refused with -1
+    (local.set $n (call $req (i32.const 0) (i32.const 600000)))
+    ;; the first answer must be gone: a read yields nothing
+    (local.set $n (call $read (i32.const 8192) (i32.const 60000)))
+    (call $log (i32.const 2) (i32.const 8192) (local.get $n))))"#
+    ))
+    .unwrap();
+    let caps = inspect(&m).unwrap().caps;
+    let plugin = PluginHost::new(Limits::default())
+        .unwrap()
+        .load(&m, &caps)
+        .unwrap()
+        .with_http(engine(&m, Arc::new(Echo::default())));
+    let fx = plugin.on_timer(&StateSnapshot::new()).unwrap();
+    assert_eq!(fx.logs[0].msg, "", "{:?}", fx.logs[0].msg);
+}
