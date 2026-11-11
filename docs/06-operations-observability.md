@@ -742,6 +742,7 @@ line prints a value. A config revision holds the name only.
 - `GET /secrets` lists names with the key id, time and actor; never a value or ciphertext.
 - `DELETE /secrets/{name}` removes one (and, under HA, asks Raft to purge the superseded log; a replacing `PUT` does not purge, the old ciphertext leaves the log with normal compaction).
 - The UI has the same three calls under Settings, Secrets (admin role), and a "Move to secret store" button under a plaintext secret field in the config form. Values are write-only there too.
+- `POST /secrets/rewrap` re-encrypts every secret under the active key (step 2 of a key rotation; refuses until every member holds it; answers `{rewrapped, skipped, unreadable, active_key_id}`, idempotent). Remove the old key only once `GET /secrets` shows the active `key_id` on every secret.
 - `GET /secrets/{name}/sealed` returns the ciphertext a proxy opens with its own key file.
 
 Every call is audited with a `warn` line (secret name, key id, actor). A controller with a key

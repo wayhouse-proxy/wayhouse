@@ -45,6 +45,13 @@ pub enum UiOp {
         kind: Kind,
         name: String,
     },
+    /// Re-encrypts one cluster secret under a newer key: applied only if the secret still holds
+    /// the ciphertext whose nonce is `from_nonce`, so a `PUT` that landed meanwhile wins.
+    RewrapSecret {
+        name: String,
+        from_nonce: String,
+        value: Value,
+    },
 }
 
 /// What applying one op did; everything but `Done` and `Replayed` changed nothing.
@@ -57,6 +64,8 @@ pub enum Applied {
     Invalid(String),
     /// The collection already holds its maximum number of records.
     Full(usize),
+    /// A rewrap lost a race: the secret was replaced since it was read.
+    Stale,
 }
 
 /// Everything replicated, for an HA snapshot.
@@ -525,6 +534,24 @@ impl UiStore {
                 }
                 Ok(Ok(vec![Write::Insert(k, serde_json::to_vec(value)?)]))
             }
+            UiOp::RewrapSecret {
+                name,
+                from_nonce,
+                value,
+            } => {
+                if let Err(why) = validate(Kind::ClusterSecret, name, value) {
+                    return Ok(Err(Applied::Invalid(why)));
+                }
+                let k = key(Kind::ClusterSecret, name);
+                let Some(current) = self.records.get(&k)? else {
+                    return Ok(Err(Applied::NotFound));
+                };
+                let current: Value = serde_json::from_slice(&current)?;
+                if current["nonce"].as_str() != Some(from_nonce) {
+                    return Ok(Err(Applied::Stale));
+                }
+                Ok(Ok(vec![Write::Insert(k, serde_json::to_vec(value)?)]))
+            }
             UiOp::Delete { kind, name } => {
                 let k = key(*kind, name);
                 if self.records.get(&k)?.is_none() {
@@ -646,6 +673,49 @@ impl UiStore {
 
 #[cfg(test)]
 mod tests {
+    fn secret(nonce: &str, key_id: &str) -> Value {
+        json!({"key_id": key_id, "nonce": nonce, "ciphertext": "c", "set_at": 5, "actor": "ops"})
+    }
+
+    fn rewrap(from: &str, value: Value) -> UiOp {
+        UiOp::RewrapSecret {
+            name: "gossip-psk".into(),
+            from_nonce: from.into(),
+            value,
+        }
+    }
+
+    #[test]
+    fn a_rewrap_replaces_the_secret_only_if_it_was_not_replaced_since() {
+        let (s, _d) = store();
+        let name = "gossip-psk";
+        assert_eq!(
+            s.apply_local(&rewrap("n1", secret("n2", "k2"))).unwrap(),
+            Applied::NotFound
+        );
+        s.apply_local(&put(Kind::ClusterSecret, name, secret("n1", "k1")))
+            .unwrap();
+        // An operator's PUT landed after the rewrap read the old ciphertext.
+        s.apply_local(&put(Kind::ClusterSecret, name, secret("n9", "k1")))
+            .unwrap();
+        assert_eq!(
+            s.apply_local(&rewrap("n1", secret("n2", "k2"))).unwrap(),
+            Applied::Stale
+        );
+        assert_eq!(
+            s.get(Kind::ClusterSecret, name).unwrap(),
+            Some(secret("n9", "k1"))
+        );
+        assert_eq!(
+            s.apply_local(&rewrap("n9", secret("n2", "k2"))).unwrap(),
+            Applied::Done
+        );
+        assert_eq!(
+            s.get(Kind::ClusterSecret, name).unwrap(),
+            Some(secret("n2", "k2"))
+        );
+    }
+
     #[test]
     fn the_snapshot_covers_every_kind() {
         // One record per kind, built by an exhaustive match that does not use `Kind::ALL`:

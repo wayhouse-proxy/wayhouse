@@ -177,7 +177,7 @@ Plaintext HTTP on a non-loopback `--listen` refuses to start with `--plugins` an
 active key (`GET /admin/plugins/secrets/keys` lists the key ids each holds), then re-encrypts
 every secret under it; a slot an operator rewrote meanwhile is skipped and reported. A member that does not answer is skipped, so a rewrap also works while a replica is down; that replica catches up on its own once it is back, and until it has the new key in its keyring the plugins that use it are held. (3) Remove
 the old key from the file. Removing it before step 2 holds the plugins that still use it
-(`held: key <id> missing`) until it is put back. With `--acme` the account and certificate keys use the same keyring and are rewrapped by `POST /admin/acme/rewrap` ([acme.md](acme.md)).
+(`held: key <id> missing`) until it is put back. With `--acme` the account and certificate keys use the same keyring and are rewrapped by `POST /admin/acme/rewrap` ([acme.md](acme.md)), and the cluster secrets (the admin token and gossip PSK, `PUT /secrets/{name}`) by `POST /secrets/rewrap`; call all that apply before step 3, or proxies that fetch a secret sealed under the removed key fail their next start.
 
 ## Routes
 
