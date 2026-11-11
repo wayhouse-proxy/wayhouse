@@ -10,7 +10,7 @@ sh deploy/check-observability.sh
 # Render the defaults: CI's deploy job exports BIN_SOURCE=prebuilt, which must not
 # change what these checks see.
 unset BIN_SOURCE
-export WAYHOUSE_CONTROLLER_TOKEN=x WAYHOUSE_AGGREGATOR_TOKEN=x WAYHOUSE_INGEST_TOKEN=y WAYHOUSE_UI_PASSWORD=x \
+export WAYHOUSE_CONTROLLER_TOKEN=x WAYHOUSE_PROXY_TOKEN=p WAYHOUSE_AGENT_TOKEN=a WAYHOUSE_AGGREGATOR_TOKEN=x WAYHOUSE_INGEST_TOKEN=y WAYHOUSE_UI_PASSWORD=x \
        WAYHOUSE_TUNNEL_ENDPOINT=1.2.3.4:51820
 C=deploy/compose
 

@@ -280,6 +280,23 @@ Every fleet API is open when no token is configured. Startup now enforces:
   `openssl rand -hex 32`. The outbound tokens (`--controller-token` etc., which must
   match the remote side) are not checked.
 
+## Controller tokens: admin, proxy, agent
+
+The controller separates three credentials, so a compromised edge box cannot administer the fleet:
+
+- `--auth-token` is the admin token: config writes, secrets, plugins, ACME, the UI and operators.
+- `--proxy-token` is what `wayhouse` proxies present (`--controller-token`,
+  `--tunnel-controller-token`). It unlocks only what a proxy calls: `GET /config`,
+  `GET /config/subscribe`, `GET /secrets/{name}/sealed`, `GET /plugin-routes/subscribe`,
+  `GET /intent/subscribe`, `GET /peers/subscribe` and `POST /proxy-peers`.
+- `--agent-token` is what `wayhouse-agent` presents (`--controller-token`). It unlocks only
+  `POST /peers` and `GET /proxy-peers/subscribe`.
+
+Setting `--auth-token` requires both of the others, and all three must differ; the controller
+refuses to start otherwise. The admin token still works on every route (the UI, operators and a
+slave controller's `--parent-token` use it). Under HA every replica takes the same three flags.
+`wayhouse-certsync` reads `/acme/bundles` (private keys) and so holds the admin token.
+
 ## TLS for the fleet services
 
 Without the settings below, `wayhouse-controller`, `wayhouse-aggregator`, `wayhouse-ui` and `wayhouse`'s

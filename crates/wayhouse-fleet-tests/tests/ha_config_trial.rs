@@ -51,6 +51,10 @@ impl Cluster {
                 &peers,
                 "--auth-token",
                 AUTH_TOKEN,
+                "--proxy-token",
+                "proxy-token-0123456789",
+                "--agent-token",
+                "agent-token-0123456789",
             ]
             .map(String::from);
             procs.push(Some(spawn_controller_with(
