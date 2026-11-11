@@ -9,7 +9,10 @@
 //!   inside a listed CIDR, or a hostname equal to / under a listed
 //!   `*.suffix`);
 //! - without: the URL's host must be an IP literal equal to the pushing
-//!   connection's source address, i.e. an instance can only name itself.
+//!   connection's source address, i.e. an instance can only name itself, and
+//!   never a loopback address (any local process could push `127.0.0.1:<its
+//!   own port>` and collect the instance token); a single-box setup lists
+//!   `--instance-url-allow=127.0.0.0/8` on purpose.
 //!
 //! Either way the scheme must be `http`/`https`, with a host and no userinfo,
 //! query or fragment.
@@ -125,6 +128,19 @@ impl AdminUrlPolicy {
             return Err("admin_url must not have a query or fragment".into());
         }
         if self.allow.is_empty() {
+            let loopback = match &host {
+                url::Host::Ipv4(h) => h.is_loopback(),
+                url::Host::Ipv6(h) => h.is_loopback(),
+                url::Host::Domain(_) => false,
+            };
+            if loopback {
+                return Err(
+                    "admin_url names a loopback address, which any local process could \
+                     claim; set --instance-url-allow=127.0.0.0/8 (or the exact address) on \
+                     the aggregator for a single-box setup"
+                        .into(),
+                );
+            }
             let same = match (&host, peer) {
                 (url::Host::Ipv4(h), Some(p)) => unmap(p) == IpAddr::V4(*h),
                 (url::Host::Ipv6(h), Some(p)) => unmap(p) == IpAddr::V6(*h),
@@ -168,13 +184,29 @@ mod tests {
         assert!(p
             .check("https://10.0.0.4:9900/wayhouse-1", ip("10.0.0.4"))
             .is_ok());
-        assert!(p.check("http://[::1]:9900", ip("::1")).is_ok());
         assert!(p
             .check("http://10.0.0.4:9900", ip("::ffff:10.0.0.4"))
             .is_ok());
         assert!(p.check("http://10.9.9.9:9900", ip("10.0.0.4")).is_err());
         assert!(p.check("http://evil.example:9900", ip("10.0.0.4")).is_err());
         assert!(p.check("http://10.0.0.4:9900", None).is_err());
+    }
+
+    #[test]
+    fn default_rule_refuses_loopback_even_from_loopback() {
+        let p = AdminUrlPolicy::default();
+        for url in [
+            "http://127.0.0.1:9900",
+            "http://127.9.9.9",
+            "http://[::1]:9900",
+        ] {
+            let peer = url.contains("::1").then(|| "::1").unwrap_or("127.0.0.1");
+            let err = p.check(url, ip(peer)).unwrap_err();
+            assert!(err.contains("--instance-url-allow"), "{err}");
+        }
+        // Listing it is the opt-in.
+        let p = AdminUrlPolicy::new(&["127.0.0.0/8"]).unwrap();
+        assert!(p.check("http://127.0.0.1:9900", ip("127.0.0.1")).is_ok());
     }
 
     #[test]

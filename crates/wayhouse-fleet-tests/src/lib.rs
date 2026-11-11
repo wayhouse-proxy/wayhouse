@@ -642,6 +642,13 @@ pub fn spawn_aggregator(listen_port: u16) -> Result<Proc> {
 pub fn spawn_aggregator_with(listen_port: u16, extra: &[String]) -> Result<Proc> {
     let mut args = vec!["--listen".to_string(), format!("127.0.0.1:{listen_port}")];
     args.extend(extra.iter().cloned());
+    // The test fleet runs on loopback; the default rule refuses loopback admin URLs.
+    if !args.iter().any(|a| a == "--instance-url-allow") {
+        args.extend([
+            "--instance-url-allow".to_string(),
+            "127.0.0.0/8".to_string(),
+        ]);
+    }
     Proc::spawn("wayhouse-aggregator", &args)
 }
 

@@ -4,8 +4,8 @@ This is the operator's checklist for moving a running 0.3.0 deployment to 0.4.0.
 rules for any upgrade (compatibility window, order of operations, draining a proxy) are in
 [Upgrading a fleet](upgrading.md); this page covers what is specific to this release.
 
-Every change is additive or opt-in except the plugin ABI (rebuild your plugins) and the quoting rule
-for tokens (see Secrets). On a single box, the [solo bundle](12-deployment.md#one-box-the-solo-bundle)
+Every change is additive or opt-in except the plugin ABI (rebuild your plugins), the quoting rule
+for tokens (see Secrets) and the aggregator's loopback rule (see Aggregator). On a single box, the [solo bundle](12-deployment.md#one-box-the-solo-bundle)
 runs all of it with one command.
 
 Opt-in: `--settings-dir` on each program lets the UI's Process flags page change their command-line
@@ -23,6 +23,17 @@ Without the flag nothing changes.
 4. Only now write `schema_version: 4` into a config that uses `features:`, `enabled:` or
    `{ secret: name }`: an older proxy refuses it.
 5. Rebuild and re-approve plugins (below).
+
+## Aggregator: loopback `admin_url`s need `--instance-url-allow`
+
+Breaking, security. Without `--instance-url-allow`, the aggregator used to accept an `admin_url`
+whose host was the pushing connection's own IP. That included `127.0.0.1`: any local process could
+push `http://127.0.0.1:<its own port>` and have the fan-out send the fleet-wide `--instance-token`
+to it. The default rule now refuses a loopback host (`400` and a warning in the aggregator's log).
+
+If your instances really are on the aggregator's own box (the solo bundle, a single-host compose),
+list the range on purpose: `--instance-url-allow=127.0.0.0/8`. The solo systemd unit and both compose
+files already do. Instances on other addresses are unaffected.
 
 ## Config schema
 
