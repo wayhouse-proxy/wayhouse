@@ -662,7 +662,13 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
                             // direct (non-HA) `promote_revision` call is
                             // what gives an accurate `404` to the caller.
                             self.config
-                                .promote_entry(index, revision)
+                                .promote_entry(index, revision, None)
+                                .map_err(|e| StorageIOError::write_state_machine(&e))?;
+                            WriteResponse::Revision(Some(revision))
+                        }
+                        WriteRequest::PromoteTrial { revision, trial } => {
+                            self.config
+                                .promote_entry(index, revision, Some(&trial))
                                 .map_err(|e| StorageIOError::write_state_machine(&e))?;
                             WriteResponse::Revision(Some(revision))
                         }
@@ -1266,7 +1272,7 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-        assert_eq!(sm.config.promote_entry(2, 1).unwrap(), None);
+        assert_eq!(sm.config.promote_entry(2, 1, None).unwrap(), None);
         assert!(!sm.config.stage_of(1).promoted);
     }
 
@@ -2475,6 +2481,34 @@ mod tests {
             actor: None,
             trial,
         }
+    }
+
+    #[tokio::test]
+    async fn a_promote_with_a_trial_puts_the_staged_revision_on_trial_on_every_replica() {
+        let trial = crate::confirm::Trial {
+            revert_to: 1,
+            deadline_ms: 9_000,
+            reasons: vec!["admin_listen".into()],
+        };
+        let canary = |bytes: &[u8]| WriteRequest::Config {
+            bytes: bytes.to_vec(),
+            stage: crate::api::Stage::canary("eu".into()),
+            actor: None,
+            trial: None,
+        };
+        let (mut a, _a) = test_sm();
+        apply_one(&mut a, 1, trial_config(b"pools: []", None)).await;
+        apply_one(&mut a, 2, canary(b"pools: [] ")).await;
+        assert_eq!(a.config.pending().unwrap(), None);
+        let promote = WriteRequest::PromoteTrial {
+            revision: 2,
+            trial: trial.clone(),
+        };
+        apply_one(&mut a, 3, promote).await;
+        assert_eq!(
+            a.config.pending().unwrap(),
+            Some(crate::confirm::Pending { revision: 2, trial })
+        );
     }
 
     #[tokio::test]

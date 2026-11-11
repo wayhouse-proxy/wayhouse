@@ -492,6 +492,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn promoting_a_risky_canary_starts_a_trial_that_reverts_fleet_wide() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = state(dir.path());
+        let app = router(st.clone());
+        post(&app, "/config", "").await;
+        // A canary revision may carry anything; it reaches one group only, so no trial yet.
+        post(&app, "/config?stage=canary&group=eu", MOVED_ADMIN).await;
+        assert!(pending(&app).await.is_null());
+
+        let (status, body) = call(&app, "POST", "/config/promote/2", String::new()).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let p = pending(&app).await;
+        assert_eq!(
+            (p["revision"].as_u64(), p["revert_to"].as_u64()),
+            (Some(2), Some(1))
+        );
+        assert_eq!(p["reasons"], serde_json::json!(["admin_listen"]));
+
+        assert!(crate::api::revert_expired(&st, now_ms() + 61_000).await);
+        assert_eq!(
+            current(&app).await,
+            BASE,
+            "everyone is back on the old bytes"
+        );
+        assert!(pending(&app).await.is_null());
+    }
+
+    #[tokio::test]
+    async fn promoting_a_safe_canary_or_opting_out_starts_no_trial() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = router(state(dir.path()));
+        post(&app, "/config", "").await;
+        post(
+            &app,
+            "/config?stage=canary&group=eu",
+            "settings:\n  workers: 2\n",
+        )
+        .await;
+        call(&app, "POST", "/config/promote/2", String::new()).await;
+        assert!(pending(&app).await.is_null(), "a safe diff needs no window");
+
+        post(&app, "/config?stage=canary&group=eu", MOVED_ADMIN).await;
+        call(
+            &app,
+            "POST",
+            "/config/promote/3?confirm_within=0",
+            String::new(),
+        )
+        .await;
+        assert!(pending(&app).await.is_null(), "confirm_within=0 opts out");
+    }
+
+    #[tokio::test]
+    async fn a_canary_submitted_during_a_trial_leaves_the_trial_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = state(dir.path());
+        let app = router(st.clone());
+        post(&app, "/config", "").await;
+        post(&app, "/config", MOVED_ADMIN).await;
+        // Revision 3 reaches group eu only; revision 2 is still what everyone else runs.
+        let (status, _) = post(
+            &app,
+            "/config?stage=canary&group=eu",
+            "settings:\n  workers: 2\n",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let p = pending(&app).await;
+        assert_eq!(p["revision"].as_u64(), Some(2), "the trial survives");
+
+        assert!(crate::api::revert_expired(&st, now_ms() + 61_000).await);
+        assert_eq!(current(&app).await, BASE);
+    }
+
+    #[tokio::test]
     async fn a_revert_decided_before_a_confirm_changes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let st = state(dir.path());
