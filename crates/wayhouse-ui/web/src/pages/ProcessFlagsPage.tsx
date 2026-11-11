@@ -153,10 +153,10 @@ function ProgramSection({ program, canWrite, onChanged }: { program: ProcessProg
                 A change is on trial. The program went back to its previous flags if it is not confirmed within {pending.confirm_secs}{" "}
                 seconds of its start. Check that you can still reach everything, then confirm.
               </span>
-              <Button variant="primary" disabled={!canWrite || busy} onClick={() => run(() => confirmProcess(program.program))}>
+              <Button variant="primary" disabled={!canWrite || busy} onClick={() => run(() => confirmProcess(program.program, file?.rev ?? 0))}>
                 Confirm
               </Button>
-              <Button disabled={!canWrite || busy} onClick={() => run(() => undoProcess(program.program))}>
+              <Button disabled={!canWrite || busy} onClick={() => run(() => undoProcess(program.program, file?.rev ?? 0))}>
                 Undo
               </Button>
             </div>

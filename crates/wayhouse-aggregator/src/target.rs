@@ -55,9 +55,9 @@ impl Target {
     /// The full URL under `base` (an instance's `admin_url`, which may itself
     /// carry a path prefix such as `https://edge.example/wayhouse-1`).
     pub fn url(&self, base: &str) -> Result<Url, String> {
-        let mut url = Url::parse(base).map_err(|e| format!("bad admin_url {base:?}: {e}"))?;
+        let mut url = Url::parse(base).map_err(|e| format!("bad admin_url: {e}"))?;
         url.path_segments_mut()
-            .map_err(|()| format!("bad admin_url {base:?}: cannot be a base"))?
+            .map_err(|()| "bad admin_url: cannot be a base".to_string())?
             .pop_if_empty()
             .extend(&self.segments);
         if !self.query.is_empty() {

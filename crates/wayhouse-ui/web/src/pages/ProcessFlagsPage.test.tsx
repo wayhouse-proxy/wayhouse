@@ -126,7 +126,7 @@ describe("ProcessFlagsPage", () => {
     expect(screen.getByLabelText("--listen")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Apply as a trial" })).toHaveAttribute("aria-disabled", "true");
     await user.click(screen.getByRole("button", { name: "Confirm" }));
-    expect(api.confirmProcess).toHaveBeenCalledWith("controller");
+    expect(api.confirmProcess).toHaveBeenCalledWith("controller", 5);
   });
 
   it("shows why the program refused a change and went back", async () => {
