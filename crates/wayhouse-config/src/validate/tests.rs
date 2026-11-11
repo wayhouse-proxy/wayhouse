@@ -2486,3 +2486,65 @@ fn enabled_needs_schema_4() {
     let e = parse_str(doc).unwrap_err().to_string();
     assert!(e.contains("listeners.enabled"), "{e}");
 }
+
+#[test]
+fn boot_secret_check_refuses_what_the_proxy_refuses_at_start() {
+    let with = |extra: &str| parse_str(&gossip_fixture(extra)).unwrap();
+    // Short or empty plaintext secrets parse, but a proxy exits at start on them.
+    let short_psk =
+        with("  failure_domain: \"r1\"\n  gossip:\n    bind: \"10.0.0.9:7946\"\n    psk: \"a\"\n");
+    let e = short_psk.check_secret_strength().unwrap_err().to_string();
+    assert!(e.contains("settings.gossip.psk"), "{e}");
+    let empty_token = with("  admin:\n    auth_token: \"\"\n");
+    let e = empty_token.check_secret_strength().unwrap_err().to_string();
+    assert!(e.contains("settings.admin.auth_token"), "{e}");
+    let short_token = with("  admin:\n    auth_token: \"short\"\n");
+    assert!(short_token.check_secret_strength().is_err());
+    // Strong values, no values and unresolved references (checked where they resolve) pass.
+    let strong = with("  admin:\n    auth_token: \"0123456789abcdef\"\n");
+    assert!(strong.check_secret_strength().is_ok());
+    assert!(parse_str(MINIMAL).unwrap().check_secret_strength().is_ok());
+    let by_ref = parse_str(&format!(
+        "schema_version: 4\n{}",
+        gossip_fixture("  admin:\n    auth_token: { secret: tok }\n")
+    ))
+    .unwrap();
+    assert!(by_ref.check_secret_strength().is_ok());
+}
+
+#[test]
+fn object_counts_are_capped_so_validation_stays_cheap() {
+    use std::fmt::Write;
+    let doc = |pools: usize, listeners: usize, routes: usize| {
+        let mut y = String::from("pools:\n");
+        for i in 0..pools {
+            writeln!(y, "  - name: p{i}\n    targets: [\"127.0.0.1:1\"]").unwrap();
+        }
+        y.push_str("listeners:\n");
+        for i in 0..listeners {
+            writeln!(y, "  - name: l{i}\n    bind: \"127.0.0.1:{}\"", 10_000 + i).unwrap();
+            if routes == 0 {
+                y.push_str("    pool: p0\n");
+            } else {
+                y.push_str("    routes:\n");
+                for _ in 0..routes {
+                    y.push_str("      - match: { type: always }\n        pool: p0\n");
+                }
+            }
+        }
+        y
+    };
+    assert!(parse_str(&doc(MAX_POOLS, 1, 0)).is_ok());
+    let e = parse_str(&doc(MAX_POOLS + 1, 1, 0))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("pools"), "{e}");
+    let e = parse_str(&doc(1, MAX_LISTENERS + 1, 0))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("listeners"), "{e}");
+    let e = parse_str(&doc(1, 1, MAX_ROUTES_PER_LISTENER + 1))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("routes"), "{e}");
+}

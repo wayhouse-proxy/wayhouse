@@ -258,6 +258,10 @@ pub struct Config {
 /// between datagrams (WireGuard's usual keepalive is 25 s).
 const HANDSHAKE_MIN_IDLE: Duration = Duration::from_secs(60);
 
+/// Shortest accepted shared secret, in bytes (`wayhouse-http`'s `policy::MIN_SECRET_LEN` is the
+/// same number; `wayhouse` tests that they agree).
+pub const MIN_SECRET_LEN: usize = 16;
+
 impl Config {
     /// The names of the secrets this config refers to, sorted, each once.
     #[must_use]
@@ -286,6 +290,28 @@ impl Config {
             g.psk = crate::SecretOr::Plain(g.psk.resolve(resolver)?);
         }
         Ok(self)
+    }
+
+    /// The strength rules a proxy applies to its plaintext admin token and gossip PSK at start.
+    /// One place for them: `wayhouse` runs this after resolving references, and the controller
+    /// runs it on every submission and validation, so a config it stores can always boot.
+    /// References are skipped here; their value is checked where they resolve.
+    pub fn check_secret_strength(&self) -> Result<(), crate::ConfigError> {
+        let psk = self.gossip.as_ref().map(|g| &g.psk);
+        for (path, secret) in [
+            ("settings.admin.auth_token", self.admin_auth_token.as_ref()),
+            ("settings.gossip.psk", psk),
+        ] {
+            if let Some(crate::SecretOr::Plain(v)) = secret {
+                if v.len() < MIN_SECRET_LEN {
+                    return Err(crate::ConfigError::Invalid(format!(
+                        "{path} is too short ({} bytes, minimum {MIN_SECRET_LEN}); generate one with `openssl rand -hex 32`",
+                        v.len()
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Non-fatal findings about a valid config, for the caller to log (startup,

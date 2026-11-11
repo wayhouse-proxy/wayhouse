@@ -782,15 +782,9 @@ fn admin_token(cfg: &wayhouse_config::Config) -> anyhow::Result<Option<String>> 
 fn check_admin_auth(cfg: &wayhouse_config::Config, insecure_no_auth: bool) -> anyhow::Result<()> {
     let token = admin_token(cfg)?;
     let token = token.as_deref();
-    wayhouse_http::policy::check_optional_secret("settings.admin.auth_token", token)
-        .map_err(|e| anyhow::anyhow!(e))?;
-    if let Some(g) = &cfg.gossip {
-        // `resolve_secrets` already ran, so this only reads the value for the strength check;
-        // the gossip runner reads it again and refuses a reference that slipped through.
-        let psk = g.psk.resolve(None).map_err(|e| anyhow::anyhow!("{e}"))?;
-        wayhouse_http::policy::check_secret("settings.gossip.psk", &psk)
-            .map_err(|e| anyhow::anyhow!(e))?;
-    }
+    // The same rule the controller applies to a submission; references are resolved by now.
+    cfg.check_secret_strength()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     wayhouse_http::policy::check_exposure(
         "wayhouse admin API",
         cfg.admin_listen,
@@ -913,6 +907,14 @@ mod tests {
         let short = cfg("  admin:\n    listen: \"0.0.0.0:9900\"\n    auth_token: \"short\"\n");
         let e = check_admin_auth(&short, true).unwrap_err().to_string();
         assert!(e.contains("settings.admin.auth_token"), "{e}");
+    }
+
+    #[test]
+    fn config_and_http_agree_on_the_minimum_secret_length() {
+        assert_eq!(
+            wayhouse_config::MIN_SECRET_LEN,
+            wayhouse_http::policy::MIN_SECRET_LEN
+        );
     }
 
     #[test]
