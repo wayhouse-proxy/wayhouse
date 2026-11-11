@@ -707,11 +707,20 @@ mod tests {
     }
 
     /// A per-process random password for a test user, so no password literal
-    /// reaches the hasher (CodeQL's hard-coded cryptographic value, #68).
+    /// reaches the hasher (CodeQL's hard-coded cryptographic value, #68). It is
+    /// looked up by name, never built from it, so the name literal does not flow
+    /// into the password either.
     fn pw(user: &str) -> String {
-        static SEED: std::sync::LazyLock<String> =
-            std::sync::LazyLock::new(|| format!("{:032x}", rand::random::<u128>()));
-        format!("{user}-{}", *SEED)
+        use std::collections::HashMap;
+        use std::sync::{LazyLock, Mutex};
+        static PASSWORDS: LazyLock<Mutex<HashMap<String, String>>> =
+            LazyLock::new(|| Mutex::new(HashMap::new()));
+        PASSWORDS
+            .lock()
+            .unwrap()
+            .entry(user.to_owned())
+            .or_insert_with(|| format!("{:032x}", rand::random::<u128>()))
+            .clone()
     }
 
     fn login_body(user: &str) -> String {
