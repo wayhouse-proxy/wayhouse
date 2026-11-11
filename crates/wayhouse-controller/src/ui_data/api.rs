@@ -113,6 +113,12 @@ pub fn router(state: UiState) -> Router {
             get(|State(st): State<UiState>| async move { list_secrets(&st) }),
         )
         .route(
+            "/secrets/rewrap",
+            axum::routing::post(
+                |State(st): State<UiState>| async move { rewrap_secrets(&st).await },
+            ),
+        )
+        .route(
             "/secrets/{name}",
             axum::routing::put(
                 |State(st): State<UiState>,
@@ -396,6 +402,91 @@ async fn put_secret(st: &UiState, name: String, headers: &HeaderMap, body: Bytes
     }
 }
 
+/// `POST /secrets/rewrap`: re-encrypts every cluster secret under the active key (step 2 of a
+/// rotation, next to `/admin/plugins/secrets/rewrap`). Refuses while a member lacks the active
+/// key. A secret replaced meanwhile is skipped and reported.
+async fn rewrap_secrets(st: &UiState) -> Response {
+    use crate::ui_data::Applied;
+    let ring = st.keyring.current();
+    let Some(active) = ring.active_id().map(str::to_string) else {
+        return err(
+            StatusCode::CONFLICT,
+            "no secret key configured on this controller",
+        );
+    };
+    if let Some(ha) = &st.ha {
+        if let Err(why) = crate::plugins::peer::check_active_key(ha, &active).await {
+            return err(
+                StatusCode::CONFLICT,
+                format!("every node needs the active key {active} first: {why}"),
+            );
+        }
+        // The entry is a `UiOp` a level-4 member cannot decode.
+        if let Err(why) = super::check_support(ha).await {
+            return err(StatusCode::CONFLICT, why);
+        }
+    }
+    let stored = match st.store.list(Kind::ClusterSecret) {
+        Ok(a) => a,
+        Err(e) => return internal(e),
+    };
+    let (mut total, mut skipped, mut unreadable) = (0, Vec::new(), Vec::new());
+    for (name, mut record) in stored {
+        if record["key_id"].as_str() == Some(active.as_str()) {
+            continue;
+        }
+        let Ok(old) = serde_json::from_value::<wayhouse_secrets::Sealed>(record.clone()) else {
+            unreadable.push(name);
+            continue;
+        };
+        let Ok(value) = ring.open_cluster(&name, &old) else {
+            unreadable.push(name);
+            continue;
+        };
+        let Ok(new) = ring.seal_cluster(&name, value.expose()) else {
+            unreadable.push(name);
+            continue;
+        };
+        total += 1;
+        record["key_id"] = new.key_id.into();
+        record["nonce"] = new.nonce.into();
+        record["ciphertext"] = new.ciphertext.into();
+        let op = UiOp::RewrapSecret {
+            name: name.clone(),
+            from_nonce: old.nonce,
+            value: record,
+        };
+        let applied = match &st.ha {
+            None => st.store.apply_local(&op).map_err(|e| e.to_string()),
+            Some(ha) => {
+                match crate::plugins::peer::propose_ciphertext(ha, WriteRequest::Ui(op)).await {
+                    Ok(WriteResponse::UiResult(a)) => Ok(a),
+                    Ok(other) => return internal(format!("unexpected answer {other:?}")),
+                    Err(why) => return err(StatusCode::SERVICE_UNAVAILABLE, why),
+                }
+            }
+        };
+        match applied {
+            Ok(Applied::Done) => {
+                tracing::warn!(secret = %name, key_id = %active, "cluster secret rewrapped");
+            }
+            Ok(Applied::Stale | Applied::NotFound) => skipped.push(name),
+            Ok(other) => return internal(format!("unexpected answer {other:?}")),
+            Err(e) => return internal(e),
+        }
+    }
+    if let (Some(ha), true) = (&st.ha, total > skipped.len()) {
+        crate::plugins::peer::request_purge(ha);
+    }
+    Json(json!({
+        "rewrapped": total - skipped.len(),
+        "skipped": skipped,
+        "unreadable": unreadable,
+        "active_key_id": active,
+    }))
+    .into_response()
+}
+
 /// `DELETE /secrets/{name}`, with the audit line and, under HA, a log purge so the superseded
 /// ciphertext does not linger.
 async fn delete_secret(st: &UiState, name: String, path: &str, headers: &HeaderMap) -> Response {
@@ -513,6 +604,10 @@ fn answer(applied: &Applied, ok: impl FnOnce() -> Response) -> Response {
         Applied::Full(max) => err(
             StatusCode::CONFLICT,
             format!("already {max} records of this kind; delete one first"),
+        ),
+        Applied::Stale => err(
+            StatusCode::CONFLICT,
+            "the record changed while the request was applied; try again",
         ),
         Applied::Replayed => internal("a write was answered as a replay"),
     }
@@ -1029,6 +1124,58 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(!stored.contains(VALUE), "{stored}");
+    }
+
+    #[tokio::test]
+    async fn rotation_rewraps_cluster_secrets_so_the_old_key_can_be_retired() {
+        const KEY2: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+        let (app, store, _d) = app(None);
+        let put = json!({"value": VALUE});
+        call(&app, "PUT", "/secrets/gossip-psk", put, None).await;
+        // Step 1: the new key is appended to the file.
+        let both = wayhouse_secrets::Keyring::parse(&format!("{KEY}\n{KEY2}")).unwrap();
+        let rotated = router(UiState {
+            store: store.clone(),
+            auth_token: None,
+            ha: None,
+            keyring: wayhouse_secrets::KeyringHandle::new(both),
+        });
+        // Step 2: rewrap.
+        let (st, r) = call(&rotated, "POST", "/secrets/rewrap", Value::Null, None).await;
+        assert_eq!(st, StatusCode::OK, "{r}");
+        assert_eq!(r["rewrapped"], 1, "{r}");
+        let (_, list) = call(&rotated, "GET", "/secrets", Value::Null, None).await;
+        assert_eq!(list["items"][0]["key_id"], r["active_key_id"]);
+        assert!(list["items"][0]["set_at"].as_u64().is_some());
+        let (_, again) = call(&rotated, "POST", "/secrets/rewrap", Value::Null, None).await;
+        assert_eq!(again["rewrapped"], 0, "{again}");
+        // Step 3: a proxy holding only the new key still opens it.
+        let (_, sealed) = call(
+            &rotated,
+            "GET",
+            "/secrets/gossip-psk/sealed",
+            Value::Null,
+            None,
+        )
+        .await;
+        let sealed: wayhouse_secrets::Sealed = serde_json::from_value(sealed).unwrap();
+        let new_only = wayhouse_secrets::Keyring::parse(KEY2).unwrap();
+        assert_eq!(
+            new_only
+                .open_cluster("gossip-psk", &sealed)
+                .unwrap()
+                .expose(),
+            VALUE.as_bytes()
+        );
+    }
+
+    #[tokio::test]
+    async fn rewrap_needs_a_key_and_the_controller_token() {
+        let (app, _s, _d) = app_with(Some("t"), wayhouse_secrets::Keyring::default());
+        let (st, _) = call(&app, "POST", "/secrets/rewrap", Value::Null, None).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+        let (st, _) = call(&app, "POST", "/secrets/rewrap", Value::Null, Some("t")).await;
+        assert_eq!(st, StatusCode::CONFLICT);
     }
 
     #[tokio::test]
