@@ -412,7 +412,8 @@ fn actor(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-actor")
         .and_then(|v| v.to_str().ok())
-        .map(str::to_owned)
+        // Bounded like the plugin API's: a caller cannot park a huge string in the audit trail.
+        .map(|s| s.chars().take(128).collect())
 }
 
 /// `DELETE /features/overrides/{name}`, with the audit line.
@@ -553,6 +554,13 @@ async fn write(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_actor_header_is_cut_to_128_characters() {
+        let mut h = HeaderMap::new();
+        h.insert("x-actor", "a".repeat(500).parse().unwrap());
+        assert_eq!(super::actor(&h).unwrap().len(), 128);
+    }
+
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use serde_json::{json, Value};

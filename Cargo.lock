@@ -4682,6 +4682,7 @@ dependencies = [
  "wayhouse-http",
  "wayhouse-secrets",
  "wayhouse-settings",
+ "zeroize",
 ]
 
 [[package]]
