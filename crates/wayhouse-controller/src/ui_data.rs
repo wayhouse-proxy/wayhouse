@@ -673,14 +673,24 @@ impl UiStore {
 
 #[cfg(test)]
 mod tests {
-    fn secret(nonce: &str, key_id: &str) -> Value {
-        json!({"key_id": key_id, "nonce": nonce, "ciphertext": "c", "set_at": 5, "actor": "ops"})
+    /// A freshly sealed record: every call draws a new random nonce, like a real `PUT`.
+    fn secret() -> Value {
+        let ring = wayhouse_secrets::Keyring::parse("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+            .unwrap();
+        let sealed = ring
+            .seal_cluster("gossip-psk", b"correct-horse-battery")
+            .unwrap();
+        json!({"key_id": sealed.key_id, "nonce": sealed.nonce, "ciphertext": sealed.ciphertext, "set_at": 5, "actor": "ops"})
     }
 
-    fn rewrap(from: &str, value: Value) -> UiOp {
+    fn nonce(record: &Value) -> String {
+        record["nonce"].as_str().unwrap().to_owned()
+    }
+
+    fn rewrap(from: &Value, value: Value) -> UiOp {
         UiOp::RewrapSecret {
             name: "gossip-psk".into(),
-            from_nonce: from.into(),
+            from_nonce: nonce(from),
             value,
         }
     }
@@ -689,31 +699,30 @@ mod tests {
     fn a_rewrap_replaces_the_secret_only_if_it_was_not_replaced_since() {
         let (s, _d) = store();
         let name = "gossip-psk";
+        let (read, replaced, rewrapped) = (secret(), secret(), secret());
         assert_eq!(
-            s.apply_local(&rewrap("n1", secret("n2", "k2"))).unwrap(),
+            s.apply_local(&rewrap(&read, rewrapped.clone())).unwrap(),
             Applied::NotFound
         );
-        s.apply_local(&put(Kind::ClusterSecret, name, secret("n1", "k1")))
+        s.apply_local(&put(Kind::ClusterSecret, name, read.clone()))
             .unwrap();
         // An operator's PUT landed after the rewrap read the old ciphertext.
-        s.apply_local(&put(Kind::ClusterSecret, name, secret("n9", "k1")))
+        s.apply_local(&put(Kind::ClusterSecret, name, replaced.clone()))
             .unwrap();
         assert_eq!(
-            s.apply_local(&rewrap("n1", secret("n2", "k2"))).unwrap(),
+            s.apply_local(&rewrap(&read, rewrapped.clone())).unwrap(),
             Applied::Stale
         );
         assert_eq!(
             s.get(Kind::ClusterSecret, name).unwrap(),
-            Some(secret("n9", "k1"))
+            Some(replaced.clone())
         );
         assert_eq!(
-            s.apply_local(&rewrap("n9", secret("n2", "k2"))).unwrap(),
+            s.apply_local(&rewrap(&replaced, rewrapped.clone()))
+                .unwrap(),
             Applied::Done
         );
-        assert_eq!(
-            s.get(Kind::ClusterSecret, name).unwrap(),
-            Some(secret("n2", "k2"))
-        );
+        assert_eq!(s.get(Kind::ClusterSecret, name).unwrap(), Some(rewrapped));
     }
 
     #[test]
