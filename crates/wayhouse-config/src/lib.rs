@@ -37,7 +37,7 @@ pub use resolved::{
     Action, Balancer, CacheConfig, CacheKeyPart, Config, GlobalLimits, GossipConfig, HashOn,
     HealthCheck, HealthCheckKind, ListenerConfig, OnError, PerSourceLimit, PoolConfig, Protocol,
     ProxyProtocol, RateLimit, ResolverConfig, ResolverKind, Route, SnifferModulePin,
-    SniffersConfig, SourceConfig, SourceKind, TokenBucket,
+    SniffersConfig, SourceConfig, SourceKind, TokenBucket, MIN_SECRET_LEN,
 };
 pub use schema::AdminTls;
 pub use secret::{SecretError, SecretOr, SecretResolver};

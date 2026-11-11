@@ -21,6 +21,12 @@ enum ResolvedSource {
 
 /// Longest accepted timeout or interval. A larger value overflows the
 /// millisecond arithmetic downstream (deadlines wrap) and is never sensible.
+/// Object-count caps: the per-pool and per-route loops are quadratic, and a 2 MB document would
+/// otherwise hold a controller worker for seconds. Far above any real deployment.
+pub(crate) const MAX_POOLS: usize = 1_000;
+pub(crate) const MAX_LISTENERS: usize = 1_000;
+pub(crate) const MAX_ROUTES_PER_LISTENER: usize = 1_000;
+
 const MAX_TIMEOUT_SEC: u64 = 86_400;
 const MAX_TIMEOUT_MS: u64 = MAX_TIMEOUT_SEC * 1000;
 
@@ -107,6 +113,28 @@ pub(crate) fn validate(
 
     if raw.listeners.is_empty() {
         return Err(Invalid("at least one listener is required".into()));
+    }
+
+    for (what, n, max) in [
+        ("pools", raw.pools.len(), MAX_POOLS),
+        ("listeners", raw.listeners.len(), MAX_LISTENERS),
+    ] {
+        if n > max {
+            return Err(Invalid(format!(
+                "at most {max} {what} are allowed (got {n})"
+            )));
+        }
+    }
+    if let Some(l) = raw
+        .listeners
+        .iter()
+        .find(|l| l.routes.len() > MAX_ROUTES_PER_LISTENER)
+    {
+        return Err(Invalid(format!(
+            "listener {}: at most {MAX_ROUTES_PER_LISTENER} routes are allowed (got {})",
+            l.name,
+            l.routes.len()
+        )));
     }
 
     let admin_listen = raw.settings.admin.listen.parse().map_err(|_| {

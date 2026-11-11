@@ -796,7 +796,7 @@ async fn submit(
         return slave_rejects_write();
     }
 
-    let parsed = match check_document(state, &text, true) {
+    let parsed = match check_document(state, &text, true).await {
         Ok(parsed) => parsed,
         Err(rejection) => return *rejection,
     };
@@ -1116,12 +1116,24 @@ fn check_base(store: &Store, base: u64) -> Result<(), StoreError> {
 ///
 /// A rejected submission logs at `warn`; a rejected validation (an editor may check on every
 /// keystroke) only at `debug`.
-fn check_document(
+async fn check_document(
     state: &AppState,
     text: &str,
     submission: bool,
 ) -> Result<wayhouse_config::Config, Box<Response>> {
-    let parsed = wayhouse_config::parse_str(text).map_err(|e| {
+    // Parsing is CPU-bound and grows with the document; keep it off the async workers (Raft
+    // heartbeats share them).
+    let owned = text.to_owned();
+    let parsed = tokio::task::spawn_blocking(move || {
+        wayhouse_config::parse_str(&owned).and_then(|c| c.check_secret_strength().map(|()| c))
+    })
+    .await
+    .unwrap_or_else(|e| {
+        Err(wayhouse_config::ConfigError::Invalid(format!(
+            "validation aborted: {e}"
+        )))
+    })
+    .map_err(|e| {
         if submission {
             tracing::warn!(error = %e, "rejected an invalid config submission");
         } else {
@@ -1162,7 +1174,7 @@ async fn config_schema() -> Response {
 /// submission and stores nothing, so it is read-only: no role gate, no Raft, fine on a slave or a
 /// follower.
 async fn validate_config(State(state): State<AppState>, body: String) -> Response {
-    match check_document(&state, &body, false) {
+    match check_document(&state, &body, false).await {
         Ok(cfg) => Json(serde_json::json!({"ok": true, "schema_version": cfg.schema_version}))
             .into_response(),
         Err(rejection) => *rejection,
@@ -2682,6 +2694,26 @@ listeners:
         assert_eq!(status, StatusCode::OK, "{body}");
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v, serde_json::json!({"ok": true, "schema_version": 2}));
+        assert_eq!(store.current_revision().unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn validate_and_submit_refuse_a_secret_every_proxy_would_refuse_at_start() {
+        let (state, _dir) = test_state();
+        let store = state.store.clone();
+        let app = router(state);
+        let weak = format!(
+            "schema_version: 2\nsettings:\n  failure_domain: r1\n  gossip:\n    bind: \"10.0.0.9:7946\"\n    psk: a\n{}",
+            VALID_CONFIG.replace("settings:\n", "")
+        );
+        for resp in [
+            validate_text(&app, weak.clone()).await,
+            submit_text(&app, weak).await,
+        ] {
+            let (status, body) = status_and_error(resp).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+            assert!(body.contains("settings.gossip.psk"), "{body}");
+        }
         assert_eq!(store.current_revision().unwrap(), None);
     }
 
