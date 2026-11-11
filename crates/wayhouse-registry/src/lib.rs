@@ -18,4 +18,4 @@ pub use plugin_index::{
     parse_plugin_index, plugin_abi, verify_plugin_artifact, PluginEntry, PluginIndex,
     PluginIndexError, PluginVerified, PluginVerifyError, PluginVersion,
 };
-pub use verify::{check_module, verify_artifact, AbiDecl, Verified, VerifyError};
+pub use verify::{check_module, signed_claim, verify_artifact, AbiDecl, Verified, VerifyError};
