@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use wayhouse_config::features::{view, FeatureView, Scope, Source};
+use wayhouse_config::features::{check_override, view, FeatureView, Scope, Source};
 use wayhouse_core::metrics_defs as m;
 
 /// Whether this binary contains the code behind `flag`. A flag with no entry here always does.
@@ -62,7 +62,16 @@ fn parse_overrides(body: &[u8]) -> Option<Overrides> {
                     tracing::warn!(item = %i, "feature override skipped: it needs a name and a value");
                 }
                 let (name, value) = item?;
-                Some((name.to_string(), (value, i["expires_at"].as_u64())))
+                let expires_at = i["expires_at"].as_u64();
+                // The controller checks this when it accepts an override; the proxy checks it
+                // again, so a document that skipped that check cannot hold a protection off
+                // forever (an unexpiring or over-long switch-off, an unknown flag).
+                let set_at = i["set_at"].as_u64().unwrap_or_else(unix_now);
+                if let Err(why) = check_override(name, value, set_at, expires_at) {
+                    tracing::warn!(flag = name, %why, "feature override ignored");
+                    return None;
+                }
+                Some((name.to_string(), (value, expires_at)))
             })
             .collect(),
     )
@@ -227,12 +236,18 @@ mod tests {
 
     #[test]
     fn one_bad_item_does_not_drop_the_rest_of_the_document() {
-        let body = br#"{"items":[{"name":"acl","value":false},{"value":true},{"name":"geo"},{"name":"sniffers","value":false,"expires_at":99}]}"#;
+        let body = br#"{"items":[{"name":"acl","value":false,"expires_at":99},{"value":true},{"name":"geo"},{"name":"sniffers","value":false,"expires_at":99}]}"#;
         let got = parse_overrides(body).unwrap();
         assert_eq!(
             got.keys().map(String::as_str).collect::<Vec<_>>(),
             ["acl", "sniffers"]
         );
+    }
+
+    #[test]
+    fn a_protection_switched_off_without_an_expiry_is_ignored() {
+        let body = br#"{"items":[{"name":"acl","value":false},{"name":"nope","value":false,"expires_at":99},{"name":"rate_limit","value":false,"set_at":1,"expires_at":99999999999}]}"#;
+        assert!(parse_overrides(body).unwrap().is_empty());
     }
 
     #[test]
@@ -267,9 +282,9 @@ mod tests {
         let _t = TURN
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let body = br#"{"items":[{"name":"sniffers","value":false,"reason":"r","set_at":1},{"name":"acl","value":false,"expires_at":2}]}"#;
+        let body = br#"{"items":[{"name":"sniffers","value":false,"reason":"r","set_at":4102444000,"expires_at":4102444800},{"name":"acl","value":false,"expires_at":2}]}"#;
         let got = parse_overrides(body).unwrap();
-        assert_eq!(got["sniffers"], (false, None));
+        assert_eq!(got["sniffers"], (false, Some(4_102_444_800)));
         assert!(parse_overrides(b"nope").is_none());
         assert!(set_overrides(got));
         let live = overrides();
