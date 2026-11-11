@@ -46,6 +46,9 @@ async fn a_proxy_token_reads_config_but_cannot_write_it() -> Result<()> {
     ensure!(status(c.get(format!("{url}/config")).bearer_auth(PROXY)).await? != 401);
     ensure!(status(c.post(format!("{url}/config")).bearer_auth(PROXY).body("x")).await? == 401);
     ensure!(status(c.get(format!("{url}/secrets")).bearer_auth(PROXY)).await? == 401);
+    // Tunnel-backed pools read one origin's record; listing or deleting peers stays admin.
+    ensure!(status(c.get(format!("{url}/peers/x")).bearer_auth(PROXY)).await? != 401);
+    ensure!(status(c.delete(format!("{url}/peers/x")).bearer_auth(PROXY)).await? == 401);
     // Proxies poll the override list; only an operator sets one.
     ensure!(
         status(

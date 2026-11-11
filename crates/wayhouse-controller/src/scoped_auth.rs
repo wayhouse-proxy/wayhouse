@@ -23,6 +23,7 @@ const PROXY: Allowed = &[
     (&Method::GET, "/plugin-routes/subscribe"),
     (&Method::GET, "/intent/subscribe"),
     (&Method::GET, "/peers/subscribe"),
+    (&Method::GET, "/peers/*"),
     (&Method::GET, "/features/overrides"),
     (&Method::POST, "/proxy-peers"),
 ];
@@ -166,6 +167,7 @@ mod tests {
             ("GET", "/plugin-routes/subscribe"),
             ("GET", "/intent/subscribe"),
             ("GET", "/peers/subscribe"),
+            ("GET", "/peers/home"),
             ("GET", "/features/overrides"),
             ("POST", "/proxy-peers"),
         ] {
@@ -191,6 +193,9 @@ mod tests {
             ("GET", "/acme/bundles"),
             ("POST", "/admin/adopt"),
             ("POST", "/peers"),
+            ("DELETE", "/peers/home"),
+            ("GET", "/peers/a/b"),
+            ("GET", "/peers"),
             ("GET", "/proxy-peers/subscribe"),
             ("GET", "/config/"),
         ] {

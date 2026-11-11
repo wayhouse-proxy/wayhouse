@@ -288,7 +288,7 @@ The controller separates three credentials, so a compromised edge box cannot adm
 - `--proxy-token` is what `wayhouse` proxies present (`--controller-token`,
   `--tunnel-controller-token`). It unlocks only what a proxy calls: `GET /config`,
   `GET /config/subscribe`, `GET /secrets/{name}/sealed`, `GET /plugin-routes/subscribe`,
-  `GET /intent/subscribe`, `GET /peers/subscribe`, `GET /features/overrides` (live feature
+  `GET /intent/subscribe`, `GET /peers/subscribe`, `GET /peers/{name}` (a tunnel backend's address), `GET /features/overrides` (live feature
   overrides) and `POST /proxy-peers`.
 - `--agent-token` is what `wayhouse-agent` presents (`--controller-token`). It unlocks only
   `POST /peers` and `GET /proxy-peers/subscribe`.
