@@ -404,7 +404,13 @@ fn bad_credentials() -> Response {
 }
 
 fn issue_session(state: &AppState, session: Session) -> Response {
-    let id = state.sessions.create(session);
+    let Some(id) = state.sessions.try_create(session) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many higher-privileged sessions are open; try again later",
+        )
+            .into_response();
+    };
     let cookie = format!(
         "{SESSION_COOKIE}={id}; HttpOnly; Path=/; SameSite=Lax; Max-Age={}{}",
         state.sessions.limits().max_age.as_secs(),

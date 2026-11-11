@@ -515,6 +515,9 @@ pub fn layer(program: &str, cmd: &Command, argv: Vec<OsString>) -> Layered {
     let Some(dir) = flag_value(&argv, "settings-dir") else {
         return none(argv, notes);
     };
+    // Held for the whole boot read-modify-write, so a confirm or undo cannot interleave with it.
+    // Best effort: a directory that cannot hold the lock file is a directory that cannot be written.
+    let _lock = lock(&dir, program).ok();
     let mut file = match read(&dir, program) {
         Ok(Some(f)) => f,
         Ok(None) => File::default(),
@@ -1410,7 +1413,6 @@ mod tests {
                 })
                 .collect();
             hs.into_iter()
-                .filter(|_| true)
                 .map(|h| h.join().unwrap())
                 .filter(|ok| *ok)
                 .count()

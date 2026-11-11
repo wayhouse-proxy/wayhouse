@@ -95,10 +95,16 @@ impl SessionStore {
 
     /// Mints a new session id for `session` and marks it valid.
     pub fn create(&self, session: Session) -> String {
+        self.try_create(session).expect("session store is full")
+    }
+
+    /// Like [`create`](Self::create), but `None` when the store is full of live sessions that all
+    /// outrank `session`: a lower role never evicts a higher one, the login is refused instead.
+    pub fn try_create(&self, session: Session) -> Option<String> {
         self.create_at(session, Instant::now())
     }
 
-    fn create_at(&self, session: Session, now: Instant) -> String {
+    fn create_at(&self, session: Session, now: Instant) -> Option<String> {
         let mut bytes = [0u8; SESSION_ID_BYTES];
         rand::thread_rng().fill_bytes(&mut bytes);
         let id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
@@ -114,6 +120,9 @@ impl SessionStore {
                 .min_by_key(|(_, e)| (e.session.role, e.created))
                 .map(|(k, _)| k.clone())
                 .expect("non-empty");
+            if map[&oldest].session.role > session.role {
+                return None;
+            }
             map.remove(&oldest);
         }
         map.insert(
@@ -124,7 +133,7 @@ impl SessionStore {
                 last_seen: now,
             },
         );
-        id
+        Some(id)
     }
 
     /// The session for `id`, if it's currently valid. A hit counts as
@@ -238,7 +247,7 @@ mod tests {
     fn an_idle_session_expires_but_activity_keeps_it_alive() {
         let store = SessionStore::with_limits(limits(60, 3600, 10));
         let t0 = Instant::now();
-        let id = store.create_at(admin(), t0);
+        let id = store.create_at(admin(), t0).unwrap();
         assert!(store.get_at(&id, t0 + Duration::from_secs(50)).is_some());
         // 50s after the last use is still inside the idle window.
         assert!(store.get_at(&id, t0 + Duration::from_secs(100)).is_some());
@@ -251,7 +260,7 @@ mod tests {
     fn a_session_dies_at_max_age_however_active() {
         let store = SessionStore::with_limits(limits(60, 100, 10));
         let t0 = Instant::now();
-        let id = store.create_at(admin(), t0);
+        let id = store.create_at(admin(), t0).unwrap();
         assert!(store.get_at(&id, t0 + Duration::from_secs(50)).is_some());
         assert!(store.get_at(&id, t0 + Duration::from_secs(99)).is_some());
         assert!(store.get_at(&id, t0 + Duration::from_secs(100)).is_none());
@@ -261,9 +270,13 @@ mod tests {
     fn the_store_never_exceeds_its_cap_and_evicts_the_oldest() {
         let store = SessionStore::with_limits(limits(60, 3600, 2));
         let t0 = Instant::now();
-        let a = store.create_at(admin(), t0);
-        let b = store.create_at(admin(), t0 + Duration::from_secs(1));
-        let c = store.create_at(admin(), t0 + Duration::from_secs(2));
+        let a = store.create_at(admin(), t0).unwrap();
+        let b = store
+            .create_at(admin(), t0 + Duration::from_secs(1))
+            .unwrap();
+        let c = store
+            .create_at(admin(), t0 + Duration::from_secs(2))
+            .unwrap();
         assert_eq!(store.len(), 2);
         let now = t0 + Duration::from_secs(3);
         assert!(store.get_at(&a, now).is_none(), "oldest evicted");
@@ -275,14 +288,18 @@ mod tests {
     fn a_full_store_evicts_a_viewer_before_an_admin() {
         let store = SessionStore::with_limits(limits(60, 3600, 2));
         let t0 = Instant::now();
-        let admin_id = store.create_at(admin(), t0);
+        let admin_id = store.create_at(admin(), t0).unwrap();
         let viewer = |name: &str| Session {
             role: crate::role::Role::Viewer,
             username: Some(name.into()),
         };
-        let v1 = store.create_at(viewer("v"), t0 + Duration::from_secs(1));
+        let v1 = store
+            .create_at(viewer("v"), t0 + Duration::from_secs(1))
+            .unwrap();
         // Repeated Viewer logins churn among themselves; the (older) Admin session stays.
-        let v2 = store.create_at(viewer("v"), t0 + Duration::from_secs(2));
+        let v2 = store
+            .create_at(viewer("v"), t0 + Duration::from_secs(2))
+            .unwrap();
         let now = t0 + Duration::from_secs(3);
         assert!(store.get_at(&admin_id, now).is_some(), "admin kept");
         assert!(store.get_at(&v1, now).is_none(), "the older viewer went");
@@ -290,14 +307,31 @@ mod tests {
     }
 
     #[test]
+    fn a_viewer_login_is_refused_when_the_store_holds_only_admins() {
+        let store = SessionStore::with_limits(limits(60, 3600, 2));
+        let t0 = Instant::now();
+        let a1 = store.create_at(admin(), t0).unwrap();
+        let a2 = store
+            .create_at(admin(), t0 + Duration::from_secs(1))
+            .unwrap();
+        let viewer = Session {
+            role: crate::role::Role::Viewer,
+            username: Some("v".into()),
+        };
+        let now = t0 + Duration::from_secs(2);
+        assert!(store.create_at(viewer, now).is_none());
+        assert!(store.get_at(&a1, now).is_some() && store.get_at(&a2, now).is_some());
+    }
+
+    #[test]
     fn a_full_store_drops_expired_sessions_before_evicting_live_ones() {
         let store = SessionStore::with_limits(limits(10, 3600, 2));
         let t0 = Instant::now();
-        let stale = store.create_at(admin(), t0);
+        let stale = store.create_at(admin(), t0).unwrap();
         let later = t0 + Duration::from_secs(8);
-        let live = store.create_at(admin(), later);
+        let live = store.create_at(admin(), later).unwrap();
         let now = t0 + Duration::from_secs(15);
-        let new = store.create_at(admin(), now);
+        let new = store.create_at(admin(), now).unwrap();
         assert!(store.get_at(&stale, now).is_none());
         assert!(store.get_at(&live, now).is_some(), "live one was kept");
         assert!(store.get_at(&new, now).is_some());
