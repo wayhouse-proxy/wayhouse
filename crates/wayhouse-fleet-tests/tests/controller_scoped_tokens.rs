@@ -46,6 +46,24 @@ async fn a_proxy_token_reads_config_but_cannot_write_it() -> Result<()> {
     ensure!(status(c.get(format!("{url}/config")).bearer_auth(PROXY)).await? != 401);
     ensure!(status(c.post(format!("{url}/config")).bearer_auth(PROXY).body("x")).await? == 401);
     ensure!(status(c.get(format!("{url}/secrets")).bearer_auth(PROXY)).await? == 401);
+    // Proxies poll the override list; only an operator sets one.
+    ensure!(
+        status(
+            c.get(format!("{url}/features/overrides"))
+                .bearer_auth(PROXY)
+        )
+        .await?
+            != 401
+    );
+    ensure!(
+        status(
+            c.put(format!("{url}/features/overrides/x"))
+                .bearer_auth(PROXY)
+                .body("{}")
+        )
+        .await?
+            == 401
+    );
     ensure!(status(c.get(format!("{url}/config")).bearer_auth(AGENT)).await? == 401);
     ensure!(status(c.get(format!("{url}/config")).bearer_auth(ADMIN)).await? != 401);
     Ok(())

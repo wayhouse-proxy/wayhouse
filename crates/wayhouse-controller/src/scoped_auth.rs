@@ -23,6 +23,7 @@ const PROXY: Allowed = &[
     (&Method::GET, "/plugin-routes/subscribe"),
     (&Method::GET, "/intent/subscribe"),
     (&Method::GET, "/peers/subscribe"),
+    (&Method::GET, "/features/overrides"),
     (&Method::POST, "/proxy-peers"),
 ];
 
@@ -165,6 +166,7 @@ mod tests {
             ("GET", "/plugin-routes/subscribe"),
             ("GET", "/intent/subscribe"),
             ("GET", "/peers/subscribe"),
+            ("GET", "/features/overrides"),
             ("POST", "/proxy-peers"),
         ] {
             assert_eq!(status(m, p, PROXY_T).await, StatusCode::OK, "{m} {p}");
@@ -179,6 +181,8 @@ mod tests {
             ("GET", "/config/revisions"),
             ("GET", "/secrets"),
             ("PUT", "/secrets/x"),
+            ("PUT", "/features/overrides/x"),
+            ("DELETE", "/features/overrides/x"),
             ("GET", "/secrets/x"),
             ("GET", "/secrets//sealed"),
             ("GET", "/secrets/a/b/sealed"),

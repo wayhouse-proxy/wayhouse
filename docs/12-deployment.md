@@ -288,7 +288,8 @@ The controller separates three credentials, so a compromised edge box cannot adm
 - `--proxy-token` is what `wayhouse` proxies present (`--controller-token`,
   `--tunnel-controller-token`). It unlocks only what a proxy calls: `GET /config`,
   `GET /config/subscribe`, `GET /secrets/{name}/sealed`, `GET /plugin-routes/subscribe`,
-  `GET /intent/subscribe`, `GET /peers/subscribe` and `POST /proxy-peers`.
+  `GET /intent/subscribe`, `GET /peers/subscribe`, `GET /features/overrides` (live feature
+  overrides) and `POST /proxy-peers`.
 - `--agent-token` is what `wayhouse-agent` presents (`--controller-token`). It unlocks only
   `POST /peers` and `GET /proxy-peers/subscribe`.
 
@@ -296,6 +297,8 @@ Setting `--auth-token` requires both of the others, and all three must differ; t
 refuses to start otherwise. The admin token still works on every route (the UI, operators and a
 slave controller's `--parent-token` use it). Under HA every replica takes the same three flags.
 `wayhouse-certsync` reads `/acme/bundles` (private keys) and so holds the admin token.
+Known limit: all proxies share one proxy token, so one compromised proxy can re-register another
+proxy's tunnel record with `POST /proxy-peers`; agents likewise with `POST /peers` (#581).
 
 ## TLS for the fleet services
 
