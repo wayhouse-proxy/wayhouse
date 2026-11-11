@@ -112,6 +112,8 @@ struct Group {
     /// `listener_udp::run_udp_listener`). Never set on shutdown or when the
     /// listener is removed, where nothing takes over its flows.
     handoff: watch::Sender<Option<Handoff>>,
+    /// Survives a respawn of the same listener (see `spawn_group`).
+    src_limiter: Arc<SourceLimiter>,
     tasks: Vec<JoinHandle<()>>,
     /// The address each of `tasks` serves, index for index.
     task_binds: Vec<SocketAddr>,
@@ -257,7 +259,7 @@ impl ListenerManager {
         groups.values().flat_map(|g| g.cfg.binds()).collect()
     }
 
-    fn spawn_group(&self, bound: Bound) -> Group {
+    fn spawn_group(&self, bound: Bound, previous: Option<Arc<SourceLimiter>>) -> Group {
         let Bound { cfg, sockets } = bound;
         let (stop_tx, stop_rx) = watch::channel(false);
         let (handoff_tx, handoff_rx) = watch::channel(None);
@@ -265,7 +267,16 @@ impl ListenerManager {
         // per-port — a port-range bind is still one logical listener), rebuilt
         // on every respawn so it tracks the live `ListenerConfig`.
         let limiter = Arc::new(RateLimiter::new(cfg.rate_limit.as_ref()));
-        let src_limiter = SourceLimiter::new(cfg.per_source.as_ref());
+        // The per-source limiter is carried over from the group this one replaces and only
+        // re-capped: connections admitted by the old group still hold their slots, so a new
+        // limiter would let `max_per_ip` more in on every reload.
+        let src_limiter = match previous {
+            Some(l) => {
+                l.reconfigure(cfg.per_source.as_ref());
+                l
+            }
+            None => SourceLimiter::new(cfg.per_source.as_ref()),
+        };
         let mut tasks = Vec::with_capacity(sockets.len());
         let mut task_binds = Vec::with_capacity(sockets.len());
         for (bind, worker_id, socket) in sockets {
@@ -340,6 +351,7 @@ impl ListenerManager {
             cfg,
             stop: stop_tx,
             handoff: handoff_tx,
+            src_limiter,
             tasks,
             task_binds,
         }
@@ -356,7 +368,7 @@ impl ListenerManager {
             .map(|lc| self.bind_group(lc, &HashSet::new()))
             .collect::<Result<Vec<_>, _>>()?;
         for b in bound {
-            groups.insert(b.cfg.name.clone(), self.spawn_group(b));
+            groups.insert(b.cfg.name.clone(), self.spawn_group(b, None));
         }
         Ok(())
     }
@@ -420,7 +432,11 @@ impl ListenerManager {
                     listener = %b.cfg.name, bind = %b.cfg.bind, protocol = ?b.cfg.protocol,
                     "starting listener"
                 );
-                groups.insert(b.cfg.name.clone(), self.spawn_group(b));
+                let previous = stopped
+                    .iter()
+                    .find(|(g, _)| g.cfg.name == b.cfg.name)
+                    .map(|(g, _)| g.src_limiter.clone());
+                groups.insert(b.cfg.name.clone(), self.spawn_group(b, previous));
             }
             (stopped, failed)
         };
