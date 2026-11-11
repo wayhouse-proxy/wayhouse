@@ -29,12 +29,40 @@ pub struct AbiDecl {
     pub minor: u16,
 }
 
+/// What a release signature must say in its trusted comment: this exact artifact, not just any
+/// bytes the key ever signed. The index is unauthenticated, so without it an index host could
+/// replay an old signed blob under another name or a higher version. `kind` is `sniffer` or
+/// `plugin`. The release workflows write the same string (see `docs/sniffers.md`).
+pub fn signed_claim(kind: &str, name: &str, version: &str, abi: &str, sha256: &str) -> String {
+    format!("wayhouse-v1 {kind} {name} {version} {abi} {sha256}")
+}
+
+/// Verify `sig` over `bytes` and that its (authenticated) trusted comment is `claim`.
+pub(crate) fn verify_claimed(
+    key: &minisign_verify::PublicKey,
+    sig: &[u8],
+    bytes: &[u8],
+    claim: &str,
+) -> Result<(), String> {
+    let text = std::str::from_utf8(sig).map_err(|_| "signature is not UTF-8 text".to_string())?;
+    let sig = minisign_verify::Signature::decode(text).map_err(|e| e.to_string())?;
+    key.verify(bytes, &sig, false).map_err(|e| e.to_string())?;
+    if sig.trusted_comment() != claim {
+        return Err(format!(
+            "the signature is for {:?}, not for {claim:?}",
+            sig.trusted_comment()
+        ));
+    }
+    Ok(())
+}
+
 /// Check size, then sha256, then the signature, then the module itself, in that order.
 ///
 /// A signature that is present is checked whenever a key is given, and a failure is
 /// an error, never a quiet downgrade to "unsigned". No signature (or no key to check
 /// it with) gives `signed: false`: signatures are optional in the first cut.
 pub fn verify_artifact(
+    name: &str,
     v: &VersionEntry,
     bytes: &[u8],
     signature: Option<&[u8]>,
@@ -58,12 +86,8 @@ pub fn verify_artifact(
     }
     let signed = match (signature, official_key) {
         (Some(sig), Some(key)) => {
-            let text = std::str::from_utf8(sig)
-                .map_err(|_| VerifyError::Signature("signature is not UTF-8 text".into()))?;
-            let sig = minisign_verify::Signature::decode(text)
-                .map_err(|e| VerifyError::Signature(e.to_string()))?;
-            key.verify(bytes, &sig, false)
-                .map_err(|e| VerifyError::Signature(e.to_string()))?;
+            let claim = signed_claim("sniffer", name, &v.version.to_string(), &v.abi, &v.sha256);
+            verify_claimed(key, sig, bytes, &claim).map_err(VerifyError::Signature)?;
             true
         }
         _ => false,
@@ -167,17 +191,47 @@ mod tests {
     /// A throwaway key pair, the public half decoded for `minisign-verify` and the
     /// minisign-formatted signature of `data`.
     fn sign(data: &[u8]) -> (minisign_verify::PublicKey, Vec<u8>) {
+        let e = entry_for(data);
+        sign_claim(
+            data,
+            &signed_claim("sniffer", "demo", &e.version.to_string(), &e.abi, &e.sha256),
+        )
+    }
+
+    fn sign_claim(data: &[u8], claim: &str) -> (minisign_verify::PublicKey, Vec<u8>) {
         let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
-        let sig = minisign::sign(Some(&kp.pk), &kp.sk, Cursor::new(data), None, None).unwrap();
+        let sig =
+            minisign::sign(Some(&kp.pk), &kp.sk, Cursor::new(data), Some(claim), None).unwrap();
         let pk = minisign_verify::PublicKey::decode(&kp.pk.to_box().unwrap().to_string()).unwrap();
         (pk, sig.to_string().into_bytes())
+    }
+
+    #[test]
+    fn a_signature_for_another_name_or_version_is_refused() {
+        // A genuinely signed blob replayed by an index under a different identity (#594).
+        let m = module(true, false);
+        let e = entry_for(&m);
+        let (pk, sig) = sign(&m);
+        for (name, version) in [("other", "0.1.0"), ("demo", "9.9.9")] {
+            let mut replay = e.clone();
+            replay.version = version.parse().unwrap();
+            let r = verify_artifact(name, &replay, &m, Some(&sig), Some(&pk));
+            assert!(
+                matches!(r, Err(VerifyError::Signature(_))),
+                "{name} {version}: {r:?}"
+            );
+        }
+        // An old-format signature (no claim) no longer verifies.
+        let (pk, old) = sign_claim(&m, "");
+        let r = verify_artifact("demo", &e, &m, Some(&old), Some(&pk));
+        assert!(matches!(r, Err(VerifyError::Signature(_))), "{r:?}");
     }
 
     #[test]
     fn ok_unsigned() {
         let m = module(true, false);
         assert_eq!(
-            verify_artifact(&entry_for(&m), &m, None, None),
+            verify_artifact("demo", &entry_for(&m), &m, None, None),
             Ok(Verified { signed: false })
         );
     }
@@ -187,7 +241,7 @@ mod tests {
         let m = module(true, false);
         let (pk, sig) = sign(&m);
         assert_eq!(
-            verify_artifact(&entry_for(&m), &m, Some(&sig), Some(&pk)),
+            verify_artifact("demo", &entry_for(&m), &m, Some(&sig), Some(&pk)),
             Ok(Verified { signed: true })
         );
     }
@@ -199,7 +253,7 @@ mod tests {
         let mut e = entry_for(&m);
         e.sha256 = "0".repeat(64);
         // The signature is garbage too; sha256 is checked first.
-        let r = verify_artifact(&e, &m, Some(b"garbage"), Some(&pk));
+        let r = verify_artifact("demo", &e, &m, Some(b"garbage"), Some(&pk));
         assert!(matches!(r, Err(VerifyError::Sha256 { .. })), "{r:?}");
     }
 
@@ -211,7 +265,7 @@ mod tests {
         let mut tampered = m.clone();
         tampered.extend_from_slice(&[0, 1, b'x']); // an extra, valid custom section
         let e = entry_for(&tampered);
-        let r = verify_artifact(&e, &tampered, Some(&sig), Some(&pk));
+        let r = verify_artifact("demo", &e, &tampered, Some(&sig), Some(&pk));
         assert!(matches!(r, Err(VerifyError::Signature(_))), "{r:?}");
     }
 
@@ -220,7 +274,7 @@ mod tests {
         let m = module(true, false);
         let (_, sig) = sign(&m);
         assert_eq!(
-            verify_artifact(&entry_for(&m), &m, Some(&sig), None),
+            verify_artifact("demo", &entry_for(&m), &m, Some(&sig), None),
             Ok(Verified { signed: false })
         );
     }
@@ -230,7 +284,7 @@ mod tests {
         let m = module(true, false);
         let (pk, _) = sign(&m);
         assert_eq!(
-            verify_artifact(&entry_for(&m), &m, None, Some(&pk)),
+            verify_artifact("demo", &entry_for(&m), &m, None, Some(&pk)),
             Ok(Verified { signed: false })
         );
     }
@@ -240,7 +294,7 @@ mod tests {
         let m = module(true, false);
         let (pk, _) = sign(&m);
         let (_, other_sig) = sign(&m);
-        let r = verify_artifact(&entry_for(&m), &m, Some(&other_sig), Some(&pk));
+        let r = verify_artifact("demo", &entry_for(&m), &m, Some(&other_sig), Some(&pk));
         assert!(matches!(r, Err(VerifyError::Signature(_))), "{r:?}");
     }
 
@@ -250,7 +304,7 @@ mod tests {
         let mut e = entry_for(&m);
         e.size += 1;
         assert_eq!(
-            verify_artifact(&e, &m, None, None),
+            verify_artifact("demo", &e, &m, None, None),
             Err(VerifyError::Size {
                 expected: e.size,
                 got: m.len()
@@ -261,7 +315,7 @@ mod tests {
     #[test]
     fn module_with_import_rejected() {
         let m = module(true, true);
-        let r = verify_artifact(&entry_for(&m), &m, None, None);
+        let r = verify_artifact("demo", &entry_for(&m), &m, None, None);
         assert!(matches!(r, Err(VerifyError::Module(msg)) if msg.contains("import")));
     }
 
@@ -286,7 +340,7 @@ mod tests {
         let m = module(true, false);
         let mut e = entry_for(&m);
         e.abi = "0.2".into();
-        let r = verify_artifact(&e, &m, None, None);
+        let r = verify_artifact("demo", &e, &m, None, None);
         assert!(matches!(r, Err(VerifyError::Module(msg)) if msg.contains("0.2")));
     }
 

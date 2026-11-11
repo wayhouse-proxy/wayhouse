@@ -406,7 +406,13 @@ async fn install(
         },
         _ => None,
     };
-    let verified = match verify_artifact(version, &bytes, signature.as_deref(), key.as_ref()) {
+    let verified = match verify_artifact(
+        &entry.name,
+        version,
+        &bytes,
+        signature.as_deref(),
+        key.as_ref(),
+    ) {
         Ok(v) => v,
         Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
     };
