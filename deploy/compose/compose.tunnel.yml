@@ -7,6 +7,7 @@
 # have IPv6 disabled (a net.* sysctl cannot be set here: Docker refuses it under
 # host networking). Usage (from deploy/compose):
 #   docker compose -f docker-compose.yml -f compose.tunnel.yml up -d
+# Both containers drop every other capability and run read-only (only /data and /tmp are writable).
 # Not smoke-tested in CI (no privileged runner); `make tunnel-e2e` covers the logic.
 services:
   controller:
@@ -17,7 +18,13 @@ services:
       - --tunnel-network=fd49:89c1:4b5e:60::/64
   wayhouse:
     user: "0"          # NET_ADMIN is only in the bounding set for non-root: run as root
-    cap_add: [NET_ADMIN]
+    # Root only to hold NET_ADMIN; everything else is dropped. DAC_OVERRIDE lets root write
+    # the /data volume, which the image owns as uid 65532.
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, DAC_OVERRIDE]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp"]
     devices: ["/dev/net/tun:/dev/net/tun"]
     volumes: ["wayhouse-tunnel-data:/data"]
     command:
@@ -46,7 +53,11 @@ services:
       target: wayhouse-agent
     image: wayhouse-deploy/wayhouse-agent:local
     network_mode: host
-    cap_add: [NET_ADMIN]
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, DAC_OVERRIDE]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp"]
     devices: ["/dev/net/tun:/dev/net/tun"]
     volumes: ["agent-data:/data"]
     command:

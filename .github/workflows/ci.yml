@@ -545,10 +545,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
-          tool: cargo-audit@0.22.2
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2
       - name: cargo audit (informational)
         continue-on-error: true
         run: sh .github/scripts/cargo_audit.sh target/cargo-audit
+      # Licenses, registries and git sources (deny.toml). Advisories stay with cargo audit above.
+      - name: cargo deny (licenses, sources, bans)
+        run: cargo deny check licenses sources bans
       - name: cargo audit report
         if: always()
         run: |
