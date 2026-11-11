@@ -79,9 +79,13 @@ pub struct Whoami {
     pub ui_support: u32,
 }
 
-/// The config trial replication level this build speaks (`1`: `Config.trial` and
-/// `ConfirmConfig`).
-pub const CONFIRM_SUPPORT: u32 = 1;
+/// The config trial replication level this build speaks (`2` adds `PromoteTrial`; `1`:
+/// `Config.trial`, `ConfirmConfig` and `RevertConfig`).
+pub const CONFIRM_SUPPORT: u32 = 2;
+
+/// The level that decodes ending a trial (confirm, revert): level `1` builds can, and must not
+/// be shut out of that while the fleet upgrades.
+pub const CONFIRM_DECODE_SUPPORT: u32 = 1;
 
 /// The UI data replication level this build speaks (`3` adds operator node tags, `2` adds
 /// feature-flag overrides; `1`: dashboards, themes, saved filters, the

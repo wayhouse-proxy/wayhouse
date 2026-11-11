@@ -193,7 +193,7 @@ pub fn check_decoders_answers(
     for (id, answer) in answers {
         if answer
             .as_ref()
-            .is_ok_and(|who| who.confirm_support < crate::ha::routes::CONFIRM_SUPPORT)
+            .is_ok_and(|who| who.confirm_support < crate::ha::routes::CONFIRM_DECODE_SUPPORT)
         {
             return Err(format!(
                 "node {id} runs a build without confirm-and-revert; upgrade every replica first"
@@ -287,6 +287,10 @@ mod tests {
         let silent = check_support_answers(&[(2, Err(WhoamiError::Unreachable("down".into())))])
             .unwrap_err();
         assert!(silent.contains("node 2"), "{silent}");
+        // A build from before `PromoteTrial` cannot start a trial but can still end one.
+        let level_one = [(2, Ok(who(crate::ha::routes::CONFIRM_DECODE_SUPPORT)))];
+        assert!(check_support_answers(&level_one).is_err());
+        assert!(check_decoders_answers(&level_one).is_ok());
     }
 
     // --- the API, standalone ---
