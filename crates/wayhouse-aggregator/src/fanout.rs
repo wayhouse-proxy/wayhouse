@@ -522,12 +522,16 @@ async fn broadcast_with_content_type(
                         detail,
                     }
                 }
-                Err(e) => InstanceResult {
-                    instance,
-                    status: None,
-                    error: Some(wayhouse_http::error_chain(&e)),
-                    detail: None,
-                },
+                Err(e) => {
+                    // reqwest's chain names the URL; the log has it, the browser does not.
+                    tracing::warn!(instance = ?instance, error = %wayhouse_http::error_chain(&e), "instance unreachable");
+                    InstanceResult {
+                        instance,
+                        status: None,
+                        error: Some("instance unreachable".into()),
+                        detail: None,
+                    }
+                }
             }
         });
     }
@@ -914,7 +918,11 @@ mod tests {
             .find(|r| r["instance"] == "unreachable")
             .unwrap();
         assert!(bad["status"].is_null());
-        assert!(bad["error"].is_string());
+        assert_eq!(bad["error"], "instance unreachable");
+        assert!(
+            !body.to_string().contains("127.0.0.1"),
+            "no URL in the answer"
+        );
     }
 
     #[tokio::test]

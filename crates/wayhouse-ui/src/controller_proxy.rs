@@ -1429,7 +1429,12 @@ mod tests {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await
             .unwrap();
-        assert!(!String::from_utf8_lossy(&bytes).contains("sentinel-secret-value"));
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains("sentinel-secret-value"));
+        assert!(
+            !text.contains("127.0.0.1"),
+            "no upstream URL in the answer: {text}"
+        );
     }
 
     #[tokio::test]

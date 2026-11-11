@@ -5,7 +5,7 @@
 //! (`docs/12-deployment.md`). The flag list of each program is the one it published when it last
 //! started, so a program that never ran with this directory shows as "not connected".
 //!
-//! Reads need `Viewer`; applying, confirming and undoing need `Admin`, the level that can already
+//! Reads need `Viewer` (and show a Viewer no values); applying, confirming and undoing need `Admin`, the level that can already
 //! change the fleet's configuration. Credentials never pass through here: the settings crate
 //! refuses token, password and PSK flags, and the files hold no secret.
 
@@ -94,7 +94,8 @@ fn file_json(f: &File, redact: bool) -> serde_json::Value {
             "attempts": p.attempts,
             "confirm_secs": wayhouse_settings::CONFIRM_SECS,
         })),
-        "error": f.error,
+        // The program's refusal text can quote the rejected value (`invalid value 'x'`).
+        "error": if redact { f.error.as_ref().map(|_| "the program refused the last change".to_string()) } else { f.error.clone() },
     })
 }
 
@@ -315,6 +316,19 @@ mod tests {
         assert_eq!(by("controller")["flags"].as_array().unwrap().len(), 3);
         assert_eq!(by("aggregator")["connected"], false);
         assert_eq!(by("controller")["file"], json!(null));
+    }
+
+    #[test]
+    fn a_redacted_file_does_not_quote_the_programs_refusal() {
+        let f = File {
+            rev: 3,
+            error: Some("invalid value '10.9.8.7:9000' for '--listen'".into()),
+            ..File::default()
+        };
+        let seen = file_json(&f, true).to_string();
+        assert!(!seen.contains("10.9.8.7"), "{seen}");
+        assert!(seen.contains("refused the last change"));
+        assert!(file_json(&f, false).to_string().contains("10.9.8.7"));
     }
 
     #[tokio::test]
