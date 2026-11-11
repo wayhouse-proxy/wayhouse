@@ -151,3 +151,17 @@ async fn an_aggregator_auth_token_requires_an_ingest_token() -> Result<()> {
     )
     .await
 }
+
+#[tokio::test]
+async fn an_empty_or_short_ui_password_is_refused() -> Result<()> {
+    let listen = format!("127.0.0.1:{}", free_port()?);
+    for pw in ["", "short"] {
+        refused(
+            "wayhouse-ui",
+            &["--listen", &listen, "--ui-password", pw],
+            "--ui-password",
+        )
+        .await?;
+    }
+    Ok(())
+}

@@ -143,8 +143,13 @@ async fn main() -> anyhow::Result<()> {
     if args.ui_password.is_some() && args.users_file.is_some() {
         anyhow::bail!("--ui-password and --users-file are mutually exclusive");
     }
-    wayhouse_http::policy::check_optional_secret("--metrics-token", args.metrics_token.as_deref())
-        .map_err(|e| anyhow::anyhow!(e))?;
+    for (flag, secret) in [
+        ("--ui-password", args.ui_password.as_deref()),
+        ("--metrics-token", args.metrics_token.as_deref()),
+    ] {
+        wayhouse_http::policy::check_optional_secret(flag, secret)
+            .map_err(|e| anyhow::anyhow!(e))?;
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(
