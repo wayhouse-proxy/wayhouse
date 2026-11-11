@@ -64,6 +64,10 @@ async fn a_write_on_a_follower_is_readable_on_every_replica() -> Result<()> {
             &peers,
             "--auth-token",
             AUTH_TOKEN,
+            "--proxy-token",
+            "proxy-token-0123456789",
+            "--agent-token",
+            "agent-token-0123456789",
         ]
         .map(String::from);
         procs.push(spawn_controller_with(

@@ -39,6 +39,8 @@ services:
       - --listen=0.0.0.0:9901
       - --data-dir=/data
       - --auth-token=${WAYHOUSE_CONTROLLER_TOKEN:?set WAYHOUSE_CONTROLLER_TOKEN in .env (sh ../solo/init.sh writes it)}
+      - --proxy-token=${WAYHOUSE_PROXY_TOKEN:?set WAYHOUSE_PROXY_TOKEN in .env}
+      - --agent-token=${WAYHOUSE_AGENT_TOKEN:?set WAYHOUSE_AGENT_TOKEN in .env}
       - --plugins
       - --secret-key-file=/keys/secret.keys
       - --allow-insecure-secrets
@@ -53,7 +55,7 @@ services:
   wayhouse:
     command:
       - --controller=http://127.0.0.1:9901
-      - --controller-token=${WAYHOUSE_CONTROLLER_TOKEN}
+      - --controller-token=${WAYHOUSE_PROXY_TOKEN}
       - --aggregator=http://127.0.0.1:9902
       - --aggregator-token=${WAYHOUSE_INGEST_TOKEN}
       - --aggregator-instance=demo-wayhouse

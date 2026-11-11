@@ -71,7 +71,7 @@ echo "ok: the secret survives a restart"
 
 # No token, password or secret value in any log.
 logs=$($COMPOSE logs --no-color 2>&1)
-for v in "$WAYHOUSE_CONTROLLER_TOKEN" "$WAYHOUSE_AGGREGATOR_TOKEN" "$WAYHOUSE_INGEST_TOKEN" "$WAYHOUSE_UI_PASSWORD" solo-smoke-value-1234; do
+for v in "$WAYHOUSE_CONTROLLER_TOKEN" "$WAYHOUSE_PROXY_TOKEN" "$WAYHOUSE_AGENT_TOKEN" "$WAYHOUSE_AGGREGATOR_TOKEN" "$WAYHOUSE_INGEST_TOKEN" "$WAYHOUSE_UI_PASSWORD" solo-smoke-value-1234; do
   if printf '%s' "$logs" | grep -qF -- "$v"; then fail "a secret value appears in the logs"; fi
 done
 echo "ok: no token, password or secret value in the logs"
