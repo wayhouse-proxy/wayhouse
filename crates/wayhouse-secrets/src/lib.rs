@@ -337,16 +337,33 @@ pub fn load(file: Option<&Path>) -> Result<Option<KeyringHandle>, KeyringError> 
 }
 
 /// What identifies a version of the key file.
-fn stamp(path: &Path) -> Option<(SystemTime, u64)> {
+type Stamp = Option<(SystemTime, u64)>;
+
+fn stamp(path: &Path) -> Stamp {
     let meta = std::fs::metadata(path).ok()?;
     Some((meta.modified().ok()?, meta.len()))
+}
+
+/// Which version of the key file the keyring holds, and which one last failed to load.
+pub struct Seen {
+    loaded: Stamp,
+    failed: Stamp,
+}
+
+impl Seen {
+    pub fn of(path: &Path) -> Self {
+        Self {
+            loaded: stamp(path),
+            failed: None,
+        }
+    }
 }
 
 /// Polls `path`; a changed file that parses replaces the keyring, one that does not is
 /// logged and ignored (the old keys stay).
 pub fn spawn_reload(handle: KeyringHandle, path: PathBuf) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut seen = stamp(&path);
+        let mut seen = Seen::of(&path);
         let mut every = tokio::time::interval(RELOAD_EVERY);
         loop {
             every.tick().await;
@@ -355,23 +372,26 @@ pub fn spawn_reload(handle: KeyringHandle, path: PathBuf) -> tokio::task::JoinHa
     })
 }
 
-pub fn reload_if_changed(
-    handle: &KeyringHandle,
-    path: &Path,
-    seen: &mut Option<(SystemTime, u64)>,
-) {
+/// Reloads when the file differs from the version the keyring holds. A version that fails to
+/// load is retried on every poll (a `chmod` after the copy changes neither mtime nor size) but
+/// logged once.
+pub fn reload_if_changed(handle: &KeyringHandle, path: &Path, seen: &mut Seen) {
     let now = stamp(path);
-    if now == *seen {
+    if now == seen.loaded {
         return;
     }
-    *seen = now;
     match Keyring::from_file(path) {
         Ok(k) => {
             tracing::info!(keys = ?k.key_ids(), "reloaded the plugin secret keyring");
             handle.set(k);
+            seen.loaded = now;
+            seen.failed = None;
         }
         Err(e) => {
-            tracing::warn!(error = %e, "the plugin secret key file changed but did not load; keeping the old keys")
+            if seen.failed != now {
+                tracing::warn!(error = %e, "the plugin secret key file changed but did not load; keeping the old keys and retrying");
+            }
+            seen.failed = now;
         }
     }
 }
@@ -602,7 +622,7 @@ mod tests {
         };
         write(&key(1));
         let handle = load(Some(&path)).unwrap().unwrap();
-        let mut seen = stamp(&path);
+        let mut seen = Seen::of(&path);
         assert_eq!(handle.current().key_ids().len(), 1);
         write(&format!("{}\n{}", key(1), key(2)));
         reload_if_changed(&handle, &path, &mut seen);
@@ -610,5 +630,28 @@ mod tests {
         write("garbage");
         reload_if_changed(&handle, &path, &mut seen);
         assert_eq!(handle.current().key_ids().len(), 2, "the old keys stay");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_key_file_that_failed_to_load_is_retried_until_it_loads() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys");
+        let write = |text: &str, mode: u32| {
+            std::fs::write(&path, text).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        write(&key(1), 0o600);
+        let handle = load(Some(&path)).unwrap().unwrap();
+        let mut seen = Seen::of(&path);
+        // `cp newkeys keyfile; chmod 600 keyfile`: the copy lands readable by others first.
+        write(&format!("{}\n{}", key(1), key(2)), 0o644);
+        reload_if_changed(&handle, &path, &mut seen);
+        assert_eq!(handle.current().key_ids().len(), 1, "refused for its mode");
+        // The chmod changes neither mtime nor size, so only a retry can pick the file up.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        reload_if_changed(&handle, &path, &mut seen);
+        assert_eq!(handle.current().key_ids().len(), 2);
     }
 }
