@@ -644,6 +644,47 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_newline_in_a_path_value_cannot_forge_a_second_audit_line() {
+        let buf = LogBuf::default();
+        let sink = buf.clone();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(move || sink.clone())
+                .with_ansi(false)
+                .finish(),
+        );
+        let app = crate::api::router(test_state());
+        let _ = app
+            .oneshot(
+                Request::post("/fleet/instances/evil%0AINFO%20forged%20line/drain")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let log = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        let audit: Vec<_> = log.lines().filter(|l| l.contains("fan-out verb")).collect();
+        assert_eq!(audit.len(), 1, "{log}");
+        assert!(audit[0].contains("evil\\nINFO forged line"), "{log}");
+        assert!(
+            log.lines().all(|l| !l.starts_with("INFO forged")),
+            "no line begins with the forged text: {log}"
+        );
+    }
+
     #[tokio::test]
     async fn drain_proxies_to_the_named_instance_and_passes_the_response_through() {
         let (base_url, _captured) =

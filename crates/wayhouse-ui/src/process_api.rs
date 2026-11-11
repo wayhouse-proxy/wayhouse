@@ -188,28 +188,43 @@ async fn confirm(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(program): Path<String>,
+    Json(body): Json<SettleBody>,
 ) -> Response {
-    finish(&state, &program, &actor, true).await
+    finish(&state, &program, &actor, true, body.rev).await
 }
 
 async fn undo(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(program): Path<String>,
+    Json(body): Json<SettleBody>,
 ) -> Response {
-    finish(&state, &program, &actor, false).await
+    finish(&state, &program, &actor, false, body.rev).await
 }
 
-async fn finish(state: &AppState, program: &str, actor: &Actor, confirm: bool) -> Response {
+/// Confirm and undo name the revision the page showed, so a stale click cannot settle a
+/// different trial than the one the operator looked at.
+#[derive(Deserialize)]
+struct SettleBody {
+    rev: u64,
+}
+
+async fn finish(
+    state: &AppState,
+    program: &str,
+    actor: &Actor,
+    confirm: bool,
+    rev: u64,
+) -> Response {
     let (dir, name) = match target(state, program) {
         Ok(t) => t,
         Err(r) => return *r,
     };
     let result = blocking(move || {
         if confirm {
-            wayhouse_settings::confirm(&dir, name)
+            wayhouse_settings::confirm(&dir, name, rev)
         } else {
-            wayhouse_settings::undo(&dir, name)
+            wayhouse_settings::undo(&dir, name, rev)
         }
     })
     .await;
@@ -442,8 +457,21 @@ mod tests {
         // A second change cannot be stacked, and a stale page is refused.
         let (status, _) = put(json!({"listen": "0.0.0.0:10"}), 1).await;
         assert_eq!(status, StatusCode::CONFLICT);
-        let (status, undone) =
-            call(&app, "POST", "/api/process/controller/undo", json!(null)).await;
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/api/process/controller/undo",
+            json!({"rev": 7}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "a stale undo");
+        let (status, undone) = call(
+            &app,
+            "POST",
+            "/api/process/controller/undo",
+            json!({"rev": 1}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(undone["values"], json!({}));
         assert_eq!(undone["pending"], json!(null));
@@ -451,12 +479,23 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT, "stale revision");
         let (status, file) = put(json!({"listen": "0.0.0.0:9"}), 2).await;
         assert_eq!(status, StatusCode::OK, "{file}");
-        let (status, done) =
-            call(&app, "POST", "/api/process/controller/confirm", json!(null)).await;
+        let (status, done) = call(
+            &app,
+            "POST",
+            "/api/process/controller/confirm",
+            json!({"rev": 3}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(done["pending"], json!(null));
         assert_eq!(done["values"], json!({"listen": "0.0.0.0:9"}));
-        let (status, _) = call(&app, "POST", "/api/process/controller/confirm", json!(null)).await;
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/api/process/controller/confirm",
+            json!({"rev": 4}),
+        )
+        .await;
         assert_eq!(status, StatusCode::CONFLICT, "nothing is waiting");
     }
 

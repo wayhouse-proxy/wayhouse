@@ -41,7 +41,7 @@ pub struct SessionLimits {
     /// A session older than this is gone however active it is; also the
     /// session cookie's `Max-Age`.
     pub max_age: Duration,
-    /// Most live sessions held at once. At the cap the oldest is evicted.
+    /// Most live sessions held at once. At the cap the oldest session of the lowest role is evicted.
     pub max_sessions: usize,
 }
 
@@ -107,9 +107,11 @@ impl SessionStore {
             map.retain(|_, e| self.live(e, now));
         }
         while map.len() >= self.limits.max_sessions.max(1) {
+            // The lowest role goes first (then the oldest), so repeated Viewer logins cannot push
+            // an Admin session out while a Viewer one is available to evict.
             let oldest = map
                 .iter()
-                .min_by_key(|(_, e)| e.created)
+                .min_by_key(|(_, e)| (e.session.role, e.created))
                 .map(|(k, _)| k.clone())
                 .expect("non-empty");
             map.remove(&oldest);
@@ -267,6 +269,24 @@ mod tests {
         assert!(store.get_at(&a, now).is_none(), "oldest evicted");
         assert!(store.get_at(&b, now).is_some());
         assert!(store.get_at(&c, now).is_some());
+    }
+
+    #[test]
+    fn a_full_store_evicts_a_viewer_before_an_admin() {
+        let store = SessionStore::with_limits(limits(60, 3600, 2));
+        let t0 = Instant::now();
+        let admin_id = store.create_at(admin(), t0);
+        let viewer = |name: &str| Session {
+            role: crate::role::Role::Viewer,
+            username: Some(name.into()),
+        };
+        let v1 = store.create_at(viewer("v"), t0 + Duration::from_secs(1));
+        // Repeated Viewer logins churn among themselves; the (older) Admin session stays.
+        let v2 = store.create_at(viewer("v"), t0 + Duration::from_secs(2));
+        let now = t0 + Duration::from_secs(3);
+        assert!(store.get_at(&admin_id, now).is_some(), "admin kept");
+        assert!(store.get_at(&v1, now).is_none(), "the older viewer went");
+        assert!(store.get_at(&v2, now).is_some());
     }
 
     #[test]
