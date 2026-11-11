@@ -64,6 +64,8 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
   const [removing, setRemoving] = useState(false);
   const canWrite = useCan("operator");
   const needsOperator = canWrite ? undefined : "This needs the operator role";
+  const canAdmin = useCan("admin");
+  const needsAdmin = canAdmin ? undefined : "This needs the admin role";
   const { confirm, dialog } = useConfirm();
 
   const reload = useCallback(async (prefer?: string) => {
@@ -127,7 +129,7 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
     <section className="mt-8">
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-lg font-semibold">Install from a registry</h2>
-        <Button onClick={() => setAddOpen(true)} disabled={!canWrite} title={needsOperator}>
+        <Button onClick={() => setAddOpen(true)} disabled={!canAdmin} title={needsAdmin}>
           Add registry
         </Button>
       </div>
@@ -158,7 +160,7 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
         </Select>
         {selected && <RiskBadge registry={selected} />}
         {selected && (
-          <Button variant="danger" size="sm" className="ml-auto" onClick={handleRemove} disabled={removing || !canWrite} title={needsOperator}>
+          <Button variant="danger" size="sm" className="ml-auto" onClick={handleRemove} disabled={removing || !canAdmin} title={needsAdmin}>
             {removing ? "removing…" : "remove registry"}
           </Button>
         )}

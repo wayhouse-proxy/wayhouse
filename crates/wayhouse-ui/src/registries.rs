@@ -95,6 +95,12 @@ fn default_ref() -> RegistryRef {
     }
 }
 
+/// Id of the official plugin registry (tests).
+#[cfg(test)]
+pub(crate) fn default_plugin_ref_id() -> String {
+    default_plugin_ref().id
+}
+
 fn default_plugin_ref() -> RegistryRef {
     RegistryRef {
         id: id_for(DEFAULT_PLUGIN_REGISTRY_URL),
@@ -189,6 +195,22 @@ impl Registries {
         let mut inner = self.inner.lock().unwrap();
         if let Some(existing) = self.snapshot(&inner).into_iter().find(|r| r.id == id) {
             return Ok(existing);
+        }
+        // Re-adding the official URL brings the official entry back; an unofficial copy would
+        // never get the signing key applied.
+        let official = match kind {
+            RegistryKind::Sniffer => default_ref(),
+            RegistryKind::Plugin => default_plugin_ref(),
+        };
+        if self.include_default && id == official.id {
+            let (sniffers_removed, plugins_removed) = match kind {
+                RegistryKind::Sniffer => (false, inner.plugin_default_removed),
+                RegistryKind::Plugin => (inner.default_removed, false),
+            };
+            self.persist(&inner.added, sniffers_removed, plugins_removed)?;
+            (inner.default_removed, inner.plugin_default_removed) =
+                (sniffers_removed, plugins_removed);
+            return Ok(official);
         }
         if self.snapshot(&inner).len() >= MAX_REGISTRIES {
             return Err(RegistriesError::TooMany);
@@ -363,6 +385,33 @@ mod tests {
     #[test]
     fn no_default_flag_hides_it() {
         assert!(Registries::load(None, false).unwrap().list().is_empty());
+    }
+
+    #[test]
+    fn re_adding_the_official_url_after_removing_it_restores_the_official_entry() {
+        let r = fresh();
+        let id = default_ref().id;
+        assert!(r.remove(&id).unwrap());
+        assert!(r.list().is_empty());
+        let back = r.add(DEFAULT_REGISTRY_URL, Some("mine")).unwrap();
+        assert!(back.official, "the official key must apply again");
+        let l = r.list();
+        assert_eq!(l.len(), 1);
+        assert!(l[0].official && l[0].id == id);
+    }
+
+    #[test]
+    fn re_adding_the_official_plugin_url_restores_the_official_plugin_registry() {
+        let r = fresh();
+        let id = default_plugin_ref().id;
+        assert!(r.remove(&id).unwrap());
+        assert!(r.list_plugins().is_empty());
+        let back = r
+            .add_kind(DEFAULT_PLUGIN_REGISTRY_URL, None, RegistryKind::Plugin)
+            .unwrap();
+        assert!(back.official && back.kind == RegistryKind::Plugin);
+        assert_eq!(r.list_plugins().len(), 1);
+        assert_eq!(r.list().len(), 1, "the sniffer default is untouched");
     }
 
     #[test]
