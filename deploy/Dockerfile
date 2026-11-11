@@ -64,7 +64,7 @@ FROM ${BIN_SOURCE} AS bins
 
 # --- runtime targets ------------------------------------------------------
 # distroless/cc-debian13 (glibc 2.41 == the builder's) has CA certs, no shell.
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS wayhouse
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab AS wayhouse
 COPY --from=bins /out/wayhouse /usr/local/bin/wayhouse
 # The Caddy sync (docs/web-proxy.md): a second service from this same image, started with
 # `entrypoint: /usr/local/bin/wayhouse-web-sync`. Unused unless the config has a `web:` section.
@@ -80,13 +80,13 @@ CMD ["--config", "/etc/wayhouse/wayhouse.yaml"]
 # The minimal edge build of wayhouse (`--no-default-features`: no WASM sniffers, gRPC
 # resolver, dns_srv source, gossip fabric or tunnel client; a config that needs
 # one is refused at startup). Installed as `wayhouse`, so it takes the same arguments as the `wayhouse` target.
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS wayhouse-minimal
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab AS wayhouse-minimal
 COPY --from=bins /out/wayhouse-minimal /usr/local/bin/wayhouse
 COPY --from=bins --chown=65532:65532 /out/data /data
 ENTRYPOINT ["/usr/local/bin/wayhouse"]
 CMD ["--config", "/etc/wayhouse/wayhouse.yaml"]
 
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS wayhouse-controller
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab AS wayhouse-controller
 COPY --from=bins /out/wayhouse-controller /usr/local/bin/wayhouse-controller
 # /data must be owned by the nonroot uid *in the image* so a fresh named
 # volume / PVC inherits a writable directory.
@@ -94,18 +94,18 @@ COPY --from=bins --chown=65532:65532 /out/data /data
 ENTRYPOINT ["/usr/local/bin/wayhouse-controller"]
 CMD ["--listen", "0.0.0.0:9901", "--data-dir", "/data"]
 
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS wayhouse-aggregator
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab AS wayhouse-aggregator
 COPY --from=bins /out/wayhouse-aggregator /usr/local/bin/wayhouse-aggregator
 ENTRYPOINT ["/usr/local/bin/wayhouse-aggregator"]
 CMD ["--listen", "0.0.0.0:9902"]
 
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS wayhouse-ui
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab AS wayhouse-ui
 COPY --from=bins /out/wayhouse-ui /usr/local/bin/wayhouse-ui
 COPY --from=web /web/dist /web
 ENTRYPOINT ["/usr/local/bin/wayhouse-ui", "--static-dir", "/web"]
 CMD ["--listen", "0.0.0.0:9903"]
 
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2 AS wayhouse-agent
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab AS wayhouse-agent
 COPY --from=bins /out/wayhouse-agent /usr/local/bin/wayhouse-agent
 COPY --from=bins --chown=65532:65532 /out/data /data
 ENTRYPOINT ["/usr/local/bin/wayhouse-agent"]
@@ -129,7 +129,7 @@ ARG TARGETOS
 ARG TARGETARCH
 ARG CADDY_VERSION=2.11.7
 ARG XCADDY_VERSION=0.4.7
-ARG GOLANG_X_NET_VERSION=0.61.0
+ARG GOLANG_X_NET_VERSION=0.62.0
 ARG GO_JOSE_VERSION=4.1.6
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@v${XCADDY_VERSION}
