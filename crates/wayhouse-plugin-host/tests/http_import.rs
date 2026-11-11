@@ -30,8 +30,11 @@ fn guest(caps: &str, request: &str) -> Vec<u8> {
   (data (i32.const 0) "{req}")
   (func (export "alloc") (param i32) (result i32) (i32.const 4096))
   (func (export "init") (param i32 i32))
+  ;; a wasm function entry is where an expired epoch deadline traps
+  (func $noop)
   (func (export "on_timer") (local $n i32)
     (local.set $n (call $req (i32.const 0) (i32.const {len})))
+    (call $noop)
     ;; too small a buffer keeps the document; the second read gets it
     (drop (call $read (i32.const 8192) (i32.const 2)))
     (drop (call $read (i32.const 8192) (local.get $n)))
@@ -134,4 +137,48 @@ fn without_an_engine_the_guest_is_told_there_is_no_network() {
         .unwrap();
     let fx = plugin.on_timer(&StateSnapshot::new()).unwrap();
     assert!(fx.logs[0].msg.contains("no network"), "{}", fx.logs[0].msg);
+}
+
+/// Takes longer than the whole call timeout, like a slow panel.
+struct Slow(std::time::Duration);
+
+impl Transport for Slow {
+    fn send(&self, _hop: &Hop) -> Result<WireResponse, String> {
+        std::thread::sleep(self.0);
+        Ok(WireResponse {
+            status: 200,
+            headers: vec![],
+            body: b"done".to_vec(),
+        })
+    }
+}
+
+#[test]
+fn time_spent_waiting_on_the_network_does_not_count_against_the_epoch_deadline() {
+    // The deadline is 2 ticks of 250 ms; the request alone takes 700 ms. The guest must get
+    // its answer, not a Timeout after the request already ran (#595).
+    let limits = Limits {
+        call_timeout: std::time::Duration::from_millis(500),
+        ..Limits::default()
+    };
+    let m = guest(CAPS, REQUEST);
+    let caps = inspect(&m).unwrap().caps;
+    let caps_http = caps.http.clone().unwrap();
+    let engine = Arc::new(HttpEngine::new(
+        caps_http,
+        caps.secrets.clone(),
+        Arc::new(Token),
+        Arc::new(Slow(std::time::Duration::from_millis(700))),
+    ));
+    let plugin = PluginHost::new(limits)
+        .unwrap()
+        .load(&m, &caps)
+        .unwrap()
+        .with_http(engine);
+    let fx = plugin.on_timer(&StateSnapshot::new()).unwrap();
+    assert!(
+        fx.logs[0].msg.contains("\"status\":200"),
+        "{}",
+        fx.logs[0].msg
+    );
 }

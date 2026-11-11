@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use wasmtime::{
-    Caller, Config, Engine, Extern, ExternType, FuncType, Instance, Linker, Memory, Module, Store,
-    StoreLimits, StoreLimitsBuilder, Trap, ValType,
+    AsContextMut, Caller, Config, Engine, Extern, ExternType, FuncType, Instance, Linker, Memory,
+    Module, Store, StoreLimits, StoreLimitsBuilder, Trap, ValType,
 };
 
 use crate::caps::Capabilities;
@@ -881,6 +881,12 @@ fn linker(engine: &Engine) -> Linker<CallState> {
                 };
                 let n = i32::try_from(doc.len())?;
                 st.http_doc = doc;
+                // The wait above was the network's, bounded by the http call budget, not guest
+                // CPU: start the guest's deadline over so a slow answer is not cut off after
+                // the request already went out (#595).
+                caller
+                    .as_context_mut()
+                    .set_epoch_deadline(EPOCH_DEADLINE_TICKS);
                 Ok(n)
             },
         )
