@@ -414,6 +414,12 @@ impl Runner {
         if self.lead() != Some(term) {
             return;
         }
+        // The record the scan captured may be stale after the wait (disabled, `http`
+        // suspended, approval edited); run on what is stored now, like `run_hook_effects`.
+        let rec = match self.store.get(&rec.id) {
+            Ok(Some(now)) if now.enabled && now.approved.triggers.on_timer => now,
+            _ => return,
+        };
         let outcome = self.call(&rec, term).await;
         if matches!(outcome, Outcome::Busy) {
             // Retry at the next scan instead of waiting a whole interval, so the
@@ -1430,6 +1436,24 @@ mod tests {
         assert_eq!(counter_value(&store, "a"), None);
         r.clone().tick(rec, Instant::now(), None).await;
         assert_eq!(counter_value(&store, "a"), Some(1));
+    }
+
+    #[tokio::test]
+    async fn a_tick_that_waited_for_its_turn_uses_the_record_as_it_is_now() {
+        let (r, store, _d) = fixture(1, 4);
+        install(&store, "a", &counter());
+        // The scan captured the record, then the operator disabled the install while the
+        // tick waited behind a webhook.
+        let rec = store.list().unwrap().remove(0);
+        store.set_enabled("a", false).unwrap();
+        r.clone().tick(rec, Instant::now(), None).await;
+        // The guest must not even run (its HTTP effects would go out before the commit is
+        // refused as stale), so no log line and no tick is recorded.
+        assert!(
+            r.status("a")
+                .is_none_or(|s| s.ticks == 0 && s.logs.is_empty()),
+            "a disabled install ran"
+        );
     }
 
     #[tokio::test]

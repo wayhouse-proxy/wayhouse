@@ -2,9 +2,10 @@
 //!
 //! Compilation cannot be interrupted once started, so the bounds are: a fixed number of
 //! worker threads, a bounded queue (a full queue answers [`PoolError::Busy`] at once),
-//! and a caller-side timeout ([`PoolError::TimedOut`]). A timed-out job still occupies
-//! its worker until it finishes; it does not occupy the caller or the queue.
+//! and a caller-side timeout ([`PoolError::TimedOut`]). A timed-out job that already
+//! started still occupies its worker until it finishes; one still queued is dropped.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -107,8 +108,14 @@ impl CompilePool {
         timeout: Duration,
     ) -> Result<T, PoolError> {
         let (tx, rx) = mpsc::channel();
+        // Set when the caller stops waiting: a job still queued then is dropped, since the
+        // caller will retry it and a late run would repeat its effect.
+        let abandoned = Arc::new(AtomicBool::new(false));
+        let gone = abandoned.clone();
         let job: Job = Box::new(move || {
-            let _ = tx.send(f());
+            if !gone.load(Ordering::SeqCst) {
+                let _ = tx.send(f());
+            }
         });
         match self.sender.try_send(job) {
             Ok(()) => {}
@@ -119,6 +126,7 @@ impl CompilePool {
         match rx.recv_timeout(timeout) {
             Ok(v) => Ok(v),
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
+                abandoned.store(true, Ordering::SeqCst);
                 Err(PoolError::TimedOut)
             }
         }
@@ -133,6 +141,28 @@ mod tests {
     fn pool(workers: usize, queue: usize, timeout: Duration) -> CompilePool {
         let host = Arc::new(PluginHost::new(Limits::default()).unwrap());
         CompilePool::new(host, workers, queue, timeout).unwrap()
+    }
+
+    #[test]
+    fn a_job_whose_caller_gave_up_never_runs() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let pool = Arc::new(pool(1, 4, Duration::from_millis(50)));
+        // Occupies the only worker past the callers' timeout.
+        let busy = pool.clone();
+        let blocker = std::thread::spawn(move || {
+            busy.call(|| std::thread::sleep(Duration::from_millis(300)))
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        let ran = Arc::new(AtomicBool::new(false));
+        let flag = ran.clone();
+        let late = pool.call(move || flag.store(true, Ordering::SeqCst));
+        assert!(matches!(late, Err(PoolError::TimedOut)));
+        let _ = blocker.join();
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "a job nobody waits for must not run (it would repeat an effect on retry)"
+        );
     }
 
     fn good_module() -> Vec<u8> {
