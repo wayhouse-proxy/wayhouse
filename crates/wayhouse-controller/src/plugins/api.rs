@@ -1157,6 +1157,17 @@ async fn put_secret(
         if let Err(why) = super::peer::check_support(ha).await {
             return err(StatusCode::CONFLICT, why);
         }
+        // Mid-rotation, this node may hold a newer key than its peers: a secret sealed under it
+        // would be unreadable on nodes and proxies that only have the old one.
+        if let Err(why) = super::peer::check_active_key(ha, &sealed.key_id).await {
+            return err(
+                StatusCode::CONFLICT,
+                format!(
+                    "every node needs the active key {} first: {why}",
+                    sealed.key_id
+                ),
+            );
+        }
     }
     let (updated_at, actor) = (now(), actor(&headers));
     let result = match &st.ha {
