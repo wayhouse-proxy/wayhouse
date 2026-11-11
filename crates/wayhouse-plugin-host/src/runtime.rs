@@ -875,18 +875,25 @@ fn linker(engine: &Engine) -> Linker<CallState> {
                 }
                 let raw = read_guest(&mut caller, ptr, len)?;
                 let st = caller.data_mut();
+                let before = st.http_call.calls();
                 let doc = match st.http.clone() {
                     Some(engine) => engine.call(&mut st.http_call, &raw),
                     None => br#"{"error":"no network is available to this plugin here"}"#.to_vec(),
                 };
+                let waited = st.http_call.calls() > before;
                 let n = i32::try_from(doc.len())?;
                 st.http_doc = doc;
-                // The wait above was the network's, bounded by the http call budget, not guest
-                // CPU: start the guest's deadline over so a slow answer is not cut off after
-                // the request already went out (#595).
-                caller
-                    .as_context_mut()
-                    .set_epoch_deadline(EPOCH_DEADLINE_TICKS);
+                // A request that may have waited on the network was bounded by the http call
+                // budget, not guest CPU: start the guest's deadline over so a slow answer is
+                // not cut off after the request already went out (#595). A call refused up
+                // front (budget spent) waited for nothing and must not extend the deadline,
+                // or a guest looping on http_request would never time out. At most
+                // MAX_HTTP_CALLS resets per run.
+                if waited {
+                    caller
+                        .as_context_mut()
+                        .set_epoch_deadline(EPOCH_DEADLINE_TICKS);
+                }
                 Ok(n)
             },
         )

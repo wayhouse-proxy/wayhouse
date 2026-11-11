@@ -182,3 +182,49 @@ fn time_spent_waiting_on_the_network_does_not_count_against_the_epoch_deadline()
         fx.logs[0].msg
     );
 }
+
+#[test]
+fn a_guest_looping_on_http_requests_still_times_out() {
+    // After the 8-call budget every request is refused at once; those must not keep
+    // pushing the epoch deadline back.
+    let caps = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,
+    "http":{"hosts":[{"host":"panel.example"}]}}"#;
+    let caps = caps.replace('"', "\\\"").replace('\n', " ");
+    let req = r#"{"method":"GET","url":"https://panel.example/x"}"#.replace('"', "\\\"");
+    let len = 48;
+    let m = wat::parse_str(format!(
+        r#"(module
+  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-caps" "{caps}")
+  (import "wayhouse" "http_request" (func $req (param i32 i32) (result i32)))
+  (memory (export "memory") 2)
+  (data (i32.const 0) "{req}")
+  (func (export "alloc") (param i32) (result i32) (i32.const 4096))
+  (func (export "init") (param i32 i32))
+  (func (export "on_timer")
+    (loop $again
+      (drop (call $req (i32.const 0) (i32.const {len})))
+      (br $again))))"#
+    ))
+    .unwrap();
+    let caps = inspect(&m).unwrap().caps;
+    let engine = Arc::new(HttpEngine::new(
+        caps.http.clone().unwrap(),
+        caps.secrets.clone(),
+        Arc::new(Token),
+        Arc::new(Echo::default()),
+    ));
+    let limits = Limits {
+        call_timeout: std::time::Duration::from_millis(200),
+        ..Limits::default()
+    };
+    let plugin = PluginHost::new(limits)
+        .unwrap()
+        .load(&m, &caps)
+        .unwrap()
+        .with_http(engine);
+    assert!(matches!(
+        plugin.on_timer(&StateSnapshot::new()),
+        Err(CallError::Timeout)
+    ));
+}
