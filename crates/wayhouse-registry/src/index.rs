@@ -305,7 +305,11 @@ pub(crate) fn valid_name(name: &str) -> bool {
 /// Parse an ABI string `major.minor` (both `u16`).
 pub(crate) fn parse_abi(abi: &str) -> Option<(u16, u16)> {
     let (major, minor) = abi.split_once('.')?;
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    // Canonical decimal only: "0.02" would parse as 0.2 here but not equal "0.2" where the
+    // strings are compared (the module's own ABI section against the index).
+    let digits = |s: &str| {
+        !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) && (s == "0" || !s.starts_with('0'))
+    };
     if !digits(major) || !digits(minor) {
         return None;
     }
@@ -558,7 +562,7 @@ mod tests {
 
     #[test]
     fn rejects_bad_abi_string() {
-        for bad in ["1", "a.b", "1.2.3", ""] {
+        for bad in ["1", "a.b", "1.2.3", "", "0.02", "01.2"] {
             let mut v = example();
             first_version(&mut v)["abi"] = bad.into();
             assert!(

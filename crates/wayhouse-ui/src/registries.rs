@@ -52,6 +52,8 @@ pub enum RegistriesError {
     Credentials,
     #[error("at most {MAX_REGISTRIES} registries")]
     TooMany,
+    #[error("this URL is already registered as a {0} registry; remove it there first")]
+    OtherKind(&'static str),
     #[error("registries file: {0}")]
     File(String),
 }
@@ -194,6 +196,14 @@ impl Registries {
         let id = id_for(&url);
         let mut inner = self.inner.lock().unwrap();
         if let Some(existing) = self.snapshot(&inner).into_iter().find(|r| r.id == id) {
+            // The same URL under the other kind is a conflict, not a success that registers
+            // nothing for the kind that was asked for.
+            if existing.kind != kind {
+                return Err(RegistriesError::OtherKind(match existing.kind {
+                    RegistryKind::Sniffer => "sniffer",
+                    RegistryKind::Plugin => "plugin",
+                }));
+            }
             return Ok(existing);
         }
         // Re-adding the official URL brings the official entry back; an unofficial copy would
@@ -332,6 +342,22 @@ mod tests {
 
     fn fresh() -> Registries {
         Registries::load(None, true).unwrap()
+    }
+
+    #[test]
+    fn adding_a_url_already_registered_as_the_other_kind_is_a_conflict() {
+        let r = fresh();
+        r.add("https://example.com/i.json", None).unwrap();
+        let err = r
+            .add_kind("https://example.com/i.json", None, RegistryKind::Plugin)
+            .unwrap_err();
+        assert!(
+            matches!(err, RegistriesError::OtherKind("sniffer")),
+            "{err}"
+        );
+        // The same kind stays idempotent.
+        assert!(r.add("https://example.com/i.json", None).is_ok());
+        assert_eq!(r.list_plugins().len(), 1);
     }
 
     #[test]
