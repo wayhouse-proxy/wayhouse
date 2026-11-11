@@ -58,14 +58,16 @@ fn write(path: &Path, store: &Store) -> Result<(), StoreError> {
         .mode(0o600)
         .open(&tmp)
         .map_err(fail)?;
-    f.write_all(
-        serde_json::to_string_pretty(store)
-            .expect("sealed values serialize")
-            .as_bytes(),
-    )
-    .map_err(fail)?;
-    f.sync_all().map_err(fail)?;
-    std::fs::rename(&tmp, path).map_err(|e| {
+    // Whatever fails after the file exists, it must not be left behind holding sealed data.
+    let done = f
+        .write_all(
+            serde_json::to_string_pretty(store)
+                .expect("sealed values serialize")
+                .as_bytes(),
+        )
+        .and_then(|()| f.sync_all())
+        .and_then(|()| std::fs::rename(&tmp, path));
+    done.map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         fail(e)
     })
@@ -120,6 +122,21 @@ mod tests {
     const KEY_A: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
     const KEY_B: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
     const VALUE: &[u8] = b"correct-horse-battery-staple";
+
+    #[test]
+    fn a_failed_replace_leaves_no_temp_file_behind() {
+        let d = tempfile::tempdir().unwrap();
+        // A directory where the store file belongs: the rename after the write fails.
+        let path = d.path().join("s.json");
+        std::fs::create_dir(&path).unwrap();
+        assert!(write(&path, &Store::default()).is_err());
+        let left: Vec<_> = std::fs::read_dir(d.path()).unwrap().flatten().collect();
+        assert!(
+            left.iter()
+                .all(|e| !e.file_name().to_string_lossy().ends_with(".tmp")),
+            "{left:?}"
+        );
+    }
 
     fn dir() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
