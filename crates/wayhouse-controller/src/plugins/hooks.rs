@@ -192,16 +192,23 @@ fn hidden(name: &str) -> bool {
     )
 }
 
+/// The headers the guest sees. A repeated header is joined with `, ` (HTTP's own rule) rather
+/// than collapsed to its last value; the joined value stays within 1 KiB and at most
+/// `MAX_HEADERS` distinct names are kept.
 fn guest_headers(headers: &HeaderMap) -> BTreeMap<String, String> {
-    headers
-        .iter()
-        .filter(|(n, _)| !hidden(n.as_str()))
-        .filter_map(|(n, v)| {
-            let v = v.to_str().ok()?;
-            (v.len() <= 1024).then(|| (n.as_str().to_string(), v.to_string()))
-        })
-        .take(MAX_HEADERS)
-        .collect()
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for (n, v) in headers.iter().filter(|(n, _)| !hidden(n.as_str())) {
+        let Ok(v) = v.to_str() else { continue };
+        if let Some(have) = out.get_mut(n.as_str()) {
+            if have.len() + 2 + v.len() <= 1024 {
+                have.push_str(", ");
+                have.push_str(v);
+            }
+        } else if v.len() <= 1024 && out.len() < MAX_HEADERS {
+            out.insert(n.as_str().to_string(), v.to_string());
+        }
+    }
+    out
 }
 
 /// The caller's `Idempotency-Key`, else a hash of the install and the body.
@@ -544,5 +551,14 @@ mod tests {
         assert_ne!(k1, idempotency_key(&h, "id", b"other"));
         h.insert("idempotency-key", "abc-123".parse().unwrap());
         assert_eq!(idempotency_key(&h, "id", b"body"), "abc-123");
+    }
+
+    #[test]
+    fn a_repeated_header_is_joined_not_collapsed_to_the_last() {
+        let mut h = HeaderMap::new();
+        h.append("x-forwarded-for", "10.0.0.1".parse().unwrap());
+        h.append("x-forwarded-for", "10.0.0.2".parse().unwrap());
+        let g = guest_headers(&h);
+        assert_eq!(g["x-forwarded-for"], "10.0.0.1, 10.0.0.2");
     }
 }

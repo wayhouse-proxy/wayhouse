@@ -405,7 +405,13 @@ fn bad_credentials() -> Response {
 }
 
 fn issue_session(state: &AppState, session: Session) -> Response {
-    let id = state.sessions.create(session);
+    let Some(id) = state.sessions.try_create(session) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too many higher-privileged sessions are open; try again later",
+        )
+            .into_response();
+    };
     let cookie = format!(
         "{SESSION_COOKIE}={id}; HttpOnly; Path=/; SameSite=Lax; Max-Age={}{}",
         state.sessions.limits().max_age.as_secs(),
@@ -707,13 +713,34 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// A per-process random password for a test user, so no password literal
+    /// reaches the hasher (CodeQL's hard-coded cryptographic value, #68). It is
+    /// looked up by name, never built from it, so the name literal does not flow
+    /// into the password either.
+    fn pw(user: &str) -> String {
+        use std::collections::HashMap;
+        use std::sync::{LazyLock, Mutex};
+        static PASSWORDS: LazyLock<Mutex<HashMap<String, String>>> =
+            LazyLock::new(|| Mutex::new(HashMap::new()));
+        PASSWORDS
+            .lock()
+            .unwrap()
+            .entry(user.to_owned())
+            .or_insert_with(|| format!("{:032x}", rand::random::<u128>()))
+            .clone()
+    }
+
+    fn login_body(user: &str) -> String {
+        serde_json::json!({ "username": user, "password": pw(user) }).to_string()
+    }
+
     fn users_state() -> AppState {
         let mut users = HashMap::new();
         users.insert(
             "alice".to_string(),
             UserRecord {
                 username: "alice".into(),
-                password_hash: crate::users::hash_password("alice-pass"),
+                password_hash: crate::users::hash_password(&pw("alice")),
                 role: Role::Admin,
             },
         );
@@ -721,7 +748,7 @@ mod tests {
             "bob".to_string(),
             UserRecord {
                 username: "bob".into(),
-                password_hash: crate::users::hash_password("bob-pass"),
+                password_hash: crate::users::hash_password(&pw("bob")),
                 role: Role::Operator,
             },
         );
@@ -746,7 +773,7 @@ mod tests {
     #[tokio::test]
     async fn a_users_file_login_with_the_right_password_succeeds() {
         let app = router(users_state());
-        let resp = login_as(&app, "alice", "alice-pass").await;
+        let resp = login_as(&app, "alice", &pw("alice")).await;
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
@@ -767,7 +794,7 @@ mod tests {
     #[tokio::test]
     async fn an_operator_session_carries_the_operator_role() {
         let app = router(users_state());
-        let resp = login_as(&app, "bob", "bob-pass").await;
+        let resp = login_as(&app, "bob", &pw("bob")).await;
         let cookie = cookie_header_from(&set_cookie_value(&resp));
 
         let resp = app
@@ -790,7 +817,7 @@ mod tests {
     #[tokio::test]
     async fn an_operator_cannot_reach_an_admin_only_route() {
         let app = router(users_state());
-        let resp = login_as(&app, "bob", "bob-pass").await; // bob is Operator
+        let resp = login_as(&app, "bob", &pw("bob")).await; // bob is Operator
         let cookie = cookie_header_from(&set_cookie_value(&resp));
 
         // No --controller-url configured, but the role gate must reject
@@ -811,7 +838,7 @@ mod tests {
     #[tokio::test]
     async fn validate_is_admin_only_and_schema_is_for_viewers() {
         let app = router(users_state());
-        let resp = login_as(&app, "bob", "bob-pass").await; // bob is Operator
+        let resp = login_as(&app, "bob", &pw("bob")).await; // bob is Operator
         let cookie = cookie_header_from(&set_cookie_value(&resp));
         let resp = app
             .clone()
@@ -841,7 +868,7 @@ mod tests {
     async fn process_flags_are_readable_by_a_viewer_and_changeable_only_by_an_admin() {
         let dir = tempfile::tempdir().unwrap();
         let app = router(users_state().with_settings_dir(dir.path().to_path_buf()));
-        let resp = login_as(&app, "bob", "bob-pass").await; // bob is Operator
+        let resp = login_as(&app, "bob", &pw("bob")).await; // bob is Operator
         let cookie = cookie_header_from(&set_cookie_value(&resp));
         let call = |method: &str, path: &str| {
             let req = HttpRequest::builder()
@@ -867,7 +894,7 @@ mod tests {
     #[tokio::test]
     async fn an_operator_cannot_change_a_plugin_install_or_the_acme_setup() {
         let app = router(users_state());
-        let resp = login_as(&app, "bob", "bob-pass").await; // bob is Operator
+        let resp = login_as(&app, "bob", &pw("bob")).await; // bob is Operator
         let cookie = cookie_header_from(&set_cookie_value(&resp));
         for (method, path) in [
             ("POST", "/api/plugins"),
@@ -914,12 +941,12 @@ mod tests {
             "carol".to_string(),
             UserRecord {
                 username: "carol".into(),
-                password_hash: crate::users::hash_password("carol-pass"),
+                password_hash: crate::users::hash_password(&pw("carol")),
                 role: Role::Viewer,
             },
         );
         let app = router(AppState::new(None).with_users(users));
-        let resp = login_as(&app, "carol", "carol-pass").await;
+        let resp = login_as(&app, "carol", &pw("carol")).await;
         let cookie = cookie_header_from(&set_cookie_value(&resp));
 
         let resp = app
@@ -948,12 +975,12 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    async fn post_login(app: &Router, body: &'static str) -> Response {
+    async fn post_login(app: &Router, body: &str) -> Response {
         app.clone()
             .oneshot(
                 HttpRequest::post("/ui/login")
                     .header("content-type", "application/json")
-                    .body(Body::from(body))
+                    .body(Body::from(body.to_owned()))
                     .unwrap(),
             )
             .await
@@ -1029,10 +1056,10 @@ mod tests {
         let app = router(users_state().with_login_limits(tight_login_limits(100, 1)));
         let resp = post_login(&app, r#"{"username":"alice","password":"nope"}"#).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-        let resp = post_login(&app, r#"{"username":"alice","password":"alice-pass"}"#).await;
+        let resp = post_login(&app, &login_body("alice")).await;
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
         // Another username is unaffected.
-        let resp = post_login(&app, r#"{"username":"bob","password":"bob-pass"}"#).await;
+        let resp = post_login(&app, &login_body("bob")).await;
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
@@ -1056,13 +1083,13 @@ mod tests {
     async fn a_successful_login_refunds_the_username_bucket() {
         let app = router(users_state().with_login_limits(tight_login_limits(100, 1)));
         for _ in 0..3 {
-            let resp = post_login(&app, r#"{"username":"alice","password":"alice-pass"}"#).await;
+            let resp = post_login(&app, &login_body("alice")).await;
             assert_eq!(resp.status(), StatusCode::OK);
         }
         // A failure still spends the token.
         let resp = post_login(&app, r#"{"username":"alice","password":"nope"}"#).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-        let resp = post_login(&app, r#"{"username":"alice","password":"alice-pass"}"#).await;
+        let resp = post_login(&app, &login_body("alice")).await;
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 

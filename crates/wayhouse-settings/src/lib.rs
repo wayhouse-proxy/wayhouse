@@ -126,6 +126,23 @@ pub fn write(dir: &Path, program: &str, file: &File) -> Result<(), String> {
     write_atomic(dir, &format!("{program}.json"), &body)
 }
 
+/// Holds an exclusive lock on `DIR/.<program>.lock` for a read-modify-write, so the UI backend's
+/// apply/confirm/undo and the program's own guard cannot interleave (two lost updates). Released
+/// when dropped. A directory that cannot be written has no lock to take and no file to change.
+fn lock(dir: &Path, program: &str) -> Result<std::fs::File, String> {
+    let p = dir.join(format!(".{program}.lock"));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let f = opts.open(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    f.lock().map_err(|e| format!("{}: {e}", p.display()))?;
+    Ok(f)
+}
+
 fn write_atomic(dir: &Path, name: &str, body: &[u8]) -> Result<(), String> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -498,6 +515,9 @@ pub fn layer(program: &str, cmd: &Command, argv: Vec<OsString>) -> Layered {
     let Some(dir) = flag_value(&argv, "settings-dir") else {
         return none(argv, notes);
     };
+    // Held for the whole boot read-modify-write, so a confirm or undo cannot interleave with it.
+    // Best effort: a directory that cannot hold the lock file is a directory that cannot be written.
+    let _lock = lock(&dir, program).ok();
     let mut file = match read(&dir, program) {
         Ok(Some(f)) => f,
         Ok(None) => File::default(),
@@ -676,6 +696,7 @@ impl Guard {
         let Some(seen) = seen else {
             return Ok(false);
         };
+        let _lock = lock(&self.dir, &self.program)?;
         let latest = read(&self.dir, &self.program)?;
         match latest {
             Some(l) if l.rev == seen.rev && l.pending.is_some() => {
@@ -754,6 +775,7 @@ fn apply_with(
     now: u64,
 ) -> Result<File, ApplyError> {
     checked?;
+    let _lock = lock(dir, program).map_err(ApplyError::Io)?;
     let cur = read(dir, program)
         .map_err(ApplyError::Io)?
         .unwrap_or_default();
@@ -784,11 +806,24 @@ fn apply_with(
     Ok(next)
 }
 
-/// Makes the pending change final.
-pub fn confirm(dir: &Path, program: &str) -> Result<File, ApplyError> {
+/// Refuses a confirm or undo meant for another trial than the one now on file.
+fn same_trial(cur: &File, expect_rev: u64) -> Result<(), ApplyError> {
+    if cur.rev == expect_rev {
+        return Ok(());
+    }
+    Err(conflict(
+        "the settings changed since you loaded them; reload and check the trial first",
+    ))
+}
+
+/// Makes the pending change final, if the file is still at `expect_rev` (the revision the
+/// caller saw).
+pub fn confirm(dir: &Path, program: &str, expect_rev: u64) -> Result<File, ApplyError> {
+    let _lock = lock(dir, program).map_err(ApplyError::Io)?;
     let mut cur = read(dir, program)
         .map_err(ApplyError::Io)?
         .ok_or_else(|| conflict("no settings file"))?;
+    same_trial(&cur, expect_rev)?;
     if cur.pending.take().is_none() {
         return Err(conflict("nothing is waiting for confirmation"));
     }
@@ -799,11 +834,14 @@ pub fn confirm(dir: &Path, program: &str) -> Result<File, ApplyError> {
     Ok(cur)
 }
 
-/// Puts the previous values back (the running program notices and restarts).
-pub fn undo(dir: &Path, program: &str) -> Result<File, ApplyError> {
+/// Puts the previous values back (the running program notices and restarts), if the file is
+/// still at `expect_rev`.
+pub fn undo(dir: &Path, program: &str, expect_rev: u64) -> Result<File, ApplyError> {
+    let _lock = lock(dir, program).map_err(ApplyError::Io)?;
     let cur = read(dir, program)
         .map_err(ApplyError::Io)?
         .ok_or_else(|| conflict("no settings file"))?;
+    same_trial(&cur, expect_rev)?;
     if cur.pending.is_none() {
         return Err(conflict("nothing is waiting for confirmation"));
     }
@@ -1039,19 +1077,23 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("changed since"));
-        go(v1.clone(), 0).unwrap();
+        let trial = go(v1.clone(), 0).unwrap();
+        let stale = confirm(dir.path(), "demo", trial.rev + 5)
+            .unwrap_err()
+            .to_string();
+        assert!(stale.contains("changed since"), "{stale}");
         let again = go(vals(&[("workers", one("3"))]), 1)
             .unwrap_err()
             .to_string();
         assert!(again.contains("waiting for confirmation"), "{again}");
-        let f = confirm(dir.path(), "demo").unwrap();
+        let f = confirm(dir.path(), "demo", trial.rev).unwrap();
         assert!(f.pending.is_none() && f.previous.is_none());
         assert_eq!(f.values, v1);
         assert!(go(v1, f.rev)
             .unwrap_err()
             .to_string()
             .contains("nothing changed"));
-        assert!(confirm(dir.path(), "demo")
+        assert!(confirm(dir.path(), "demo", f.rev)
             .unwrap_err()
             .to_string()
             .contains("nothing"));
@@ -1325,7 +1367,7 @@ mod tests {
             cmd: cmd(),
         };
         // The guard saw `applied`; the operator confirms a moment later.
-        confirm(dir.path(), "demo").unwrap();
+        confirm(dir.path(), "demo", applied.rev).unwrap();
         assert_eq!(guard.undo_if_unchanged(Some(&applied), None), Ok(false));
         let f = read(dir.path(), "demo").unwrap().unwrap();
         assert_eq!(
@@ -1351,9 +1393,37 @@ mod tests {
     }
 
     #[test]
+    fn two_applies_at_the_same_revision_let_exactly_one_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let wins = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8)
+                .map(|i| {
+                    let d = dir.path();
+                    s.spawn(move || {
+                        apply(
+                            d,
+                            "demo",
+                            &cmd(),
+                            vals(&[("workers", one(&format!("{}", i + 2)))]),
+                            0,
+                            10,
+                        )
+                        .is_ok()
+                    })
+                })
+                .collect();
+            hs.into_iter()
+                .map(|h| h.join().unwrap())
+                .filter(|ok| *ok)
+                .count()
+        });
+        assert_eq!(wins, 1);
+    }
+
+    #[test]
     fn a_manual_undo_puts_the_previous_values_back() {
         let dir = tempfile::tempdir().unwrap();
-        apply(
+        let trial = apply(
             dir.path(),
             "demo",
             &cmd(),
@@ -1362,8 +1432,12 @@ mod tests {
             10,
         )
         .unwrap();
-        let back = undo(dir.path(), "demo").unwrap();
+        assert!(
+            undo(dir.path(), "demo", trial.rev + 1).is_err(),
+            "a stale undo"
+        );
+        let back = undo(dir.path(), "demo", trial.rev).unwrap();
         assert!(back.values.is_empty() && back.pending.is_none());
-        assert!(undo(dir.path(), "demo").is_err());
+        assert!(undo(dir.path(), "demo", back.rev).is_err());
     }
 }

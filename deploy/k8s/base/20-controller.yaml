@@ -14,10 +14,14 @@ spec:
       containers:
         - name: controller
           image: wayhouse-deploy/wayhouse-controller:local
-          args: ["--listen=0.0.0.0:9901", "--data-dir=/data", "--auth-token=$(TOKEN)"]
+          args: ["--listen=0.0.0.0:9901", "--data-dir=/data", "--auth-token=$(TOKEN)", "--proxy-token=$(PROXY_TOKEN)", "--agent-token=$(AGENT_TOKEN)"]
           env:
             - name: TOKEN
               valueFrom: { secretKeyRef: { name: wayhouse-tokens, key: controller-token } }
+            - name: PROXY_TOKEN
+              valueFrom: { secretKeyRef: { name: wayhouse-tokens, key: proxy-token } }
+            - name: AGENT_TOKEN
+              valueFrom: { secretKeyRef: { name: wayhouse-tokens, key: agent-token } }
           ports: [{ containerPort: 9901 }]
           readinessProbe: { httpGet: { path: /healthz, port: 9901 } }
           livenessProbe: { httpGet: { path: /healthz, port: 9901 }, initialDelaySeconds: 10 }

@@ -45,6 +45,13 @@ pub enum UiOp {
         kind: Kind,
         name: String,
     },
+    /// Re-encrypts one cluster secret under a newer key: applied only if the secret still holds
+    /// the ciphertext whose nonce is `from_nonce`, so a `PUT` that landed meanwhile wins.
+    RewrapSecret {
+        name: String,
+        from_nonce: String,
+        value: Value,
+    },
 }
 
 /// What applying one op did; everything but `Done` and `Replayed` changed nothing.
@@ -57,6 +64,8 @@ pub enum Applied {
     Invalid(String),
     /// The collection already holds its maximum number of records.
     Full(usize),
+    /// A rewrap lost a race: the secret was replaced since it was read.
+    Stale,
 }
 
 /// Everything replicated, for an HA snapshot.
@@ -525,6 +534,24 @@ impl UiStore {
                 }
                 Ok(Ok(vec![Write::Insert(k, serde_json::to_vec(value)?)]))
             }
+            UiOp::RewrapSecret {
+                name,
+                from_nonce,
+                value,
+            } => {
+                if let Err(why) = validate(Kind::ClusterSecret, name, value) {
+                    return Ok(Err(Applied::Invalid(why)));
+                }
+                let k = key(Kind::ClusterSecret, name);
+                let Some(current) = self.records.get(&k)? else {
+                    return Ok(Err(Applied::NotFound));
+                };
+                let current: Value = serde_json::from_slice(&current)?;
+                if current["nonce"].as_str() != Some(from_nonce) {
+                    return Ok(Err(Applied::Stale));
+                }
+                Ok(Ok(vec![Write::Insert(k, serde_json::to_vec(value)?)]))
+            }
             UiOp::Delete { kind, name } => {
                 let k = key(*kind, name);
                 if self.records.get(&k)?.is_none() {
@@ -646,6 +673,58 @@ impl UiStore {
 
 #[cfg(test)]
 mod tests {
+    /// A freshly sealed record: every call draws a new random nonce, like a real `PUT`.
+    fn secret() -> Value {
+        let ring = wayhouse_secrets::Keyring::parse("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
+            .unwrap();
+        let sealed = ring
+            .seal_cluster("gossip-psk", b"correct-horse-battery")
+            .unwrap();
+        json!({"key_id": sealed.key_id, "nonce": sealed.nonce, "ciphertext": sealed.ciphertext, "set_at": 5, "actor": "ops"})
+    }
+
+    fn nonce(record: &Value) -> String {
+        record["nonce"].as_str().unwrap().to_owned()
+    }
+
+    fn rewrap(from: &Value, value: Value) -> UiOp {
+        UiOp::RewrapSecret {
+            name: "gossip-psk".into(),
+            from_nonce: nonce(from),
+            value,
+        }
+    }
+
+    #[test]
+    fn a_rewrap_replaces_the_secret_only_if_it_was_not_replaced_since() {
+        let (s, _d) = store();
+        let name = "gossip-psk";
+        let (read, replaced, rewrapped) = (secret(), secret(), secret());
+        assert_eq!(
+            s.apply_local(&rewrap(&read, rewrapped.clone())).unwrap(),
+            Applied::NotFound
+        );
+        s.apply_local(&put(Kind::ClusterSecret, name, read.clone()))
+            .unwrap();
+        // An operator's PUT landed after the rewrap read the old ciphertext.
+        s.apply_local(&put(Kind::ClusterSecret, name, replaced.clone()))
+            .unwrap();
+        assert_eq!(
+            s.apply_local(&rewrap(&read, rewrapped.clone())).unwrap(),
+            Applied::Stale
+        );
+        assert_eq!(
+            s.get(Kind::ClusterSecret, name).unwrap(),
+            Some(replaced.clone())
+        );
+        assert_eq!(
+            s.apply_local(&rewrap(&replaced, rewrapped.clone()))
+                .unwrap(),
+            Applied::Done
+        );
+        assert_eq!(s.get(Kind::ClusterSecret, name).unwrap(), Some(rewrapped));
+    }
+
     #[test]
     fn the_snapshot_covers_every_kind() {
         // One record per kind, built by an exhaustive match that does not use `Kind::ALL`:
@@ -704,6 +783,8 @@ mod tests {
             ui_support,
         };
         assert!(check_support_answers(&[(2, Ok(who(UI_SUPPORT)))]).is_ok());
+        // Level 4 predates the cluster secret rewrap entry and cannot decode it.
+        assert!(check_support_answers(&[(2, Ok(who(4)))]).is_err());
         assert!(
             check_support_answers(&[(2, Ok(who(3)))]).is_err(),
             "level 3 cannot decode cluster secrets"

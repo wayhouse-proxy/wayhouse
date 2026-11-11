@@ -661,13 +661,17 @@ pub(crate) async fn proxy_raw(
 
     match req.send().await {
         Ok(resp) => crate::proxy_util::relay(resp, "aggregator").await,
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("aggregator ({url}): {}", wayhouse_http::error_chain(&e)),
-            }),
-        )
-            .into_response(),
+        Err(e) => {
+            // The URL and the transport error are for the log; the browser gets neither.
+            tracing::warn!(%url, error = %wayhouse_http::error_chain(&e), "aggregator unreachable");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse {
+                    error: "aggregator unreachable".into(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -1478,5 +1482,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            !body.contains("127.0.0.1"),
+            "no upstream URL in the answer: {body}"
+        );
     }
 }

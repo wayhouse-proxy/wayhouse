@@ -37,7 +37,14 @@ async fn controller_and_aggregator_serve_metrics_behind_their_auth_token() -> Re
     let _controller = spawn_controller_with(
         dir.path(),
         &format!("127.0.0.1:{cport}"),
-        &args(&["--auth-token", TOKEN]),
+        &args(&[
+            "--auth-token",
+            TOKEN,
+            "--proxy-token",
+            "proxy-token-0123456789",
+            "--agent-token",
+            "agent-token-0123456789",
+        ]),
     )?;
     let _aggregator = spawn_aggregator_with(
         aport,
@@ -79,7 +86,14 @@ async fn a_metrics_token_unlocks_only_metrics_on_controller_and_aggregator() -> 
     let dir = tempfile::tempdir()?;
     let (cport, aport) = (free_port()?, free_port()?);
     let extra = args(&["--auth-token", TOKEN, "--metrics-token", SCRAPE_TOKEN]);
-    let _controller = spawn_controller_with(dir.path(), &format!("127.0.0.1:{cport}"), &extra)?;
+    let mut ctl_extra = extra.clone();
+    ctl_extra.extend(args(&[
+        "--proxy-token",
+        "proxy-token-0123456789",
+        "--agent-token",
+        "agent-token-0123456789",
+    ]));
+    let _controller = spawn_controller_with(dir.path(), &format!("127.0.0.1:{cport}"), &ctl_extra)?;
     let mut agg_extra = extra.clone();
     agg_extra.extend(args(&["--ingest-token", INGEST_TOKEN]));
     let _aggregator = spawn_aggregator_with(aport, &agg_extra)?;

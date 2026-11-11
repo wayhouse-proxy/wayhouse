@@ -90,7 +90,9 @@ async fn add_registry(State(state): State<AppState>, Json(req): Json<AddRegistry
         Err(e @ (RegistriesError::BadUrl | RegistriesError::Credentials)) => {
             error(StatusCode::BAD_REQUEST, e.to_string())
         }
-        Err(e @ RegistriesError::TooMany) => error(StatusCode::CONFLICT, e.to_string()),
+        Err(e @ (RegistriesError::TooMany | RegistriesError::OtherKind(_))) => {
+            error(StatusCode::CONFLICT, e.to_string())
+        }
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -351,7 +353,9 @@ async fn install(
         return error(StatusCode::NOT_FOUND, "no such sniffer in this registry");
     };
 
-    let env = fleet_env(&state, actor.clone()).await.env;
+    let fleet = fleet_env(&state, actor.clone()).await;
+    let min_proxy_checked = fleet.min_proxy_checked;
+    let env = fleet.env;
     let version = match &req.version {
         Some(want) => {
             let Some(v) = entry.versions.iter().find(|v| &v.version == want) else {
@@ -491,6 +495,9 @@ async fn install(
             "signed": verified.signed,
             "risk": risk(&reg),
             "sha256": sha256,
+            // False when a proxy's version is unknown, so `min_proxy` was only checked
+            // against the proxies that report one.
+            "min_proxy_checked": min_proxy_checked,
             "results": results,
             "pinned_instances": pinned,
         })),
@@ -1417,6 +1424,17 @@ mod tests {
         let (status, body) = h.install().await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["version"], "0.2.0");
+    }
+
+    #[tokio::test]
+    async fn install_reports_when_min_proxy_could_not_be_checked_for_every_proxy() {
+        let base = fake_registry_versions(&[("0.1.0", "0.1", tagged_module("old"))]).await;
+        let (agg, _) =
+            fake_aggregator_with_health(ok_results(), Some(health(&["0.1.0", ""]))).await;
+        let h = harness(&base, &agg, false, crate::role::Role::Operator).await;
+        let (status, body) = install_version(&h, "0.1.0").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["min_proxy_checked"], false);
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@
 //! (`docs/12-deployment.md`). The flag list of each program is the one it published when it last
 //! started, so a program that never ran with this directory shows as "not connected".
 //!
-//! Reads need `Viewer`; applying, confirming and undoing need `Admin`, the level that can already
+//! Reads need `Viewer` (and show a Viewer no values); applying, confirming and undoing need `Admin`, the level that can already
 //! change the fleet's configuration. Credentials never pass through here: the settings crate
 //! refuses token, password and PSK flags, and the files hold no secret.
 
@@ -22,6 +22,7 @@ use wayhouse_settings::{ApplyError, File, Values};
 
 use crate::api::AppState;
 use crate::auth::Actor;
+use crate::auth::ActorRole;
 
 /// The programs whose flags can be edited, with the name their settings file carries.
 const PROGRAMS: &[(&str, &str)] = &[
@@ -74,18 +75,27 @@ fn target(state: &AppState, program: &str) -> Result<(PathBuf, &'static str), Bo
     Ok((dir.clone(), name))
 }
 
-/// What the page shows of a settings file.
-fn file_json(f: &File) -> serde_json::Value {
+/// What the page shows of a settings file. `redact` hides the values (a data directory, a
+/// listen address, a tunnel endpoint are the operator's to see, not a Viewer's); the
+/// revision and the pending trial stay, so the page still shows that a change is waiting.
+fn file_json(f: &File, redact: bool) -> serde_json::Value {
+    let (values, previous) = if redact {
+        (json!({}), json!({}))
+    } else {
+        (json!(f.values), json!(f.previous))
+    };
     json!({
         "rev": f.rev,
-        "values": f.values,
-        "previous": f.previous,
+        "values": values,
+        "previous": previous,
+        "redacted": redact,
         "pending": f.pending.as_ref().map(|p| json!({
             "applied_at": p.applied_at,
             "attempts": p.attempts,
             "confirm_secs": wayhouse_settings::CONFIRM_SECS,
         })),
-        "error": f.error,
+        // The program's refusal text can quote the rejected value (`invalid value 'x'`).
+        "error": if redact { f.error.as_ref().map(|_| "the program refused the last change".to_string()) } else { f.error.clone() },
     })
 }
 
@@ -97,7 +107,11 @@ async fn blocking<T: Send + 'static>(
         .map_err(|_| Box::new(error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")))
 }
 
-async fn list(State(state): State<AppState>) -> Response {
+async fn list(
+    State(state): State<AppState>,
+    Extension(ActorRole(role)): Extension<ActorRole>,
+) -> Response {
+    let redact = role == crate::role::Role::Viewer;
     let Some(dir) = state.settings_dir.as_deref().cloned() else {
         return Json(json!({ "dir_configured": false, "programs": [] })).into_response();
     };
@@ -112,7 +126,7 @@ async fn list(State(state): State<AppState>) -> Response {
                     "label": label,
                     "connected": flags.is_some(),
                     "flags": flags.unwrap_or_default(),
-                    "file": file.as_ref().map(file_json),
+                    "file": file.as_ref().map(|f| file_json(f, redact)),
                 })
             })
             .collect::<Vec<_>>()
@@ -163,7 +177,7 @@ async fn apply(
             // Names only: a value could be a path or an address the operator keeps private.
             tracing::info!(?actor, program = name, keys = ?file.values.keys().collect::<Vec<_>>(),
                 "process flags applied as a trial; waiting for confirmation");
-            Json(file_json(&file)).into_response()
+            Json(file_json(&file, false)).into_response()
         }
         Ok(Err(e)) => refusal(e),
         Err(r) => *r,
@@ -174,28 +188,43 @@ async fn confirm(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(program): Path<String>,
+    Json(body): Json<SettleBody>,
 ) -> Response {
-    finish(&state, &program, &actor, true).await
+    finish(&state, &program, &actor, true, body.rev).await
 }
 
 async fn undo(
     State(state): State<AppState>,
     Extension(actor): Extension<Actor>,
     Path(program): Path<String>,
+    Json(body): Json<SettleBody>,
 ) -> Response {
-    finish(&state, &program, &actor, false).await
+    finish(&state, &program, &actor, false, body.rev).await
 }
 
-async fn finish(state: &AppState, program: &str, actor: &Actor, confirm: bool) -> Response {
+/// Confirm and undo name the revision the page showed, so a stale click cannot settle a
+/// different trial than the one the operator looked at.
+#[derive(Deserialize)]
+struct SettleBody {
+    rev: u64,
+}
+
+async fn finish(
+    state: &AppState,
+    program: &str,
+    actor: &Actor,
+    confirm: bool,
+    rev: u64,
+) -> Response {
     let (dir, name) = match target(state, program) {
         Ok(t) => t,
         Err(r) => return *r,
     };
     let result = blocking(move || {
         if confirm {
-            wayhouse_settings::confirm(&dir, name)
+            wayhouse_settings::confirm(&dir, name, rev)
         } else {
-            wayhouse_settings::undo(&dir, name)
+            wayhouse_settings::undo(&dir, name, rev)
         }
     })
     .await;
@@ -207,7 +236,7 @@ async fn finish(state: &AppState, program: &str, actor: &Actor, confirm: bool) -
                 confirmed = confirm,
                 "process flags trial settled"
             );
-            Json(file_json(&file)).into_response()
+            Json(file_json(&file, false)).into_response()
         }
         Ok(Err(e)) => refusal(e),
         Err(r) => *r,
@@ -304,6 +333,106 @@ mod tests {
         assert_eq!(by("controller")["file"], json!(null));
     }
 
+    #[test]
+    fn a_redacted_file_does_not_quote_the_programs_refusal() {
+        let f = File {
+            rev: 3,
+            error: Some("invalid value '10.9.8.7:9000' for '--listen'".into()),
+            ..File::default()
+        };
+        let seen = file_json(&f, true).to_string();
+        assert!(!seen.contains("10.9.8.7"), "{seen}");
+        assert!(seen.contains("refused the last change"));
+        assert!(file_json(&f, false).to_string().contains("10.9.8.7"));
+    }
+
+    #[tokio::test]
+    async fn a_viewer_sees_that_a_change_is_waiting_but_not_the_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let flags = vec![flag("listen", Kind::Text, None)];
+        std::fs::write(
+            wayhouse_settings::schema_path(dir.path(), "controller"),
+            serde_json::to_vec(&json!({ "flags": flags })).unwrap(),
+        )
+        .unwrap();
+        let mut users = std::collections::HashMap::new();
+        users.insert(
+            "carol".to_string(),
+            crate::users::UserRecord {
+                username: "carol".into(),
+                password_hash: crate::users::hash_password(&format!(
+                    "pw-{:x}",
+                    rand::random::<u64>()
+                )),
+                role: crate::role::Role::Viewer,
+            },
+        );
+        let state = AppState::new(None)
+            .with_users(users)
+            .with_settings_dir(dir.path().to_path_buf());
+        let viewer = state.sessions.create(crate::session::Session {
+            role: crate::role::Role::Viewer,
+            username: Some("carol".into()),
+        });
+        let admin = state.sessions.create(crate::session::Session {
+            role: crate::role::Role::Admin,
+            username: None,
+        });
+        let app = crate::api::router(state);
+        let send = |method: &str, id: &str, body: Body| {
+            let req = Request::builder()
+                .method(method)
+                .uri(if method == "GET" {
+                    "/api/process"
+                } else {
+                    "/api/process/controller"
+                })
+                .header("content-type", "application/json")
+                .header(
+                    axum::http::header::COOKIE,
+                    format!("{}={id}", crate::api::SESSION_COOKIE),
+                )
+                .body(body)
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let resp = app.oneshot(req).await.unwrap();
+                let status = resp.status();
+                let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                (
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or(json!(null)),
+                )
+            }
+        };
+        let put = json!({"values":{"listen":"10.9.8.7:9000"},"rev":0}).to_string();
+        assert_eq!(send("PUT", &admin, Body::from(put)).await.0, StatusCode::OK);
+
+        let controller = |body: &serde_json::Value| {
+            body["programs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["program"] == "controller")
+                .unwrap()["file"]
+                .clone()
+        };
+        let (_, as_admin) = send("GET", &admin, Body::empty()).await;
+        assert_eq!(controller(&as_admin)["values"]["listen"], "10.9.8.7:9000");
+        let (status, as_viewer) = send("GET", &viewer, Body::empty()).await;
+        assert_eq!(status, StatusCode::OK);
+        let file = controller(&as_viewer);
+        assert_eq!(file["redacted"], true);
+        assert_eq!(file["values"], json!({}));
+        assert!(
+            file["pending"].is_object(),
+            "the pending trial is still shown"
+        );
+        assert!(!as_viewer.to_string().contains("10.9.8.7"));
+    }
+
     #[tokio::test]
     async fn a_trial_is_applied_confirmed_and_undone_through_the_api() {
         let (dir, app) = published();
@@ -331,8 +460,21 @@ mod tests {
         // A second change cannot be stacked, and a stale page is refused.
         let (status, _) = put(json!({"listen": "0.0.0.0:10"}), 1).await;
         assert_eq!(status, StatusCode::CONFLICT);
-        let (status, undone) =
-            call(&app, "POST", "/api/process/controller/undo", json!(null)).await;
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/api/process/controller/undo",
+            json!({"rev": 7}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "a stale undo");
+        let (status, undone) = call(
+            &app,
+            "POST",
+            "/api/process/controller/undo",
+            json!({"rev": 1}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(undone["values"], json!({}));
         assert_eq!(undone["pending"], json!(null));
@@ -340,12 +482,23 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT, "stale revision");
         let (status, file) = put(json!({"listen": "0.0.0.0:9"}), 2).await;
         assert_eq!(status, StatusCode::OK, "{file}");
-        let (status, done) =
-            call(&app, "POST", "/api/process/controller/confirm", json!(null)).await;
+        let (status, done) = call(
+            &app,
+            "POST",
+            "/api/process/controller/confirm",
+            json!({"rev": 3}),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(done["pending"], json!(null));
         assert_eq!(done["values"], json!({"listen": "0.0.0.0:9"}));
-        let (status, _) = call(&app, "POST", "/api/process/controller/confirm", json!(null)).await;
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/api/process/controller/confirm",
+            json!({"rev": 4}),
+        )
+        .await;
         assert_eq!(status, StatusCode::CONFLICT, "nothing is waiting");
     }
 

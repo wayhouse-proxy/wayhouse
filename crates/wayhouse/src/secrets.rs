@@ -12,6 +12,14 @@ use wayhouse_secrets::{Keyring, OpenError, Sealed};
 #[derive(Default)]
 pub struct Resolved(HashMap<String, String>);
 
+impl Drop for Resolved {
+    fn drop(&mut self) {
+        for v in self.0.values_mut() {
+            zeroize::Zeroize::zeroize(v);
+        }
+    }
+}
+
 impl std::fmt::Debug for Resolved {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Resolved({} secrets, values redacted)", self.0.len())
@@ -69,8 +77,8 @@ pub fn open_all(
                     }
                 },
             })?;
-        let text =
-            String::from_utf8(value.expose().to_vec()).map_err(|_| SecretError::Unreadable {
+        let text = String::from_utf8(zeroize::Zeroizing::new(value.expose().to_vec()).to_vec())
+            .map_err(|_| SecretError::Unreadable {
                 name: name.clone(),
                 why: "the value is not valid UTF-8 text".into(),
             })?;

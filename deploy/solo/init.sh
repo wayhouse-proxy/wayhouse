@@ -13,6 +13,8 @@ fi
 rand() { od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'; }
 {
   echo "WAYHOUSE_CONTROLLER_TOKEN=$(rand 24)"
+  echo "WAYHOUSE_PROXY_TOKEN=$(rand 24)"
+  echo "WAYHOUSE_AGENT_TOKEN=$(rand 24)"
   echo "WAYHOUSE_AGGREGATOR_TOKEN=$(rand 24)"
   echo "WAYHOUSE_INGEST_TOKEN=$(rand 24)"
   echo "WAYHOUSE_UI_PASSWORD=$(rand 12)"

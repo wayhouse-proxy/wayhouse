@@ -139,6 +139,7 @@ fn is_secret_entry(entry: &WriteRequest) -> bool {
                 kind: Kind::ClusterSecret,
                 ..
             })
+            | WriteRequest::Ui(UiOp::RewrapSecret { .. })
     )
 }
 

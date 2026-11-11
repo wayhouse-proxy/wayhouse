@@ -39,6 +39,10 @@ async fn writes_through_a_follower_carry_the_callers_bearer_token() -> Result<()
             &peers,
             "--auth-token",
             AUTH_TOKEN,
+            "--proxy-token",
+            "proxy-token-0123456789",
+            "--agent-token",
+            "agent-token-0123456789",
             "--tunnel-network",
             "10.60.0.0/24",
         ]

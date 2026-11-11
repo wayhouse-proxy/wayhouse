@@ -457,6 +457,8 @@ export interface ProcessFile {
   rev: number;
   values: Record<string, ProcessValue>;
   previous: Record<string, ProcessValue> | null;
+  /** A Viewer sees that a change is waiting but not the values (empty here). */
+  redacted?: boolean;
   pending: { applied_at: number; attempts: number; confirm_secs: number } | null;
   /** Why the program itself refused the last change. */
   error: string | null;
