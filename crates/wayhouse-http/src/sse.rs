@@ -15,6 +15,12 @@
 /// bound memory against a misbehaving or hostile peer.
 pub const MAX_EVENT_BYTES: usize = 16 * 1024 * 1024;
 
+/// How long a subscriber waits for any bytes before it drops the stream and reconnects.
+/// Every controller subscribe stream sends a keep-alive comment every 15 seconds (axum's
+/// default), so four missed ones mean the connection died without a FIN or RST; without
+/// this a half-open TCP connection would freeze the subscriber's config for good.
+pub const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// An event grew past the limit without terminating.
 #[derive(Debug, thiserror::Error)]
 #[error("an SSE event exceeded {limit} bytes without ending")]
