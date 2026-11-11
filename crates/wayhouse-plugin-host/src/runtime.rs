@@ -604,13 +604,17 @@ fn linker(engine: &Engine) -> Linker<CallState> {
                 if !caller.data().caps.log {
                     return Err(deny(&mut caller, "log"));
                 }
-                let raw = read_guest(&mut caller, ptr, len)?;
                 let st = caller.data_mut();
                 st.used_log = true;
                 if st.logs.len() >= st.run.max_log_lines {
                     st.logs_dropped += 1;
                     return Ok(());
                 }
+                // Copy only what will be kept (plus a few bytes so a cut multibyte character is
+                // seen), not whatever length the guest claims.
+                let len = i32::try_from((len as u32 as usize).min(MAX_LOG_LINE_BYTES + 4))?;
+                let raw = read_guest(&mut caller, ptr, len)?;
+                let st = caller.data_mut();
                 let mut msg = String::from_utf8_lossy(&raw).into_owned();
                 if msg.len() > MAX_LOG_LINE_BYTES {
                     let mut cut = MAX_LOG_LINE_BYTES;
@@ -674,6 +678,10 @@ fn linker(engine: &Engine) -> Linker<CallState> {
                     return Err(deny(&mut caller, "state"));
                 };
                 caller.data_mut().used_state = true;
+                // Refuse an oversize key or value before copying it out of guest memory.
+                if klen as u32 as usize > MAX_KEY_BYTES || vlen as u32 as usize > cap.max_bytes {
+                    return Ok(-1);
+                }
                 let key = read_guest(&mut caller, kptr, klen)?;
                 let value = read_guest(&mut caller, vptr, vlen)?;
                 let Ok(key) = String::from_utf8(key) else {
@@ -870,6 +878,8 @@ fn linker(engine: &Engine) -> Linker<CallState> {
                     return Err(deny(&mut caller, "http"));
                 }
                 caller.data_mut().used_http = true;
+                // A refused request must not leave the previous answer for `http_read`.
+                caller.data_mut().http_doc.clear();
                 if usize::try_from(len).map_or(true, |l| l > MAX_REQUEST_BODY * 2) {
                     return Ok(-1);
                 }
