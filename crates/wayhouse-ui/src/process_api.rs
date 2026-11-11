@@ -360,7 +360,10 @@ mod tests {
             "carol".to_string(),
             crate::users::UserRecord {
                 username: "carol".into(),
-                password_hash: crate::users::hash_password("carol-pass"),
+                password_hash: crate::users::hash_password(&format!(
+                    "pw-{:x}",
+                    rand::random::<u64>()
+                )),
                 role: crate::role::Role::Viewer,
             },
         );
