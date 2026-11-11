@@ -347,7 +347,8 @@ fn stamp(path: &Path) -> Stamp {
 /// Which version of the key file the keyring holds, and which one last failed to load.
 pub struct Seen {
     loaded: Stamp,
-    failed: Stamp,
+    /// `Some(stamp)` once that version failed to load (a missing file is `Some(None)`).
+    failed: Option<Stamp>,
 }
 
 impl Seen {
@@ -388,10 +389,10 @@ pub fn reload_if_changed(handle: &KeyringHandle, path: &Path, seen: &mut Seen) {
             seen.failed = None;
         }
         Err(e) => {
-            if seen.failed != now {
+            if seen.failed != Some(now) {
                 tracing::warn!(error = %e, "the plugin secret key file changed but did not load; keeping the old keys and retrying");
             }
-            seen.failed = now;
+            seen.failed = Some(now);
         }
     }
 }
@@ -653,5 +654,22 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         reload_if_changed(&handle, &path, &mut seen);
         assert_eq!(handle.current().key_ids().len(), 2);
+    }
+
+    #[test]
+    fn a_deleted_key_file_is_a_failure_to_report_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys");
+        std::fs::write(&path, key(1)).unwrap();
+        let mut seen = Seen::of(&path);
+        std::fs::remove_file(&path).unwrap();
+        let handle = KeyringHandle::new(ring(&[1]));
+        reload_if_changed(&handle, &path, &mut seen);
+        assert_eq!(
+            seen.failed,
+            Some(None),
+            "reported as a failure, not as 'nothing failed'"
+        );
+        assert_eq!(handle.current().key_ids().len(), 1, "the old keys stay");
     }
 }
