@@ -789,7 +789,7 @@ fn actor_header(headers: &axum::http::HeaderMap) -> Option<String> {
     headers
         .get("X-Actor")
         .and_then(|v| v.to_str().ok())
-        .map(str::to_string)
+        .map(|s| s.chars().take(128).collect())
 }
 
 /// Validates `text` and persists it (at `stage`, attributed to `actor`) as
