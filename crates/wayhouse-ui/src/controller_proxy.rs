@@ -841,13 +841,17 @@ pub(crate) async fn proxy_typed(
 
     match req.send().await {
         Ok(resp) => crate::proxy_util::relay(resp, "controller").await,
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("controller ({url}): {}", wayhouse_http::error_chain(&e)),
-            }),
-        )
-            .into_response(),
+        Err(e) => {
+            // The URL and the transport error are for the log; the browser gets neither.
+            tracing::warn!(%url, error = %wayhouse_http::error_chain(&e), "controller unreachable");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse {
+                    error: "controller unreachable".into(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 
