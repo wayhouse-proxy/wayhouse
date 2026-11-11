@@ -774,6 +774,8 @@ mod tests {
             ui_support,
         };
         assert!(check_support_answers(&[(2, Ok(who(UI_SUPPORT)))]).is_ok());
+        // Level 4 predates the cluster secret rewrap entry and cannot decode it.
+        assert!(check_support_answers(&[(2, Ok(who(4)))]).is_err());
         assert!(
             check_support_answers(&[(2, Ok(who(3)))]).is_err(),
             "level 3 cannot decode cluster secrets"

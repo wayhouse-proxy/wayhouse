@@ -413,7 +413,8 @@ async fn rewrap_secrets(st: &UiState) -> Response {
                 format!("every node needs the active key {active} first: {why}"),
             );
         }
-        if let Err(why) = crate::plugins::peer::check_revocation_support(ha).await {
+        // The entry is a `UiOp` a level-4 member cannot decode.
+        if let Err(why) = super::check_support(ha).await {
             return err(StatusCode::CONFLICT, why);
         }
     }
