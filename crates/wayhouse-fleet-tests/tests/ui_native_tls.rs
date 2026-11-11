@@ -19,7 +19,7 @@ async fn login_over_native_tls_sets_a_secure_cookie_that_works() -> Result<()> {
             "--tls-key",
             TEST_LEAF_KEY,
             "--ui-password",
-            "secret",
+            "0123456789abcdef",
         ]
         .map(String::from),
     )?;
@@ -48,7 +48,7 @@ async fn login_over_native_tls_sets_a_secure_cookie_that_works() -> Result<()> {
 
     let login = client
         .post(format!("{base}/ui/login"))
-        .json(&serde_json::json!({ "password": "secret" }))
+        .json(&serde_json::json!({ "password": "0123456789abcdef" }))
         .send()
         .await?
         .error_for_status()?;

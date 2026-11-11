@@ -137,7 +137,7 @@ async fn ui_metrics_need_their_own_token_once_a_login_is_configured() -> Result<
 
     // A login and no --metrics-token: not served at all.
     let port = free_port()?;
-    let _login = spawn_ui_with(port, &args(&["--ui-password", "secret"]))?;
+    let _login = spawn_ui_with(port, &args(&["--ui-password", "0123456789abcdef"]))?;
     let base = format!("http://127.0.0.1:{port}");
     wait_http_up(&format!("{base}/healthz"), Duration::from_secs(30)).await?;
     let (status, _) = scrape(&client, &format!("{base}/metrics"), None).await?;
@@ -150,7 +150,12 @@ async fn ui_metrics_need_their_own_token_once_a_login_is_configured() -> Result<
     let port = free_port()?;
     let _both = spawn_ui_with(
         port,
-        &args(&["--ui-password", "secret", "--metrics-token", TOKEN]),
+        &args(&[
+            "--ui-password",
+            "0123456789abcdef",
+            "--metrics-token",
+            TOKEN,
+        ]),
     )?;
     let url = format!("http://127.0.0.1:{port}/metrics");
     wait_http_up(

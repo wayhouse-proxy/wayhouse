@@ -275,10 +275,10 @@ Every fleet API is open when no token is configured. Startup now enforces:
   without it, with no opt-out: `/raft/*` and `/admin/ha/members` would otherwise accept
   anyone. HA peers should use `https://` URLs (see below), since the token travels in
   each request.
-- **Minimum secret length: 16 bytes** for `--auth-token`, `--ha-token`,
+- **Minimum secret length: 16 bytes** for `--auth-token`, `--ha-token`, `--ui-password`,
   `settings.admin.auth_token` and `settings.gossip.psk`. Generate one with
-  `openssl rand -hex 32`. `--ui-password` and the outbound tokens
-  (`--controller-token` etc., which must match the remote side) are not checked.
+  `openssl rand -hex 32`. The outbound tokens (`--controller-token` etc., which must
+  match the remote side) are not checked.
 
 ## TLS for the fleet services
 
