@@ -200,7 +200,11 @@ mod tests {
             "http://127.9.9.9",
             "http://[::1]:9900",
         ] {
-            let peer = url.contains("::1").then(|| "::1").unwrap_or("127.0.0.1");
+            let peer = if url.contains("::1") {
+                "::1"
+            } else {
+                "127.0.0.1"
+            };
             let err = p.check(url, ip(peer)).unwrap_err();
             assert!(err.contains("--instance-url-allow"), "{err}");
         }
