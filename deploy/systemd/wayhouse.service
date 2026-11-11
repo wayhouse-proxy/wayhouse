@@ -8,7 +8,7 @@ PartOf=wayhouse-solo.target
 User=wayhouse
 # The tokens arrive as files under $CREDENTIALS_DIRECTORY; the program reads them from there
 # (sh deploy/solo/init.sh --credentials /etc/wayhouse/credentials writes the sources).
-LoadCredential=controller-token:/etc/wayhouse/credentials/controller-token
+LoadCredential=controller-token:/etc/wayhouse/credentials/proxy-token
 LoadCredential=aggregator-token:/etc/wayhouse/credentials/ingest-token
 ExecStart=/usr/local/bin/wayhouse \
   --controller=http://127.0.0.1:9901 \

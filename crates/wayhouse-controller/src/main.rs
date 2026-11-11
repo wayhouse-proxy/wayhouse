@@ -55,6 +55,27 @@ struct Args {
     #[arg(skip)]
     auth_token: Option<String>,
 
+    /// Bearer token for proxies: unlocks only what a proxy calls (config fetch and subscribe,
+    /// sealed secrets, plugin routes, intent, tunnel peers), so a compromised proxy cannot
+    /// administer the fleet. At least 16 bytes. Required with `--auth-token`.
+    #[arg(long, value_name = "PATH")]
+    proxy_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--proxy-token-file`, `$CREDENTIALS_DIRECTORY/proxy-token` or `$WAYHOUSE_PROXY_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
+    proxy_token: Option<String>,
+
+    /// Bearer token for tunnel agents: unlocks only peer registration and the proxy-peers
+    /// stream. At least 16 bytes. Required with `--auth-token`.
+    #[arg(long, value_name = "PATH")]
+    agent_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--agent-token-file`, `$CREDENTIALS_DIRECTORY/agent-token` or `$WAYHOUSE_AGENT_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
+    agent_token: Option<String>,
+
     /// Bearer token `GET /metrics` accepts instead of `--auth-token`, at least
     /// 16 bytes, so a Prometheus scraper need not hold the admin token. It
     /// unlocks only `/metrics`. Omitted: `/metrics` is gated by `--auth-token`
@@ -265,6 +286,12 @@ async fn main() -> anyhow::Result<()> {
     args.metrics_token =
         wayhouse_http::secret_arg::resolve("metrics-token", args.metrics_token_file.as_deref())
             .map_err(anyhow::Error::msg)?;
+    args.proxy_token =
+        wayhouse_http::secret_arg::resolve("proxy-token", args.proxy_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.agent_token =
+        wayhouse_http::secret_arg::resolve("agent-token", args.agent_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
     args.parent_token =
         wayhouse_http::secret_arg::resolve("parent-token", args.parent_token_file.as_deref())
             .map_err(anyhow::Error::msg)?;
@@ -286,6 +313,12 @@ async fn main() -> anyhow::Result<()> {
     .map_err(|e| anyhow::anyhow!(e))?;
     wayhouse_http::policy::check_optional_secret("--auth-token", args.auth_token.as_deref())
         .map_err(|e| anyhow::anyhow!(e))?;
+    wayhouse_controller::scoped_auth::check(
+        args.auth_token.as_deref(),
+        args.proxy_token.as_deref(),
+        args.agent_token.as_deref(),
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
     wayhouse_http::policy::check_optional_secret("--metrics-token", args.metrics_token.as_deref())
         .map_err(|e| anyhow::anyhow!(e))?;
     let (tunnel_network, stale_after) = wayhouse_controller::addresses::resolve_flags(
@@ -700,7 +733,7 @@ async fn main() -> anyhow::Result<()> {
         role: role_handle,
         config: state.clone(),
         intent: intent_state.clone(),
-        auth_token: args.auth_token.map(Arc::from),
+        auth_token: args.auth_token.clone().map(Arc::from),
     };
 
     let mut app = Router::new()
@@ -959,6 +992,17 @@ async fn main() -> anyhow::Result<()> {
             .merge(ha::members::router(handle.clone(), admin_token))
             .merge(wayhouse_controller::plugins::peer::secret_router(&handle))
             .merge(ha::routes::router(handle));
+    }
+
+    if let Some(t) = wayhouse_controller::scoped_auth::ScopedTokens::new(
+        args.auth_token.as_deref(),
+        args.proxy_token.as_deref(),
+        args.agent_token.as_deref(),
+    ) {
+        app = app.layer(axum::middleware::from_fn_with_state(
+            t,
+            wayhouse_controller::scoped_auth::promote,
+        ));
     }
 
     wayhouse_http::tls::serve(

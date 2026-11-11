@@ -10,6 +10,8 @@ services:
       - --listen=0.0.0.0:9901
       - --data-dir=/data
       - --auth-token-file=/run/secrets/auth-token
+      - --proxy-token-file=/run/secrets/proxy-token
+      - --agent-token-file=/run/secrets/agent-token
       - --plugins
       - --secret-key-file=/keys/secret.keys
       - --allow-insecure-secrets

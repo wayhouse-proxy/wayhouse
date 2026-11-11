@@ -307,7 +307,9 @@ impl Drop for Proc {
 /// The binaries take no token on the command line, only `--<name>-file`. Tests keep writing
 /// `--auth-token <value>`; this swaps each such pair for a file holding the value.
 pub fn secret_files(args: &[String]) -> Vec<String> {
-    const SECRETS: [&str; 11] = [
+    const SECRETS: [&str; 13] = [
+        "--proxy-token",
+        "--agent-token",
         "--ha-token",
         "--parent-token",
         "--plugin-overlay-token",

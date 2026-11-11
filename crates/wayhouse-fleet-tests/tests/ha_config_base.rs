@@ -64,6 +64,10 @@ async fn a_follower_forwards_base_and_the_leader_answers_409() -> Result<()> {
             &peers,
             "--auth-token",
             AUTH_TOKEN,
+            "--proxy-token",
+            "proxy-token-0123456789",
+            "--agent-token",
+            "agent-token-0123456789",
         ]
         .map(String::from);
         procs.push(spawn_controller_with(

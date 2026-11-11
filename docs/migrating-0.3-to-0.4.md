@@ -4,8 +4,8 @@ This is the operator's checklist for moving a running 0.3.0 deployment to 0.4.0.
 rules for any upgrade (compatibility window, order of operations, draining a proxy) are in
 [Upgrading a fleet](upgrading.md); this page covers what is specific to this release.
 
-Every change is additive or opt-in except the plugin ABI (rebuild your plugins) and the quoting rule
-for tokens (see Secrets). On a single box, the [solo bundle](12-deployment.md#one-box-the-solo-bundle)
+Every change is additive or opt-in except the plugin ABI (rebuild your plugins), the quoting rule
+for tokens (see Secrets) and the controller tokens (see below). On a single box, the [solo bundle](12-deployment.md#one-box-the-solo-bundle)
 runs all of it with one command.
 
 Opt-in: `--settings-dir` on each program lets the UI's Process flags page change their command-line
@@ -127,6 +127,25 @@ Listeners, backend sources, resolvers, web sites and a listener's `rate_limit`, 
 changes for an existing file. Details in [configuration](05-configuration.md) ("Parking one
 item"). Declare `schema_version: 4` only once every proxy that receives the document runs 0.4.0.
 
+## Controller tokens: proxies and agents get their own
+
+A controller started with `--auth-token` now refuses to start without a proxy token and an agent
+token (`--proxy-token-file`, `--agent-token-file`; 16 bytes each, all three different). Proxies and agents used to present the admin
+token, so one compromised edge box could submit config, install plugins and overwrite cluster
+secrets. Now:
+
+1. Generate two tokens (`openssl rand -hex 32`) and give every controller replica `--proxy-token-file`
+   and `--agent-token-file` (see the next section: tokens are files now).
+2. Point every `wayhouse` proxy's `--controller-token` and `--tunnel-controller-token` at the proxy
+   token, and every `wayhouse-agent`'s `--controller-token` at the agent token.
+3. Keep the admin token for the UI, operators, slave controllers (`--parent-token`) and
+   `wayhouse-certsync`.
+
+The compose files, systemd units, k8s manifests and `deploy/solo/init.sh` already do this; an
+existing `.env` needs `WAYHOUSE_PROXY_TOKEN` and `WAYHOUSE_AGENT_TOKEN` added. The exact route lists
+are in [deployment](12-deployment.md#controller-tokens-admin-proxy-agent). Upgrade and reconfigure the
+controllers first, then move proxies and agents to their tokens.
+
 ## Deploy layout
 
 `deploy/compose` gains overlays: `compose.solo.yml` (the controller with `--plugins` and a sealed
@@ -140,7 +159,7 @@ use `LoadCredential=`, so no token is on a command line. See [deployment](12-dep
 
 ## Tokens and passwords are no longer command-line flags (breaking)
 
-`--auth-token`, `--ingest-token`, `--metrics-token`, `--instance-token`, `--parent-token`,
+`--auth-token`, `--proxy-token`, `--agent-token`, `--ingest-token`, `--metrics-token`, `--instance-token`, `--parent-token`,
 `--ha-token`, `--controller-token`, `--aggregator-token`, `--tunnel-controller-token`,
 `--plugin-overlay-token` and `--ui-password` are gone: a value on the command line is visible in
 `ps`, `/proc/<pid>/cmdline` and `docker inspect`. Each has a `--<name>-file PATH` flag instead (for

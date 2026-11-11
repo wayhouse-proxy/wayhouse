@@ -20,7 +20,12 @@ services:
       - --listen=0.0.0.0:9901
       - --data-dir=/data
       - --auth-token-file=/run/secrets/auth-token
-    secrets: [{ source: controller-token, target: auth-token }]
+      - --proxy-token-file=/run/secrets/proxy-token
+      - --agent-token-file=/run/secrets/agent-token
+    secrets:
+      - { source: controller-token, target: auth-token }
+      - proxy-token
+      - agent-token
     ports: ["127.0.0.1:9901:9901"]   # wayhouse (host network) dials it here
     volumes: ["controller-data:/data"]
     restart: unless-stopped
@@ -91,7 +96,7 @@ services:
       - --aggregator-token-file=/run/secrets/aggregator-token
       - --aggregator-instance=demo-wayhouse
     secrets:
-      - controller-token
+      - { source: proxy-token, target: controller-token }
       - { source: ingest-token, target: aggregator-token }
     depends_on:
       seed: { condition: service_completed_successfully }
@@ -102,6 +107,8 @@ services:
 # Compose builds them from the variables in .env.
 secrets:
   controller-token: { environment: WAYHOUSE_CONTROLLER_TOKEN }
+  proxy-token: { environment: WAYHOUSE_PROXY_TOKEN }
+  agent-token: { environment: WAYHOUSE_AGENT_TOKEN }
   aggregator-token: { environment: WAYHOUSE_AGGREGATOR_TOKEN }
   ingest-token: { environment: WAYHOUSE_INGEST_TOKEN }
   ui-password: { environment: WAYHOUSE_UI_PASSWORD }

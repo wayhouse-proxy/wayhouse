@@ -14,12 +14,14 @@ services:
       - --listen=0.0.0.0:9901
       - --data-dir=/data
       - --auth-token-file=/run/secrets/auth-token
+      - --proxy-token-file=/run/secrets/proxy-token
+      - --agent-token-file=/run/secrets/agent-token
       - --tunnel-network=fd49:89c1:4b5e:60::/64
   wayhouse:
     user: "0"          # NET_ADMIN is only in the bounding set for non-root: run as root
-    cap_add: [NET_ADMIN]
     secrets:
-      - { source: controller-token, target: tunnel-controller-token }
+      - { source: proxy-token, target: tunnel-controller-token }
+    cap_add: [NET_ADMIN]
     devices: ["/dev/net/tun:/dev/net/tun"]
     volumes: ["wayhouse-tunnel-data:/data"]
     command:
@@ -48,8 +50,9 @@ services:
       target: wayhouse-agent
     image: wayhouse-deploy/wayhouse-agent:local
     network_mode: host
+    secrets:
+      - { source: agent-token, target: controller-token }
     cap_add: [NET_ADMIN]
-    secrets: [controller-token]
     devices: ["/dev/net/tun:/dev/net/tun"]
     volumes: ["agent-data:/data"]
     command:

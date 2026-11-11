@@ -3,8 +3,8 @@
 # deploy/compose/.env), random and readable by you only. It never prints a value and never
 # overwrites a file that exists, so running it twice cannot change a token under a running stack.
 #   sh deploy/solo/init.sh [FILE]
-# With --credentials DIR it writes one file per secret instead (controller-token, aggregator-token,
-# ingest-token, ui-password): the sources for systemd's LoadCredential= in deploy/systemd/.
+# With --credentials DIR it writes one file per secret instead (controller-token, proxy-token,
+# agent-token, aggregator-token, ingest-token, ui-password): the sources for systemd's LoadCredential= in deploy/systemd/.
 #   sh deploy/solo/init.sh --credentials /etc/wayhouse/credentials
 set -eu
 umask 077
@@ -17,10 +17,10 @@ if [ "${1:-}" = "--credentials" ]; then
   fi
   mkdir -p "$dir"
   chmod 0700 "$dir"
-  for name in controller-token aggregator-token ingest-token; do rand 24 > "$dir/$name"; done
+  for name in controller-token proxy-token agent-token aggregator-token ingest-token; do rand 24 > "$dir/$name"; done
   rand 12 > "$dir/ui-password"
   chmod 0600 "$dir"/*
-  echo "wrote $dir/{controller-token,aggregator-token,ingest-token,ui-password} (mode 0600). The values stay out of your terminal."
+  echo "wrote $dir/{controller-token,proxy-token,agent-token,aggregator-token,ingest-token,ui-password} (mode 0600). The values stay out of your terminal."
   exit 0
 fi
 file="${1:-$(dirname "$0")/../compose/.env}"
@@ -30,6 +30,8 @@ if [ -e "$file" ]; then
 fi
 {
   echo "WAYHOUSE_CONTROLLER_TOKEN=$(rand 24)"
+  echo "WAYHOUSE_PROXY_TOKEN=$(rand 24)"
+  echo "WAYHOUSE_AGENT_TOKEN=$(rand 24)"
   echo "WAYHOUSE_AGGREGATOR_TOKEN=$(rand 24)"
   echo "WAYHOUSE_INGEST_TOKEN=$(rand 24)"
   echo "WAYHOUSE_UI_PASSWORD=$(rand 12)"

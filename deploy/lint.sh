@@ -6,11 +6,13 @@ set -eu
 cd "$(dirname "$0")/.."
 sh deploy/check-caddy-modules.sh
 sh deploy/check-caddy-modules-selftest.sh
+# The example tokens must meet the services' 16-byte minimum, or the demo controller exits at start.
+awk -F= '/^WAYHOUSE_[A-Z_]*(TOKEN|PASSWORD)=/ && length($2) < 16 { print "deploy/compose/.env.example: " $1 " is under 16 bytes"; bad = 1 } END { exit bad }' deploy/compose/.env.example
 sh deploy/check-observability.sh
 # Render the defaults: CI's deploy job exports BIN_SOURCE=prebuilt, which must not
 # change what these checks see.
 unset BIN_SOURCE
-export WAYHOUSE_CONTROLLER_TOKEN=x WAYHOUSE_AGGREGATOR_TOKEN=x WAYHOUSE_INGEST_TOKEN=y WAYHOUSE_UI_PASSWORD=x \
+export WAYHOUSE_CONTROLLER_TOKEN=x WAYHOUSE_PROXY_TOKEN=p WAYHOUSE_AGENT_TOKEN=a WAYHOUSE_AGGREGATOR_TOKEN=x WAYHOUSE_INGEST_TOKEN=y WAYHOUSE_UI_PASSWORD=x \
        WAYHOUSE_TUNNEL_ENDPOINT=1.2.3.4:51820
 C=deploy/compose
 
@@ -163,6 +165,15 @@ end
 # No compose or k8s command carries a token value: only `--<name>-file` flags.
 [base, tunnel, web, solo, solo_acme].each do |cfg|
   cfg.each_value { |x| (x["command"] || []).each { |a| errs << "compose: #{a} puts a secret on the command line" if a =~ /\A--[a-z-]*(token|password)(=|\z)/ } }
+end
+# k8s args and commands too: only the -file flags may name a token or password.
+k8s.each do |o, docs|
+  docs.each do |d|
+    pod = d.dig("spec", "template", "spec") or next
+    (pod["containers"] || []).each do |c|
+      ((c["args"] || []) + (c["command"] || [])).each { |a| errs << "k8s #{o}: #{c["name"]} puts a secret on its command line: #{a}" if a =~ /\A--[a-z-]*(token|password)(=|\z)/ }
+    end
+  end
 end
 if errs.empty? then puts "deploy lint: ok" else warn errs.map { |e| "LINT FAIL: #{e}" }; exit 1 end
 '
