@@ -229,9 +229,14 @@ async fn subscribe_once(
     }
     let mut buf = wayhouse_http::sse::EventBuffer::new();
     loop {
-        let Some(chunk) = resp
-            .chunk()
+        let Some(chunk) = tokio::time::timeout(wayhouse_http::sse::IDLE_TIMEOUT, resp.chunk())
             .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "{url} sent nothing for {:?}; reconnecting",
+                    wayhouse_http::sse::IDLE_TIMEOUT
+                )
+            })?
             .map_err(|e| anyhow::anyhow!("reading {url}: {}", wayhouse_http::error_chain(&e)))?
         else {
             return Ok(());
