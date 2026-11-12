@@ -18,6 +18,7 @@ const PAGES = [
 
 for (const scheme of ["light", "dark"] as const) {
   test(`no serious accessibility violations in the ${scheme} theme`, async ({ page }) => {
+    test.setTimeout(90_000); // one navigation and axe pass per page: the list grows, so the default 30 s is not enough
     await page.emulateMedia({ colorScheme: scheme });
     const found: string[] = [];
     const titles = new Set<string>();
