@@ -76,6 +76,27 @@ struct Args {
     #[arg(skip)]
     agent_token: Option<String>,
 
+    /// Token handed to a redeemed aggregator or proxy enrollment code, so it can accept (or
+    /// push) telemetry. The same secret as the aggregator's `--ingest-token`. At least 16 bytes.
+    #[arg(long, value_name = "PATH")]
+    ingest_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--ingest-token-file`, `$CREDENTIALS_DIRECTORY/ingest-token` or `$WAYHOUSE_INGEST_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
+    ingest_token: Option<String>,
+
+    /// Secret an operator must enter again to mint an enrollment code for a role that receives
+    /// the cluster keyring or the admin token (`proxy`, `ui`). At least 16 bytes, different
+    /// from the other tokens; without it those roles cannot be minted.
+    #[arg(long, value_name = "PATH")]
+    enroll_step_up_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--enroll-step-up-file`, `$CREDENTIALS_DIRECTORY/enroll-step-up` or `$WAYHOUSE_ENROLL_STEP_UP`;
+    /// never a command-line value.
+    #[arg(skip)]
+    enroll_step_up: Option<String>,
+
     /// Bearer token `GET /metrics` accepts instead of `--auth-token`, at least
     /// 16 bytes, so a Prometheus scraper need not hold the admin token. It
     /// unlocks only `/metrics`. Omitted: `/metrics` is gated by `--auth-token`
@@ -292,6 +313,12 @@ async fn main() -> anyhow::Result<()> {
     args.agent_token =
         wayhouse_http::secret_arg::resolve("agent-token", args.agent_token_file.as_deref())
             .map_err(anyhow::Error::msg)?;
+    args.ingest_token =
+        wayhouse_http::secret_arg::resolve("ingest-token", args.ingest_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.enroll_step_up =
+        wayhouse_http::secret_arg::resolve("enroll-step-up", args.enroll_step_up_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
     args.parent_token =
         wayhouse_http::secret_arg::resolve("parent-token", args.parent_token_file.as_deref())
             .map_err(anyhow::Error::msg)?;
@@ -319,6 +346,27 @@ async fn main() -> anyhow::Result<()> {
         args.agent_token.as_deref(),
     )
     .map_err(|e| anyhow::anyhow!(e))?;
+    wayhouse_http::policy::check_optional_secret("--ingest-token", args.ingest_token.as_deref())
+        .map_err(anyhow::Error::msg)?;
+    wayhouse_http::policy::check_optional_secret(
+        "--enroll-step-up",
+        args.enroll_step_up.as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    if let Some(s) = args.enroll_step_up.as_deref() {
+        if [
+            &args.auth_token,
+            &args.proxy_token,
+            &args.agent_token,
+            &args.ingest_token,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|t| t == s)
+        {
+            anyhow::bail!("--enroll-step-up must differ from the controller's tokens");
+        }
+    }
     wayhouse_http::policy::check_optional_secret("--metrics-token", args.metrics_token.as_deref())
         .map_err(|e| anyhow::anyhow!(e))?;
     let (tunnel_network, stale_after) = wayhouse_controller::addresses::resolve_flags(
@@ -988,7 +1036,12 @@ async fn main() -> anyhow::Result<()> {
     app = app
         .merge(wayhouse_controller::enroll::router(
             ui_state.clone(),
-            args.agent_token.as_deref().map(std::sync::Arc::from),
+            wayhouse_controller::enroll::Grants {
+                agent_token: args.agent_token.as_deref().map(std::sync::Arc::from),
+                proxy_token: args.proxy_token.as_deref().map(std::sync::Arc::from),
+                ingest_token: args.ingest_token.as_deref().map(std::sync::Arc::from),
+                step_up: args.enroll_step_up.as_deref().map(std::sync::Arc::from),
+            },
         ))
         .merge(wayhouse_controller::ui_data::api::router(ui_state));
     if let Some((handle, _, _, _, _)) = ha_handle {

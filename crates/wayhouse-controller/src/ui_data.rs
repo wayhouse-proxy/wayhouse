@@ -433,10 +433,17 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                     "uses",
                     "uses_left",
                     "created_by",
+                    "parent_url",
                 ],
             )?;
-            if obj.get("role").and_then(Value::as_str) != Some("agent") {
-                return Err("role must be \"agent\"".into());
+            if !matches!(
+                obj.get("role").and_then(Value::as_str),
+                Some("agent" | "proxy" | "aggregator" | "ui")
+            ) {
+                return Err("role must be agent, proxy, aggregator or ui".into());
+            }
+            if let Some(u) = obj.get("parent_url") {
+                string_max(u, "parent_url", 512)?;
             }
             let origin = string_max(obj.get("origin").unwrap_or(&Value::Null), "origin", 64)?;
             crate::registry::validate_name(origin)?;

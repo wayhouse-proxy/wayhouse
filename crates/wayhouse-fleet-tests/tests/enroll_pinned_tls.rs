@@ -100,7 +100,7 @@ async fn the_code_goes_only_to_a_controller_matching_the_pin() -> Result<()> {
         .await
         .ok()
         .ok_or_else(|| anyhow::anyhow!("pinned redeem failed"))?;
-    ensure!(got.name == "home" && !got.tunnel_psk.is_empty());
+    ensure!(got.name == "home" && got.files.contains_key("tunnel-psk"));
     ensure!(
         redeem(&base, Some(&pin), &code, Role::Agent).await.is_err(),
         "a spent code redeemed twice"

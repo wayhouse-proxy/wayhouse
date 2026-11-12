@@ -1,10 +1,24 @@
-//! One-time-code enrollment, controller side (slice 1: the origin agent).
+//! One-time-code enrollment, controller side.
 //!
-//! An admin mints a code (`POST /enrollments`); the node redeems it once over TLS
-//! (`POST /enroll`, the only unauthenticated write route) and receives the shared agent token
-//! and a fresh tunnel preshared key. The key is sealed under the cluster keyring as
-//! `tunnel-psk-<hash of origin>` so proxies fetch it through `GET /secrets/{name}/sealed`
-//! with their own scoped token; the agent gets the plaintext once, in the redeem answer.
+//! An admin mints a code for a role (`POST /enrollments`); the node redeems it once over TLS
+//! (`POST /enroll`, the only unauthenticated write route) and receives exactly that role's
+//! files (see [`Role::grant_files`]):
+//!
+//! | role | files |
+//! |---|---|
+//! | agent | the shared agent token and a fresh tunnel preshared key |
+//! | proxy | the proxy token, the ingest token (if set) and the cluster keyring |
+//! | aggregator | the ingest token (if set); its own admin token is made on the node |
+//! | ui | the admin token as `controller-token` |
+//!
+//! The tunnel key is sealed under the cluster keyring as `tunnel-psk-<hash of origin>` so
+//! proxies fetch it through `GET /secrets/{name}/sealed` with their own scoped token; the agent
+//! gets the plaintext once, in the redeem answer.
+//!
+//! The keyring and the admin token are the crown jewels, so minting a code for `proxy` or `ui`
+//! needs the admin token **and** the step-up secret (`--enroll-step-up-file`; the UI asks the
+//! operator for it again at every mint). Without a configured step-up secret those roles
+//! cannot be minted at all.
 //!
 //! Codes live in the replicated [`UiStore`] (kind `Enrollment`) as a hash only. A redeem is the
 //! `UiOp::Redeem` entry, applied atomically per Raft index, so a single-use code redeems
@@ -95,23 +109,31 @@ fn ip_key(ip: IpAddr) -> String {
     }
 }
 
+/// The secrets this controller may hand out. `None` means the role that needs it cannot be
+/// minted (agents still enroll on a controller without auth tokens, as before).
+#[derive(Clone, Default)]
+pub struct Grants {
+    pub agent_token: Option<Arc<str>>,
+    pub proxy_token: Option<Arc<str>>,
+    pub ingest_token: Option<Arc<str>>,
+    pub step_up: Option<Arc<str>>,
+}
+
 #[derive(Clone)]
 struct EnrollState {
     ui: UiState,
-    /// The shared agent token handed to a redeemed agent; `None` on a controller without
-    /// auth tokens.
-    agent_token: Option<Arc<str>>,
+    grants: Grants,
     limiter: Arc<Limiter>,
 }
 
-pub fn router(ui: UiState, agent_token: Option<Arc<str>>) -> Router {
+pub fn router(ui: UiState, grants: Grants) -> Router {
     let auth = middleware::from_fn_with_state(
         wayhouse_http::server::BearerAuth::new(ui.auth_token.as_deref()),
         wayhouse_http::server::require_bearer,
     );
     let st = EnrollState {
         ui,
-        agent_token,
+        grants,
         limiter: Arc::default(),
     };
     let admin = Router::new()
@@ -151,20 +173,68 @@ fn no_store(mut r: Response) -> Response {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MintBody {
-    origin: String,
+    #[serde(default = "default_role")]
+    role: Role,
+    /// The node's name (an origin's tunnel name, a proxy's instance name).
+    #[serde(alias = "origin")]
+    name: String,
     ttl_secs: Option<u64>,
     uses: Option<u64>,
+    /// Aggregator only: the parent this tier pushes to.
+    parent_url: Option<String>,
+    /// Roles that need it only; never logged, never stored.
+    step_up: Option<String>,
 }
 
-/// `POST /enrollments`: `{origin, ttl_secs?, uses?}`. The code is in this answer and nowhere
-/// else, ever: the store keeps a hash.
+fn default_role() -> Role {
+    Role::Agent
+}
+
+/// Why `role` cannot be handed out by this controller right now, if it cannot. Checked at mint
+/// (so the admin hears it early) and again at redeem, before the use is spent.
+fn not_ready(st: &EnrollState, role: Role) -> Option<&'static str> {
+    let g = &st.grants;
+    let ring = st.ui.keyring.current();
+    match role {
+        Role::Agent if ring.active_id().is_none() => Some(
+            "this controller has no secret key (--secret-key-file), so it cannot seal a tunnel key",
+        ),
+        Role::Proxy if g.proxy_token.is_none() => Some("this controller has no --proxy-token"),
+        Role::Proxy if ring.is_empty() => {
+            Some("this controller has no secret key (--secret-key-file) to hand to a proxy")
+        }
+        Role::Aggregator if g.ingest_token.is_none() => {
+            Some("this controller has no --ingest-token to hand to an aggregator")
+        }
+        Role::Ui if st.ui.auth_token.is_none() => Some("this controller has no --auth-token"),
+        _ if role.needs_step_up() && g.step_up.is_none() => {
+            Some("this role needs --enroll-step-up-file on the controller")
+        }
+        _ => None,
+    }
+}
+
+/// `parent_url` must be an http(s) URL with no credentials in it.
+fn parent_url_ok(u: &str) -> bool {
+    u.len() <= 512
+        && reqwest::Url::parse(u).is_ok_and(|u| {
+            matches!(u.scheme(), "http" | "https")
+                && u.username().is_empty()
+                && u.password().is_none()
+                && u.host_str().is_some()
+        })
+}
+
+/// `POST /enrollments`: `{role?, name, ttl_secs?, uses?, parent_url?, step_up?}`. The code is
+/// in this answer and nowhere else, ever: the store keeps a hash.
 async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) -> Response {
     let Ok(b) = serde_json::from_slice::<MintBody>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
-            "the body must be {\"origin\": \"...\", \"ttl_secs\"?, \"uses\"?}",
+            "the body must be {\"role\"?: \"agent|proxy|aggregator|ui\", \"name\": \"...\", \"ttl_secs\"?, \"uses\"?, \"parent_url\"?, \"step_up\"?}",
         );
     };
+    let who = actor(&headers);
     let ttl = b.ttl_secs.unwrap_or(DEFAULT_TTL);
     if !(1..=MAX_TTL).contains(&ttl) {
         return err(
@@ -172,15 +242,37 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
             format!("ttl_secs must be 1 to {MAX_TTL}"),
         );
     }
+    if b.parent_url
+        .as_deref()
+        .is_some_and(|u| b.role != Role::Aggregator || !parent_url_ok(u))
+    {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "parent_url is for an aggregator and must be an http(s) URL without credentials",
+        );
+    }
+    if let Some(why) = not_ready(&st, b.role) {
+        return err(StatusCode::CONFLICT, why);
+    }
+    if b.role.needs_step_up() && !step_up_ok(&st, b.step_up.as_deref()) {
+        tracing::warn!(role = b.role.as_str(), name = %b.name, actor = who.as_deref().unwrap_or("-"), "enrollment mint refused: step-up failed");
+        return err(
+            StatusCode::FORBIDDEN,
+            "this role needs the step-up secret; enter it again",
+        );
+    }
     let uses = b.uses.unwrap_or(1);
     let code = Code::generate();
-    let (created, who) = (now(), actor(&headers));
+    let created = now();
     let mut record = json!({
-        "role": "agent", "origin": b.origin, "hash": code.hash(),
+        "role": b.role.as_str(), "origin": b.name, "hash": code.hash(),
         "created_at": created, "expires_at": created + ttl, "uses": uses, "uses_left": uses,
     });
     if let Some(a) = &who {
         record["created_by"] = a.as_str().into();
+    }
+    if let Some(u) = &b.parent_url {
+        record["parent_url"] = u.as_str().into();
     }
     let op = UiOp::Put {
         kind: Kind::Enrollment,
@@ -199,14 +291,30 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
         Ok(_) => return internal("unexpected answer to a mint"),
         Err(r) => return r,
     }
-    tracing::warn!(enrollment = code.id(), origin = %b.origin, actor = who.as_deref().unwrap_or("-"), "enrollment code minted");
+    tracing::warn!(enrollment = code.id(), role = b.role.as_str(), name = %b.name, actor = who.as_deref().unwrap_or("-"), step_up = b.role.needs_step_up(), "enrollment code minted");
     no_store(
         Json(json!({
-            "id": code.id(), "code": &*code.expose(), "origin": b.origin,
+            "id": code.id(), "code": &*code.expose(), "role": b.role.as_str(), "name": b.name,
             "expires_at": created + ttl, "uses": uses,
         }))
         .into_response(),
     )
+}
+
+/// Checks the step-up secret in constant time. A wrong guess counts against one shared bucket
+/// (the admin token is already required, so this only slows a stolen admin token).
+fn step_up_ok(st: &EnrollState, presented: Option<&str>) -> bool {
+    let (Some(expected), Some(p)) = (st.grants.step_up.as_deref(), presented) else {
+        return false;
+    };
+    if !st.limiter.take("step-up", PER_ID) {
+        return false;
+    }
+    let ok = wayhouse_http::token_eq(p, expected);
+    if ok {
+        st.limiter.refund("step-up");
+    }
+    ok
 }
 
 /// `GET /enrollments`: every code with its state; never the code or its hash.
@@ -287,31 +395,29 @@ async fn redeem(
     let Ok(req) = serde_json::from_slice::<RedeemRequest>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
-            "the body must be {\"code\": \"...\", \"role\": \"agent\"}",
+            "the body must be {\"code\": \"...\", \"role\": \"agent|proxy|aggregator|ui\"}",
         );
     };
     let Ok(code) = Code::parse(&req.code) else {
         return refused();
     };
-    drop(req);
     let id_key = format!("id:{}", code.id());
     if !st.limiter.take(&id_key, PER_ID) {
         return too_many();
     }
-    let origin = match st.ui.store.get(Kind::Enrollment, code.id()) {
-        Ok(Some(rec)) if rec["role"] == "agent" => {
-            rec["origin"].as_str().unwrap_or_default().to_owned()
-        }
+    let (name, parent_url) = match st.ui.store.get(Kind::Enrollment, code.id()) {
+        Ok(Some(rec)) if rec["role"] == req.role.as_str() => (
+            rec["origin"].as_str().unwrap_or_default().to_owned(),
+            rec["parent_url"].as_str().map(str::to_owned),
+        ),
         Ok(_) => return refused(),
         Err(e) => return internal(e),
     };
-    let ring = st.ui.keyring.current();
-    if ring.active_id().is_none() {
+    let role = req.role;
+    drop(req);
+    if let Some(why) = not_ready(&st, role) {
         // Before the use is spent: an operator can fix this and retry with the same code.
-        return err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "this controller has no secret key (--secret-key-file), so it cannot seal a tunnel key",
-        );
+        return err(StatusCode::SERVICE_UNAVAILABLE, why);
     }
     let op = UiOp::Redeem {
         id: code.id().to_owned(),
@@ -324,22 +430,55 @@ async fn redeem(
         Ok(_) => return internal("unexpected answer to a redeem"),
         Err(r) => return r,
     }
-    let psk = wayhouse_enroll::generate_psk();
-    if let Err(r) = store_psk(&st.ui, &origin, &psk).await {
-        return r;
-    }
+    let files = match grant_files(&st, role, &name).await {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
     st.limiter.refund(&ip);
     st.limiter.refund(&id_key);
-    tracing::warn!(enrollment = code.id(), origin = %origin, "enrollment code redeemed");
+    tracing::warn!(enrollment = code.id(), role = role.as_str(), name = %name, "enrollment code redeemed");
     no_store(
         Json(RedeemResponse {
-            name: origin,
-            role: Role::Agent,
-            agent_token: st.agent_token.as_deref().map(str::to_owned),
-            tunnel_psk: (*psk).clone(),
+            name,
+            role,
+            files,
+            parent_url,
         })
         .into_response(),
     )
+}
+
+/// What `role` receives. The agent's tunnel key is made here, after the use is spent (see the
+/// module note on ordering).
+#[allow(clippy::result_large_err)]
+async fn grant_files(
+    st: &EnrollState,
+    role: Role,
+    name: &str,
+) -> Result<std::collections::BTreeMap<String, String>, Response> {
+    let g = &st.grants;
+    let mut f = std::collections::BTreeMap::new();
+    let mut put = |k: &str, v: Option<&str>| {
+        if let Some(v) = v {
+            f.insert(k.to_owned(), v.to_owned());
+        }
+    };
+    match role {
+        Role::Agent => {
+            let psk = wayhouse_enroll::generate_psk();
+            store_psk(&st.ui, name, &psk).await?;
+            put("tunnel-psk", Some(&psk));
+            put("agent-token", g.agent_token.as_deref());
+        }
+        Role::Proxy => {
+            put("controller-token", g.proxy_token.as_deref());
+            put("aggregator-token", g.ingest_token.as_deref());
+            put("secret.keys", Some(&st.ui.keyring.current().export()));
+        }
+        Role::Aggregator => put("ingest-token", g.ingest_token.as_deref()),
+        Role::Ui => put("controller-token", st.ui.auth_token.as_deref()),
+    }
+    Ok(f)
 }
 
 /// Seals `psk` as the origin's tunnel secret and replicates the ciphertext.
@@ -394,6 +533,9 @@ mod tests {
     const KEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
     const ADMIN: &str = "admin-token-admin-token";
     const AGENT: &str = "agent-token-agent-token";
+    const PROXY: &str = "proxy-token-proxy-token";
+    const INGEST: &str = "ingest-token-ingest-token";
+    const STEP_UP: &str = "step-up-step-up-step-up";
 
     struct T {
         app: Router,
@@ -418,7 +560,15 @@ mod tests {
             keyring: keyring.clone(),
         };
         T {
-            app: router(ui, Some(Arc::from(AGENT))),
+            app: router(
+                ui,
+                Grants {
+                    agent_token: Some(Arc::from(AGENT)),
+                    proxy_token: Some(Arc::from(PROXY)),
+                    ingest_token: Some(Arc::from(INGEST)),
+                    step_up: Some(Arc::from(STEP_UP)),
+                },
+            ),
             store,
             keyring,
             _d: dir,
@@ -524,10 +674,10 @@ mod tests {
         let (st, v) = redeem(&t, &code, "10.0.0.2").await;
         assert_eq!(st, StatusCode::OK, "{v}");
         assert_eq!(
-            (v["name"].as_str(), v["agent_token"].as_str()),
+            (v["name"].as_str(), v["files"]["agent-token"].as_str()),
             (Some("home-nas"), Some(AGENT))
         );
-        let psk = v["tunnel_psk"].as_str().unwrap();
+        let psk = v["files"]["tunnel-psk"].as_str().unwrap();
         // The proxy opens the same value from the sealed secret.
         let name = wayhouse_enroll::psk_secret_name("home-nas");
         let rec = t.store.get(Kind::ClusterSecret, &name).unwrap().unwrap();
@@ -661,16 +811,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn without_a_secret_key_the_code_is_not_spent() {
+    async fn without_a_secret_key_no_agent_code_is_minted() {
         let t = setup(None);
-        let code = mint(&t, "nokey").await;
-        let (st, _) = redeem(&t, &code, "10.0.0.2").await;
-        assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
-        let id = code.split('.').next().unwrap();
-        assert_eq!(
-            t.store.get(Kind::Enrollment, id).unwrap().unwrap()["uses_left"],
-            1
-        );
+        let (st, _) = call(
+            &t.app,
+            "POST",
+            "/enrollments",
+            json!({"origin": "nokey"}),
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT);
+        assert!(t.store.list(Kind::Enrollment).unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -700,5 +853,224 @@ mod tests {
                 .0,
             StatusCode::PAYLOAD_TOO_LARGE
         );
+    }
+
+    async fn mint_as(t: &T, body: Value) -> (StatusCode, Value) {
+        call(
+            &t.app,
+            "POST",
+            "/enrollments",
+            body,
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await
+    }
+
+    async fn redeem_as(t: &T, code: &str, role: &str) -> (StatusCode, Value) {
+        call(
+            &t.app,
+            "POST",
+            "/enroll",
+            json!({"code": code, "role": role}),
+            None,
+            "10.0.0.2",
+        )
+        .await
+    }
+
+    fn files(v: &Value) -> Vec<String> {
+        let mut k: Vec<_> = v["files"].as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    }
+
+    #[tokio::test]
+    async fn each_role_gets_exactly_its_files_and_nothing_else() {
+        let t = setup(Some(KEY));
+        for (role, expect) in [
+            (
+                "proxy",
+                vec!["aggregator-token", "controller-token", "secret.keys"],
+            ),
+            ("aggregator", vec!["ingest-token"]),
+            ("ui", vec!["controller-token"]),
+            ("agent", vec!["agent-token", "tunnel-psk"]),
+        ] {
+            let (st, m) =
+                mint_as(&t, json!({"role": role, "name": "n1", "step_up": STEP_UP})).await;
+            assert_eq!(st, StatusCode::OK, "{role}: {m}");
+            let (st, v) = redeem_as(&t, m["code"].as_str().unwrap(), role).await;
+            assert_eq!(st, StatusCode::OK, "{role}: {v}");
+            assert_eq!(files(&v), expect, "{role}");
+            // And only the role's grant names, so the client's allowlist accepts it.
+            let role_enum: Role = serde_json::from_value(json!(role)).unwrap();
+            assert!(files(&v)
+                .iter()
+                .all(|f| role_enum.grant_files().contains(&f.as_str())));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_grants_carry_the_right_secrets() {
+        let t = setup(Some(KEY));
+        let go = |role: &'static str| {
+            let t = &t;
+            async move {
+                let (_, m) =
+                    mint_as(t, json!({"role": role, "name": "n", "step_up": STEP_UP})).await;
+                redeem_as(t, m["code"].as_str().unwrap(), role).await.1
+            }
+        };
+        let p = go("proxy").await;
+        assert_eq!(
+            p["files"]["controller-token"], PROXY,
+            "a proxy never gets the admin token"
+        );
+        assert_eq!(p["files"]["aggregator-token"], INGEST);
+        assert_eq!(
+            wayhouse_secrets::Keyring::parse(p["files"]["secret.keys"].as_str().unwrap())
+                .unwrap()
+                .key_ids(),
+            t.keyring.current().key_ids()
+        );
+        assert_eq!(go("ui").await["files"]["controller-token"], ADMIN);
+    }
+
+    #[tokio::test]
+    async fn a_code_only_redeems_as_the_role_it_was_minted_for() {
+        let t = setup(Some(KEY));
+        let (_, m) = mint_as(&t, json!({"role": "aggregator", "name": "agg"})).await;
+        let code = m["code"].as_str().unwrap();
+        for role in ["proxy", "ui", "agent"] {
+            assert_eq!(
+                redeem_as(&t, code, role).await.0,
+                StatusCode::UNAUTHORIZED,
+                "{role}"
+            );
+        }
+        assert_eq!(redeem_as(&t, code, "aggregator").await.0, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn keyring_and_admin_roles_need_the_step_up_secret_at_every_mint() {
+        let t = setup(Some(KEY));
+        for role in ["proxy", "ui"] {
+            for bad in [None, Some("wrong-wrong-wrong-wrong"), Some(ADMIN)] {
+                let mut body = json!({"role": role, "name": "n"});
+                if let Some(b) = bad {
+                    body["step_up"] = b.into();
+                }
+                assert_eq!(
+                    mint_as(&t, body).await.0,
+                    StatusCode::FORBIDDEN,
+                    "{role} {bad:?}"
+                );
+            }
+        }
+        assert!(
+            t.store.list(Kind::Enrollment).unwrap().is_empty(),
+            "nothing was minted"
+        );
+        // Roles without that grant need no step-up.
+        assert_eq!(
+            mint_as(&t, json!({"role": "aggregator", "name": "a"}))
+                .await
+                .0,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn guessing_the_step_up_secret_is_rate_limited() {
+        let t = setup(Some(KEY));
+        let mut last = StatusCode::OK;
+        for _ in 0..PER_ID + 2 {
+            last = mint_as(
+                &t,
+                json!({"role": "proxy", "name": "n", "step_up": "nope-nope-nope-nope"}),
+            )
+            .await
+            .0;
+        }
+        assert_eq!(last, StatusCode::FORBIDDEN);
+        // Even the right secret is refused until the window passes.
+        let (st, _) = mint_as(
+            &t,
+            json!({"role": "proxy", "name": "n", "step_up": STEP_UP}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn without_a_configured_step_up_or_keyring_the_role_cannot_be_minted() {
+        let t = setup(None);
+        let (st, v) = mint_as(
+            &t,
+            json!({"role": "proxy", "name": "n", "step_up": STEP_UP}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT, "{v}");
+        let (st, _) = mint_as(&t, json!({"role": "agent", "name": "n"})).await;
+        assert_eq!(
+            st,
+            StatusCode::CONFLICT,
+            "an agent code needs a key to seal its tunnel key"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_aggregator_parent_url_is_validated_and_returned() {
+        let t = setup(Some(KEY));
+        for bad in ["ftp://p", "https://u:p@parent.example", "nonsense"] {
+            let (st, _) = mint_as(
+                &t,
+                json!({"role": "aggregator", "name": "a", "parent_url": bad}),
+            )
+            .await;
+            assert_eq!(st, StatusCode::BAD_REQUEST, "{bad}");
+        }
+        let (st, _) = mint_as(
+            &t,
+            json!({"role": "agent", "name": "a", "parent_url": "https://parent.example"}),
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::BAD_REQUEST,
+            "only an aggregator has a parent"
+        );
+        let (_, m) = mint_as(
+            &t,
+            json!({"role": "aggregator", "name": "a", "parent_url": "https://parent.example:9902"}),
+        )
+        .await;
+        let (_, v) = redeem_as(&t, m["code"].as_str().unwrap(), "aggregator").await;
+        assert_eq!(v["parent_url"], "https://parent.example:9902");
+    }
+
+    #[tokio::test]
+    async fn the_listing_shows_role_and_state_but_never_the_step_up_or_a_secret() {
+        let t = setup(Some(KEY));
+        let (_, m) = mint_as(
+            &t,
+            json!({"role": "proxy", "name": "edge1", "step_up": STEP_UP}),
+        )
+        .await;
+        let (_, list) = call(
+            &t.app,
+            "GET",
+            "/enrollments",
+            Value::Null,
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(list["items"][0]["role"], "proxy");
+        let text = list.to_string()
+            + &serde_json::to_string(&t.store.list(Kind::Enrollment).unwrap()).unwrap();
+        assert!(!text.contains(STEP_UP));
+        assert!(!text.contains(m["code"].as_str().unwrap().split_once('.').unwrap().1));
     }
 }
