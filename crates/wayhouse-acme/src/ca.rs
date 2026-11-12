@@ -90,6 +90,9 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
 
 /// The default client: HTTPS only, the platform's certificate verifier.
 fn default_client() -> Result<Box<dyn HttpClient>, IssueError> {
+    // ring is also compiled in (reqwest's fallback), so rustls cannot pick a process
+    // default on its own; an earlier install, e.g. by wayhouse-http, stays.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let connector = hyper_rustls::HttpsConnectorBuilder::new()
         .try_with_platform_verifier()
         .map_err(|e| IssueError::Account(e.to_string()))?

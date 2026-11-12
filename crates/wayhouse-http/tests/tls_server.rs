@@ -299,3 +299,100 @@ async fn a_source_over_its_connect_rate_is_closed_while_others_get_in() {
     // 127.0.0.1 is another source with its own bucket.
     get_ok("ca.pem", addr).await;
 }
+
+/// Handshake as a client that offers only `groups` and report the key exchange group
+/// the server picked.
+async fn negotiated_group(
+    addr: SocketAddr,
+    groups: Vec<&'static dyn tokio_rustls::rustls::crypto::SupportedKxGroup>,
+) -> Result<tokio_rustls::rustls::NamedGroup, std::io::Error> {
+    use tokio_rustls::rustls::{self, crypto::aws_lc_rs, pki_types::pem::PemObject};
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in rustls::pki_types::CertificateDer::pem_file_iter(fixture("ca.pem")).unwrap() {
+        roots.add(cert.unwrap()).unwrap();
+    }
+    let mut provider = aws_lc_rs::default_provider();
+    provider.kx_groups = groups;
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let tcp = TcpStream::connect(addr).await?;
+    let tls = tokio_rustls::TlsConnector::from(Arc::new(config))
+        .connect("localhost".try_into().unwrap(), tcp)
+        .await?;
+    Ok(tls
+        .get_ref()
+        .1
+        .negotiated_key_exchange_group()
+        .unwrap()
+        .name())
+}
+
+/// The post-quantum hybrid is negotiated when the client offers it, and a client
+/// without it still connects (classical fallback).
+#[tokio::test]
+async fn negotiates_the_post_quantum_hybrid_group() {
+    use tokio_rustls::rustls::{crypto::aws_lc_rs::kx_group, NamedGroup};
+    let (addr, _) = serve(fixture_files()).await;
+    let pq = negotiated_group(addr, vec![kx_group::X25519MLKEM768]).await;
+    assert_eq!(pq.unwrap(), NamedGroup::X25519MLKEM768);
+    let classical = negotiated_group(addr, vec![kx_group::X25519]).await;
+    assert_eq!(classical.unwrap(), NamedGroup::X25519);
+}
+
+/// The outbound side: a client from `builder_with` offers the hybrid first, so it
+/// connects to a server that accepts nothing else.
+#[tokio::test]
+async fn outbound_client_offers_the_post_quantum_hybrid() {
+    use tokio_rustls::rustls::{
+        self, crypto::aws_lc_rs, pki_types::pem::PemObject, pki_types::CertificateDer,
+        pki_types::PrivateKeyDer,
+    };
+    let mut provider = aws_lc_rs::default_provider();
+    provider.kx_groups = vec![aws_lc_rs::kx_group::X25519MLKEM768];
+    let chain = CertificateDer::pem_file_iter(fixture("leaf.pem"))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let key = PrivateKeyDer::from_pem_file(fixture("leaf.key")).unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(provider))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(chain, key)
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(tcp).await else {
+                    return;
+                };
+                let mut buf = [0u8; 1024];
+                let _ = tls.read(&mut buf).await;
+                let _ = tls
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok",
+                    )
+                    .await;
+                let _ = tls.shutdown().await;
+            });
+        }
+    });
+    let client = builder_with(&load_ca_file(&fixture("ca.pem")).unwrap())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let resp = client
+        .get(format!("https://localhost:{port}/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "ok");
+}

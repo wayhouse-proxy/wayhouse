@@ -17,7 +17,7 @@ default = ["client"]
 # The ACME client (`AcmeCa`) and its HTTP/TLS stack. Without it the crate keeps only the
 # certificate model, renewal arithmetic and the `DnsSolver` trait, which the controller needs
 # to store and replicate certificates even when its build leaves issuance out.
-client = ["dep:instant-acme", "dep:rcgen", "dep:x509-parser", "dep:hyper-util", "dep:hyper-rustls", "dep:bytes", "dep:http", "dep:httpdate"]
+client = ["dep:instant-acme", "dep:rcgen", "dep:x509-parser", "dep:hyper-util", "dep:hyper-rustls", "dep:rustls", "dep:bytes", "dep:http", "dep:httpdate"]
 # The in-process fake CA and fake DNS records; used by this crate's and the controller's tests.
 test-support = ["client", "dep:axum", "dep:ring", "dep:sha2", "dep:http-body-util", "dep:time", "dep:rustls-pki-types", "dep:rand", "rcgen/x509-parser"]
 
@@ -33,13 +33,14 @@ async-trait.workspace = true
 base64 = "0.22"
 tokio = { workspace = true }
 tracing.workspace = true
-instant-acme = { version = "0.8", default-features = false, features = ["ring", "hyper-rustls", "rcgen"], optional = true }
-rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"], optional = true }
+instant-acme = { version = "0.8", default-features = false, features = ["aws-lc-rs", "hyper-rustls", "rcgen"], optional = true }
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"], optional = true }
 x509-parser = { version = "0.18", optional = true }
 axum = { workspace = true, optional = true }
 ring = { version = "0.17", optional = true }
 sha2 = { workspace = true, optional = true }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"], optional = true }
+rustls = { workspace = true, optional = true }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "native-tokio", "tls12", "rustls-platform-verifier"], optional = true }
 bytes = { version = "1", optional = true }
 http = { version = "1", optional = true }

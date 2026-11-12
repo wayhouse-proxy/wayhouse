@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
-use tokio_rustls::rustls::crypto::ring;
+use tokio_rustls::rustls::crypto::aws_lc_rs;
 use tokio_rustls::rustls::pki_types::pem::PemObject;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::ServerConfig;
@@ -54,7 +54,7 @@ pub async fn tls_front_counted(
         .collect::<Result<Vec<_>, _>>()
         .context("parsing the fixture certificate")?;
     let key = PrivateKeyDer::from_pem_slice(LEAF_KEY).context("parsing the fixture key")?;
-    let config = ServerConfig::builder_with_provider(Arc::new(ring::default_provider()))
+    let config = ServerConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
         .with_safe_default_protocol_versions()?
         .with_no_client_auth()
         .with_single_cert(certs, key)?;
