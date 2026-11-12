@@ -662,7 +662,15 @@ pool, sniffer) are percent-encoded to stay one path segment, and `.` / `..` are 
 Sessions expire: `--session-idle-timeout-secs` (default 1800) and
 `--session-max-age-secs` (default 43200, also the cookie's `Max-Age`), with at
 most `--max-sessions` (default 1000) held at once. `POST /ui/login` is
-rate-limited per client address and per username (`429` + `Retry-After`).
+rate-limited per client address (a burst of 10, then one attempt per 3 s) and
+slowed per username: every attempt at a name delays the next one for that name
+by 100 ms, doubling to a 5 s cap, and a successful login clears it. Too-early
+attempts get `429` + `Retry-After`. Guessing at one account is held to one try
+per 5 s whichever addresses it comes from, while the owner waits at most 5 s
+(someone hammering your username can still make you wait that long). The delay
+is kept in memory on each controller replica (a restart or another replica
+starts fresh), and names share a fixed set of 1024 slots, so it neither leaks
+which accounts exist nor grows with attacker-chosen names.
 
 Three roles gate three route groups: `viewer` (every `GET` — fleet reads,
 config/revision reads/diffs, `GET /ws/fleet`), `operator` (+ the phase-5
