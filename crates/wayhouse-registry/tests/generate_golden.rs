@@ -3,7 +3,7 @@
 //! Regenerate with `UPDATE_GOLDEN=1 cargo test -p wayhouse-registry --test generate_golden`
 //! and review the diff by hand.
 
-use wayhouse_registry::{generate, parse_manifest, to_json, Artifact};
+use wayhouse_registry::{generate, parse_manifest, to_json, Artifact, GenerateOptions};
 
 fn artifact(name: &str, version: &str, marker: &str) -> Artifact {
     let manifest = parse_manifest(&format!(
@@ -13,6 +13,8 @@ license = "MIT OR Apache-2.0"
 version = "{version}"
 abi = "0.1"
 min_proxy = "0.1.0"
+categories = ["game"]
+tags = ["query", "source"]
 [limits]
 max_memory_bytes = 1048576
 call_timeout_ms = 50
@@ -35,8 +37,14 @@ call_timeout_ms = 50
 
 #[test]
 fn generated_index_matches_the_golden_file() {
+    let opts = GenerateOptions {
+        registry_name: "golden registry".into(),
+        today: "2026-11-12".into(),
+        allowed_categories: None,
+        stats_url: Some("https://example.com/stats.json".into()),
+    };
     let g = generate(
-        "golden registry",
+        &opts,
         &[
             artifact("wireguard", "0.1.0", "w"),
             artifact("a2s", "0.2.0", "b"),

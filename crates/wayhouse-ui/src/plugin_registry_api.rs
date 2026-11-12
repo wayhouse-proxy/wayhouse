@@ -35,6 +35,10 @@ pub fn viewer_router() -> Router<AppState> {
     Router::new()
         .route("/api/plugin-registries", get(list_registries))
         .route("/api/plugin-registries/{id}/plugins", get(list_plugins))
+        .route(
+            "/api/plugin-registries/{id}/plugins/{name}",
+            get(plugin_detail),
+        )
 }
 
 /// Admin only: a fetch ends in the controller's module upload, which is an admin action
@@ -101,30 +105,60 @@ async fn list_plugins(State(state): State<AppState>, Path(id): Path<String>) -> 
         Err(e) => return fetch_failure(&e),
     };
     let host_abi = host_plugin_abi();
+    // The catalog only; versions come with the per-plugin detail request.
     let plugins: Vec<_> = index
         .plugins
         .iter()
         .map(|entry| {
             let mut v = serde_json::to_value(entry).expect("index entries serialize");
-            v["compatible"] = json!(entry
-                .versions
-                .iter()
-                .any(|x| abi_matches(&x.abi, &host_abi).unwrap_or(false)));
-            for (j, version) in entry.versions.iter().enumerate() {
-                v["versions"][j]["compatible"] =
-                    json!(abi_matches(&version.abi, &host_abi).unwrap_or(false));
-                v["versions"][j]["verifiable"] = json!(version_verifiable(&reg, version));
-            }
+            v.as_object_mut()
+                .expect("an entry is an object")
+                .remove("versions");
+            v["abi_compatible"] = json!(abi_matches(&entry.abi, &host_abi).unwrap_or(false));
             v
         })
         .collect();
     Json(json!({
         "registry": registry_json(&reg),
         "index_name": index.name,
+        "stats_url": index.stats_url,
         "host_abi": host_abi,
         "plugins": plugins,
     }))
     .into_response()
+}
+
+/// `GET /api/plugin-registries/{id}/plugins/{name}`: one plugin with every version.
+async fn plugin_detail(
+    State(state): State<AppState>,
+    Path((id, name)): Path<(String, String)>,
+) -> Response {
+    let Some(reg) = plugin_registry(&state, &id) else {
+        return error(StatusCode::NOT_FOUND, "no such plugin registry");
+    };
+    let index = match state.registry_client.fetch_plugin_index(&reg.url).await {
+        Ok(i) => i,
+        Err(e) => return fetch_failure(&e),
+    };
+    let Some(catalog) = index.plugins.iter().find(|p| p.name == name) else {
+        return error(StatusCode::NOT_FOUND, "no such plugin in this registry");
+    };
+    let entry = match state.registry_client.resolve_plugin(catalog).await {
+        Ok(e) => e,
+        Err(e) => return fetch_failure(&e),
+    };
+    let host_abi = host_plugin_abi();
+    let mut v = serde_json::to_value(&entry).expect("index entries serialize");
+    v["compatible"] = json!(entry
+        .versions
+        .iter()
+        .any(|x| abi_matches(&x.abi, &host_abi).unwrap_or(false)));
+    for (j, version) in entry.versions.iter().enumerate() {
+        v["versions"][j]["compatible"] =
+            json!(abi_matches(&version.abi, &host_abi).unwrap_or(false));
+        v["versions"][j]["verifiable"] = json!(version_verifiable(&reg, version));
+    }
+    Json(json!({ "plugin": v, "host_abi": host_abi })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -195,8 +229,12 @@ async fn fetch(
         Ok(i) => i,
         Err(e) => return fetch_failure(&e),
     };
-    let Some(entry) = index.plugins.iter().find(|p| p.name == req.name) else {
+    let Some(catalog) = index.plugins.iter().find(|p| p.name == req.name) else {
         return error(StatusCode::NOT_FOUND, "no such plugin in this registry");
+    };
+    let entry = &match state.registry_client.resolve_plugin(catalog).await {
+        Ok(e) => e,
+        Err(e) => return fetch_failure(&e),
     };
     let version = match pick(entry, req.version.as_ref(), &host_plugin_abi()) {
         Ok(v) => v,
@@ -315,6 +353,13 @@ mod tests {
             description: String::new(),
             license: "MIT".into(),
             homepage: None,
+            categories: Vec::new(),
+            tags: Vec::new(),
+            latest: "0.3.0-rc.1".parse().unwrap(),
+            abi: "0.2".into(),
+            signed: false,
+            updated: "2026-11-12".into(),
+            detail_url: None,
             versions: vec![version("0.3.0-rc.1"), version("0.2.0")],
         };
         let picked = pick(&entry, None, "0.2").unwrap();
@@ -339,9 +384,10 @@ mod tests {
         let sha =
             sha256_override.map_or_else(|| format!("{:x}", Sha256::digest(&module)), str::to_owned);
         let index = json!({
-            "schema": 1, "kind": "plugin", "name": "test plugins",
+            "schema": 2, "kind": "plugin", "name": "test plugins",
             "plugins": [{
                 "name": "demo", "description": "a demo", "license": "MIT",
+                "categories": ["game"], "tags": [], "updated": "2026-11-12", "latest": "0.1.0", "abi": abi, "signed": false,
                 "versions": [{
                     "version": "0.1.0", "abi": abi,
                     "url": "https://registry.test/demo.wasm",
@@ -606,8 +652,21 @@ mod tests {
             .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["plugins"][0]["name"], "demo");
-        assert_eq!(body["plugins"][0]["compatible"], true);
-        assert_eq!(body["plugins"][0]["versions"][0]["verifiable"], false);
+        assert_eq!(body["plugins"][0]["abi_compatible"], true);
+        assert!(
+            body["plugins"][0].get("versions").is_none(),
+            "the catalog carries no versions"
+        );
+        let (status, body) = h
+            .call(
+                "GET",
+                &format!("/api/plugin-registries/{}/plugins/demo", h.registry_id),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["plugin"]["compatible"], true);
+        assert_eq!(body["plugin"]["versions"][0]["verifiable"], false);
         assert_eq!(body["host_abi"], "0.2");
         let (status, body) = h.call("GET", "/api/plugin-registries", None).await;
         assert_eq!(status, StatusCode::OK);

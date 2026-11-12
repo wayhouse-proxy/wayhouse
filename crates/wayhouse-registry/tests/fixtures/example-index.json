@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "sniffer",
   "name": "wayhouse official sniffers",
   "sniffers": [
@@ -8,6 +8,12 @@
       "description": "Minecraft handshake virtual hosts",
       "license": "MIT OR Apache-2.0",
       "homepage": "https://github.com/wayhouse-proxy/sniffers/tree/main/sniffers/minecraft",
+      "categories": ["game"],
+      "tags": ["minecraft", "java-edition"],
+      "latest": "0.2.0",
+      "abi": "0.1",
+      "signed": true,
+      "updated": "2026-11-12",
       "versions": [
         {
           "version": "0.2.0",

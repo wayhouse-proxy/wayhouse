@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use wayhouse_registry::{
-    parse_index, parse_plugin_index, Index, IndexError, PluginIndex, PluginIndexError,
-    MAX_INDEX_BYTES,
+    parse_detail, parse_index, parse_plugin_detail, parse_plugin_index, Index, IndexError,
+    PluginEntry, PluginIndex, PluginIndexError, SnifferEntry, MAX_DETAIL_BYTES, MAX_INDEX_BYTES,
 };
 
 /// Largest signature file fetched.
@@ -89,6 +89,7 @@ impl Resolve for PublicOnlyResolver {
 }
 
 type IndexCache = Arc<Mutex<HashMap<String, (Instant, Arc<Index>)>>>;
+type DetailCache = Arc<Mutex<HashMap<String, (Instant, Arc<Vec<u8>>)>>>;
 type PluginIndexCache = Arc<Mutex<HashMap<String, (Instant, Arc<PluginIndex>)>>>;
 
 #[derive(Clone)]
@@ -99,6 +100,9 @@ pub struct RegistryClient {
     ttl: Duration,
     cache: IndexCache,
     plugin_cache: PluginIndexCache,
+    /// Raw detail files by URL; merged with the catalog entry on every use so a
+    /// refreshed catalog never pairs with a stale detail.
+    detail_cache: DetailCache,
     /// Tests only: `https://registry.test` URLs (the only kind an index may hold) are
     /// fetched from this local server instead.
     #[cfg(test)]
@@ -145,6 +149,7 @@ impl RegistryClient {
             ttl,
             cache: Arc::default(),
             plugin_cache: Arc::default(),
+            detail_cache: Arc::default(),
             #[cfg(test)]
             rewrite_to: None,
         }
@@ -159,6 +164,39 @@ impl RegistryClient {
     pub fn invalidate(&self, url: &str) {
         self.cache.lock().unwrap().remove(url);
         self.plugin_cache.lock().unwrap().remove(url);
+        // Detail files are not tied to a registry URL; dropping all of them is cheap.
+        self.detail_cache.lock().unwrap().clear();
+    }
+
+    async fn detail_bytes(&self, url: &str) -> Result<Arc<Vec<u8>>, FetchError> {
+        if let Some((at, bytes)) = self.detail_cache.lock().unwrap().get(url) {
+            if at.elapsed() < self.ttl {
+                return Ok(bytes.clone());
+            }
+        }
+        let bytes = Arc::new(self.get(url, MAX_DETAIL_BYTES as u64).await?);
+        self.detail_cache
+            .lock()
+            .unwrap()
+            .insert(url.to_string(), (Instant::now(), bytes.clone()));
+        Ok(bytes)
+    }
+
+    /// The entry with all its versions: inline ones as they are, a catalog entry with
+    /// its detail file fetched and checked against the catalog.
+    pub async fn resolve_sniffer(&self, entry: &SnifferEntry) -> Result<SnifferEntry, FetchError> {
+        match &entry.detail_url {
+            None => Ok(entry.clone()),
+            Some(url) => Ok(parse_detail(&self.detail_bytes(url).await?, entry)?),
+        }
+    }
+
+    /// As [`RegistryClient::resolve_sniffer`], for a plugin registry.
+    pub async fn resolve_plugin(&self, entry: &PluginEntry) -> Result<PluginEntry, FetchError> {
+        match &entry.detail_url {
+            None => Ok(entry.clone()),
+            Some(url) => Ok(parse_plugin_detail(&self.detail_bytes(url).await?, entry)?),
+        }
     }
 
     /// As [`RegistryClient::fetch_index`], for a plugin registry.

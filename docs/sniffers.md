@@ -38,6 +38,7 @@ One per sniffer, written by the author. Unknown keys are an error.
 | `abi`                                               | `major.minor` the module was built for; must equal the section in the built module                       |
 | `min_proxy`                                         | Oldest proxy version it runs on                                                                          |
 | `limits.max_memory_bytes`, `limits.call_timeout_ms` | Resource limits the sniffer is designed for; the client rejects 0 and anything above 256 MiB / 10 000 ms |
+| `categories` (1 to 3), `tags` (0 to 8)              | Labels the UI filters by; see "Catalog and detail files"                                                 |
 | `config` (optional), `homepage` (optional)          | Documentation of the per-module config string; a link                                                    |
 
 ## Index (`index.json`)
@@ -46,14 +47,21 @@ The same file format for the official registry and for external ones, served ove
 
 ```json
 {
-    "schema": 1,
+    "schema": 2,
     "kind": "sniffer",
     "name": "wayhouse official sniffers",
+    "stats_url": "https://.../stats.json",
     "sniffers": [
         {
             "name": "minecraft",
             "description": "...",
             "license": "MIT OR Apache-2.0",
+            "categories": ["game"],
+            "tags": ["minecraft", "java-edition"],
+            "latest": "0.1.0",
+            "abi": "0.1",
+            "signed": true,
+            "updated": "2026-11-12",
             "versions": [
                 {
                     "version": "0.1.0",
@@ -71,7 +79,38 @@ The same file format for the official registry and for external ones, served ove
 }
 ```
 
-Rules a client enforces: `schema` is 1; `kind` is `sniffer` (`plugin` is reserved for the
+### Catalog and detail files (schema 2)
+
+Every entry is a _catalog entry_: enough to search and filter (`categories`, `tags`, `description`,
+`latest`, `abi`, `signed`, `updated`) without the version list. The versions live either **inline**
+(`versions`, the form above; right for a small registry in one file) or in a **detail file**:
+the entry then has `"detail_url": "https://.../minecraft.json"` instead of `versions`, and that file is
+
+```json
+{
+    "schema": 2,
+    "kind": "sniffer",
+    "name": "minecraft",
+    "versions": [{ "version": "0.1.0", "...": "..." }]
+}
+```
+
+`latest`, `abi` and `signed` must describe the newest listed version (`signed` means it lists a
+`signature_url`); the client refuses a detail file that disagrees, so a catalog cannot advertise
+a signature or an ABI the versions do not have. `signed` is a display hint only: an install still
+checks the version entry itself. A catalog stays near 450 bytes per sniffer (about 450 KB for
+1000), inside the 1 MiB cap; a detail file has its own 1 MiB cap and is fetched only when an
+operator opens a sniffer, installs it or checks for updates. `stats_url` (optional) points to a
+registry-published `stats.json` used only to sort by popularity; leave it out and that sort is
+hidden. The plugin registry (`kind = plugin`, `plugins` instead of `sniffers`) uses the same fields.
+
+`categories` (at most 3) and `tags` (at most 8) are 2 to 24 characters of `a-z`, `0-9` and `-`. A
+client checks only that syntax, so a registry may use its own categories. The official registry
+takes categories from a fixed list (`categories.toml` in its repository, enforced by the generator
+with `--categories`), adding one is a maintainer change. Tags are free-form; the generator trims,
+lowercases and de-duplicates them.
+
+Rules a client enforces: `schema` is 2 (schema 1 is refused: regenerate the index); `kind` is `sniffer` (`plugin` is reserved for the
 plugin registry and rejected for now); names are unique and valid; versions are unique
 and sorted newest first; every URL is `https://` with a host and no user info; `sha256` is 64 lowercase hex; `size`
 is at most 8 MiB; the whole file is at most 1 MiB. Unknown extra fields are ignored so a
@@ -113,6 +152,13 @@ Each directory holds `manifest.toml` and `<name>.wasm` (and optionally
 order), older versions are kept, and re-running with identical bytes changes nothing. A
 published version is immutable: the same version with a different sha256 is refused, so
 bump the version instead. A failed run leaves the existing file untouched.
+
+Options: `--categories categories.toml` (every manifest category must be on the list),
+`--date YYYY-MM-DD` (the `updated` value for what is published now; default today, UTC) and
+`--stats-url`. By default every version is inline. With `--details-dir <dir> --details-base-url <url>`
+the output is a catalog plus `<dir>/<name>.json` per sniffer (served at `<url>/<name>.json`), and the next
+run reads the old versions back from those files, so keep the directory next to the index.
+`verify index.json --details-dir <dir>` checks the detail files too.
 
 If `--previous` is left out and `--out` already exists, `--out` is read as the previous
 index, so a plain regenerate cannot replace a published version. If that file exists but is

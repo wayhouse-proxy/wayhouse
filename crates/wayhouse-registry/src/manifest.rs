@@ -1,5 +1,6 @@
 //! The per-sniffer source manifest (`sniffers/<name>/manifest.toml` in the sniffers repo).
 
+use crate::catalog::{check_labels, normalize_tags, CatalogProblem};
 use crate::index::{parse_abi, valid_name, Limits};
 use serde::Deserialize;
 
@@ -19,6 +20,11 @@ pub struct Manifest {
     pub config: Option<String>,
     #[serde(default)]
     pub homepage: Option<String>,
+    /// 1 to 3, from the registry's `categories.toml` (the generator enforces the list).
+    pub categories: Vec<String>,
+    /// 0 to 8 free-form labels; trimmed and lowercased on parse.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -27,12 +33,21 @@ pub enum ManifestError {
     Toml(String),
     #[error("manifest.toml: abi {0:?} is not of the form major.minor")]
     BadAbi(String),
+    #[error("manifest.toml: {0}")]
+    Catalog(CatalogProblem),
+    #[error("manifest.toml: list at least one category")]
+    NoCategory,
     #[error("manifest.toml: name {0:?} must match [a-z0-9_-]+")]
     BadName(String),
 }
 
 pub fn parse_manifest(text: &str) -> Result<Manifest, ManifestError> {
-    let m: Manifest = toml::from_str(text).map_err(|e| ManifestError::Toml(e.to_string()))?;
+    let mut m: Manifest = toml::from_str(text).map_err(|e| ManifestError::Toml(e.to_string()))?;
+    m.tags = normalize_tags(&m.tags);
+    if m.categories.is_empty() {
+        return Err(ManifestError::NoCategory);
+    }
+    check_labels(&m.categories, &m.tags).map_err(ManifestError::Catalog)?;
     if !valid_name(&m.name) {
         return Err(ManifestError::BadName(m.name));
     }
@@ -54,6 +69,8 @@ version = "0.1.0"
 abi = "0.1"
 min_proxy = "0.1.0"
 homepage = "https://github.com/wayhouse-proxy/sniffers/tree/main/sniffers/minecraft"
+categories = ["game"]
+tags = ["Minecraft", "java-edition"]
 config = "optional documentation"
 
 [limits]
@@ -68,6 +85,26 @@ call_timeout_ms = 50
         assert_eq!(m.version.to_string(), "0.1.0");
         assert_eq!(m.limits.call_timeout_ms, 50);
         assert_eq!(m.config.as_deref(), Some("optional documentation"));
+    }
+
+    #[test]
+    fn manifest_normalizes_tags_and_checks_labels() {
+        assert_eq!(
+            parse_manifest(MANIFEST).unwrap().tags,
+            ["minecraft", "java-edition"]
+        );
+        let bad = MANIFEST.replace("\"Minecraft\"", "\"mc!\"");
+        assert!(matches!(
+            parse_manifest(&bad),
+            Err(ManifestError::Catalog(_))
+        ));
+        let none = MANIFEST.replace("categories = [\"game\"]", "categories = []");
+        assert_eq!(parse_manifest(&none), Err(ManifestError::NoCategory));
+        let many = MANIFEST.replace("[\"game\"]", "[\"aa\", \"bb\", \"cc\", \"dd\"]");
+        assert!(matches!(
+            parse_manifest(&many),
+            Err(ManifestError::Catalog(_))
+        ));
     }
 
     #[test]

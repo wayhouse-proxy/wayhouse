@@ -1,11 +1,14 @@
 //! The registry `index.json` format and every rule on it.
 
+use crate::catalog::{Catalog, CatalogProblem, Newest};
 use serde::{Deserialize, Serialize};
 
 /// The only index schema this crate understands.
-pub const INDEX_SCHEMA: u32 = 1;
+pub const INDEX_SCHEMA: u32 = 2;
 /// Largest index file accepted (1 MiB).
 pub const MAX_INDEX_BYTES: usize = 1024 * 1024;
+/// Largest per-sniffer detail file accepted (1 MiB).
+pub const MAX_DETAIL_BYTES: usize = 1024 * 1024;
 /// Largest module a registry may list. Equal to `MAX_MODULE_BYTES` in the proxy's
 /// `sniffer_loader.rs` (the source of truth); keep the two in step.
 pub const MAX_MODULE_BYTES: u64 = 8 * 1024 * 1024;
@@ -30,6 +33,10 @@ pub struct Index {
     pub schema: u32,
     pub kind: Kind,
     pub name: String,
+    /// Where the registry publishes download counts (`stats.json`); absent means no
+    /// "popular" sort. Fetched by the UI, never trusted for anything but ordering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats_url: Option<String>,
     pub sniffers: Vec<SnifferEntry>,
 }
 
@@ -40,6 +47,30 @@ pub struct SnifferEntry {
     pub license: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub homepage: Option<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Summary of the newest version, so the catalog can be filtered without the details.
+    pub latest: semver::Version,
+    pub abi: String,
+    /// Whether the newest version lists a signature.
+    pub signed: bool,
+    /// `YYYY-MM-DD` of the newest publish.
+    pub updated: String,
+    /// Where the full version list lives; exclusive with inline `versions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<VersionEntry>,
+}
+
+/// A per-sniffer detail file (`detail_url`): the full version list of one sniffer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnifferDetail {
+    pub schema: u32,
+    pub kind: Kind,
+    pub name: String,
     pub versions: Vec<VersionEntry>,
 }
 
@@ -114,6 +145,17 @@ pub enum IndexError {
         version: String,
         size: u64,
     },
+    #[error("sniffer {sniffer:?}: {problem}")]
+    Catalog {
+        sniffer: String,
+        problem: CatalogProblem,
+    },
+    #[error("stats_url must be an https:// URL with a host and no user info, got {0:?}")]
+    BadStatsUrl(String),
+    #[error("detail file is {0} bytes, over the {MAX_DETAIL_BYTES} byte limit")]
+    DetailTooLarge(usize),
+    #[error("detail file is for {found:?}, not {expected:?}")]
+    DetailName { expected: String, found: String },
     #[error("sniffer {sniffer:?} {version}: abi {abi:?} is not of the form major.minor")]
     BadAbi {
         sniffer: String,
@@ -155,6 +197,9 @@ impl Index {
         if self.kind != Kind::Sniffer {
             return Err(IndexError::UnsupportedKind(self.kind));
         }
+        if let Some(url) = &self.stats_url {
+            check_https_url(url).map_err(|_| IndexError::BadStatsUrl(url.clone()))?;
+        }
         let mut seen = std::collections::HashSet::new();
         for sniffer in &self.sniffers {
             if !valid_name(&sniffer.name) {
@@ -169,8 +214,66 @@ impl Index {
     }
 }
 
+/// Parse a detail file and merge it into its catalog `entry`; the result is a fully
+/// inline entry that passes the same checks as one from a one-file registry.
+pub fn parse_detail(bytes: &[u8], entry: &SnifferEntry) -> Result<SnifferEntry, IndexError> {
+    if bytes.len() > MAX_DETAIL_BYTES {
+        return Err(IndexError::DetailTooLarge(bytes.len()));
+    }
+    let detail: SnifferDetail =
+        serde_json::from_slice(bytes).map_err(|e| IndexError::Json(e.to_string()))?;
+    if detail.schema != INDEX_SCHEMA {
+        return Err(IndexError::UnsupportedSchema(detail.schema));
+    }
+    if detail.name != entry.name {
+        return Err(IndexError::DetailName {
+            expected: entry.name.clone(),
+            found: detail.name,
+        });
+    }
+    let mut merged = entry.clone();
+    merged.detail_url = None;
+    merged.versions = detail.versions;
+    merged.validate()?;
+    Ok(merged)
+}
+
 impl SnifferEntry {
+    /// Split into the catalog entry (pointing at `detail_url`) and its detail file.
+    pub fn split(&self, detail_url: String) -> (SnifferEntry, SnifferDetail) {
+        let mut catalog = self.clone();
+        catalog.versions = Vec::new();
+        catalog.detail_url = Some(detail_url);
+        let detail = SnifferDetail {
+            schema: INDEX_SCHEMA,
+            kind: Kind::Sniffer,
+            name: self.name.clone(),
+            versions: self.versions.clone(),
+        };
+        (catalog, detail)
+    }
+
     fn validate(&self) -> Result<(), IndexError> {
+        let newest = self.versions.first().map(|v| Newest {
+            version: &v.version,
+            abi: &v.abi,
+            signed: v.signature_url.is_some(),
+        });
+        let catalog = Catalog {
+            categories: &self.categories,
+            tags: &self.tags,
+            updated: &self.updated,
+            detail_url: self.detail_url.as_deref(),
+            latest: &self.latest,
+            abi: &self.abi,
+            signed: self.signed,
+            newest,
+        }
+        .check()
+        .map_err(|problem| IndexError::Catalog {
+            sniffer: self.name.clone(),
+            problem,
+        });
         for pair in self.versions.windows(2) {
             let (earlier, later) = (&pair[0].version, &pair[1].version);
             if earlier == later {
@@ -190,7 +293,7 @@ impl SnifferEntry {
         for v in &self.versions {
             v.validate(&self.name)?;
         }
-        Ok(())
+        catalog
     }
 }
 
@@ -343,10 +446,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_schema_2() {
-        let mut v = example();
-        v["schema"] = 2.into();
-        assert_eq!(parse(&v), Err(IndexError::UnsupportedSchema(2)));
+    fn rejects_other_schemas() {
+        for other in [1, 3] {
+            let mut v = example();
+            v["schema"] = other.into();
+            assert_eq!(parse(&v), Err(IndexError::UnsupportedSchema(other)));
+        }
     }
 
     #[test]
@@ -601,5 +706,94 @@ mod tests {
         v["future_field"] = true.into();
         first_version(&mut v)["future"] = 1.into();
         assert!(parse(&v).is_ok());
+    }
+
+    fn catalog_problem(v: &serde_json::Value) -> CatalogProblem {
+        match parse(v) {
+            Err(IndexError::Catalog { problem, .. }) => problem,
+            other => panic!("expected a catalog problem, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn catalog_fields_are_checked() {
+        let mut v = example();
+        v["sniffers"][0]["categories"] = serde_json::json!(["Game"]);
+        assert_eq!(catalog_problem(&v), CatalogProblem::BadLabel("Game".into()));
+        let mut v = example();
+        v["sniffers"][0]["updated"] = "yesterday".into();
+        assert!(matches!(catalog_problem(&v), CatalogProblem::BadDate(_)));
+        let mut v = example();
+        v["sniffers"][0]["latest"] = "0.1.0".into();
+        assert_eq!(catalog_problem(&v), CatalogProblem::LatestMismatch);
+        let mut v = example();
+        v["sniffers"][0]["signed"] = false.into();
+        assert_eq!(catalog_problem(&v), CatalogProblem::LatestMismatch);
+    }
+
+    #[test]
+    fn versions_and_detail_url_are_exclusive() {
+        let mut v = example();
+        v["sniffers"][0]["detail_url"] = "https://example.com/minecraft.json".into();
+        assert_eq!(catalog_problem(&v), CatalogProblem::VersionsOrDetail);
+        let mut v = example();
+        v["sniffers"][0]["versions"] = serde_json::json!([]);
+        assert_eq!(catalog_problem(&v), CatalogProblem::VersionsOrDetail);
+        v["sniffers"][0]["detail_url"] = "http://example.com/m.json".into();
+        assert!(matches!(
+            catalog_problem(&v),
+            CatalogProblem::BadDetailUrl(_)
+        ));
+    }
+
+    #[test]
+    fn stats_url_must_be_https() {
+        let mut v = example();
+        v["stats_url"] = "https://example.com/stats.json".into();
+        assert!(parse(&v).is_ok());
+        v["stats_url"] = "http://example.com/stats.json".into();
+        assert!(matches!(parse(&v), Err(IndexError::BadStatsUrl(_))));
+    }
+
+    fn split_example() -> (SnifferEntry, Vec<u8>) {
+        let index = parse_index(EXAMPLE.as_bytes()).unwrap();
+        let (catalog, detail) = index.sniffers[0].split("https://example.com/m.json".into());
+        (catalog, serde_json::to_vec(&detail).unwrap())
+    }
+
+    #[test]
+    fn a_catalog_entry_plus_its_detail_equals_the_inline_entry() {
+        let (catalog, detail) = split_example();
+        assert!(catalog.versions.is_empty() && catalog.detail_url.is_some());
+        let mut v = example();
+        v["sniffers"][0] = serde_json::to_value(&catalog).unwrap();
+        assert!(
+            parse(&v).is_ok(),
+            "a catalog-only entry is valid on its own"
+        );
+        let merged = parse_detail(&detail, &catalog).unwrap();
+        assert_eq!(merged, parse_index(EXAMPLE.as_bytes()).unwrap().sniffers[0]);
+    }
+
+    #[test]
+    fn a_detail_for_another_sniffer_or_another_latest_is_refused() {
+        let (catalog, detail) = split_example();
+        let mut other = catalog.clone();
+        other.name = "other".into();
+        assert!(matches!(
+            parse_detail(&detail, &other),
+            Err(IndexError::DetailName { .. })
+        ));
+        let mut stale = catalog.clone();
+        stale.latest = "0.3.0".parse().unwrap();
+        assert!(matches!(
+            parse_detail(&detail, &stale),
+            Err(IndexError::Catalog { .. })
+        ));
+        assert!(matches!(
+            parse_detail(&vec![b' '; MAX_DETAIL_BYTES + 1], &catalog),
+            Err(IndexError::DetailTooLarge(_))
+        ));
+        assert!(parse_detail(b"{}", &catalog).is_err());
     }
 }

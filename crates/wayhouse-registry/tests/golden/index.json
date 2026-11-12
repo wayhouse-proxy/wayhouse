@@ -1,12 +1,24 @@
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "sniffer",
   "name": "golden registry",
+  "stats_url": "https://example.com/stats.json",
   "sniffers": [
     {
       "name": "a2s",
       "description": "a2s sniffer",
       "license": "MIT OR Apache-2.0",
+      "categories": [
+        "game"
+      ],
+      "tags": [
+        "query",
+        "source"
+      ],
+      "latest": "0.2.0",
+      "abi": "0.1",
+      "signed": true,
+      "updated": "2026-11-12",
       "versions": [
         {
           "version": "0.2.0",
@@ -40,6 +52,17 @@
       "name": "wireguard",
       "description": "wireguard sniffer",
       "license": "MIT OR Apache-2.0",
+      "categories": [
+        "game"
+      ],
+      "tags": [
+        "query",
+        "source"
+      ],
+      "latest": "0.1.0",
+      "abi": "0.1",
+      "signed": true,
+      "updated": "2026-11-12",
       "versions": [
         {
           "version": "0.1.0",

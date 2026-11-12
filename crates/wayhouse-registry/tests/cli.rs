@@ -13,6 +13,7 @@ license = "MIT"
 version = "{version}"
 abi = "0.1"
 min_proxy = "0.1.0"
+categories = ["game"]
 [limits]
 max_memory_bytes = 1048576
 call_timeout_ms = 50
@@ -151,4 +152,83 @@ fn verify_accepts_a_generated_index_and_rejects_garbage() {
     let r = run(&["verify".as_ref(), bad.as_os_str()]);
     assert!(!r.status.success());
     assert!(!String::from_utf8_lossy(&r.stderr).is_empty());
+}
+
+fn with_extra<'a>(
+    out: &'a Path,
+    extra: &[&'a std::ffi::OsStr],
+    dir: &'a Path,
+) -> Vec<&'a std::ffi::OsStr> {
+    let mut a = gen_args(out, None, &[]);
+    a.extend(extra.iter().copied());
+    a.push(dir.as_os_str());
+    a
+}
+
+#[test]
+fn catalog_mode_writes_detail_files_and_a_rerun_keeps_old_versions() {
+    let t = tempfile::tempdir().unwrap();
+    let out = t.path().join("index.json");
+    let details = t.path().join("details");
+    let cats = t.path().join("categories.toml");
+    std::fs::write(&cats, "categories = [\"game\", \"voip\"]\n").unwrap();
+    let extra: Vec<&std::ffi::OsStr> = vec![
+        "--details-dir".as_ref(),
+        details.as_os_str(),
+        "--details-base-url".as_ref(),
+        "https://example.com/d".as_ref(),
+        "--categories".as_ref(),
+        cats.as_os_str(),
+        "--date".as_ref(),
+        "2026-11-12".as_ref(),
+    ];
+    let d1 = sniffer_dir(t.path(), "a2s", "0.1.0", "x", false);
+    let r = run(&with_extra(&out, &extra, &d1));
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let index = wayhouse_registry::parse_index(&std::fs::read(&out).unwrap()).unwrap();
+    let entry = &index.sniffers[0];
+    assert!(entry.versions.is_empty());
+    assert_eq!(
+        entry.detail_url.as_deref(),
+        Some("https://example.com/d/a2s.json")
+    );
+    assert_eq!(
+        (entry.latest.to_string(), entry.updated.as_str()),
+        ("0.1.0".into(), "2026-11-12")
+    );
+    // The second run reads the old versions back through the detail file.
+    let d2 = sniffer_dir(t.path(), "a2s", "0.2.0", "y", false);
+    assert!(run(&with_extra(&out, &extra, &d2)).status.success());
+    let detail = std::fs::read(details.join("a2s.json")).unwrap();
+    let index = wayhouse_registry::parse_index(&std::fs::read(&out).unwrap()).unwrap();
+    let merged = wayhouse_registry::parse_detail(&detail, &index.sniffers[0]).unwrap();
+    assert_eq!(merged.versions.len(), 2);
+    let ok = run(&[
+        "verify".as_ref(),
+        out.as_os_str(),
+        "--details-dir".as_ref(),
+        details.as_os_str(),
+    ]);
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(!run(&["verify".as_ref(), out.as_os_str()]).status.success());
+}
+
+#[test]
+fn a_category_off_the_list_fails_and_writes_nothing() {
+    let t = tempfile::tempdir().unwrap();
+    let out = t.path().join("index.json");
+    let cats = t.path().join("categories.toml");
+    std::fs::write(&cats, "categories = [\"voip\"]\n").unwrap();
+    let d = sniffer_dir(t.path(), "a2s", "0.1.0", "x", false);
+    let dirs = [d.as_path()];
+    let mut a = gen_args(&out, None, &dirs);
+    a.extend(["--categories".as_ref(), cats.as_os_str()]);
+    let r = run(&a);
+    assert!(!r.status.success());
+    assert!(String::from_utf8_lossy(&r.stderr).contains("unknown category"));
+    assert!(!out.exists());
 }

@@ -9,9 +9,10 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::catalog::{Catalog, CatalogProblem, Newest};
 use crate::index::{
-    check_https_url, parse_abi, valid_name, Kind, UrlProblem, INDEX_SCHEMA, MAX_INDEX_BYTES,
-    MAX_MODULE_BYTES,
+    check_https_url, parse_abi, valid_name, Kind, UrlProblem, INDEX_SCHEMA, MAX_DETAIL_BYTES,
+    MAX_INDEX_BYTES, MAX_MODULE_BYTES,
 };
 
 /// Largest `options_schema` an entry may carry once serialised (64 KiB).
@@ -22,6 +23,9 @@ pub struct PluginIndex {
     pub schema: u32,
     pub kind: Kind,
     pub name: String,
+    /// Where the registry publishes download counts; absent means no "popular" sort.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats_url: Option<String>,
     pub plugins: Vec<PluginEntry>,
 }
 
@@ -32,7 +36,56 @@ pub struct PluginEntry {
     pub license: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub homepage: Option<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Summary of the newest version (see the sniffer entry).
+    pub latest: semver::Version,
+    pub abi: String,
+    pub signed: bool,
+    /// `YYYY-MM-DD` of the newest publish.
+    pub updated: String,
+    /// Where the full version list lives; exclusive with inline `versions`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub versions: Vec<PluginVersion>,
+}
+
+/// A per-plugin detail file (`detail_url`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginDetail {
+    pub schema: u32,
+    pub kind: Kind,
+    pub name: String,
+    pub versions: Vec<PluginVersion>,
+}
+
+/// Parse a detail file and merge it into its catalog `entry` (see `index::parse_detail`).
+pub fn parse_plugin_detail(
+    bytes: &[u8],
+    entry: &PluginEntry,
+) -> Result<PluginEntry, PluginIndexError> {
+    if bytes.len() > MAX_DETAIL_BYTES {
+        return Err(PluginIndexError::DetailTooLarge(bytes.len()));
+    }
+    let detail: PluginDetail =
+        serde_json::from_slice(bytes).map_err(|e| PluginIndexError::Json(e.to_string()))?;
+    if detail.schema != INDEX_SCHEMA {
+        return Err(PluginIndexError::UnsupportedSchema(detail.schema));
+    }
+    if detail.name != entry.name {
+        return Err(PluginIndexError::DetailName {
+            expected: entry.name.clone(),
+            found: detail.name,
+        });
+    }
+    let mut merged = entry.clone();
+    merged.detail_url = None;
+    merged.versions = detail.versions;
+    merged.validate()?;
+    Ok(merged)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +140,17 @@ pub enum PluginIndexError {
         field: &'static str,
         url: String,
     },
+    #[error("plugin {plugin:?}: {problem}")]
+    Catalog {
+        plugin: String,
+        problem: CatalogProblem,
+    },
+    #[error("stats_url must be an https:// URL with a host and no user info, got {0:?}")]
+    BadStatsUrl(String),
+    #[error("detail file is {0} bytes, over the {MAX_DETAIL_BYTES} byte limit")]
+    DetailTooLarge(usize),
+    #[error("detail file is for {found:?}, not {expected:?}")]
+    DetailName { expected: String, found: String },
     #[error("plugin {plugin:?} {version}: sha256 must be 64 lowercase hex characters")]
     BadSha256 { plugin: String, version: String },
     #[error("plugin {plugin:?} {version}: size {size} must be 1..={MAX_MODULE_BYTES} bytes")]
@@ -139,6 +203,9 @@ impl PluginIndex {
         if self.kind != Kind::Plugin {
             return Err(PluginIndexError::WrongKind(self.kind));
         }
+        if let Some(url) = &self.stats_url {
+            check_https_url(url).map_err(|_| PluginIndexError::BadStatsUrl(url.clone()))?;
+        }
         let mut seen = std::collections::HashSet::new();
         for plugin in &self.plugins {
             if !valid_name(&plugin.name) {
@@ -154,7 +221,41 @@ impl PluginIndex {
 }
 
 impl PluginEntry {
+    /// Split into the catalog entry (pointing at `detail_url`) and its detail file.
+    pub fn split(&self, detail_url: String) -> (PluginEntry, PluginDetail) {
+        let mut catalog = self.clone();
+        catalog.versions = Vec::new();
+        catalog.detail_url = Some(detail_url);
+        let detail = PluginDetail {
+            schema: INDEX_SCHEMA,
+            kind: Kind::Plugin,
+            name: self.name.clone(),
+            versions: self.versions.clone(),
+        };
+        (catalog, detail)
+    }
+
     fn validate(&self) -> Result<(), PluginIndexError> {
+        let newest = self.versions.first().map(|v| Newest {
+            version: &v.version,
+            abi: &v.abi,
+            signed: v.signature_url.is_some(),
+        });
+        let catalog = Catalog {
+            categories: &self.categories,
+            tags: &self.tags,
+            updated: &self.updated,
+            detail_url: self.detail_url.as_deref(),
+            latest: &self.latest,
+            abi: &self.abi,
+            signed: self.signed,
+            newest,
+        }
+        .check()
+        .map_err(|problem| PluginIndexError::Catalog {
+            plugin: self.name.clone(),
+            problem,
+        });
         for pair in self.versions.windows(2) {
             let (earlier, later) = (&pair[0].version, &pair[1].version);
             if earlier == later {
@@ -173,7 +274,8 @@ impl PluginEntry {
         }
         self.versions
             .iter()
-            .try_for_each(|v| v.validate(&self.name))
+            .try_for_each(|v| v.validate(&self.name))?;
+        catalog
     }
 }
 
@@ -380,7 +482,7 @@ mod tests {
 
     fn doc(extra: &str) -> String {
         format!(
-            r#"{{"schema":1,"kind":"plugin","name":"official plugins","plugins":[{{"name":"demo","description":"d","license":"MIT","versions":[{{"version":"0.1.0","abi":"0.2","url":"https://example.com/p.wasm","sha256":"{}","size":10{extra}}}]}}]}}"#,
+            r#"{{"schema":2,"kind":"plugin","name":"official plugins","plugins":[{{"name":"demo","description":"d","license":"MIT","categories":["integration"],"tags":["pelican"],"latest":"0.1.0","abi":"0.2","signed":false,"updated":"2026-11-12","versions":[{{"version":"0.1.0","abi":"0.2","url":"https://example.com/p.wasm","sha256":"{}","size":10{extra}}}]}}]}}"#,
             "a".repeat(64)
         )
     }
@@ -389,7 +491,7 @@ mod tests {
     fn a_plugin_index_parses_and_a_sniffer_index_is_told_apart() {
         let idx = parse_plugin_index(doc("").as_bytes()).unwrap();
         assert_eq!(idx.plugins[0].name, "demo");
-        let sniffer = br#"{"schema":1,"kind":"sniffer","name":"s","sniffers":[]}"#;
+        let sniffer = br#"{"schema":2,"kind":"sniffer","name":"s","sniffers":[]}"#;
         assert_eq!(
             parse_plugin_index(sniffer),
             Err(PluginIndexError::WrongKind(Kind::Sniffer))
@@ -431,8 +533,8 @@ mod tests {
             PluginIndexError::BadAbi { .. }
         ));
         assert!(matches!(
-            bad("\"schema\":1", "\"schema\":2"),
-            PluginIndexError::UnsupportedSchema(2)
+            bad("\"schema\":2", "\"schema\":3"),
+            PluginIndexError::UnsupportedSchema(3)
         ));
     }
 
@@ -447,7 +549,7 @@ mod tests {
             .unwrap()
             .to_string();
         let twice =
-            format!(r#"{{"schema":1,"kind":"plugin","name":"n","plugins":[{entry},{entry}]}}"#);
+            format!(r#"{{"schema":2,"kind":"plugin","name":"n","plugins":[{entry},{entry}]}}"#);
         assert!(matches!(
             parse_plugin_index(twice.as_bytes()),
             Err(PluginIndexError::DuplicatePlugin(_))
@@ -459,7 +561,7 @@ mod tests {
             )
         };
         let sorted_wrong = format!(
-            r#"{{"schema":1,"kind":"plugin","name":"n","plugins":[{{"name":"d","description":"","license":"MIT","versions":[{},{}]}}]}}"#,
+            r#"{{"schema":2,"kind":"plugin","name":"n","plugins":[{{"name":"d","description":"","license":"MIT","categories":["integration"],"tags":["pelican"],"latest":"0.1.0","abi":"0.2","signed":false,"updated":"2026-11-12","versions":[{},{}]}}]}}"#,
             ver("0.1.0"),
             ver("0.2.0")
         );
@@ -587,6 +689,26 @@ mod tests {
         assert!(matches!(
             verify_plugin_artifact("demo", &v2, &other, Some(&sig), Some(&key)),
             Err(PluginVerifyError::Signature(_))
+        ));
+    }
+
+    #[test]
+    fn a_plugin_catalog_entry_plus_its_detail_equals_the_inline_entry() {
+        let inline = parse_plugin_index(doc("").as_bytes()).unwrap();
+        let (catalog, detail) = inline.plugins[0].split("https://example.com/demo.json".into());
+        let merged = parse_plugin_detail(&serde_json::to_vec(&detail).unwrap(), &catalog).unwrap();
+        assert_eq!(merged, inline.plugins[0]);
+        let mut other = catalog.clone();
+        other.name = "other".into();
+        assert!(matches!(
+            parse_plugin_detail(&serde_json::to_vec(&detail).unwrap(), &other),
+            Err(PluginIndexError::DetailName { .. })
+        ));
+        let mut stale = catalog;
+        stale.signed = true;
+        assert!(matches!(
+            parse_plugin_detail(&serde_json::to_vec(&detail).unwrap(), &stale),
+            Err(PluginIndexError::Catalog { .. })
         ));
     }
 }

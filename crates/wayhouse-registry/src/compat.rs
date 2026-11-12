@@ -135,6 +135,13 @@ mod tests {
             description: String::new(),
             license: "MIT".into(),
             homepage: None,
+            categories: Vec::new(),
+            tags: Vec::new(),
+            latest: "0.0.0".parse().unwrap(),
+            abi: "0.1".into(),
+            signed: false,
+            updated: "2026-11-12".into(),
+            detail_url: None,
             versions,
         }
     }

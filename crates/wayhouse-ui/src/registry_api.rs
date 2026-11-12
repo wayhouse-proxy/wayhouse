@@ -41,6 +41,7 @@ pub fn viewer_router() -> Router<AppState> {
     Router::new()
         .route("/api/registries", get(list_registries))
         .route("/api/registries/{id}/sniffers", get(list_sniffers))
+        .route("/api/registries/{id}/sniffers/{name}", get(sniffer_detail))
 }
 
 /// Changing which registries are trusted is `Admin`; installing from one is `Operator`.
@@ -208,11 +209,7 @@ fn verifiable(reg: &RegistryRef, entry: &SnifferEntry, env: &Environment) -> boo
     select(entry, env).is_ok_and(|v| version_verifiable(reg, v))
 }
 
-async fn list_sniffers(
-    State(state): State<AppState>,
-    Extension(Actor(actor)): Extension<Actor>,
-    Path(id): Path<String>,
-) -> Response {
+async fn list_sniffers(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(reg) = state
         .registries
         .get(&id)
@@ -224,26 +221,67 @@ async fn list_sniffers(
         Ok(i) => i,
         Err(e) => return fetch_failure(&e),
     };
-    let fleet = fleet_env(&state, actor).await;
+    let host = host_abi();
+    // The catalog only: versions come with the per-sniffer detail request, so listing a
+    // large registry never fetches a detail file.
     let sniffers: Vec<_> = index
         .sniffers
         .iter()
         .map(|entry| {
             let mut v = serde_json::to_value(entry).expect("index entries serialize");
-            v["compatible"] = compatible(entry, &fleet.env);
-            v["verifiable"] = json!(verifiable(&reg, entry, &fleet.env));
-            for (j, version) in entry.versions.iter().enumerate() {
-                v["versions"][j]["verifiable"] = json!(version_verifiable(&reg, version));
-            }
+            v.as_object_mut()
+                .expect("an entry is an object")
+                .remove("versions");
+            v["abi_compatible"] = json!(abi_matches(&entry.abi, &host).unwrap_or(false));
             v
         })
         .collect();
     Json(json!({
         "registry": registry_json(&reg),
         "index_name": index.name,
+        "stats_url": index.stats_url,
+        "host_abi": host,
+        "sniffers": sniffers,
+    }))
+    .into_response()
+}
+
+/// `GET /api/registries/{id}/sniffers/{name}`: one sniffer with every version, each
+/// marked compatible with this fleet and verifiable here.
+async fn sniffer_detail(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path((id, name)): Path<(String, String)>,
+) -> Response {
+    let Some(reg) = state
+        .registries
+        .get(&id)
+        .filter(|r| r.kind == crate::registries::RegistryKind::Sniffer)
+    else {
+        return error(StatusCode::NOT_FOUND, "no such registry");
+    };
+    let index = match state.registry_client.fetch_index(&reg.url).await {
+        Ok(i) => i,
+        Err(e) => return fetch_failure(&e),
+    };
+    let Some(catalog) = index.sniffers.iter().find(|s| s.name == name) else {
+        return error(StatusCode::NOT_FOUND, "no such sniffer in this registry");
+    };
+    let entry = match state.registry_client.resolve_sniffer(catalog).await {
+        Ok(e) => e,
+        Err(e) => return fetch_failure(&e),
+    };
+    let fleet = fleet_env(&state, actor).await;
+    let mut v = serde_json::to_value(&entry).expect("index entries serialize");
+    v["compatible"] = compatible(&entry, &fleet.env);
+    v["verifiable"] = json!(verifiable(&reg, &entry, &fleet.env));
+    for (j, version) in entry.versions.iter().enumerate() {
+        v["versions"][j]["verifiable"] = json!(version_verifiable(&reg, version));
+    }
+    Json(json!({
+        "sniffer": v,
         "host_abi": host_abi(),
         "min_proxy_checked": fleet.min_proxy_checked,
-        "sniffers": sniffers,
     }))
     .into_response()
 }
@@ -349,8 +387,12 @@ async fn install(
         Ok(i) => i,
         Err(e) => return fetch_failure(&e),
     };
-    let Some(entry) = index.sniffers.iter().find(|s| s.name == req.name) else {
+    let Some(catalog) = index.sniffers.iter().find(|s| s.name == req.name) else {
         return error(StatusCode::NOT_FOUND, "no such sniffer in this registry");
+    };
+    let entry = &match state.registry_client.resolve_sniffer(catalog).await {
+        Ok(e) => e,
+        Err(e) => return fetch_failure(&e),
     };
 
     let fleet = fleet_env(&state, actor.clone()).await;
@@ -716,12 +758,30 @@ async fn check_updates(
         }
     }
 
+    // Only the installed sniffers need their version lists, so only their detail files
+    // are fetched. A detail that cannot be had hides that sniffer's update, nothing else.
+    let mut resolved: Vec<(RegistryRef, Vec<SnifferEntry>)> = Vec::new();
+    for (reg, index) in &indexes {
+        let mut entries = Vec::new();
+        for catalog in index
+            .sniffers
+            .iter()
+            .filter(|e| groups.keys().any(|(name, _)| *name == e.name))
+        {
+            match state.registry_client.resolve_sniffer(catalog).await {
+                Ok(e) => entries.push(e),
+                Err(e) => {
+                    tracing::warn!(registry = %reg.id, sniffer = %catalog.name, error = %e, "detail file unavailable for the update check")
+                }
+            }
+        }
+        resolved.push((reg.clone(), entries));
+    }
     let rows: Vec<_> = groups
         .into_iter()
         .map(|((name, sha256), g)| {
-            let known = indexes.iter().find_map(|(_, index)| {
-                index
-                    .sniffers
+            let known = resolved.iter().find_map(|(_, entries)| {
+                entries
                     .iter()
                     .filter(|e| e.name == name)
                     .flat_map(|e| &e.versions)
@@ -729,10 +789,10 @@ async fn check_updates(
                     .map(|v| v.version.clone())
             });
             let update = known.as_ref().and_then(|installed| {
-                indexes
+                resolved
                     .iter()
-                    .filter_map(|(reg, index)| {
-                        let entry = index.sniffers.iter().find(|e| e.name == name)?;
+                    .filter_map(|(reg, entries)| {
+                        let entry = entries.iter().find(|e| e.name == name)?;
                         update_from(reg, entry, installed, &fleet.env)
                     })
                     .max_by(|a, b| (a.compatible, &a.version).cmp(&(b.compatible, &b.version)))
@@ -792,9 +852,10 @@ mod tests {
         let sha =
             sha256_override.map_or_else(|| format!("{:x}", Sha256::digest(&module)), str::to_owned);
         let index = json!({
-            "schema": 1, "kind": "sniffer", "name": "test registry",
+            "schema": 2, "kind": "sniffer", "name": "test registry",
             "sniffers": [{
                 "name": "demo", "description": "a demo", "license": "MIT",
+                "categories": ["game"], "tags": [], "updated": "2026-11-12", "latest": "0.1.0", "abi": abi, "signed": false,
                 "versions": [{
                     "version": "0.1.0", "abi": abi, "min_proxy": "0.1.0",
                     "url": "https://registry.test/demo.wasm",
@@ -1142,15 +1203,15 @@ mod tests {
         let (status, body) = h
             .call(
                 "GET",
-                &format!("/api/registries/{}/sniffers", h.registry_id),
+                &format!("/api/registries/{}/sniffers/demo", h.registry_id),
                 None,
             )
             .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["sniffers"][0]["name"], "demo");
-        assert_eq!(body["sniffers"][0]["compatible"]["version"], "0.1.0");
-        assert_eq!(body["sniffers"][0]["verifiable"], false);
-        assert_eq!(body["sniffers"][0]["versions"][0]["verifiable"], false);
+        assert_eq!(body["sniffer"]["name"], "demo");
+        assert_eq!(body["sniffer"]["compatible"]["version"], "0.1.0");
+        assert_eq!(body["sniffer"]["verifiable"], false);
+        assert_eq!(body["sniffer"]["versions"][0]["verifiable"], false);
         assert_eq!(body["min_proxy_checked"], false);
     }
 
@@ -1176,14 +1237,12 @@ mod tests {
         let (_, body) = h
             .call(
                 "GET",
-                &format!("/api/registries/{}/sniffers", h.registry_id),
+                &format!("/api/registries/{}/sniffers/demo", h.registry_id),
                 None,
             )
             .await;
         assert_eq!(body["min_proxy_checked"], true);
-        let reason = body["sniffers"][0]["compatible"]["reason"]
-            .as_str()
-            .unwrap();
+        let reason = body["sniffer"]["compatible"]["reason"].as_str().unwrap();
         assert!(
             reason.contains("0.1.0") && reason.contains("0.0.9"),
             "{reason}"
@@ -1199,12 +1258,12 @@ mod tests {
         let (_, body) = h
             .call(
                 "GET",
-                &format!("/api/registries/{}/sniffers", h.registry_id),
+                &format!("/api/registries/{}/sniffers/demo", h.registry_id),
                 None,
             )
             .await;
         assert_eq!(body["min_proxy_checked"], false);
-        assert_eq!(body["sniffers"][0]["compatible"]["version"], "0.1.0");
+        assert_eq!(body["sniffer"]["compatible"]["version"], "0.1.0");
     }
 
     async fn fake_controller_features(registry_install: bool) -> String {
@@ -1280,13 +1339,11 @@ mod tests {
         let (_, body) = h
             .call(
                 "GET",
-                &format!("/api/registries/{}/sniffers", h.registry_id),
+                &format!("/api/registries/{}/sniffers/demo", h.registry_id),
                 None,
             )
             .await;
-        let reason = body["sniffers"][0]["compatible"]["reason"]
-            .as_str()
-            .unwrap();
+        let reason = body["sniffer"]["compatible"]["reason"].as_str().unwrap();
         assert!(reason.contains("0.9") && reason.contains("0.1"), "{reason}");
     }
 
@@ -1327,13 +1384,105 @@ mod tests {
         assert_eq!(uploads.lock().unwrap().as_slice(), [module]);
     }
 
+    /// A catalog registry: `demo` is listed without versions and its detail file serves them.
+    /// `detail_latest` is what the detail file's newest version claims to be.
+    async fn fake_catalog_registry(module: Vec<u8>, detail_latest: &str) -> String {
+        let version = |v: &str| {
+            json!({
+                "version": v, "abi": "0.1", "min_proxy": "0.1.0",
+                "url": "https://registry.test/demo.wasm",
+                "sha256": format!("{:x}", Sha256::digest(&module)), "size": module.len(),
+                "limits": { "max_memory_bytes": 1048576, "call_timeout_ms": 50 }
+            })
+        };
+        let index = json!({
+            "schema": 2, "kind": "sniffer", "name": "test registry",
+            "stats_url": "https://registry.test/stats.json",
+            "sniffers": [{
+                "name": "demo", "description": "a demo", "license": "MIT",
+                "categories": ["game"], "tags": ["minecraft"], "updated": "2026-11-12",
+                "latest": "0.1.0", "abi": "0.1", "signed": false,
+                "detail_url": "https://registry.test/sniffers/demo.json"
+            }]
+        })
+        .to_string();
+        let detail =
+            json!({ "schema": 2, "kind": "sniffer", "name": "demo", "versions": [version(detail_latest)] })
+                .to_string();
+        serve(
+            Router::new()
+                .route("/index.json", get(move || async move { index }))
+                .route("/sniffers/demo.json", get(move || async move { detail }))
+                .route("/demo.wasm", get(move || async move { module })),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_catalog_lists_without_versions_and_the_detail_and_install_fetch_them() {
+        let module = wat::parse_str(MODULE_WAT).unwrap();
+        let base = fake_catalog_registry(module.clone(), "0.1.0").await;
+        let (agg, uploads) = fake_aggregator(ok_results()).await;
+        let h = harness(&base, &agg, false, crate::role::Role::Operator).await;
+        let (status, body) = h
+            .call(
+                "GET",
+                &format!("/api/registries/{}/sniffers", h.registry_id),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let entry = &body["sniffers"][0];
+        assert_eq!(
+            (entry["name"].as_str(), entry["latest"].as_str()),
+            (Some("demo"), Some("0.1.0"))
+        );
+        assert_eq!(entry["tags"][0], "minecraft");
+        assert_eq!(entry["abi_compatible"], true);
+        assert!(entry.get("versions").is_none());
+        assert_eq!(body["stats_url"], "https://registry.test/stats.json");
+        let (status, body) = h
+            .call(
+                "GET",
+                &format!("/api/registries/{}/sniffers/demo", h.registry_id),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["sniffer"]["versions"][0]["version"], "0.1.0");
+        assert_eq!(body["sniffer"]["compatible"]["version"], "0.1.0");
+        let (status, body) = h.install().await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(uploads.lock().unwrap().as_slice(), [module]);
+    }
+
+    #[tokio::test]
+    async fn a_detail_that_disagrees_with_the_catalog_is_refused_and_nothing_uploads() {
+        let module = wat::parse_str(MODULE_WAT).unwrap();
+        let base = fake_catalog_registry(module, "0.9.0").await;
+        let (agg, uploads) = fake_aggregator(ok_results()).await;
+        let h = harness(&base, &agg, false, crate::role::Role::Operator).await;
+        let (status, _) = h
+            .call(
+                "GET",
+                &format!("/api/registries/{}/sniffers/demo", h.registry_id),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        let (status, _) = h.install().await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(uploads.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn install_ignores_a_dead_signature_url_when_nothing_verifies_it() {
         let module = wat::parse_str(MODULE_WAT).unwrap();
         let index = json!({
-            "schema": 1, "kind": "sniffer", "name": "test registry",
+            "schema": 2, "kind": "sniffer", "name": "test registry",
             "sniffers": [{
                 "name": "demo", "description": "a demo", "license": "MIT",
+                "categories": ["game"], "tags": [], "updated": "2026-11-12", "latest": "0.1.0", "abi": "0.1", "signed": true,
                 "versions": [{
                     "version": "0.1.0", "abi": "0.1", "min_proxy": "0.1.0",
                     "url": "https://registry.test/demo.wasm",
@@ -1376,8 +1525,8 @@ mod tests {
             })
             .collect();
         let index = json!({
-            "schema": 1, "kind": "sniffer", "name": "test registry",
-            "sniffers": [{ "name": "demo", "description": "d", "license": "MIT", "versions": list }]
+            "schema": 2, "kind": "sniffer", "name": "test registry",
+            "sniffers": [{ "name": "demo", "description": "d", "license": "MIT", "categories": ["game"], "tags": [], "updated": "2026-11-12", "latest": list[0]["version"], "abi": list[0]["abi"], "signed": false, "versions": list }]
         })
         .to_string();
         let mut app = Router::new().route("/index.json", get(move || async move { index }));
@@ -1619,8 +1768,8 @@ mod tests {
             })
             .collect();
         let index = json!({
-            "schema": 1, "kind": "sniffer", "name": "test registry",
-            "sniffers": [{ "name": "demo", "description": "d", "license": "MIT", "versions": list }]
+            "schema": 2, "kind": "sniffer", "name": "test registry",
+            "sniffers": [{ "name": "demo", "description": "d", "license": "MIT", "categories": ["game"], "tags": [], "updated": "2026-11-12", "latest": list[0]["version"], "abi": list[0]["abi"], "signed": false, "versions": list }]
         })
         .to_string();
         let app = Router::new().route(
