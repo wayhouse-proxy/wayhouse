@@ -9,7 +9,7 @@ use tokio_rustls::rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
 };
 use tokio_rustls::rustls::crypto::{
-    ring, verify_tls12_signature, verify_tls13_signature, CryptoProvider,
+    verify_tls12_signature, verify_tls13_signature, CryptoProvider,
 };
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use tokio_rustls::rustls::{
@@ -144,7 +144,7 @@ fn http_client(pin: Option<&Pin>, https: bool) -> Result<reqwest::Client, Enroll
         None if !https => reqwest::Client::builder(),
         None => return Err(EnrollError::NoPin),
         Some(Pin::Fingerprint(fp)) => {
-            let provider = Arc::new(ring::default_provider());
+            let provider = Arc::new(tokio_rustls::rustls::crypto::aws_lc_rs::default_provider());
             let cfg = ClientConfig::builder_with_provider(provider.clone())
                 .with_safe_default_protocol_versions()
                 .map_err(|e| EnrollError::Connect(e.to_string()))?
