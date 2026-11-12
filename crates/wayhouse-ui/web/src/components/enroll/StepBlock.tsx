@@ -40,6 +40,11 @@ export function StepBlock({ step, index }: { step: Step; index: number }) {
           The browser refused to copy. Select the text above and copy it by hand.
         </p>
       )}
+      {step.holdsCode && (
+        <p className="mt-1 max-w-(--measure) text-xs text-ink-muted">
+          Copying puts the code on the clipboard, where a clipboard manager may keep it. Clear it once pasted.
+        </p>
+      )}
       {step.note && <p className="mt-1 max-w-(--measure) text-xs text-ink-muted">{step.note}</p>}
     </section>
   );

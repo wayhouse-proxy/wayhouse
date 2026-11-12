@@ -121,7 +121,7 @@ describe("generate", () => {
     expect(yaml.text).toContain('file: "./edge-1.enroll"');
     expect(yaml.text).toContain("--parent-url=https://parent.example");
     expect(steps.at(-1)!.text).toBe(
-      "docker compose -f compose.edge-1.yml run --rm enroll\ndocker compose -f compose.edge-1.yml up -d aggregator\nrm edge-1.enroll",
+      "docker compose -f compose.edge-1.yml run --rm enroll\ndocker compose -f compose.edge-1.yml up -d aggregator\nrm -- edge-1.enroll",
     );
   });
 

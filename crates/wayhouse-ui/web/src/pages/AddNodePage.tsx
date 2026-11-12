@@ -132,7 +132,7 @@ export function AddNodePage() {
   const errors = useMemo(() => {
     const e: Record<string, string> = {};
     if (!validName(name)) e.name = "1 to 64 letters, digits, '.', '_' or '-'.";
-    if (!validUrl(prefs.controllerUrl)) e.controllerUrl = "An https:// URL the new node can reach.";
+    if (!validUrl(prefs.controllerUrl, { httpsOnly: true })) e.controllerUrl = "An https:// URL the new node can reach.";
     if (!validPin(prefs.pin)) e.pin = "sha256: followed by 64 hex digits, as `wayhouse-controller init` printed it.";
     if (role === "agent" && !validBackends(backends)) e.backends = "host:port or :port, comma separated.";
     if ((role === "proxy" || role === "ui") && aggregatorUrl && !validUrl(aggregatorUrl)) e.aggregatorUrl = "An http(s) URL.";
@@ -398,7 +398,7 @@ export function AddNodePage() {
               help={`${role === "proxy" ? "This code hands out the cluster keyring" : "This code hands out the admin token"}. Type the controller's step-up secret again; it is sent with this request only and kept nowhere.`}
               error={stepUpError ?? shown("stepUp")}
               render={(a) => (
-                <Input {...a} type="password" autoComplete="new-password" value={stepUp} onChange={(e) => setStepUp(e.target.value)} className="w-full max-w-xl" />
+                <Input {...a} type="password" autoComplete="new-password" data-1p-ignore data-lpignore="true" data-form-type="other" value={stepUp} onChange={(e) => setStepUp(e.target.value)} className="w-full max-w-xl" />
               )}
             />
           )}

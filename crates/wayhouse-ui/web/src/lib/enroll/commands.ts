@@ -165,7 +165,7 @@ function systemd(s: Spec): Step[] {
     holdsCode: s.code !== null,
     text: lines.join(" \\\n  "),
     note: s.code
-      ? "The code travels in the environment of this one process, not on its command line."
+      ? "The code is not on the node binary's command line, but it is in this command, so it is in your shell history and briefly in the process list. Tick \"Keep the code out of the command\" to avoid that."
       : "The command asks for the code on the terminal; paste it there.",
   });
   return steps;
@@ -318,7 +318,7 @@ function compose(s: Spec): Step[] {
       title: "Enroll, start, then delete the spent code",
       language: "sh",
       holdsCode: false,
-      text: `docker compose -f ${sh(f)} run --rm enroll\ndocker compose -f ${sh(f)} up -d ${s.role}\nrm ${sh(`${s.name}.enroll`)}`,
+      text: `docker compose -f ${sh(f)} run --rm enroll\ndocker compose -f ${sh(f)} up -d ${s.role}\nrm -- ${sh(`${s.name}.enroll`)}`,
     },
   );
   return steps;
