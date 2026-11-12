@@ -207,6 +207,17 @@ impl Keyring {
         self.keys.is_empty()
     }
 
+    /// The key file text `parse` reads back: one base64 key per line, the active key last.
+    /// This is key material; only enrollment hands it to a node.
+    pub fn export(&self) -> Zeroizing<String> {
+        let mut out = Zeroizing::new(String::new());
+        for k in &self.keys {
+            out.push_str(&STANDARD.encode(*k.bytes));
+            out.push('\n');
+        }
+        out
+    }
+
     /// Ids of every key held, oldest first.
     pub fn key_ids(&self) -> Vec<String> {
         self.keys.iter().map(|k| k.id.clone()).collect()
@@ -407,6 +418,14 @@ mod tests {
 
     fn ring(keys: &[u8]) -> Keyring {
         Keyring::parse(&keys.iter().map(|n| key(*n)).collect::<Vec<_>>().join("\n")).unwrap()
+    }
+
+    #[test]
+    fn an_exported_keyring_parses_back_with_the_same_keys_and_active_key() {
+        let r = ring(&[1, 2, 3]);
+        let back = Keyring::parse(&r.export()).unwrap();
+        assert_eq!(back.key_ids(), r.key_ids());
+        assert_eq!(back.active_id(), r.active_id());
     }
 
     #[test]

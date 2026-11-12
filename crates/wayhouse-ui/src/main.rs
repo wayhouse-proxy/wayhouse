@@ -160,6 +160,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let argv: Vec<_> = std::env::args_os().collect();
+    if wayhouse_enroll::cli::is_node_cmd(&argv) {
+        return wayhouse_enroll::cli::run(wayhouse_enroll::Role::Ui, "wayhouse-ui", argv)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"));
+    }
     let layered = wayhouse_settings::layer(
         "ui",
         &<Args as clap::CommandFactory>::command(),

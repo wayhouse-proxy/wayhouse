@@ -190,7 +190,19 @@ pub async fn redeem(
         .await
         .map_err(|e| EnrollError::Connect(wayhouse_http::error_chain(&e)))?;
     match resp.status().as_u16() {
-        200 => resp.json().await.map_err(|_| EnrollError::BadAnswer),
+        200 => {
+            let r: RedeemResponse = resp.json().await.map_err(|_| EnrollError::BadAnswer)?;
+            // The answer must be for the role asked and carry only that role's files.
+            let ok = r.role == role
+                && r.files
+                    .keys()
+                    .all(|k| role.grant_files().contains(&k.as_str()));
+            if ok {
+                Ok(r)
+            } else {
+                Err(EnrollError::BadAnswer)
+            }
+        }
         401 | 403 | 404 | 410 | 429 => Err(EnrollError::Refused),
         s => Err(EnrollError::Status(s)),
     }

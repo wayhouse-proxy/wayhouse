@@ -334,7 +334,7 @@ over TLS that the redeemer pins.
 ```sh
 # On an admin machine: a 15-minute, single-use code for an origin named home-nas.
 curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
-  -d '{"origin": "home-nas"}'                    # {"id":"..","code":"..","expires_at":..}
+  -d '{"name": "home-nas"}'                      # {"id":"..","code":"..","expires_at":..}
 # On the origin host (the code from a file, the environment, or typed at the prompt):
 wayhouse-agent enroll --controller-url https://controller.example:9901 \
   --pin sha256:<leaf fingerprint> --code-file ./code
@@ -357,10 +357,56 @@ with a key an eavesdropper who records it today cannot recover later.
   address and per code id, and every refusal looks the same.
 - Re-enrolling an origin mints a new key and replaces the old one: the agent must be restarted
   with the new `tunnel-psk` (and proxies pick it up when the origin re-registers).
-- Not in this slice: rotating a key without re-enrolling, per-origin tokens (the shared agent
-  token is still what the agent presents, #581), and the proxy, aggregator and controller roles.
+- Not yet: rotating a key without re-enrolling, per-origin tokens (the shared agent token is
+  still what the agent presents, #581), and the controller replica role.
 - Upgrade every proxy to 0.4.0 before enrolling an origin: an older proxy ignores the key and
   its handshake with the origin then fails.
+
+### Enrolling a proxy, an aggregator or a UI
+
+The same code works for the other node binaries. `POST /enrollments` takes a `role`
+(`agent` by default, `proxy`, `aggregator`, `ui`) and the redeem returns exactly that role's
+files, named after the credentials the binary already reads (`$CREDENTIALS_DIRECTORY/<name>`):
+
+| Role | Binary | Files written to `--data-dir` | Minted with |
+|---|---|---|---|
+| `agent` | `wayhouse-agent` | `agent-token`, `tunnel-psk` | admin token |
+| `proxy` | `wayhouse` | `controller-token` (the proxy token), `aggregator-token` (the ingest token, if the controller has one), `secret.keys` (the cluster keyring) | admin token **and step-up secret** |
+| `aggregator` | `wayhouse-aggregator` | `ingest-token`, and `auth-token` (made on the node, never sent) | admin token |
+| `ui` | `wayhouse-ui` | `controller-token` (the **admin token**) | admin token **and step-up secret** |
+
+```sh
+curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
+  -d '{"role": "proxy", "name": "edge-1", "step_up": "'"$(cat step-up)"'"}'
+sudo wayhouse install --systemd --controller-url https://controller.example:9901 \
+  --pin sha256:<leaf fingerprint> --code-file ./code -- --aggregator https://agg.example:9902
+```
+
+- The keyring and the admin token are the crown jewels, so a `proxy` or `ui` code is only minted
+  with the **step-up secret** in the body (the controller's `--enroll-step-up-file`,
+  `$CREDENTIALS_DIRECTORY/enroll-step-up` or `$WAYHOUSE_ENROLL_STEP_UP`: at least 16 bytes,
+  different from every token). Without that flag those roles cannot be minted. Wrong guesses are
+  limited to five a minute. Limits of this gate: it protects against a leaked admin token, not
+  against a compromised UI host (the UI sees the secret whenever the operator types it) or
+  controller host (which already holds the keyring). The wrong-guess bucket is shared by all
+  callers, so someone with only the admin token can use it up and block the operator for a
+  minute, and under HA each replica counts separately. `proxy` and `ui` codes live at most 24
+  hours and a `ui` code is single use. Every mint, refused mint, redeem and revoke is logged with the actor
+  (the `X-Actor` header the UI sets), never with a secret.
+- The controller needs `--ingest-token-file` (the same secret the aggregator and proxies use) to
+  mint an `aggregator` code and to give proxies their aggregator token. An aggregator tier's
+  `parent_url` can be set at mint time and is written to `enrollment.json`.
+- A code redeems only as the role it was minted for. `enroll` refuses a `--data-dir` that is
+  already enrolled.
+- `enroll` (any binary) writes the files and prints how to run the node. `install --systemd`
+  (needs root) enrolls into `/etc/wayhouse/<role>` (the agent: `/var/lib/wayhouse-agent`), then
+  writes `wayhouse*.service` with `LoadCredential=` for every secret file and enables it. It
+  refuses to replace an existing unit or enrollment. Flags after `--` go to the binary;
+  `--credential NAME=PATH` loads a further secret (the UI's `ui-password`).
+- The UI also needs `--aggregator-token` and `--ui-password`, and the aggregator needs
+  `--instance-token`: enrollment does not deliver them (the controller does not hold them).
+- Running without systemd: `CREDENTIALS_DIRECTORY=<data-dir> wayhouse --secret-key-file <data-dir>/secret.keys ...`
+  reads the same files.
 
 ## TLS for the fleet services
 

@@ -154,6 +154,16 @@ fn check_ingest_token(auth: Option<&str>, ingest: Option<&str>) -> Result<(), St
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let argv: Vec<_> = std::env::args_os().collect();
+    if wayhouse_enroll::cli::is_node_cmd(&argv) {
+        return wayhouse_enroll::cli::run(
+            wayhouse_enroll::Role::Aggregator,
+            "wayhouse-aggregator",
+            argv,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"));
+    }
     let layered = wayhouse_settings::layer(
         "aggregator",
         &<Args as clap::CommandFactory>::command(),

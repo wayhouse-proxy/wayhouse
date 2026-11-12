@@ -34,42 +34,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use defguard_wireguard_rs::key::Key;
 use defguard_wireguard_rs::net::IpAddrMask;
 use defguard_wireguard_rs::peer::Peer;
 use tracing_subscriber::EnvFilter;
-
-#[derive(Subcommand, Debug)]
-enum Command {
-    /// Redeem a one-time enrollment code and save this origin's identity files into
-    /// `--data-dir`; afterwards `wayhouse-agent --data-dir D ...` needs no URL, name, token or
-    /// tunnel key flags.
-    Enroll(EnrollArgs),
-}
-
-#[derive(clap::Args, Debug)]
-struct EnrollArgs {
-    /// Directory to write `enrollment.json`, `agent-token` and `tunnel-psk` into (mode 0700).
-    #[arg(long, default_value = "wayhouse-agent-data")]
-    data_dir: PathBuf,
-    /// Base URL of the controller. Must be `https://` (plain `http://` only to loopback).
-    #[arg(long)]
-    controller_url: String,
-    /// The controller's TLS leaf certificate as `sha256:<hex>` (what the minting UI shows).
-    #[arg(long, value_name = "SHA256", conflicts_with = "controller_ca")]
-    pin: Option<String>,
-    /// PEM file of the CA that signed the controller's certificate, trusted instead of the
-    /// built-in roots.
-    #[arg(long, value_name = "PATH")]
-    controller_ca: Option<PathBuf>,
-    /// The code itself. Visible in `ps`; prefer `--code-file` or the prompt.
-    #[arg(long)]
-    code: Option<String>,
-    /// File holding the code (or set `WAYHOUSE_ENROLL_CODE_FILE` / `WAYHOUSE_ENROLL_CODE`).
-    #[arg(long, value_name = "PATH")]
-    code_file: Option<PathBuf>,
-}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -78,9 +47,6 @@ struct EnrollArgs {
     about = "Origin-side WireGuard agent for wayhouse's backend transport (phase 14, docs/11)"
 )]
 struct Args {
-    #[command(subcommand)]
-    command: Option<Command>,
-
     /// Directory holding this agent's persisted WireGuard private key
     /// (created if missing). The key is this origin's stable identity —
     /// never regenerated once it exists.
@@ -181,10 +147,13 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut args = Args::parse();
-    if let Some(Command::Enroll(e)) = args.command.take() {
-        return enroll(e).await;
+    let argv: Vec<_> = std::env::args_os().collect();
+    if wayhouse_enroll::cli::is_node_cmd(&argv) {
+        return wayhouse_enroll::cli::run(wayhouse_enroll::Role::Agent, "wayhouse-agent", argv)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"));
     }
+    let mut args = Args::parse_from(argv);
     let enrolled = enrolled_defaults(&args.data_dir)?;
     args.controller_url = args.controller_url.or(enrolled.controller_url);
     args.name = args.name.or(enrolled.name);
@@ -406,28 +375,4 @@ fn enrolled_defaults(dir: &std::path::Path) -> anyhow::Result<Enrolled> {
         token_file: existing(TOKEN_FILE),
         psk_file: existing(PSK_FILE),
     })
-}
-
-async fn enroll(e: EnrollArgs) -> anyhow::Result<()> {
-    use wayhouse_enroll::client::{parse_fingerprint, Pin};
-    let pin = match (&e.pin, &e.controller_ca) {
-        (Some(fp), None) => Some(Pin::Fingerprint(parse_fingerprint(fp)?)),
-        (None, Some(ca)) => Some(Pin::CaFile(ca.clone())),
-        // Only a loopback http:// URL may go without; the client refuses anything else.
-        _ => None,
-    };
-    let code = wayhouse_enroll::input::resolve(
-        e.code.as_deref(),
-        e.code_file.as_deref(),
-        |k| std::env::var(k).ok(),
-        wayhouse_enroll::input::tty_prompt,
-    )?;
-    let name = wayhouse_enroll::enroll_agent(&e.controller_url, pin.as_ref(), &code, &e.data_dir)
-        .await
-        .map_err(|err| anyhow::anyhow!("{err}"))?;
-    eprintln!(
-        "enrolled as {name:?}; identity written to {} (nothing else to configure but --backends)",
-        e.data_dir.display()
-    );
-    Ok(())
 }

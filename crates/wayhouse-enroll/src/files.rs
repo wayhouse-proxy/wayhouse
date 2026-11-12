@@ -14,6 +14,7 @@ use crate::Role;
 pub const META_FILE: &str = "enrollment.json";
 pub const TOKEN_FILE: &str = "agent-token";
 pub const PSK_FILE: &str = "tunnel-psk";
+pub const KEYRING_FILE: &str = "secret.keys";
 
 /// `enrollment.json`: where this node enrolled and as whom. Holds no secret.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -21,6 +22,9 @@ pub struct Meta {
     pub controller_url: String,
     pub name: String,
     pub role: Role,
+    /// An aggregator tier's parent URL, when the admin set one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_url: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -65,19 +69,37 @@ fn write_private(path: &Path, data: &[u8]) -> Result<(), FileError> {
     f.write_all(data).map_err(io(path))
 }
 
+/// Refuses a directory that already holds an enrollment: a second `enroll` would overwrite its
+/// tokens and tunnel key with truncating writes.
+pub fn check_fresh(dir: &Path) -> Result<(), FileError> {
+    let p = dir.join(META_FILE);
+    if p.exists() {
+        return Err(FileError::Io {
+            path: p,
+            source: std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "this directory is already enrolled; remove it or pick another --data-dir",
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Writes `enrollment.json` and every granted file (name -> content). A name is one of the
+/// role's fixed grant names, never a path.
 pub fn write(
     dir: &Path,
     meta: &Meta,
-    agent_token: Option<&str>,
-    psk: &str,
+    files: &std::collections::BTreeMap<String, String>,
 ) -> Result<(), FileError> {
     private_dir(dir)?;
     let meta_json = serde_json::to_vec_pretty(meta).expect("meta serializes");
     write_private(&dir.join(META_FILE), &meta_json)?;
-    if let Some(t) = agent_token {
-        write_private(&dir.join(TOKEN_FILE), t.as_bytes())?;
+    for (name, content) in files {
+        debug_assert!(!name.contains('/') && name != "..");
+        write_private(&dir.join(name), content.as_bytes())?;
     }
-    write_private(&dir.join(PSK_FILE), psk.as_bytes())
+    Ok(())
 }
 
 pub fn read_meta(dir: &Path) -> Result<Meta, FileError> {
@@ -123,14 +145,28 @@ mod tests {
             controller_url: "https://c".into(),
             name: "home".into(),
             role: Role::Agent,
+            parent_url: None,
         };
-        write(&dir, &meta, Some("tok-tok-tok-tok-tok"), &psk).unwrap();
+        let granted = [
+            (TOKEN_FILE.to_owned(), "tok-tok-tok-tok-tok".to_owned()),
+            (PSK_FILE.to_owned(), (*psk).clone()),
+        ]
+        .into();
+        write(&dir, &meta, &granted).unwrap();
         assert_eq!(mode(&dir), 0o700);
         for f in [META_FILE, TOKEN_FILE, PSK_FILE] {
             assert_eq!(mode(&dir.join(f)), 0o600, "{f}");
         }
         assert_eq!(*read_psk(&dir.join(PSK_FILE)).unwrap(), *psk);
         assert_eq!(read_meta(&dir).unwrap(), meta);
+    }
+
+    #[test]
+    fn an_enrolled_directory_is_not_enrolled_again() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(check_fresh(t.path()).is_ok());
+        std::fs::write(t.path().join(META_FILE), "{}").unwrap();
+        assert!(check_fresh(t.path()).is_err());
     }
 
     #[test]
@@ -141,8 +177,10 @@ mod tests {
             controller_url: "https://c".into(),
             name: "n".into(),
             role: Role::Agent,
+            parent_url: None,
         };
-        write(t.path(), &meta, Some("tok-tok-tok-tok-tok"), "not-a-key").unwrap();
+        let granted = [(PSK_FILE.to_owned(), "not-a-key".to_owned())].into();
+        write(t.path(), &meta, &granted).unwrap();
         assert_eq!(mode(t.path()), 0o700);
         assert!(matches!(
             read_psk(&t.path().join(PSK_FILE)),

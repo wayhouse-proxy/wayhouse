@@ -4825,6 +4825,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "wayhouse-enroll",
  "wayhouse-http",
  "wayhouse-settings",
 ]
@@ -4946,6 +4947,7 @@ name = "wayhouse-enroll"
 version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
+ "clap",
  "rand 0.8.8",
  "reqwest",
  "serde",
@@ -5104,6 +5106,7 @@ dependencies = [
  "tracing-subscriber",
  "wat",
  "wayhouse-config",
+ "wayhouse-enroll",
  "wayhouse-http",
  "wayhouse-plugin-abi",
  "wayhouse-registry",

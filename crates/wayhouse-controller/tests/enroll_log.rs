@@ -14,6 +14,9 @@ use wayhouse_controller::ui_data::{api::UiState, UiStore};
 const KEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 const ADMIN: &str = "admin-token-admin-token";
 const AGENT: &str = "agent-token-agent-token";
+const PROXY: &str = "proxy-token-proxy-token";
+const INGEST: &str = "ingest-token-ingest-token";
+const STEP_UP: &str = "step-up-step-up-step-up";
 
 #[derive(Clone, Default)]
 struct Log(Arc<Mutex<Vec<u8>>>);
@@ -71,40 +74,55 @@ async fn no_secret_reaches_the_log_even_at_trace() {
             wayhouse_secrets::Keyring::parse(KEY).unwrap(),
         ),
     };
-    let app = wayhouse_controller::enroll::router(ui, Some(Arc::from(AGENT)));
-    let minted = call(
+    let app = wayhouse_controller::enroll::router(
+        ui,
+        wayhouse_controller::enroll::Grants {
+            agent_token: Some(Arc::from(AGENT)),
+            proxy_token: Some(Arc::from(PROXY)),
+            ingest_token: Some(Arc::from(INGEST)),
+            step_up: Some(Arc::from(STEP_UP)),
+        },
+    );
+    let mut secrets: Vec<String> = vec![AGENT.into(), ADMIN.into(), PROXY.into(), INGEST.into()];
+    secrets.push(STEP_UP.into());
+    secrets.push(KEY.into());
+    for role in ["agent", "proxy", "aggregator", "ui"] {
+        let minted = call(
+            &app,
+            "/enrollments",
+            json!({"role": role, "name": "quiet", "step_up": STEP_UP}),
+            Some(ADMIN),
+        )
+        .await;
+        let code = minted["code"].as_str().unwrap().to_owned();
+        let body = json!({"code": code, "role": role});
+        let redeemed = call(&app, "/enroll", body.clone(), None).await;
+        call(&app, "/enroll", body, None).await;
+        secrets.push(code.split_once('.').unwrap().1.to_owned());
+        if let Some(psk) = redeemed["files"]["tunnel-psk"].as_str() {
+            secrets.push(psk.to_owned());
+        }
+    }
+    // A refused step-up is audited without the guess.
+    call(
         &app,
         "/enrollments",
-        json!({"origin": "quiet"}),
+        json!({"role": "proxy", "name": "x", "step_up": "guess-guess-guess-guess"}),
         Some(ADMIN),
     )
     .await;
-    let code = minted["code"].as_str().unwrap().to_owned();
-    let redeemed = call(
-        &app,
-        "/enroll",
-        json!({"code": code, "role": "agent"}),
-        None,
-    )
-    .await;
-    call(
-        &app,
-        "/enroll",
-        json!({"code": code, "role": "agent"}),
-        None,
-    )
-    .await;
+    secrets.push("guess-guess-guess-guess".into());
     let out = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
-    for secret in [
-        code.split_once('.').unwrap().1,
-        redeemed["tunnel_psk"].as_str().unwrap(),
-        AGENT,
-        ADMIN,
-    ] {
-        assert!(!out.contains(secret), "a secret is in the log: {out}");
+    for secret in &secrets {
+        assert!(
+            !out.contains(secret.as_str()),
+            "a secret is in the log: {out}"
+        );
     }
     assert!(
-        out.contains("enrollment code minted") && out.contains("enrollment code redeemed"),
+        out.contains("enrollment code minted")
+            && out.contains("enrollment code redeemed")
+            && out.contains("step-up failed"),
         "the audit lines are missing: {out}"
     );
 }

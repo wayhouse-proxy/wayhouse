@@ -31,6 +31,9 @@ key ([how](12-deployment.md#enrolling-an-origin-agent-with-a-one-time-code)). No
 for an origin that does not enroll. Upgrade every controller replica first (the stored-data level
 is now 6 and a mixed HA cluster refuses to mint or redeem), then every proxy, then enroll origins:
 a 0.3.0 proxy ignores the key and cannot complete the handshake with an enrolled origin.
+Proxies, aggregators and UI processes enroll the same way (`wayhouse enroll`, `install --systemd`;
+[roles and the step-up secret](12-deployment.md#enrolling-a-proxy-an-aggregator-or-a-ui)). Breaking
+for the mint call: `POST /enrollments` takes `name` (the old `origin` still works) and a `role`.
 
 ## Aggregator: loopback `admin_url`s need `--instance-url-allow`
 
