@@ -221,7 +221,7 @@ async fn main() -> anyhow::Result<()> {
             EnvFilter::try_from_env("WAYHOUSE_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
-    wayhouse_http::policy::check_bearer_transport(
+    wayhouse_http::bearer::check_bearer_transport(
         "--controller-url",
         &controller_url,
         args.controller_token.is_some(),

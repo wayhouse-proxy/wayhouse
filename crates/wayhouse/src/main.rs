@@ -394,7 +394,7 @@ async fn async_main(mut args: Args) -> anyhow::Result<()> {
         ),
     ] {
         if let Some(url) = url {
-            wayhouse_http::policy::check_bearer_transport(
+            wayhouse_http::bearer::check_bearer_transport(
                 flag,
                 url,
                 token.is_some(),
@@ -403,7 +403,7 @@ async fn async_main(mut args: Args) -> anyhow::Result<()> {
             .map_err(anyhow::Error::msg)?;
         }
     }
-    wayhouse_http::policy::set_allow_insecure_controller(args.allow_insecure_controller);
+    wayhouse_http::bearer::set_allow_insecure_controller(args.allow_insecure_controller);
     let tunnel_config = tunnel_boot::config(&args)?;
     if let Some(raw) = &args.plugin_overlay_url {
         let url = checked_http_url("--plugin-overlay-url", raw)?;

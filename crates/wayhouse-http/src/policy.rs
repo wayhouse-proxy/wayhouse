@@ -56,97 +56,16 @@ pub fn check_exposure(
     ))
 }
 
-static ALLOW_INSECURE_CONTROLLER: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Records the operator's `--allow-insecure-controller` for call sites deep in a binary that
-/// have no `Args` (a later fetch builds its URL itself). Set once, at start, by `main`.
-pub fn set_allow_insecure_controller(allow: bool) {
-    ALLOW_INSECURE_CONTROLLER.store(allow, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Refuses to start a client that would send `token` over plain `http://` to a non-loopback
-/// host: anyone on the path could read it and then act as this process. `flag` names the URL
-/// option. `--allow-insecure-controller` turns the refusal into a warning, for a network that
-/// is private by construction (a container network, a trusted overlay).
-pub fn check_bearer_transport(
-    flag: &str,
-    url: &str,
-    has_token: bool,
-    allow_insecure: bool,
-) -> Result<(), String> {
-    if !has_token || !sends_bearer_in_clear(url) {
-        return Ok(());
-    }
-    let url = redact_userinfo(url);
-    if allow_insecure {
-        tracing::warn!(
-            flag,
-            url = %url,
-            "bearer token is sent over plain http to a non-loopback host (--allow-insecure-controller)"
-        );
-        return Ok(());
-    }
-    Err(format!(
-        "{flag} is {url}: its bearer token would travel over plain http. Use an https:// URL, \
-         or pass --allow-insecure-controller if this network is private"
-    ))
-}
-
-/// [`check_bearer_transport`] for a call site with no `Args`: uses the flag recorded by
-/// [`set_allow_insecure_controller`].
-pub fn check_bearer_transport_global(what: &str, url: &str, has_token: bool) -> Result<(), String> {
-    check_bearer_transport(
-        what,
-        url,
-        has_token,
-        ALLOW_INSECURE_CONTROLLER.load(std::sync::atomic::Ordering::Relaxed),
-    )
-}
-
 /// Warns when `url` is plain http to a non-loopback host, token or not, for a source whose
 /// *content* an on-path attacker could forge (the plugin route overlay: hostname -> backend).
 pub fn warn_plaintext_source(flag: &str, url: &str) {
-    if sends_bearer_in_clear(url) {
+    if crate::bearer::sends_bearer_in_clear(url) {
         tracing::warn!(
             flag,
-            url = %redact_userinfo(url),
+            url = %crate::bearer::redact_userinfo(url),
             "this source is read over plain http from a non-loopback host, so anyone on the path can change what it says; use https:// unless this network is trusted"
         );
     }
-}
-
-/// Only `scheme://host[:port]` of `url`: no userinfo, path, query or fragment,
-/// any of which may carry a credential. Safe to log.
-fn redact_userinfo(url: &str) -> String {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return url.to_string();
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = authority.rsplit('@').next().unwrap_or_default();
-    format!("{scheme}://{host}")
-}
-
-fn sends_bearer_in_clear(url: &str) -> bool {
-    let Some(rest) = url
-        .get(..7)
-        .filter(|scheme| scheme.eq_ignore_ascii_case("http://"))
-        .map(|_| &url[7..])
-    else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let authority = authority.rsplit('@').next().unwrap_or_default();
-    let host = if let Some(v6) = authority.strip_prefix('[') {
-        v6.split(']').next().unwrap_or_default()
-    } else {
-        authority.split(':').next().unwrap_or_default()
-    };
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.to_canonical().is_loopback());
-    !loopback
 }
 
 #[cfg(test)]
@@ -192,61 +111,5 @@ mod tests {
     fn exposure_non_loopback_with_token_or_optout_ok() {
         assert!(check_exposure("c", addr("0.0.0.0:1"), true, false).is_ok());
         assert!(check_exposure("c", addr("0.0.0.0:1"), false, true).is_ok());
-    }
-
-    #[test]
-    fn plaintext_bearer_is_flagged_only_for_non_loopback_http() {
-        for clear in [
-            "http://controller.example:8080",
-            "http://10.0.0.5:8080/path",
-            "HTTP://[2001:db8::1]:8080",
-            "http://user@host.example",
-        ] {
-            assert!(super::sends_bearer_in_clear(clear), "{clear}");
-        }
-        for fine in [
-            "https://controller.example",
-            "http://127.0.0.1:8080",
-            "http://localhost:8080",
-            "http://[::1]:8080/x",
-            "http://[::ffff:127.0.0.1]:80",
-            "unix:///run/wayhouse.sock",
-        ] {
-            assert!(!super::sends_bearer_in_clear(fine), "{fine}");
-        }
-    }
-
-    #[test]
-    fn a_token_over_plain_http_beyond_loopback_is_refused_unless_opted_out() {
-        let e = check_bearer_transport("--controller", "http://c.example:9901", true, false)
-            .unwrap_err();
-        assert!(
-            e.contains("--controller") && e.contains("--allow-insecure-controller"),
-            "{e}"
-        );
-        for ok in [
-            ("http://c.example", false, false),
-            ("https://c.example", true, false),
-            ("http://127.0.0.1:1", true, false),
-            ("http://c.example", true, true),
-        ] {
-            assert!(
-                check_bearer_transport("--x", ok.0, ok.1, ok.2).is_ok(),
-                "{ok:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn logged_urls_carry_no_credentials() {
-        assert_eq!(
-            super::redact_userinfo("http://user:pw@host.example:8080/a?token=s3cret#c"),
-            "http://host.example:8080"
-        );
-        assert_eq!(
-            super::redact_userinfo("http://host.example/x@y"),
-            "http://host.example"
-        );
-        assert_eq!(super::redact_userinfo("not a url"), "not a url");
     }
 }

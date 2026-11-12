@@ -154,7 +154,7 @@ pub async fn fetch_sealed(
         name: name.to_owned(),
         why,
     };
-    wayhouse_http::policy::check_bearer_transport_global(
+    wayhouse_http::bearer::check_bearer_transport_global(
         "the controller URL",
         base_url,
         token.is_some(),

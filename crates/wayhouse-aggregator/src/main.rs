@@ -196,7 +196,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
     layered.start();
     if let Some(url) = &args.parent_url {
-        wayhouse_http::policy::check_bearer_transport(
+        wayhouse_http::bearer::check_bearer_transport(
             "--parent-url",
             url,
             args.parent_token.is_some(),

@@ -221,7 +221,7 @@ async fn main() -> anyhow::Result<()> {
         ),
     ] {
         if let Some(url) = url {
-            wayhouse_http::policy::check_bearer_transport(
+            wayhouse_http::bearer::check_bearer_transport(
                 flag,
                 url,
                 token.is_some(),
