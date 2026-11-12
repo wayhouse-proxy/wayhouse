@@ -211,8 +211,10 @@ private by construction, pass `--allow-insecure-controller` (a warning is logged
 also be set in a settings file, like the other non-secret flags. A URL to loopback, and a URL with
 no token, are unaffected. The solo bundle (compose and systemd) needs no flag: `wayhouse-controller
 init` made a CA and certificates, the controller and aggregator serve them and the clients trust the
-CA (`--ca-file`). The demo Compose file and the Kubernetes manifests still set the flag for the UI and
-the node proxy, whose traffic stays on the container or cluster network.
+CA (`--ca-file`). The Kubernetes manifests are https too: they mount the `wayhouse-tls` Secret from
+`wayhouse-controller init --target k8s-secret` (**create it before applying; an existing 0.3 install must add it**),
+and only the aggregator keeps the flag. The demo Compose file (`docker-compose.yml` alone, with its `change-me`
+values) is plain http on a private network and keeps the flag; `compose.solo.yml` is its https form.
 
 The same rule now covers the controller's own calls: `--parent-url` with a `--parent-token`, every
 `--ha-peers` entry and every address given to `POST /admin/ha/members` (the Raft token goes there;
@@ -220,8 +222,10 @@ a bare `host:port` is plain http), and the aggregator's `admin_url`s: with an `-
 the aggregator rejects at ingest a plain-http `admin_url` that is not loopback, so such an instance
 disappears from the fleet view until it reports an `https://` URL or the aggregator gets
 `--allow-insecure-controller`. The controller has the same `--allow-insecure-controller` flag now.
-The Kubernetes aggregator and the HA overlay set it (cluster-internal http); an HA cluster across
-hosts should use `https://` peer addresses.
+The Kubernetes aggregator sets it (node admin URLs are http); the HA overlay uses `https://` peers and
+needs no flag. An HA cluster across hosts should use `https://` peer addresses.
+
+**An existing Kubernetes HA cluster does not carry over.** Raft stores the member addresses at bootstrap and `--ha-peers` is read only then, so a cluster bootstrapped with `http://` peers keeps them while the replicas now serve only https, and it will not re-form (a rolling update also loses quorum while pods mix both). Recreate the cluster (delete the StatefulSet and its PVCs) or re-add each member with `--ha-join` and its `https://` address.
 
 ## What works on one instance
 

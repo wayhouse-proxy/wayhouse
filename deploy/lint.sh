@@ -65,6 +65,34 @@ if sts
 end
 errs << "k8s single/web-gateway must keep the one-replica controller Deployment" unless %w[single web-gateway].all? { |o| k8s[o].any? { |d| d["kind"] == "Deployment" && d.dig("metadata", "name") == "wayhouse-controller" } }
 
+# k8s is https between the Services (the wayhouse-tls Secret that `wayhouse-controller init --target k8s-secret`
+# makes): controller and aggregator serve it, every client trusts the CA, and the plain-http opt-out
+# survives only on the aggregator, which presents the instance token to node admin URLs that are http.
+k8s.each do |o, docs|
+  pods = docs.select { |d| %w[Deployment StatefulSet DaemonSet].include?(d["kind"]) }
+  pods.each do |d|
+    pod = d.dig("spec", "template", "spec")
+    (pod["containers"] || []).each do |c|
+      who = "k8s #{o}: #{d.dig("metadata", "name")}/#{c["name"]}"
+      args = c["args"] || []
+      args.grep(/\A--allow-insecure-/).each { |a| errs << "#{who} sets #{a}; only the aggregator may (node admin URLs are http)" unless c["name"] == "aggregator" && a == "--allow-insecure-controller" }
+      args.grep(/\A--(controller|controller-url|aggregator|aggregator-url)=http:/).each { |a| errs << "#{who} reaches a Service over plain http (#{a})" }
+      args.grep(/\A--ha-peers=/).each { |a| a.sub("--ha-peers=", "").split(",").each { |e| errs << "#{who} has a plain-http HA peer (#{e})" unless e =~ /\A\d+=https:\/\// } }
+      mounts = (pod["volumes"] || []).select { |v| v.dig("secret", "secretName") == "wayhouse-tls" }
+      errs << "#{who} must mount the wayhouse-tls Secret (CA at least)" if %w[controller aggregator ui wayhouse].include?(c["name"]) && mounts.empty?
+      if %w[controller aggregator].include?(c["name"])
+        errs << "#{who} must serve https (--tls-cert and --tls-key under /run/tls)" unless args.any? { |a| a =~ /\A--tls-cert=\/run\/tls\// } && args.any? { |a| a =~ /\A--tls-key=\/run\/tls\// }
+        %w[readinessProbe livenessProbe].each { |k| errs << "#{who} #{k} must use scheme HTTPS" unless c.dig(k, "httpGet", "scheme") == "HTTPS" }
+      elsif c["name"] != "web-sync" && c["name"] != "caddy"
+        errs << "#{who} must trust the init CA (--ca-file=/run/tls/ca.crt)" unless args.include?("--ca-file=/run/tls/ca.crt")
+      end
+    end
+  end
+end
+errs << "k8s ha: replicas must trust the CA for the Raft peers (--ca-file) and name https peers" unless sts && sts["spec"]["template"]["spec"]["containers"][0]["args"].include?("--ca-file=/run/tls/ca.crt")
+# No key may sit in a manifest: the Secret is made by init, never rendered here.
+k8s.each { |o, docs| docs.each { |d| errs << "k8s #{o}: a manifest must not define the wayhouse-tls Secret" if d["kind"] == "Secret" && d.dig("metadata", "name") == "wayhouse-tls" } }
+
 # NET_ADMIN is only in the bounding set for a non-root user: tunnel services run as root.
 %w[wayhouse agent].each { |s| errs << "tunnel #{s} must run as root (user: \"0\")" unless tunnel[s]["user"] == "0" }
 # The agent must not clash with wayhouse on the shared host network.
