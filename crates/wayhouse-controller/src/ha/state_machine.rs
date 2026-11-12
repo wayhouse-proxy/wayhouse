@@ -2648,6 +2648,7 @@ mod tests {
             id: "abcd1234".into(),
             hash: h.clone(),
             now: 5,
+            join_hash: None,
         });
         let (mut a, _a) = test_sm();
         let (mut b, _b) = test_sm();

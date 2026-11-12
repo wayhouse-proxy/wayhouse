@@ -26,6 +26,8 @@ pub enum Role {
     Proxy,
     Aggregator,
     Ui,
+    /// Another replica of the controller's HA group (see `wayhouse-controller`'s `enroll` module).
+    Controller,
 }
 
 impl Role {
@@ -35,6 +37,7 @@ impl Role {
             Role::Proxy => "proxy",
             Role::Aggregator => "aggregator",
             Role::Ui => "ui",
+            Role::Controller => "controller",
         }
     }
 
@@ -45,13 +48,25 @@ impl Role {
             Role::Proxy => &["controller-token", "aggregator-token", files::KEYRING_FILE],
             Role::Aggregator => &["ingest-token"],
             Role::Ui => &["controller-token"],
+            // A replica serves the same API, so it holds every token the first controller has;
+            // `ha-join-proof` is what it later shows to be added to the Raft group.
+            Role::Controller => &[
+                "ha-token",
+                files::KEYRING_FILE,
+                "auth-token",
+                "proxy-token",
+                "agent-token",
+                "ingest-token",
+                "enroll-step-up",
+                files::JOIN_PROOF_FILE,
+            ],
         }
     }
 
     /// Roles whose grant is the cluster keyring or the admin token. Minting one needs the
     /// admin token and a fresh step-up secret (decision 4A of the design).
     pub fn needs_step_up(self) -> bool {
-        matches!(self, Role::Proxy | Role::Ui)
+        matches!(self, Role::Proxy | Role::Ui | Role::Controller)
     }
 }
 
@@ -72,6 +87,12 @@ pub struct RedeemResponse {
     /// An aggregator tier's parent, set by the admin at mint time (not a secret).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_url: Option<String>,
+    /// A controller replica's Raft node id, picked by the cluster when the code was minted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<u64>,
+    /// A controller replica's `--tunnel-network`, which must match the cluster's (not a secret).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_network: Option<String>,
 }
 
 /// The sealed cluster secret that holds an origin's tunnel PSK. Derived from the origin name so
@@ -124,6 +145,7 @@ pub async fn enroll(
     code: &Code,
     role: Role,
     dir: &std::path::Path,
+    advertise: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let r = client::redeem(controller_url, pin, code, role).await?;
     let mut granted = r.files;
@@ -136,6 +158,9 @@ pub async fn enroll(
         name: r.name.clone(),
         role: r.role,
         parent_url: r.parent_url,
+        node_id: r.node_id,
+        tunnel_network: r.tunnel_network,
+        advertise: advertise.map(str::to_owned),
     };
     files::write(dir, &meta, &granted)?;
     Ok(r.name)

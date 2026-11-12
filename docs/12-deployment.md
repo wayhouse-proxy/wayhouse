@@ -378,7 +378,7 @@ with a key an eavesdropper who records it today cannot recover later.
 ### Enrolling a proxy, an aggregator or a UI
 
 The same code works for the other node binaries. `POST /enrollments` takes a `role`
-(`agent` by default, `proxy`, `aggregator`, `ui`) and the redeem returns exactly that role's
+(`agent` by default, `proxy`, `aggregator`, `ui`, and `controller`, see "Adding a controller replica by code" below) and the redeem returns exactly that role's
 files, named after the credentials the binary already reads (`$CREDENTIALS_DIRECTORY/<name>`):
 
 | Role | Binary | Files written to `--data-dir` | Minted with |
@@ -420,6 +420,66 @@ sudo wayhouse install --systemd --controller-url https://controller.example:9901
   `--instance-token`: enrollment does not deliver them (the controller does not hold them).
 - Running without systemd: `CREDENTIALS_DIRECTORY=<data-dir> wayhouse --secret-key-file <data-dir>/secret.keys ...`
   reads the same files.
+
+### Adding a controller replica by code
+
+A second or third controller joins a running HA group with one command, and the new host never
+holds an admin token to do it. The group must run HA already (`--ha-peers` on the first
+controller; a standalone controller cannot mint this code) and have `--auth-token`, a secret key
+(`--secret-key-file`) and `--enroll-step-up-file`.
+
+```sh
+# On anything that can reach the cluster: mint a code (admin token and step-up secret).
+curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
+  -d '{"role": "controller", "name": "ctl-4", "step_up": "'"$(cat step-up)"'"}'
+# -> {"code": "...", "node_id": 4, ...}
+
+# On the new host (root; the cluster needs its own TLS certificate here, see "HA replicas over TLS"):
+sudo wayhouse-controller install --systemd --controller-url https://ctl-1.internal:9901 \
+  --pin sha256:<leaf fingerprint> --code-file ./code --advertise https://ctl-4.internal:9901 \
+  -- --listen 0.0.0.0:9901 --tls-cert /etc/wayhouse/ctl-4.pem --tls-key /etc/wayhouse/ctl-4.key \
+     --ca-file /etc/wayhouse/ca.pem
+```
+
+What happens, in order:
+
+1. The code is minted for node id **N+1** (above every member and every other controller code; two
+   codes minted at once never share an id, because the replicated store refuses a second code
+   with the same id). The answer carries `node_id`.
+2. `enroll` redeems the code over the pinned TLS connection and writes, 0600 in
+   `/etc/wayhouse/controller`: `ha-token`, `secret.keys` (the keyring), `auth-token` (the **admin**
+   token), `proxy-token`, `agent-token`, `ingest-token` and `enroll-step-up` (each only if the
+   first controller has one) and `ha-join-proof`, plus `enrollment.json` with the node id and the
+   `--advertise` address. A replica serves the same API, so it holds every token the first
+   controller holds; because the **Raft token is cluster-wide**, a replica holds the cluster's Raft
+   credential, which is the same trust level as the keyring.
+3. The unit starts `wayhouse-controller --ha-join --ha-node-id=N --ha-advertise=... --ha-join-via=...`
+   with every secret as a `LoadCredential=` file. The new node answers `/raft/whoami` and asks
+   `--ha-join-via` for `POST /enroll/ha-join {proof, addr}` until it is added.
+4. The cluster runs the same member add as `POST /admin/ha/members`: the leader asks the node at
+   the advertised address who it is (`/raft/whoami`, must answer as node N with an empty log),
+   adds it as a learner, waits for it to catch up and promotes it. A follower relays the request to
+   the leader.
+
+Failure and retry:
+
+- The join proof is a second secret, separate from the code (which is spent at the redeem). It is
+  valid for one hour after the redeem, lives only in `ha-join-proof` on the node and, hashed, in
+  the replicated store, and is useless once the node is a voter. The node asks again every few
+  seconds (backing off to a minute) and logs the leader's reason each time: an address nothing
+  answers on (`did not answer /raft/whoami`), a node that answers as another id, a log that is not
+  empty, another membership change in progress. None of those uses the code up. A `401` (proof
+  expired, revoked or wrong) ends the asking: remove the unit and the data directory, mint a new code and enroll again.
+- `GET /enrollments` shows the code as `pending`, `joining` (redeemed, not yet a voter) or
+  `joined`.
+- `POST /enroll/ha-join` is unauthenticated like `POST /enroll` and guarded the same way (1 KiB
+  body, limits per address and per code, one answer for every wrong proof). After a valid proof the
+  leader sends the Raft token to the address in the request, so keep `ha-join-proof` as private as
+  the other files.
+- Roll out every replica to the build with this feature before minting a controller code
+  (the UI data level is 8; an older replica refuses the write).
+- Not delivered: the replica's own TLS certificate and `--ca-file`. Give them after `--`.
+  `--tunnel-network` comes from the first controller's flag.
 
 ### Adding a node from the UI
 
