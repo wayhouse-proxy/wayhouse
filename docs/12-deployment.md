@@ -414,6 +414,25 @@ sudo wayhouse install --systemd --controller-url https://controller.example:9901
 - Running without systemd: `CREDENTIALS_DIRECTORY=<data-dir> wayhouse --secret-key-file <data-dir>/secret.keys ...`
   reads the same files.
 
+### Adding a node from the UI
+
+**Add node** (System group, admin role) mints a code and writes the command for you. Pick the role,
+a name, and a target: systemd, `docker run`, Docker Compose or Kubernetes (an agent on Kubernetes
+waits for the per-pod init container). Fill in the controller URL and the certificate fingerprint
+`wayhouse-controller init` printed. The page then shows the steps once, each with a Copy button.
+
+- The code lives in the page's memory only: never in browser storage or a URL, never logged by the
+  UI, and gone when you press Done or leave the page. The UI's `/api/enrollments` routes are
+  admin-only and answer `Cache-Control: no-store`.
+- A `proxy` or `ui` code needs the controller's step-up secret, typed for every mint. The UI sends it
+  with that one request and clears the field, so it is neither stored nor logged.
+- "Keep the code out of the command" produces commands without the code; you paste it when the
+  node asks, so it stays out of shell history and process lists.
+- The list under the form shows every code (pending, used or expired) and revokes any of them.
+  On **Tunnel addresses**, an origin row has **Re-enroll**, which opens the form pre-filled.
+- Not yet: rotating a tunnel key from the UI (needs the rotation API) and the controller replica
+  role (waits for the HA join code).
+
 ## TLS for the fleet services
 
 Without the settings below, `wayhouse-controller`, `wayhouse-aggregator`, `wayhouse-ui` and `wayhouse`'s

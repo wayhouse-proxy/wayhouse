@@ -12,7 +12,7 @@ import { expect, test } from "@playwright/test";
 const DEMO = pathToFileURL(resolve(process.cwd(), "dist-demo/wayhouse-demo.html")).href;
 const PAGES = [
   "/dashboard", "/overview", "/fleet", "/listeners", "/pools", "/features", "/plugins", "/plugins/new",
-  "/settings", "/settings/appearance", "/settings/secrets", "/settings/process", "/sniffers", "/certificates", "/config-history", "/tunnel",
+  "/settings", "/settings/appearance", "/settings/secrets", "/settings/process", "/sniffers", "/certificates", "/config-history", "/tunnel", "/nodes/add",
   "/config/listeners", "/config/pools",
 ];
 

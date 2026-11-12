@@ -477,3 +477,28 @@ export interface ProcessList {
   dir_configured: boolean;
   programs: ProcessProgram[];
 }
+
+/** One row of the controller's `GET /enrollments`: a code's state, never the code itself. */
+export interface EnrollmentCode {
+  id: string;
+  role: "agent" | "proxy" | "aggregator" | "ui";
+  /** The node's name. */
+  origin: string;
+  created_at: number;
+  expires_at: number;
+  uses: number;
+  uses_left: number;
+  status: "pending" | "used" | "expired";
+  created_by?: string;
+  parent_url?: string;
+}
+
+/** The answer to a mint. The `code` is in this one response and nowhere else. */
+export interface MintedEnrollment {
+  id: string;
+  code: string;
+  role: EnrollmentCode["role"];
+  name: string;
+  expires_at: number;
+  uses: number;
+}
