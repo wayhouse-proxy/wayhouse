@@ -920,6 +920,9 @@ mod tests {
             ("POST", "/api/enrollments"),
             ("GET", "/api/enrollments"),
             ("DELETE", "/api/enrollments/abc123"),
+            ("POST", "/api/tunnel/origins/fra-1/psk/rotate"),
+            ("DELETE", "/api/tunnel/origins/fra-1"),
+            ("DELETE", "/api/tunnel/proxies/edge-1"),
         ] {
             let resp = app
                 .clone()
