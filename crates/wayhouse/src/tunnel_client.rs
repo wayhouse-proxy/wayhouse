@@ -387,7 +387,7 @@ fn open_psk(
         return Ok(None);
     };
     // Only the key enrollment made for this very origin; never another origin's or a cluster secret.
-    if *name != wayhouse_enroll::psk_secret_name(&reg.name) {
+    if wayhouse_enroll::psk_secret_gen(&reg.name, name).is_none() {
         return Err("it names a tunnel key that is not its own".into());
     }
     let Some(keyring) = keyring else {

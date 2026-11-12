@@ -337,7 +337,7 @@ fn apply_locked(
             // Recorded only once the peer is configured: an identical
             // registration is skipped by `plan`, so one recorded after a failed
             // configure would never be retried.
-            match reconcile_peer(wg, reg, live.psk()) {
+            match reconcile_peer(wg, reg, live.current_psk().as_ref()) {
                 Reconciled::Configured => {
                     applied.insert(reg.name.clone(), reg.clone());
                 }

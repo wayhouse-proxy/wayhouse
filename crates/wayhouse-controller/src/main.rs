@@ -808,6 +808,13 @@ async fn main() -> anyhow::Result<()> {
         auth_token: args.auth_token.clone().map(Arc::from),
     };
 
+    let (ui_store, ui_ha) = match &ha_handle {
+        Some((handle, _, _, _, store)) => (store.clone(), Some(handle.clone())),
+        None => (
+            wayhouse_controller::ui_data::UiStore::open(state.store.db())?,
+            None,
+        ),
+    };
     let mut app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .merge(wayhouse_http::metrics::router(
@@ -820,7 +827,18 @@ async fn main() -> anyhow::Result<()> {
         .merge(wayhouse_controller::intent::api::router(
             (*intent_state).clone(),
         ))
-        .merge(wayhouse_controller::peers::api::router(peers_state))
+        // The guard sits inside the bearer check: only an authenticated call reaches it.
+        .merge(
+            wayhouse_controller::peers::api::router(peers_state.clone())
+                .route_layer(axum::middleware::from_fn_with_state(
+                    ui_store.clone(),
+                    wayhouse_controller::origin::guard,
+                ))
+                .route_layer(axum::middleware::from_fn_with_state(
+                    wayhouse_http::server::BearerAuth::new(admin_token.as_deref()),
+                    wayhouse_http::server::require_bearer,
+                )),
+        )
         .merge(wayhouse_controller::proxy_peers::api::router(
             proxy_peers_state,
         ))
@@ -1043,16 +1061,9 @@ async fn main() -> anyhow::Result<()> {
             "ACME is not enabled on this controller (start it with --acme)",
         )
     });
-    let (ui_store, ui_ha) = match &ha_handle {
-        Some((handle, _, _, _, store)) => (store.clone(), Some(handle.clone())),
-        None => (
-            wayhouse_controller::ui_data::UiStore::open(state.store.db())?,
-            None,
-        ),
-    };
     tokio::spawn(publish_features(ui_store.clone()));
     let ui_state = wayhouse_controller::ui_data::api::UiState {
-        store: ui_store,
+        store: ui_store.clone(),
         auth_token: admin_token.clone(),
         ha: ui_ha,
         keyring: plugin_keys.clone(),
@@ -1067,6 +1078,10 @@ async fn main() -> anyhow::Result<()> {
                 step_up: args.enroll_step_up.as_deref().map(std::sync::Arc::from),
             },
         ))
+        .merge(wayhouse_controller::origin::router(
+            ui_state.clone(),
+            peers_state,
+        ))
         .merge(wayhouse_controller::ui_data::api::router(ui_state));
     if let Some((handle, _, _, _, _)) = ha_handle {
         app = app
@@ -1080,6 +1095,7 @@ async fn main() -> anyhow::Result<()> {
         args.proxy_token.as_deref(),
         args.agent_token.as_deref(),
     ) {
+        let t = t.with_origin_tokens(wayhouse_controller::origin::lookup(ui_store.clone()));
         app = app.layer(axum::middleware::from_fn_with_state(
             t,
             wayhouse_controller::scoped_auth::promote,

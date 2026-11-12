@@ -4793,6 +4793,7 @@ name = "wayhouse-agent"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "defguard_wireguard_rs",
  "netlink-packet-core",
@@ -4807,6 +4808,7 @@ dependencies = [
  "tracing-subscriber",
  "wayhouse-enroll",
  "wayhouse-http",
+ "zeroize",
 ]
 
 [[package]]

@@ -33,6 +33,31 @@ const AGENT: Allowed = &[
     (&Method::GET, "/proxy-peers/subscribe"),
 ];
 
+/// What an enrolled origin's own token may call: the agent's list plus its tunnel key, which
+/// the handler then holds to the token's own name.
+const ORIGIN: Allowed = &[
+    (&Method::POST, "/peers"),
+    (&Method::GET, "/proxy-peers/subscribe"),
+    (&Method::GET, "/peers/*/psk"),
+];
+
+/// Who a promoted request came from, put on the request for the handlers that must tell the
+/// callers apart. A request with no `Caller` came in with the admin token itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Caller {
+    /// The shared `--proxy-token`.
+    Proxy,
+    /// The shared `--agent-token`: any origin's agent, so it may not touch an origin that holds
+    /// its own token.
+    SharedAgent,
+    /// The token enrollment issued to one origin; the name it may act for.
+    Origin(String),
+}
+
+/// Finds the origin a token (not the shared ones) was issued to. Reads the replicated store,
+/// so a follower sees a new or revoked token once its apply catches up.
+pub type OriginLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 /// Startup rule: with an admin token, both scoped tokens are required, each at least 16 bytes
 /// and all three different, so no component quietly keeps using the admin token.
 pub fn check(admin: Option<&str>, proxy: Option<&str>, agent: Option<&str>) -> Result<(), String> {
@@ -60,18 +85,33 @@ pub fn check(admin: Option<&str>, proxy: Option<&str>, agent: Option<&str>) -> R
 #[derive(Clone)]
 pub struct ScopedTokens {
     admin: HeaderValue,
-    scoped: Vec<(Arc<str>, Allowed)>,
+    scoped: Vec<(Arc<str>, Allowed, Caller)>,
+    origins: Option<OriginLookup>,
 }
 
 impl ScopedTokens {
     /// `None` when there is nothing to promote (no admin token, or no scoped token set).
     pub fn new(admin: Option<&str>, proxy: Option<&str>, agent: Option<&str>) -> Option<Self> {
         let admin = HeaderValue::from_str(&format!("Bearer {}", admin?)).ok()?;
-        let scoped: Vec<_> = [(proxy, PROXY), (agent, AGENT)]
-            .into_iter()
-            .filter_map(|(t, a)| Some((Arc::from(t?), a)))
-            .collect();
-        (!scoped.is_empty()).then_some(Self { admin, scoped })
+        let scoped: Vec<_> = [
+            (proxy, PROXY, Caller::Proxy),
+            (agent, AGENT, Caller::SharedAgent),
+        ]
+        .into_iter()
+        .filter_map(|(t, a, c)| Some((Arc::from(t?), a, c)))
+        .collect();
+        (!scoped.is_empty()).then_some(Self {
+            admin,
+            scoped,
+            origins: None,
+        })
+    }
+
+    /// Also accept the tokens enrollment issued to single origins.
+    #[must_use]
+    pub fn with_origin_tokens(mut self, lookup: OriginLookup) -> Self {
+        self.origins = Some(lookup);
+        self
     }
 }
 
@@ -105,13 +145,23 @@ pub async fn promote(State(t): State<ScopedTokens>, mut req: Request, next: Next
     let scope = presented.and_then(|p| {
         t.scoped
             .iter()
-            .find(|(tok, _)| wayhouse_http::token_eq(p, tok))
+            .find(|(tok, _, _)| wayhouse_http::token_eq(p, tok))
     });
-    if let Some((_, allowed)) = scope {
-        if allows(allowed, req.method(), req.uri().path()) {
-            req.headers_mut()
-                .insert(header::AUTHORIZATION, t.admin.clone());
+    let caller = match (scope, presented, &t.origins) {
+        (Some((_, allowed, caller)), _, _) => {
+            allows(allowed, req.method(), req.uri().path()).then(|| caller.clone())
         }
+        // Not a shared token: an origin's own, looked up only for a call it could make, so a
+        // stray bearer on any other route costs no store read.
+        (None, Some(p), Some(lookup)) if allows(ORIGIN, req.method(), req.uri().path()) => {
+            lookup(p).map(Caller::Origin)
+        }
+        _ => None,
+    };
+    if let Some(caller) = caller {
+        req.headers_mut()
+            .insert(header::AUTHORIZATION, t.admin.clone());
+        req.extensions_mut().insert(caller);
     }
     next.run(req).await
 }
@@ -225,6 +275,103 @@ mod tests {
                 "{m} {p}"
             );
         }
+    }
+
+    const ORIGIN_T: &str = "origin-token-for-home-0123456789";
+
+    /// The same stand-in, with one enrolled origin ("home") and a handler that echoes who the
+    /// layer says is calling.
+    async fn origin_call(method: &str, path: &str, token: &str) -> (StatusCode, String) {
+        let tokens = ScopedTokens::new(Some(ADMIN), Some(PROXY_T), Some(AGENT_T))
+            .unwrap()
+            .with_origin_tokens(Arc::new(|t| (t == ORIGIN_T).then(|| "home".to_string())));
+        let app =
+            Router::new()
+                .route(
+                    "/{*any}",
+                    any(|c: Option<axum::Extension<Caller>>| async move {
+                        format!("{:?}", c.map(|c| c.0))
+                    }),
+                )
+                .route_layer(middleware::from_fn_with_state(
+                    wayhouse_http::server::BearerAuth::new(Some(ADMIN)),
+                    wayhouse_http::server::require_bearer,
+                ))
+                .layer(middleware::from_fn_with_state(tokens, promote));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[tokio::test]
+    async fn an_origins_own_token_reaches_the_agent_routes_and_its_tunnel_key_as_that_origin() {
+        for (m, p) in [
+            ("POST", "/peers"),
+            ("GET", "/proxy-peers/subscribe"),
+            ("GET", "/peers/home/psk"),
+        ] {
+            let (st, who) = origin_call(m, p, ORIGIN_T).await;
+            assert_eq!(st, StatusCode::OK, "{m} {p}");
+            assert_eq!(who, "Some(Origin(\"home\"))", "{m} {p}");
+        }
+        for (m, p) in [
+            ("GET", "/config"),
+            ("POST", "/proxy-peers"),
+            ("GET", "/peers/home"),
+            ("GET", "/peers/home/psk/x"),
+            ("POST", "/peers/home/psk"),
+            ("POST", "/peers/home/psk/rotate"),
+            ("GET", "/secrets/x/sealed"),
+            ("DELETE", "/peers/home"),
+        ] {
+            assert_eq!(
+                origin_call(m, p, ORIGIN_T).await.0,
+                StatusCode::UNAUTHORIZED,
+                "{m} {p}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_shared_tokens_are_named_and_the_shared_agent_token_has_no_tunnel_key_route() {
+        assert_eq!(
+            origin_call("POST", "/peers", AGENT_T).await.1,
+            "Some(SharedAgent)"
+        );
+        assert_eq!(
+            origin_call("POST", "/proxy-peers", PROXY_T).await.1,
+            "Some(Proxy)"
+        );
+        assert_eq!(
+            origin_call("GET", "/peers/home/psk", AGENT_T).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            origin_call("GET", "/peers/home/psk", PROXY_T).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            origin_call("GET", "/peers/home/psk", "not-a-token").await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        // The admin token comes in as itself: no caller to restrict.
+        assert_eq!(
+            origin_call("GET", "/peers/home/psk", ADMIN).await,
+            (StatusCode::OK, "None".into())
+        );
     }
 
     #[tokio::test]

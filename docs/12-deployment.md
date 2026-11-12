@@ -322,14 +322,17 @@ The controller separates three credentials, so a compromised edge box cannot adm
   `GET /intent/subscribe`, `GET /peers/subscribe`, `GET /peers/{name}` (a tunnel backend's address), `GET /features/overrides` (live feature
   overrides) and `POST /proxy-peers`.
 - `--agent-token` is what `wayhouse-agent` presents (`--controller-token`). It unlocks only
-  `POST /peers` and `GET /proxy-peers/subscribe`.
+  `POST /peers` and `GET /proxy-peers/subscribe`. An origin that enrolled holds a token of its
+  own instead (see "Enrolling an origin agent"), which also unlocks `GET /peers/{name}/psk` for
+  that name only.
 
 Setting `--auth-token` requires both of the others, and all three must differ; the controller
 refuses to start otherwise. The admin token still works on every route (the UI, operators and a
 slave controller's `--parent-token` use it). Under HA every replica takes the same three flags.
 `wayhouse-certsync` reads `/acme/bundles` (private keys) and so holds the admin token.
 Known limit: all proxies share one proxy token, so one compromised proxy can re-register another
-proxy's tunnel record with `POST /proxy-peers`; agents likewise with `POST /peers` (#581).
+proxy's tunnel record with `POST /proxy-peers`. Agents that enrolled have their own tokens (below);
+an agent on the shared token can still re-register any origin that did not enroll (#581).
 
 ## Enrolling an origin agent with a one-time code
 
@@ -361,10 +364,14 @@ with a key an eavesdropper who records it today cannot recover later.
   `GET /enrollments` lists codes and their state, never the code.
 - `POST /enroll` is the one unauthenticated write route: 1 KiB body, attempts limited per
   address and per code id, and every refusal looks the same.
-- Re-enrolling an origin mints a new key and replaces the old one: the agent must be restarted
-  with the new `tunnel-psk` (and proxies pick it up when the origin re-registers).
-- Not yet: rotating a key without re-enrolling, per-origin tokens (the shared agent token is
-  still what the agent presents, #581), and the controller replica role.
+- With `--auth-token` on the controller, `agent-token` is a token for this origin alone, not the
+  shared `--agent-token`: it registers only this name and reads only this origin's key. Re-enrolling
+  a name replaces its token (the old one stops working), starts the key over at generation 0 and
+  removes every other generation; the agent must be restarted with the new files.
+- Rotate the key without re-enrolling: `curl -X POST "$CONTROLLER/peers/home-nas/psk/rotate" -H
+  "Authorization: Bearer $(cat admin-token)"` (`202`, then the agent picks it up within one
+  `--register-interval-sec`; `409` while a rotation is waiting). Details in
+  [docs/11](11-backend-transport.md#rotating-the-key). The UI button follows.
 - Upgrade every proxy to 0.4.0 before enrolling an origin: an older proxy ignores the key and
   its handshake with the origin then fails.
 
