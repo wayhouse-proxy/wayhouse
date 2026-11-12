@@ -607,3 +607,48 @@ async fn an_edge_changes_its_address_without_a_restart() -> Result<()> {
     t.pass();
     Ok(())
 }
+
+/// Slice 1 of the enrollment work. The origin enrolls with a one-time code, so it and every
+/// proxy hold the same controller-made tunnel PSK; the tunnel comes up and carries traffic.
+/// Needs the kernel or userspace backend to honour the preshared key on both ends.
+#[tokio::test]
+#[ignore = "needs a user+net namespace: run via `make tunnel-e2e`"]
+async fn an_enrolled_origin_tunnels_with_a_preshared_key() -> Result<()> {
+    ensure_built();
+    let mut t = TunnelLab::with(LabOptions {
+        psk: true,
+        ..LabOptions::default()
+    })
+    .await?;
+    t.start_origin(true).await?;
+    let edge = t.start_edge("edge-1", None).await?;
+    t.wait_roundtrip(edge).await?;
+    let big = vec![0x17u8; 64 * 1024];
+    assert_eq!(tcp_roundtrip(t.public_addr(edge), &big).await?, big);
+    t.pass();
+    Ok(())
+}
+
+/// The same lab, but the agent holds a different (valid) key than the controller sealed for
+/// the proxy: the handshake never completes, so no byte crosses. This is what proves the PSK
+/// really is mixed into the handshake and not just stored.
+#[tokio::test]
+#[ignore = "needs a user+net namespace: run via `make tunnel-e2e`"]
+async fn a_mismatched_preshared_key_never_connects() -> Result<()> {
+    ensure_built();
+    let mut t = TunnelLab::with(LabOptions {
+        psk: true,
+        ..LabOptions::default()
+    })
+    .await?;
+    t.start_origin_with_wrong_psk(true).await?;
+    let edge = t.start_edge("edge-1", None).await?;
+    // Longer than the slowest backend's handshake (userspace ~25 s) would need.
+    tokio::time::sleep(Duration::from_secs(35)).await;
+    assert!(
+        tcp_roundtrip(t.public_addr(edge), b"ping").await.is_err(),
+        "traffic crossed a tunnel whose two ends hold different preshared keys"
+    );
+    t.pass();
+    Ok(())
+}

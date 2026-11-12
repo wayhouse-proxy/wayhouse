@@ -19,6 +19,7 @@ members = [
     "crates/wayhouse-certsync",
     "crates/wayhouse-acme",
     "crates/wayhouse-secrets",
+    "crates/wayhouse-enroll",
     "crates/wayhouse-settings",
 ]
 

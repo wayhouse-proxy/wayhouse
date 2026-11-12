@@ -107,6 +107,11 @@ struct Args {
     #[arg(long)]
     tier_name: Option<String>,
 
+    /// Send bearer tokens over plain `http://` to a non-loopback host. Without it the start is
+    /// refused. Only for a network that is private by construction.
+    #[arg(long)]
+    allow_insecure_controller: bool,
+
     /// Bearer token this tier presents pushing to `--parent-url`.
     #[arg(long, value_name = "PATH")]
     parent_token_file: Option<std::path::PathBuf>,
@@ -190,6 +195,15 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     layered.start();
+    if let Some(url) = &args.parent_url {
+        wayhouse_http::bearer::check_bearer_transport(
+            "--parent-url",
+            url,
+            args.parent_token.is_some(),
+            args.allow_insecure_controller,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+    }
     let prometheus =
         wayhouse_http::metrics::install("wayhouse-aggregator", env!("CARGO_PKG_VERSION"))?;
     wayhouse_http::policy::check_exposure(

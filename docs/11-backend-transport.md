@@ -196,6 +196,17 @@ routing, neither a reimplementation of cryptography or tunnel framing.
   "discovered set, not a static file list" property every other dynamic
   source already has.
 
+## Preshared key (0.4.0)
+
+An origin enrolled with a one-time code (`docs/12-deployment.md`, "Enrolling an origin agent")
+holds a controller-made WireGuard preshared key. Both ends set it on the peer: the agent on every
+proxy peer, each proxy on that origin's peer, so the Noise handshake is mixed with a symmetric key
+and stays safe against a recorded handshake that a quantum computer breaks later. The agent
+registers `psk_secret` (a name, never the key); a proxy accepts only the name the controller
+derives from the origin's own name, fetches the sealed value through `GET /secrets/{name}/sealed`,
+opens it with its own key file and refuses to configure the peer without it rather than fall back
+to an unkeyed peer. An origin that never enrolled has no key and works as before.
+
 ## Address authority (built 2026-10-02)
 
 `wayhouse-controller` allocates tunnel-internal addresses, so no operator chooses (or

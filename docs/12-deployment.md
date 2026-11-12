@@ -301,6 +301,43 @@ slave controller's `--parent-token` use it). Under HA every replica takes the sa
 Known limit: all proxies share one proxy token, so one compromised proxy can re-register another
 proxy's tunnel record with `POST /proxy-peers`; agents likewise with `POST /peers` (#581).
 
+## Enrolling an origin agent with a one-time code
+
+Instead of copying `--agent-token` and a name onto the origin host, mint a code on the controller
+and redeem it there. The controller needs a secret key (`--secret-key-file`); the code travels
+over TLS that the redeemer pins.
+
+```sh
+# On an admin machine: a 15-minute, single-use code for an origin named home-nas.
+curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
+  -d '{"origin": "home-nas"}'                    # {"id":"..","code":"..","expires_at":..}
+# On the origin host (the code from a file, the environment, or typed at the prompt):
+wayhouse-agent enroll --controller-url https://controller.example:9901 \
+  --pin sha256:<leaf fingerprint> --code-file ./code
+wayhouse-agent --data-dir wayhouse-agent-data --backends :25565
+```
+
+`enroll` writes `enrollment.json` (controller URL and the origin's name), `agent-token` (when the
+controller has one) and `tunnel-psk` into `--data-dir` (0700, files 0600). Afterwards the agent
+needs no `--controller-url`, `--name`, token or key flag. The controller makes a fresh WireGuard
+preshared key for the origin, stores it sealed as `tunnel-psk-<hash of the name>`, and every proxy
+(which needs `--secret-key-file`) fetches and applies it, so the tunnel's handshake is mixed
+with a key an eavesdropper who records it today cannot recover later.
+
+- Pin with `--pin sha256:<hex>` (the controller's leaf certificate) or `--controller-ca <pem>`.
+  `https://` is required; plain `http://` is accepted only to a loopback host.
+- A code is stored as a hash only. It is single use (`"uses"` raises that), expires after
+  `ttl_secs` (default 900, at most 7 days), and `DELETE /enrollments/{id}` revokes it.
+  `GET /enrollments` lists codes and their state, never the code.
+- `POST /enroll` is the one unauthenticated write route: 1 KiB body, attempts limited per
+  address and per code id, and every refusal looks the same.
+- Re-enrolling an origin mints a new key and replaces the old one: the agent must be restarted
+  with the new `tunnel-psk` (and proxies pick it up when the origin re-registers).
+- Not in this slice: rotating a key without re-enrolling, per-origin tokens (the shared agent
+  token is still what the agent presents, #581), and the proxy, aggregator and controller roles.
+- Upgrade every proxy to 0.4.0 before enrolling an origin: an older proxy ignores the key and
+  its handshake with the origin then fails.
+
 ## TLS for the fleet services
 
 Without the settings below, `wayhouse-controller`, `wayhouse-aggregator`, `wayhouse-ui` and `wayhouse`'s

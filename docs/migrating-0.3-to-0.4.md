@@ -24,6 +24,14 @@ Without the flag nothing changes.
    `{ secret: name }`: an older proxy refuses it.
 5. Rebuild and re-approve plugins (below).
 
+## Enrollment codes and tunnel keys (new, opt-in)
+
+`wayhouse-agent enroll` with a one-time code gives an origin a controller-made tunnel preshared
+key ([how](12-deployment.md#enrolling-an-origin-agent-with-a-one-time-code)). Nothing changes
+for an origin that does not enroll. Upgrade every controller replica first (the stored-data level
+is now 6 and a mixed HA cluster refuses to mint or redeem), then every proxy, then enroll origins:
+a 0.3.0 proxy ignores the key and cannot complete the handshake with an enrolled origin.
+
 ## Aggregator: loopback `admin_url`s need `--instance-url-allow`
 
 Breaking, security. Without `--instance-url-allow`, the aggregator used to accept an `admin_url`
@@ -185,6 +193,21 @@ read from a settings file, like the other credentials. To migrate, write each va
 0400, readable by the service user) and replace `--auth-token=$X` with `--auth-token-file=/path`.
 Docker secrets (`/run/secrets/<name>`), Kubernetes secret volumes and `LoadCredential=` all produce
 such files. `wayhouse-web-sync` already read its tokens from the environment and is unchanged.
+
+## A token over plain http to a remote host is refused (breaking)
+
+`wayhouse`, `wayhouse-agent`, `wayhouse-aggregator` and `wayhouse-ui` used to warn and carry on
+when a bearer token was configured for a plain `http://` URL on a non-loopback host
+(`--controller`, `--aggregator`, `--plugin-overlay-url`, `--tunnel-controller-url`,
+`--controller-url`, `--aggregator-url`, `--parent-url`). They now refuse to start: anyone on the
+path could read the token and act as that process. Use an `https://` URL, or, on a network that is
+private by construction, pass `--allow-insecure-controller` (a warning is logged at start). It can
+also be set in a settings file, like the other non-secret flags. A URL to loopback, and a URL with
+no token, are unaffected. The shipped Compose and Kubernetes files set the flag for the UI and the
+Kubernetes node proxy, whose traffic stays on the container or cluster network; `wayhouse-controller
+init` will generate a certificate that clients pin, so the bundles can move to https (slice 2).
+Calls from the controller to other controllers (HA, parent, plugin peers) and the aggregator's
+reach to instance admin URLs are not covered yet.
 
 ## What works on one instance
 

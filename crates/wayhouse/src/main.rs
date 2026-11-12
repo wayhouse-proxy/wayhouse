@@ -155,6 +155,12 @@ struct Args {
     #[arg(long)]
     insecure_no_auth: bool,
 
+    /// Send bearer tokens to `--controller`, `--aggregator`, `--plugin-overlay-url` and
+    /// `--tunnel-controller-url` over plain `http://` to a non-loopback host. Without it
+    /// the start is refused. Only for a network that is private by construction.
+    #[arg(long)]
+    allow_insecure_controller: bool,
+
     /// Fleet aggregator base URL (e.g. "http://127.0.0.1:9902") to push
     /// periodic fleet-state summaries to (docs/10 "The aggregator").
     /// Optional and independent of `--controller` — pushing state and
@@ -388,9 +394,16 @@ async fn async_main(mut args: Args) -> anyhow::Result<()> {
         ),
     ] {
         if let Some(url) = url {
-            wayhouse_http::policy::warn_plaintext_bearer(flag, url, token.is_some());
+            wayhouse_http::bearer::check_bearer_transport(
+                flag,
+                url,
+                token.is_some(),
+                args.allow_insecure_controller,
+            )
+            .map_err(anyhow::Error::msg)?;
         }
     }
+    wayhouse_http::bearer::set_allow_insecure_controller(args.allow_insecure_controller);
     let tunnel_config = tunnel_boot::config(&args)?;
     if let Some(raw) = &args.plugin_overlay_url {
         let url = checked_http_url("--plugin-overlay-url", raw)?;

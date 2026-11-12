@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 wayhouse-http.workspace = true
+wayhouse-enroll = { path = "../wayhouse-enroll" }
 tokio = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

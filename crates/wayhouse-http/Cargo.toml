@@ -19,7 +19,7 @@ default = ["server"]
 # Lets `WAYHOUSE_TEST_PROTOCOL_MAJOR`/`_MINOR` override the announced protocol
 # version. Only `wayhouse-fleet-tests` builds with it; no image does.
 test-protocol-override = []
-server = ["dep:axum", "dep:tokio", "dep:tokio-rustls", "dep:arc-swap", "dep:tracing", "dep:clap", "dep:metrics", "dep:metrics-exporter-prometheus"]
+server = ["dep:axum", "dep:tokio", "dep:tokio-rustls", "dep:arc-swap", "dep:clap", "dep:metrics", "dep:metrics-exporter-prometheus"]
 
 [lints]
 workspace = true
@@ -34,7 +34,7 @@ axum = { workspace = true, features = ["http2"], optional = true }
 tokio = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 arc-swap = { workspace = true, optional = true }
-tracing = { workspace = true, optional = true }
+tracing.workspace = true
 # `TlsArgs`: the shared `--tls-cert`/`--tls-key` flags.
 clap = { workspace = true, optional = true }
 # Handshake counters; a no-op unless the binary installs a recorder (see `metrics`).

@@ -4750,6 +4750,7 @@ dependencies = [
  "wat",
  "wayhouse-config",
  "wayhouse-core",
+ "wayhouse-enroll",
  "wayhouse-http",
  "wayhouse-secrets",
  "wayhouse-settings",
@@ -4804,6 +4805,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wayhouse-enroll",
  "wayhouse-http",
 ]
 
@@ -4904,6 +4906,7 @@ dependencies = [
  "wat",
  "wayhouse-acme",
  "wayhouse-config",
+ "wayhouse-enroll",
  "wayhouse-http",
  "wayhouse-plugin-host",
  "wayhouse-secrets",
@@ -4936,17 +4939,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayhouse-enroll"
+version = "0.3.0"
+dependencies = [
+ "base64 0.22.1",
+ "rand 0.8.8",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "wayhouse-http",
+ "zeroize",
+]
+
+[[package]]
 name = "wayhouse-fleet-tests"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "nix 0.29.0",
  "reqwest",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tokio-rustls",
  "wat",
+ "wayhouse-enroll",
  "wayhouse-http",
 ]
 

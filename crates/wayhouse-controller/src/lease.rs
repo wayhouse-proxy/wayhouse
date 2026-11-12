@@ -174,6 +174,7 @@ mod tests {
             endpoint: None,
             backends: vec![],
             tunnel_address: Some(a.address.to_string()),
+            psk_secret: None,
         };
         f.peers.register_applied(&reg, None).unwrap();
     }

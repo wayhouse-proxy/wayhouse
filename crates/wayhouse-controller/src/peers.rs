@@ -63,6 +63,11 @@ pub struct PeerRegistration {
     /// be allocated one, or give one to claim it); always set once stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel_address: Option<String>,
+    /// The sealed cluster secret holding this origin's tunnel preshared key (only ever the name
+    /// [`wayhouse_enroll::psk_secret_name`] derives from `name`). Proxies fetch and open it;
+    /// the key itself is never in a registration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub psk_secret: Option<String>,
 }
 
 /// How many backend entries one origin may register. Far above any real origin
@@ -107,6 +112,13 @@ impl PeerRegistration {
             if a.parse::<IpAddr>().is_err() {
                 return Err(format!("tunnel_address {a:?} is not an IP address"));
             }
+        }
+        if self
+            .psk_secret
+            .as_ref()
+            .is_some_and(|s| *s != wayhouse_enroll::psk_secret_name(&self.name))
+        {
+            return Err("psk_secret must be the secret enrollment made for this origin".into());
         }
         Ok(())
     }
@@ -159,7 +171,25 @@ mod tests {
             endpoint: Some("203.0.113.7:51820".into()),
             backends: vec!["10.60.0.2:25565".into()],
             tunnel_address: None,
+            psk_secret: None,
         }
+    }
+
+    #[test]
+    fn a_psk_secret_is_only_the_origins_own_derived_name_and_decodes_from_old_logs() {
+        let mut reg = valid();
+        reg.psk_secret = Some(wayhouse_enroll::psk_secret_name("home-origin"));
+        assert!(reg.validate().is_ok());
+        reg.psk_secret = Some(wayhouse_enroll::psk_secret_name("someone-else"));
+        assert!(
+            reg.validate().is_err(),
+            "an origin may not name another origin's key"
+        );
+        reg.psk_secret = Some("gossip-psk".into());
+        assert!(reg.validate().is_err(), "nor any other cluster secret");
+        assert!(!serde_json::to_string(&valid())
+            .unwrap()
+            .contains("psk_secret"));
     }
 
     #[test]

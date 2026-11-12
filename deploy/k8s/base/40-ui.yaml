@@ -17,6 +17,7 @@ spec:
             - --listen=0.0.0.0:9903
             - --ui-password-file=/run/secrets/wayhouse/ui-password
             - --controller-url=http://wayhouse-controller:9901
+            - --allow-insecure-controller   # tokens cross the cluster network in plain http
             - --controller-token-file=/run/secrets/wayhouse/controller-token
             - --aggregator-url=http://wayhouse-aggregator:9902
             - --aggregator-token-file=/run/secrets/wayhouse/aggregator-token

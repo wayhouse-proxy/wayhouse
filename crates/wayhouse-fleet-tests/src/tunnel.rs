@@ -35,7 +35,13 @@ pub struct LabOptions {
     /// The controller's `--tunnel-network`.
     pub tunnel_network: &'static str,
     pub underlay: Underlay,
+    /// Enrol the origin with a one-time code (so it holds a tunnel PSK) and give the controller
+    /// and the edges the cluster secret key that seals and opens it.
+    pub psk: bool,
 }
+
+/// A valid cluster keyring (32 bytes, base64) for the lab.
+const LAB_SECRET_KEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 
 impl Default for LabOptions {
     /// IPv6 tunnel network (the documented default) over an IPv4 underlay.
@@ -43,6 +49,7 @@ impl Default for LabOptions {
         LabOptions {
             tunnel_network: "fd49:89c1:4b5e:60::/64",
             underlay: Underlay::V4,
+            psk: false,
         }
     }
 }
@@ -179,7 +186,20 @@ impl TunnelLab {
         let controller_port = crate::free_port()?;
         let dir = tempfile::tempdir()?;
         std::fs::create_dir_all(dir.path().join("controller"))?;
-        let controller_args = controller_args(opts.tunnel_network, &[]);
+        let secret_key = dir.path().join("secret.key");
+        let key_arg = secret_key.to_str().unwrap().to_string();
+        std::fs::write(&secret_key, format!("{LAB_SECRET_KEY}\n"))?;
+        // The key loaders refuse a group- or world-readable file.
+        std::fs::set_permissions(
+            &secret_key,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        )?;
+        let extra: Vec<&str> = if opts.psk {
+            vec!["--secret-key-file", &key_arg, "--allow-insecure-secrets"]
+        } else {
+            Vec::new()
+        };
+        let controller_args = controller_args(opts.tunnel_network, &extra);
         let controller = spawn_controller_with(
             &dir.path().join("controller"),
             &controller_listen(opts.underlay, controller_port),
@@ -250,6 +270,9 @@ impl TunnelLab {
     /// Start `wayhouse-agent` in a new namespace, wait until it has registered, and
     /// remember its pubkey. With `with_echo` the echo server starts too.
     pub async fn start_origin(&mut self, with_echo: bool) -> Result<()> {
+        if self.opts.psk {
+            self.enroll_origin(None).await?;
+        }
         let ns = self.lab.add_ns()?;
         let mut args: Vec<String> = [
             "--data-dir",
@@ -311,6 +334,49 @@ impl TunnelLab {
             ip,
         });
         Ok(())
+    }
+
+    /// Mints a code on the controller and redeems it with `wayhouse-agent enroll` into the
+    /// agent's data dir (from the outer namespace, where the controller is on loopback: a
+    /// plain-http URL is only accepted for loopback). `psk_override` then replaces the
+    /// agent's key, to prove that a mismatched pair does not connect.
+    async fn enroll_origin(&self, psk_override: Option<&str>) -> Result<()> {
+        let base = self.registry_url("");
+        let minted: serde_json::Value = wayhouse_http::client()
+            .post(format!("{base}/enrollments"))
+            .json(&serde_json::json!({ "origin": ORIGIN_NAME }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let code = minted["code"].as_str().context("no code minted")?;
+        let data = self.dir.path().join("agent");
+        let out = std::process::Command::new(crate::bin_path("wayhouse-agent"))
+            .args(["enroll", "--controller-url", &base, "--data-dir"])
+            .arg(&data)
+            .env("WAYHOUSE_ENROLL_CODE", code)
+            .output()?;
+        anyhow::ensure!(
+            out.status.success(),
+            "enroll failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if let Some(psk) = psk_override {
+            std::fs::write(data.join("tunnel-psk"), psk)?;
+        }
+        Ok(())
+    }
+
+    /// Replaces the enrolled agent's tunnel key with a different valid one before it starts.
+    pub async fn start_origin_with_wrong_psk(&mut self, with_echo: bool) -> Result<()> {
+        anyhow::ensure!(self.opts.psk, "needs LabOptions.psk");
+        self.enroll_origin(Some(&wayhouse_enroll::generate_psk()))
+            .await?;
+        self.opts.psk = false; // already enrolled
+        let r = self.start_origin(with_echo).await;
+        self.opts.psk = true;
+        r
     }
 
     /// Kill the origin's agent and start it again with the same arguments in
@@ -454,6 +520,17 @@ impl TunnelLab {
         args.extend(self.backend.wayhouse_flag().map(str::to_string));
         // The lab edge's admin API binds the wildcard address with no token.
         args.push("--insecure-no-auth".to_string());
+        if self.opts.psk {
+            args.extend([
+                "--secret-key-file".to_string(),
+                self.dir
+                    .path()
+                    .join("secret.key")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
+            ]);
+        }
         let wayhouse = Proc::spawn_in(Some(&ns), "wayhouse", &args)?;
         self.edges.push(Edge {
             wayhouse: Some(wayhouse),
