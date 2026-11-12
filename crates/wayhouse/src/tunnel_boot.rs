@@ -24,6 +24,8 @@ pub struct TunnelConfig {
     name: String,
     endpoint: String,
     register_interval: Duration,
+    /// `--secret-key-file`: opens the sealed tunnel keys of origins enrolled with a PSK.
+    secret_key_file: Option<PathBuf>,
 }
 
 /// The `--tunnel-*` settings, or `None` when `--tunnel-iface` is not given.
@@ -54,6 +56,7 @@ pub fn config(args: &Args) -> anyhow::Result<Option<TunnelConfig>> {
         name,
         endpoint,
         register_interval: Duration::from_secs(args.tunnel_register_interval_sec),
+        secret_key_file: args.secret_key_file.clone(),
     }))
 }
 
@@ -170,10 +173,13 @@ pub async fn start(tc: TunnelConfig) -> anyhow::Result<Running> {
         controller = %tc.controller_url,
         "wireguard tunnel interface up; subscribing to backend-peers updates"
     );
+    let keyring = wayhouse_secrets::load(tc.secret_key_file.as_deref())
+        .map_err(|e| anyhow::anyhow!("secret key: {e}"))?;
     let task = tokio::spawn(crate::tunnel_client::run(
         tc.controller_url.clone(),
         tc.controller_token.clone(),
         live.api(),
+        keyring,
     ));
     // Register ourselves (periodically) so every origin's `wayhouse-agent`
     // can peer with us — the mirror image of `task` above.

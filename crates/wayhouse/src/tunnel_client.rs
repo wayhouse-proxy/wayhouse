@@ -194,6 +194,9 @@ struct PeerRegistration {
     backends: Vec<String>,
     #[serde(default)]
     tunnel_address: Option<String>,
+    /// The sealed secret holding this origin's tunnel preshared key, when it has one.
+    #[serde(default)]
+    psk_secret: Option<String>,
 }
 
 /// Builds the WireGuard peer this registration implies: a **host route to the
@@ -244,6 +247,7 @@ pub async fn run(
     controller_url: String,
     token: Option<String>,
     wg: std::sync::Arc<dyn WireguardInterfaceApi + Send + Sync>,
+    keyring: Option<wayhouse_secrets::KeyringHandle>,
 ) {
     let mut backoff = RECONNECT_MIN;
     let mut last_applied: HashMap<String, PeerRegistration> = HashMap::new();
@@ -254,6 +258,7 @@ pub async fn run(
             &controller_url,
             token.as_deref(),
             wg.as_ref(),
+            keyring.as_ref(),
             &mut last_applied,
             &mut warned,
         )
@@ -283,6 +288,7 @@ async fn subscribe_once(
     base_url: &str,
     token: Option<&str>,
     wg: &(dyn WireguardInterfaceApi + Send + Sync),
+    keyring: Option<&wayhouse_secrets::KeyringHandle>,
     last_applied: &mut HashMap<String, PeerRegistration>,
     warned: &mut HashSet<(String, String)>,
 ) -> anyhow::Result<()> {
@@ -337,12 +343,61 @@ async fn subscribe_once(
 
         while let Some(event) = buf.next_event() {
             if let Some(ev) = parse_sse_event(&event) {
-                if apply_event(wg, last_applied, warned, &ev) {
+                let psk = match &ev {
+                    Event::Registered(reg) => psk_for(base_url, token, keyring, reg).await,
+                    Event::Removed(_) => Ok(None),
+                };
+                if apply_event(wg, last_applied, warned, &ev, psk) {
                     retry_at.get_or_insert(tokio::time::Instant::now() + CONFIGURE_RETRY);
                 }
             }
         }
     }
+}
+
+/// The preshared key this registration's origin holds: `None` when it names no secret, an error
+/// when it names one this proxy cannot open (the peer must not come up without its key).
+async fn psk_for(
+    base_url: &str,
+    token: Option<&str>,
+    keyring: Option<&wayhouse_secrets::KeyringHandle>,
+    reg: &PeerRegistration,
+) -> Result<Option<Key>, String> {
+    let Some(name) = &reg.psk_secret else {
+        return Ok(None);
+    };
+    let fetched = crate::secrets::fetch_sealed(base_url, token, name)
+        .await
+        .map_err(|e| e.to_string())?;
+    open_psk(reg, keyring.map(|k| k.current()).as_deref(), fetched)
+}
+
+fn open_psk(
+    reg: &PeerRegistration,
+    keyring: Option<&wayhouse_secrets::Keyring>,
+    fetched: crate::secrets::Fetched,
+) -> Result<Option<Key>, String> {
+    let Some(name) = &reg.psk_secret else {
+        return Ok(None);
+    };
+    // Only the key enrollment made for this very origin; never another origin's or a cluster secret.
+    if *name != wayhouse_enroll::psk_secret_name(&reg.name) {
+        return Err("it names a tunnel key that is not its own".into());
+    }
+    let Some(keyring) = keyring else {
+        return Err("its tunnel key needs this proxy's secret key (--secret-key-file)".into());
+    };
+    let crate::secrets::Fetched::Sealed(sealed) = fetched else {
+        return Err("its tunnel key is not stored on the controller".into());
+    };
+    let value = keyring
+        .open_cluster(name, &sealed)
+        .map_err(|_| "its tunnel key does not open with this proxy's secret key".to_string())?;
+    let text = std::str::from_utf8(value.expose())
+        .map_err(|_| "its tunnel key is malformed".to_string())?;
+    Key::try_from(text)
+        .map(Some)
+        .map_err(|_| "its tunnel key is malformed".into())
 }
 
 /// Applies one event to the WireGuard device and records what it applied. `true`
@@ -352,6 +407,7 @@ fn apply_event(
     last_applied: &mut HashMap<String, PeerRegistration>,
     warned: &mut HashSet<(String, String)>,
     ev: &Event,
+    psk: Result<Option<Key>, String>,
 ) -> bool {
     let mut retry = false;
     match plan(last_applied, ev) {
@@ -375,7 +431,17 @@ fn apply_event(
             // Recorded only once the peer is configured: an identical
             // registration is skipped by `plan`, so one recorded after a failed
             // configure would never be retried.
-            match reconcile_peer(wg, reg) {
+            let psk = match psk {
+                Ok(k) => k,
+                Err(why) => {
+                    // Never configure the peer without the key its origin holds: that would
+                    // silently drop the PSK protection. Retried on the next reconnect.
+                    tracing::warn!(origin = %reg.name, "not configuring the peer: {why}");
+                    last_applied.remove(&reg.name);
+                    return true;
+                }
+            };
+            match reconcile_peer(wg, reg, psk) {
                 Reconciled::Configured => {
                     last_applied.insert(reg.name.clone(), reg.clone());
                 }
@@ -528,9 +594,11 @@ enum Reconciled {
 fn reconcile_peer(
     wg: &(dyn WireguardInterfaceApi + Send + Sync),
     reg: &PeerRegistration,
+    psk: Option<Key>,
 ) -> Reconciled {
     match to_wg_peer(reg) {
-        Ok(peer) => {
+        Ok(mut peer) => {
+            peer.preshared_key = psk;
             if let Err(e) = wg.remove_peer(&peer.public_key) {
                 tracing::debug!(
                     origin = %reg.name, error = %e,
@@ -590,19 +658,82 @@ mod tests {
             endpoint: None,
             backends: vec![],
             tunnel_address: Some("10.60.0.2".into()),
+            psk_secret: None,
         };
         let ev = Event::Registered(reg.clone());
         let mut applied = HashMap::new();
 
         assert!(
-            apply_event(&wg, &mut applied, &mut HashSet::new(), &ev),
+            apply_event(&wg, &mut applied, &mut HashSet::new(), &ev, Ok(None)),
             "a failed configure asks for a retry"
         );
         assert!(applied.is_empty(), "a failed configure is not applied");
         assert_eq!(plan(&applied, &ev), Action::Reconcile(&reg));
 
-        assert!(!apply_event(&wg, &mut applied, &mut HashSet::new(), &ev));
+        assert!(!apply_event(&wg, &mut applied, &mut HashSet::new(), &ev, Ok(None)));
         assert_eq!(applied.get("home"), Some(&reg));
+    }
+
+
+    fn origin(name: &str, psk_secret: Option<String>) -> PeerRegistration {
+        PeerRegistration {
+            name: name.into(),
+            pubkey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+            endpoint: None,
+            backends: vec![],
+            tunnel_address: Some("10.60.0.2".into()),
+            psk_secret,
+        }
+    }
+
+    const RING: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+
+    fn sealed_psk(origin: &str, psk: &str) -> crate::secrets::Fetched {
+        let ring = wayhouse_secrets::Keyring::parse(RING).unwrap();
+        crate::secrets::Fetched::Sealed(
+            ring.seal_cluster(&wayhouse_enroll::psk_secret_name(origin), psk.as_bytes()).unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_registered_origins_sealed_psk_opens_into_the_peers_preshared_key() {
+        let psk = &*wayhouse_enroll::generate_psk();
+        let reg = origin("home", Some(wayhouse_enroll::psk_secret_name("home")));
+        let ring = wayhouse_secrets::Keyring::parse(RING).unwrap();
+        let key = open_psk(&reg, Some(&ring), sealed_psk("home", psk)).unwrap().unwrap();
+        assert_eq!(key.to_string(), Key::try_from(psk.as_str()).unwrap().to_string());
+        assert_eq!(open_psk(&origin("home", None), None, crate::secrets::Fetched::Absent), Ok(None));
+    }
+
+    #[test]
+    fn a_psk_that_cannot_be_used_is_an_error_not_a_silent_downgrade() {
+        let psk = &*wayhouse_enroll::generate_psk();
+        let own = Some(wayhouse_enroll::psk_secret_name("home"));
+        let ring = wayhouse_secrets::Keyring::parse(RING).unwrap();
+        let other = wayhouse_secrets::Keyring::parse("AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=").unwrap();
+        // No key file, key not stored, wrong key, another origin's secret, a non-key value.
+        assert!(open_psk(&origin("home", own.clone()), None, sealed_psk("home", psk)).is_err());
+        assert!(open_psk(&origin("home", own.clone()), Some(&ring), crate::secrets::Fetched::Absent).is_err());
+        assert!(open_psk(&origin("home", own.clone()), Some(&other), sealed_psk("home", psk)).is_err());
+        let theirs = Some(wayhouse_enroll::psk_secret_name("other"));
+        assert!(open_psk(&origin("home", theirs), Some(&ring), sealed_psk("other", psk)).is_err());
+        assert!(open_psk(&origin("home", own), Some(&ring), sealed_psk("home", "not a key")).is_err());
+    }
+
+    #[test]
+    fn a_peer_whose_psk_cannot_be_opened_is_left_unconfigured_and_retried() {
+        use crate::live_interface::testing::Fake;
+        let wg = Fake {
+            log: std::sync::Arc::default(),
+            fail_assign: vec![],
+            fail_remove: false,
+            fail_configure: std::sync::Mutex::new(0),
+        };
+        let ev = Event::Registered(origin("home", Some(wayhouse_enroll::psk_secret_name("home"))));
+        let mut applied = HashMap::new();
+        assert!(apply_event(&wg, &mut applied, &mut HashSet::new(), &ev, Err("no key".into())));
+        assert!(applied.is_empty());
+        assert!(wg.log.lock().unwrap().is_empty(), "nothing reached the device");
     }
 
     /// A malformed update leaves the device alone, so the installed peer keeps
@@ -622,14 +753,14 @@ mod tests {
             endpoint: None,
             backends: vec![],
             tunnel_address: Some("10.60.0.2".into()),
+            psk_secret: None,
         };
         let mut applied = HashMap::new();
         apply_event(
             &wg,
             &mut applied,
             &mut HashSet::new(),
-            &Event::Registered(reg.clone()),
-        );
+            &Event::Registered(reg.clone()), Ok(None));
         let mut broken = reg.clone();
         broken.tunnel_address = Some("not-an-address".into());
 
@@ -637,15 +768,13 @@ mod tests {
             &wg,
             &mut applied,
             &mut HashSet::new(),
-            &Event::Registered(broken),
-        );
+            &Event::Registered(broken), Ok(None));
         assert_eq!(applied.get("home"), Some(&reg));
         apply_event(
             &wg,
             &mut applied,
             &mut HashSet::new(),
-            &Event::Removed("home".into()),
-        );
+            &Event::Removed("home".into()), Ok(None));
         assert!(applied.is_empty());
     }
 
@@ -699,6 +828,7 @@ mod tests {
             endpoint: None,
             backends: vec![],
             tunnel_address: None,
+            psk_secret: None,
         };
         assert!(to_wg_peer(&reg).is_err());
     }
@@ -711,6 +841,7 @@ mod tests {
             endpoint: None,
             backends: vec![],
             tunnel_address: Some("10.60.0.5".into()),
+            psk_secret: None,
         };
         let peer = to_wg_peer(&reg).unwrap();
         assert!(peer.endpoint.is_none());
@@ -723,6 +854,7 @@ mod tests {
             endpoint: None,
             backends: vec![],
             tunnel_address: addr.map(str::to_string),
+            psk_secret: None,
         }
     }
 
