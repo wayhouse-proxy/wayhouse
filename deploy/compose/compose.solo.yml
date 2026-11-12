@@ -1,6 +1,7 @@
 # Solo bundle (docs/12-deployment.md, "One box"): the demo stack plus what a single box needs for
 # everything in 0.4 to work: plugins and a sealed secret store. Use it as an overlay:
-#   sh ../solo/init.sh                    # once: writes .env with random tokens (never prints them)
+#   wayhouse-controller init --target compose   # once: .env with random tokens and ./tls with a
+#                                                # private CA and the certificates (never prints a secret)
 #   docker compose -f docker-compose.yml -f compose.solo.yml up -d --build
 # Add compose.web.yml for the Caddy front door, compose.solo-acme.yml for certificates.
 #
@@ -13,9 +14,10 @@
 #               so the UI's "Process flags" page can change their flags with a trial apply that
 #               goes back by itself (docs/12-deployment.md, "Process flags from a settings file")
 #
-# Everything is published on the host's loopback only. The controller listens on 0.0.0.0 inside
-# the compose network, which its plain-HTTP guard refuses once it holds a key; the bridge network
-# is private to the host, so --allow-insecure-secrets is set here and nowhere else.
+# Everything is published on the host's loopback only. The controller and the aggregator serve
+# https inside the compose network (certificates from `init`, copied into the solo-tls volume by
+# the keys step), and every client trusts the init CA with --ca-file, so no flag turns off the
+# plain-http guards: --allow-insecure-controller and --allow-insecure-secrets appear nowhere here.
 services:
   keys:
     image: busybox:1.37.0
@@ -31,7 +33,18 @@ services:
         chmod 0600 /keys/secret.keys
         chown 65532:65532 /settings
         chmod 0700 /settings
-    volumes: ["solo-keys:/keys", "solo-settings:/settings"]
+        [ -f /tls-src/ca.pem ] || { echo "no certificates in WAYHOUSE_TLS_DIR: run wayhouse-controller init --target compose first" >&2; exit 1; }
+        mkdir -p /tls
+        for f in ca.pem controller.pem controller.key aggregator.pem aggregator.key; do cp "/tls-src/$$f" "/tls/$$f"; done
+        chown -R 65532:65532 /tls
+        chmod 0755 /tls
+        chmod 0644 /tls/*.pem
+        chmod 0600 /tls/*.key
+    volumes:
+      - solo-keys:/keys
+      - solo-settings:/settings
+      - solo-tls:/tls
+      - ${WAYHOUSE_TLS_DIR:-./tls}:/tls-src:ro
     restart: "no"
 
   controller:
@@ -43,27 +56,31 @@ services:
       - --agent-token-file=/run/secrets/agent-token
       - --plugins
       - --secret-key-file=/keys/secret.keys
-      - --allow-insecure-secrets
+      - --tls-cert=/tls/controller.pem
+      - --tls-key=/tls/controller.key
       - --settings-dir=/settings
     volumes:
       - controller-data:/data
       - solo-keys:/keys:ro
       - solo-settings:/settings
+      - solo-tls:/tls:ro
     depends_on:
       keys: { condition: service_completed_successfully }
 
   wayhouse:
     command:
-      - --controller=http://127.0.0.1:9901
+      - --controller=https://127.0.0.1:9901
       - --controller-token-file=/run/secrets/controller-token
-      - --aggregator=http://127.0.0.1:9902
+      - --aggregator=https://127.0.0.1:9902
       - --aggregator-token-file=/run/secrets/aggregator-token
       - --aggregator-instance=demo-wayhouse
+      - --ca-file=/tls/ca.pem
       - --secret-key-file=/keys/secret.keys
       - --settings-dir=/settings
     volumes:
       - solo-keys:/keys:ro
       - solo-settings:/settings
+      - solo-tls:/tls:ro
     depends_on:
       keys: { condition: service_completed_successfully }
 
@@ -73,8 +90,10 @@ services:
       - --auth-token-file=/run/secrets/auth-token
       - --ingest-token-file=/run/secrets/ingest-token
       - --instance-url-allow=127.0.0.0/8
+      - --tls-cert=/tls/aggregator.pem
+      - --tls-key=/tls/aggregator.key
       - --settings-dir=/settings
-    volumes: ["solo-settings:/settings"]
+    volumes: ["solo-settings:/settings", "solo-tls:/tls:ro"]
     depends_on:
       keys: { condition: service_completed_successfully }
 
@@ -82,16 +101,40 @@ services:
     command:
       - --listen=0.0.0.0:9903
       - --ui-password-file=/run/secrets/ui-password
-      - --controller-url=http://controller:9901
-      - --allow-insecure-controller   # tokens cross the private compose network in plain http
+      - --controller-url=https://controller:9901
       - --controller-token-file=/run/secrets/controller-token
-      - --aggregator-url=http://aggregator:9902
+      - --aggregator-url=https://aggregator:9902
       - --aggregator-token-file=/run/secrets/aggregator-token
+      - --ca-file=/tls/ca.pem
       - --settings-dir=/settings
-    volumes: ["solo-settings:/settings"]
+    volumes: ["solo-settings:/settings", "solo-tls:/tls:ro"]
+    depends_on:
+      keys: { condition: service_completed_successfully }
+
+  # The base file's one-shot that writes revision 1; it has to speak https here and trust the CA
+  # (curl 8.11.1 rejects `--opt=value`, so values are separate arguments, as in the base).
+  seed:
+    command:
+      - -fsS
+      - --cacert
+      - /tls/ca.pem
+      - --retry
+      - "30"
+      - --retry-delay
+      - "1"
+      - --retry-all-errors
+      - -X
+      - POST
+      - -H
+      - "Authorization: Bearer ${WAYHOUSE_CONTROLLER_TOKEN}"
+      - --data-binary
+      - "@/wayhouse.yaml"
+      - https://controller:9901/config
+    volumes: ["./wayhouse.yaml:/wayhouse.yaml:ro", "solo-tls:/tls:ro"]
     depends_on:
       keys: { condition: service_completed_successfully }
 
 volumes:
   solo-keys:
   solo-settings:
+  solo-tls:

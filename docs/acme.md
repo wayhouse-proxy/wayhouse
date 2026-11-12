@@ -322,8 +322,11 @@ production rate limits.
 
 - **HTTP-01, no plugin.** Needs the name to resolve to this box and port 80 reachable from the
   internet. Add `compose.web.yml` (Caddy and `wayhouse-web-sync`) and start the sync with
-  `--acme-challenge-upstream http://127.0.0.1:9901`; then create the site with
-  `"challenge": "http-01"` as [above](#http-01).
+  `--acme-challenge-upstream https://127.0.0.1:9901 --acme-challenge-ca-file /tls/ca.pem`: the
+  solo controller serves https from the certificate `init` made, so Caddy needs that CA too.
+  Mount `tls/ca.pem` into the `caddy` service (`${WAYHOUSE_TLS_DIR}/ca.pem:/tls/ca.pem:ro`). Then
+  create the site with `"challenge": "http-01"` as [above](#http-01). (This combination is not
+  part of the CI smoke test.)
 - **DNS-01 with the Cloudflare plugin.** Needs no open port. Install the plugin from the registry
   (Plugins, Install, From a registry), set its `CLOUDFLARE_API_TOKEN` slot under Secrets, and give
   the site `"dns_plugin": "<id>"` ([Cloudflare](#cloudflare)).

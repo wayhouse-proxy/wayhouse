@@ -171,8 +171,11 @@ controllers first, then move proxies and agents to their tokens.
 secret key created once by a `keys` step, the proxy with the same key, nothing published beyond
 the host loopback), `compose.solo-acme.yml` (adds `--acme`, staging CA by default; including it is
 your acceptance of the CA's terms) and the existing `compose.web.yml` and `compose.tunnel.yml`.
-`sh deploy/solo/init.sh` writes random tokens and a UI password into `deploy/compose/.env` (mode
-0600, never overwrites). Without Docker, `deploy/systemd/` has the same units and a
+`wayhouse-controller init --target compose` (what `sh deploy/solo/init.sh` now calls) writes random
+tokens and a UI password into `deploy/compose/.env` (mode 0600, never overwrites) and a private CA
+with the controller's and aggregator's certificates into `deploy/compose/tls/`; the solo bundle
+serves https from them. An existing solo `.env` has no `WAYHOUSE_TLS_DIR`: run `init` in a new
+directory and start the bundle from it, or add the certificates by hand. Without Docker, `deploy/systemd/` has the same units and a
 `wayhouse-solo.target`. Compose hands the tokens to each container as Docker secrets and the units
 use `LoadCredential=`, so no token is on a command line. See [deployment](12-deployment.md).
 
@@ -203,11 +206,19 @@ when a bearer token was configured for a plain `http://` URL on a non-loopback h
 path could read the token and act as that process. Use an `https://` URL, or, on a network that is
 private by construction, pass `--allow-insecure-controller` (a warning is logged at start). It can
 also be set in a settings file, like the other non-secret flags. A URL to loopback, and a URL with
-no token, are unaffected. The shipped Compose and Kubernetes files set the flag for the UI and the
-Kubernetes node proxy, whose traffic stays on the container or cluster network; `wayhouse-controller
-init` will generate a certificate that clients pin, so the bundles can move to https (slice 2).
-Calls from the controller to other controllers (HA, parent, plugin peers) and the aggregator's
-reach to instance admin URLs are not covered yet.
+no token, are unaffected. The solo bundle (compose and systemd) needs no flag: `wayhouse-controller
+init` made a CA and certificates, the controller and aggregator serve them and the clients trust the
+CA (`--ca-file`). The demo Compose file and the Kubernetes manifests still set the flag for the UI and
+the node proxy, whose traffic stays on the container or cluster network.
+
+The same rule now covers the controller's own calls: `--parent-url` with a `--parent-token`, every
+`--ha-peers` entry and every address given to `POST /admin/ha/members` (the Raft token goes there;
+a bare `host:port` is plain http), and the aggregator's `admin_url`s: with an `--instance-token`
+the aggregator rejects at ingest a plain-http `admin_url` that is not loopback, so such an instance
+disappears from the fleet view until it reports an `https://` URL or the aggregator gets
+`--allow-insecure-controller`. The controller has the same `--allow-insecure-controller` flag now.
+The Kubernetes aggregator and the HA overlay set it (cluster-internal http); an HA cluster across
+hosts should use `https://` peer addresses.
 
 ## What works on one instance
 

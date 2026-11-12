@@ -8,14 +8,18 @@ PartOf=wayhouse-solo.target
 [Service]
 User=wayhouse
 StateDirectory=wayhouse
-# Loopback only (the default listener), so the plain-HTTP guard needs no override.
+# Loopback only (the default listener), served over https with the certificate `init` made: the
+# private key arrives as a credential (%d is its directory), the certificate is public.
 # The tokens arrive as files under $CREDENTIALS_DIRECTORY; the program reads them from there
-# (sh deploy/solo/init.sh --credentials /etc/wayhouse/credentials writes the sources).
+# (`wayhouse-controller init --target systemd` writes the sources under /etc/wayhouse/credentials).
 LoadCredential=auth-token:/etc/wayhouse/credentials/controller-token
 LoadCredential=proxy-token:/etc/wayhouse/credentials/proxy-token
 LoadCredential=agent-token:/etc/wayhouse/credentials/agent-token
+LoadCredential=tls-key:/etc/wayhouse/tls/controller.key
 ExecStart=/usr/local/bin/wayhouse-controller \
   --listen=127.0.0.1:9901 \
+  --tls-cert=/etc/wayhouse/tls/controller.pem \
+  --tls-key=%d/tls-key \
   --data-dir=/var/lib/wayhouse/controller \
   --plugins \
   --secret-key-file=/var/lib/wayhouse/secret.keys
