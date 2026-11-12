@@ -231,6 +231,11 @@ pub fn router(ui: UiState, peers: PeersState) -> Router {
     Router::new()
         .route("/peers/{name}/psk", get(read_current))
         .route("/peers/{name}/psk/rotate", post(rotate))
+        // Scoped tokens arrive here already exchanged for the admin token by `promote`.
+        .route_layer(axum::middleware::from_fn_with_state(
+            wayhouse_http::server::BearerAuth::new(ui.auth_token.as_deref()),
+            wayhouse_http::server::require_bearer,
+        ))
         .with_state(PskState { ui, peers })
 }
 
@@ -336,6 +341,16 @@ async fn rotate(
         Ok(Some(_)) => {}
         Err(e) => return internal(e),
     }
+    // The active generation's secret must be there: a re-enroll in flight (or damage) would
+    // otherwise have the cleanup below delete what the agent is about to register.
+    match exists(&st, &name, active) {
+        Ok(true) => {}
+        Ok(false) => return err(
+            StatusCode::CONFLICT,
+            "the active tunnel key is missing (a re-enroll may be in progress); try again shortly",
+        ),
+        Err(r) => return r,
+    }
     match exists(&st, &name, active + 1) {
         Ok(true) => {
             return err(
@@ -431,6 +446,7 @@ mod tests {
             let mut req = Request::builder()
                 .method(method)
                 .uri(uri)
+                .header("authorization", format!("Bearer {ADMIN}"))
                 .body(Body::empty())
                 .unwrap();
             if let Some(c) = caller {
@@ -476,6 +492,47 @@ mod tests {
 
     fn origin(n: &str) -> Option<Caller> {
         Some(Caller::Origin(n.into()))
+    }
+
+    #[tokio::test]
+    async fn the_key_routes_need_a_token_and_a_wrong_one_is_refused() {
+        let t = setup();
+        t.enrolled("home").await;
+        for (m, u) in [
+            ("GET", "/peers/home/psk"),
+            ("POST", "/peers/home/psk/rotate"),
+        ] {
+            for auth in [None, Some("Bearer wrong-wrong-wrong-wrong")] {
+                let mut req = Request::builder().method(m).uri(u);
+                if let Some(a) = auth {
+                    req = req.header("authorization", a);
+                }
+                let resp = router(t.ui.clone(), t.peers.clone())
+                    .oneshot(req.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{m} {u} {auth:?}");
+            }
+        }
+        assert_eq!(
+            t.ui.store
+                .get(
+                    Kind::ClusterSecret,
+                    &wayhouse_enroll::psk_secret_name_gen("home", 1)
+                )
+                .unwrap(),
+            None,
+            "nothing was rotated"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotation_waits_while_the_active_key_is_missing() {
+        let t = setup();
+        t.enrolled("home").await;
+        t.register("home", 3);
+        let (st, _) = t.call("POST", "/peers/home/psk/rotate", None).await;
+        assert_eq!(st, StatusCode::CONFLICT);
     }
 
     #[tokio::test]

@@ -35,6 +35,8 @@ struct Offer {
 pub enum FetchError {
     /// The controller does not serve this agent a key (401, 403, 404): not a rotating agent.
     NotOffered,
+    /// 404: nothing stored for the name yet (before its first registration); try later.
+    Absent,
     Other(anyhow::Error),
 }
 
@@ -65,7 +67,10 @@ impl Rotation {
             .await
             .map_err(|e| FetchError::Other(anyhow::Error::new(e)))?;
         let status = resp.status();
-        if matches!(status.as_u16(), 401 | 403 | 404) {
+        if status.as_u16() == 404 {
+            return Err(FetchError::Absent);
+        }
+        if matches!(status.as_u16(), 401 | 403) {
             return Err(FetchError::NotOffered);
         }
         if !status.is_success() {
@@ -107,6 +112,7 @@ impl Rotation {
         let offer = match self.fetch().await {
             Ok(o) => o,
             Err(FetchError::NotOffered) => return Ok(false),
+            Err(FetchError::Absent) => return Ok(true),
             Err(FetchError::Other(e)) => return Err(e),
         };
         if self.apply(offer).await? {
@@ -284,7 +290,10 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let dir = tempfile::tempdir().unwrap();
         let (rot, gen, _) = rotation(url, dir.path(), 0);
-        assert!(!rot.poll().await.unwrap(), "404 means no key on offer");
+        assert!(
+            rot.poll().await.unwrap(),
+            "404 is nothing yet, not a refusal"
+        );
         assert_eq!(gen.load(Ordering::SeqCst), 0);
     }
 

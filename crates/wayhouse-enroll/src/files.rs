@@ -98,6 +98,16 @@ pub fn write(
     for (name, content) in files {
         debug_assert!(!name.contains('/') && name != "..");
         write_private(&dir.join(name), content.as_bytes())?;
+        if name == PSK_FILE {
+            // A fresh key is generation 0; a generation left by an earlier life would make the
+            // agent register a secret the controller no longer has.
+            match std::fs::remove_file(psk_gen_path(&dir.join(name))) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(io(&psk_gen_path(&dir.join(name)))(e))
+                }
+                _ => {}
+            }
+        }
     }
     Ok(())
 }
@@ -198,6 +208,19 @@ mod tests {
         replace_psk(&path, &new).unwrap();
         write_psk_gen(&path, 3).unwrap();
         assert_eq!(*read_psk(&path).unwrap(), *new);
+        // Enrolling again writes generation 0 over whatever was there.
+        let meta = Meta {
+            controller_url: "https://c".into(),
+            name: "home".into(),
+            role: Role::Agent,
+            parent_url: None,
+        };
+        let files = [(PSK_FILE.to_owned(), new.to_string())]
+            .into_iter()
+            .collect();
+        write(t.path(), &meta, &files).unwrap();
+        assert_eq!(read_psk_gen(&path), 0);
+        write_psk_gen(&path, 3).unwrap();
         assert_eq!(read_psk_gen(&path), 3);
         assert_eq!(mode(&path), 0o600);
         assert_eq!(mode(&psk_gen_path(&path)), 0o600);
@@ -209,7 +232,7 @@ mod tests {
             .flatten()
             .map(|e| e.file_name())
             .collect();
-        assert_eq!(left.len(), 2, "{left:?}");
+        assert_eq!(left.len(), 3, "{left:?}");
     }
 
     #[test]
