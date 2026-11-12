@@ -306,7 +306,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
 | A controller or aggregator client call that carries a token | `wayhouse_http::bearer::check_bearer_transport` at start (or `check_bearer_transport_global` where there is no `Args`), so plain `http://` beyond loopback is refused unless `--allow-insecure-controller`; `crates/wayhouse-fleet-tests/tests/plain_http_token.rs` lists the binaries |
 | New page under `docs/` (not `docs/superpowers/`) | a line in `docs/SUMMARY.md`, or it is not on the website |
 | New routing matcher / balancer | `docs/03`, `config.example.yaml`, tests |
-| Registry index / manifest format or the sniffer ABI version rules | `wayhouse-registry` (`index.rs`, `compat.rs`), the golden `tests/golden/index.json`, `docs/sniffers.md`, the registry spec |
+| Registry index / manifest format or the sniffer ABI version rules | `wayhouse-registry` (`index.rs`, `plugin_index.rs`, `catalog.rs`, `compat.rs`), `wayhouse-ui` (`registry_client.rs`, `registry_api.rs`, `plugin_registry_api.rs`) and the web registry views, the golden `tests/golden/index.json`, `docs/sniffers.md`, the registry spec |
 | New / changed sniffer seam | `wayhouse_core::sniff`, `docs/03`, `docs/08` (Phase 9). NB: no game sniffers are compiled in — they load as sniffers (Phase 9), never as core code or a fork. |
 | Sniffer ABI (wire format or `wayhouse.abi` version) | `crates/wayhouse-sniffer-abi`, `HOST_ABI` in `sniffer_loader.rs`, the rev pinned in the sniffers repo's `Cargo.toml`, rebuilt sniffer releases, then `sniffers.lock` (`docs/sniffers.md`) |
 | Plugin ABI (imports, exports, capability format or `wayhouse.plugin-abi` version) | `crates/wayhouse-plugin-abi` constants, `HOST_ABI` in `wayhouse-plugin-host`, `docs/plugins.md`, the automation hooks spec |

@@ -1,5 +1,6 @@
 //! Deterministic `index.json` generation from manifests and built artifacts.
 
+use crate::catalog::{check_allowed, CatalogProblem};
 use crate::index::{Index, IndexError, Kind, SnifferEntry, VersionEntry, INDEX_SCHEMA};
 use crate::manifest::Manifest;
 use crate::verify::check_module;
@@ -44,14 +45,30 @@ pub enum GenerateError {
         published: String,
         built: String,
     },
+    #[error("{name}: {problem}")]
+    Catalog {
+        name: String,
+        problem: CatalogProblem,
+    },
     #[error("the generated index is invalid: {0}")]
     Invalid(#[from] IndexError),
 }
 
+/// What `generate` needs besides the artifacts.
+#[derive(Debug, Clone)]
+pub struct GenerateOptions {
+    pub registry_name: String,
+    /// `YYYY-MM-DD`, stored as `updated` on every sniffer that gains a version.
+    pub today: String,
+    /// The allowed categories (`categories.toml`); `None` checks syntax only.
+    pub allowed_categories: Option<Vec<String>>,
+    pub stats_url: Option<String>,
+}
+
 /// Merge `artifacts` into `previous` (older versions are kept) and return the new,
-/// validated index with sniffers sorted by name and versions newest first.
+/// validated index (all versions inline) with sniffers sorted by name and versions newest first.
 pub fn generate(
-    registry_name: &str,
+    opts: &GenerateOptions,
     artifacts: &[Artifact],
     previous: Option<&Index>,
 ) -> Result<Generated, GenerateError> {
@@ -71,6 +88,12 @@ pub fn generate(
     for a in artifacts {
         let m = &a.manifest;
         let version = m.version.to_string();
+        if let Some(allowed) = &opts.allowed_categories {
+            check_allowed(&m.categories, allowed).map_err(|problem| GenerateError::Catalog {
+                name: m.name.clone(),
+                problem,
+            })?;
+        }
         let declared = check_module(&a.bytes).map_err(|e| GenerateError::Module {
             name: m.name.clone(),
             version: version.clone(),
@@ -96,6 +119,13 @@ pub fn generate(
                 description: m.description.clone(),
                 license: m.license.clone(),
                 homepage: m.homepage.clone(),
+                categories: Vec::new(),
+                tags: Vec::new(),
+                latest: m.version.clone(),
+                abi: m.abi.clone(),
+                signed: false,
+                updated: opts.today.clone(),
+                detail_url: None,
                 versions: Vec::new(),
             });
         match entry.versions.iter().find(|v| v.version == m.version) {
@@ -120,6 +150,7 @@ pub fn generate(
                     limits: m.limits.clone(),
                     config: m.config.clone(),
                 });
+                entry.updated = opts.today.clone();
                 added.push((m.name.clone(), m.version.clone()));
             }
         }
@@ -143,7 +174,14 @@ pub fn generate(
                 entry.description = a.manifest.description.clone();
                 entry.license = a.manifest.license.clone();
                 entry.homepage = a.manifest.homepage.clone();
+                entry.categories = a.manifest.categories.clone();
+                entry.tags = a.manifest.tags.clone();
             }
+        }
+        if let Some(newest) = entry.versions.first() {
+            entry.latest = newest.version.clone();
+            entry.abi = newest.abi.clone();
+            entry.signed = newest.signature_url.is_some();
         }
     }
     added.sort();
@@ -151,7 +189,11 @@ pub fn generate(
     let index = Index {
         schema: INDEX_SCHEMA,
         kind: Kind::Sniffer,
-        name: registry_name.to_owned(),
+        name: opts.registry_name.clone(),
+        stats_url: opts
+            .stats_url
+            .clone()
+            .or_else(|| previous.and_then(|p| p.stats_url.clone())),
         sniffers: sniffers.into_values().collect(),
     };
     index.validate()?;
@@ -177,6 +219,15 @@ mod tests {
         .unwrap()
     }
 
+    fn opts() -> GenerateOptions {
+        GenerateOptions {
+            registry_name: "test".into(),
+            today: "2026-11-12".into(),
+            allowed_categories: None,
+            stats_url: None,
+        }
+    }
+
     fn manifest(name: &str, version: &str, abi: &str) -> Manifest {
         parse_manifest(&format!(
             r#"name = "{name}"
@@ -185,6 +236,8 @@ license = "MIT"
 version = "{version}"
 abi = "{abi}"
 min_proxy = "0.1.0"
+categories = ["game"]
+tags = ["Fps", "source"]
 [limits]
 max_memory_bytes = 1048576
 call_timeout_ms = 50
@@ -203,9 +256,48 @@ call_timeout_ms = 50
     }
 
     #[test]
+    fn catalog_fields_follow_the_newest_version_and_the_date() {
+        let mut signed = artifact("a2s", "0.2.0", "y");
+        signed.signature_url = Some("https://example.com/a2s.minisig".into());
+        let first = generate(&opts(), &[artifact("a2s", "0.1.0", "x")], None)
+            .unwrap()
+            .index;
+        let later = GenerateOptions {
+            today: "2026-12-01".into(),
+            ..opts()
+        };
+        let second = generate(&later, &[signed], Some(&first)).unwrap().index;
+        let e = &second.sniffers[0];
+        assert_eq!(
+            (e.latest.to_string(), e.signed, e.updated.as_str()),
+            ("0.2.0".to_string(), true, "2026-12-01")
+        );
+        assert_eq!(
+            (e.categories.as_slice(), e.tags.as_slice()),
+            (
+                &["game".to_string()][..],
+                &["fps".to_string(), "source".to_string()][..]
+            )
+        );
+        // Nothing new published: the date stays.
+        let same = generate(&later, &[], Some(&first)).unwrap().index;
+        assert_eq!(same.sniffers[0].updated, "2026-11-12");
+    }
+
+    #[test]
+    fn a_category_off_the_allowed_list_is_refused() {
+        let o = GenerateOptions {
+            allowed_categories: Some(vec!["voip".into()]),
+            ..opts()
+        };
+        let r = generate(&o, &[artifact("a2s", "0.1.0", "x")], None);
+        assert!(matches!(r, Err(GenerateError::Catalog { .. })), "{r:?}");
+    }
+
+    #[test]
     fn generate_computes_sha_and_size() {
         let a = artifact("a2s", "0.1.0", "x");
-        let g = generate("test", std::slice::from_ref(&a), None).unwrap();
+        let g = generate(&opts(), std::slice::from_ref(&a), None).unwrap();
         let v = &g.index.sniffers[0].versions[0];
         assert_eq!(v.size, a.bytes.len() as u64);
         let want: String = Sha256::digest(&a.bytes)
@@ -223,7 +315,7 @@ call_timeout_ms = 50
         let mut a = artifact("a2s", "0.1.0", "x");
         a.manifest.abi = "0.2".into();
         assert!(matches!(
-            generate("test", &[a], None),
+            generate(&opts(), &[a], None),
             Err(GenerateError::AbiMismatch { .. })
         ));
     }
@@ -233,17 +325,17 @@ call_timeout_ms = 50
         let mut a = artifact("a2s", "0.1.0", "x");
         a.bytes = b"not wasm".to_vec();
         assert!(matches!(
-            generate("test", &[a], None),
+            generate(&opts(), &[a], None),
             Err(GenerateError::Module { .. })
         ));
     }
 
     #[test]
     fn generate_keeps_previous_versions() {
-        let first = generate("test", &[artifact("a2s", "0.1.0", "x")], None)
+        let first = generate(&opts(), &[artifact("a2s", "0.1.0", "x")], None)
             .unwrap()
             .index;
-        let second = generate("test", &[artifact("a2s", "0.2.0", "y")], Some(&first)).unwrap();
+        let second = generate(&opts(), &[artifact("a2s", "0.2.0", "y")], Some(&first)).unwrap();
         let versions: Vec<_> = second.index.sniffers[0]
             .versions
             .iter()
@@ -256,21 +348,21 @@ call_timeout_ms = 50
     #[test]
     fn generate_republishing_identical_bytes_is_a_no_op() {
         let a = artifact("a2s", "0.1.0", "x");
-        let first = generate("test", std::slice::from_ref(&a), None)
+        let first = generate(&opts(), std::slice::from_ref(&a), None)
             .unwrap()
             .index;
-        let again = generate("test", &[a], Some(&first)).unwrap();
+        let again = generate(&opts(), &[a], Some(&first)).unwrap();
         assert_eq!(again.index, first);
         assert!(again.added.is_empty());
     }
 
     #[test]
     fn generate_rejects_a_version_already_published_with_a_different_sha() {
-        let first = generate("test", &[artifact("a2s", "0.1.0", "x")], None)
+        let first = generate(&opts(), &[artifact("a2s", "0.1.0", "x")], None)
             .unwrap()
             .index;
         let r = generate(
-            "test",
+            &opts(),
             &[artifact("a2s", "0.1.0", "different")],
             Some(&first),
         );
@@ -280,7 +372,7 @@ call_timeout_ms = 50
     #[test]
     fn generate_sorts_sniffers_and_versions() {
         let g = generate(
-            "test",
+            &opts(),
             &[
                 artifact("zeta", "0.1.0", "a"),
                 artifact("alpha", "0.1.0", "b"),
@@ -306,7 +398,7 @@ call_timeout_ms = 50
         old.manifest.description = "old text".into();
         let mut new = artifact("a2s", "0.2.0", "y");
         new.manifest.description = "new text".into();
-        let g = generate("test", &[new, old], None).unwrap();
+        let g = generate(&opts(), &[new, old], None).unwrap();
         assert_eq!(g.index.sniffers[0].description, "new text");
     }
 
@@ -317,17 +409,17 @@ call_timeout_ms = 50
             artifact("alpha", "0.1.0", "b"),
             artifact("alpha", "0.2.0", "c"),
         ];
-        let one = to_json(&generate("test", &arts, None).unwrap().index);
+        let one = to_json(&generate(&opts(), &arts, None).unwrap().index);
         let mut shuffled = arts.to_vec();
         shuffled.reverse();
-        let two = to_json(&generate("test", &shuffled, None).unwrap().index);
+        let two = to_json(&generate(&opts(), &shuffled, None).unwrap().index);
         assert_eq!(one, two);
         assert!(one.ends_with("}\n"));
     }
 
     #[test]
     fn the_generated_index_round_trips_through_the_parser() {
-        let g = generate("test", &[artifact("a2s", "0.1.0", "x")], None).unwrap();
+        let g = generate(&opts(), &[artifact("a2s", "0.1.0", "x")], None).unwrap();
         assert_eq!(
             crate::parse_index(to_json(&g.index).as_bytes()).unwrap(),
             g.index

@@ -42,11 +42,11 @@ wayhouse-plugin-abi = { path = "../wayhouse-plugin-abi" }
 wayhouse-sniffer-abi = { path = "../wayhouse-sniffer-abi" }
 semver.workspace = true
 thiserror.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 wayhouse-config = { path = "../wayhouse-config", features = ["test-util"] }
 tokio-tungstenite = "0.29"
-futures-util = { version = "0.3", default-features = false }
 base64 = "0.22"
 tempfile.workspace = true
 wat.workspace = true
