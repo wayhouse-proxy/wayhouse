@@ -1,4 +1,5 @@
-import { render, screen, within } from "@testing-library/react";
+import { render as rtlRender, screen, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
@@ -12,6 +13,7 @@ vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()),
 import { TunnelAddressesPage } from "./TunnelAddressesPage";
 
 const NOW = 1_800_000_000;
+const render = (ui: React.ReactElement) => rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
 
 beforeEach(() => {
   vi.spyOn(Date, "now").mockReturnValue(NOW * 1000);
@@ -57,6 +59,13 @@ describe("TunnelAddressesPage", () => {
     expect(within(proxy).getByText("proxy")).toBeInTheDocument();
     expect(within(proxy).getByText("20 d ago")).toBeInTheDocument();
     expect(within(proxy).getByText("stale")).toBeInTheDocument();
+  });
+
+  it("links an origin to a pre-filled new code, and a proxy not at all", async () => {
+    render(<TunnelAddressesPage />);
+    const link = await screen.findByRole("link", { name: "Re-enroll fra-origin" });
+    expect(link).toHaveAttribute("href", "/nodes/add?role=agent&name=fra-origin");
+    expect(screen.queryByRole("link", { name: "Re-enroll edge-1" })).not.toBeInTheDocument();
   });
 
   it("explains how to free a stale address when one is listed", async () => {

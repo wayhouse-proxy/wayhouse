@@ -33,6 +33,8 @@ import type {
   SnifferInfo,
   UpdateCheck,
   TunnelAddresses,
+  EnrollmentCode,
+  MintedEnrollment,
 } from "./types";
 import type { FleetStats, Range } from "./lib/stats";
 import type { NodePage, Resolved, SavedFilter } from "./lib/fleet/nodes";
@@ -438,6 +440,31 @@ export function releaseTunnelAddress(
 ): Promise<{ revision: number; released: string | null }> {
   const base = role === "origin" ? "origins" : "proxies";
   return requestJson(`/api/tunnel/${base}/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+
+// --- enrollment codes (proxied to wayhouse-controller; admin-only) ---
+
+export interface MintRequest {
+  role: EnrollmentCode["role"];
+  name: string;
+  ttl_secs: number;
+  uses: number;
+  parent_url?: string;
+  /** Proxy and UI codes only. Typed per mint, sent once, never stored. */
+  step_up?: string;
+}
+
+/** Mints a one-time code. The answer carries the code; keep it in memory only. */
+export function mintEnrollment(req: MintRequest): Promise<MintedEnrollment> {
+  return requestJson("/api/enrollments", jsonInit("POST", req));
+}
+
+export function listEnrollments(): Promise<{ items: EnrollmentCode[] }> {
+  return requestJson("/api/enrollments");
+}
+
+export function revokeEnrollment(id: string): Promise<void> {
+  return requestJson(`/api/enrollments/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 // --- ACME sites and gateways (proxied to wayhouse-controller; writes are admin-only) ---

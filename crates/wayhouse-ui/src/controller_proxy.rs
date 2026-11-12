@@ -80,6 +80,15 @@ pub fn admin_router() -> Router<AppState> {
             "/api/acme/gateways/{name}",
             axum::routing::delete(revoke_acme_gateway),
         )
+        // Enrollment codes (docs/12 "Enrolling an origin agent"): admin-only, reads included,
+        // because a pending list names every node being added.
+        .route(
+            "/api/enrollments",
+            post(mint_enrollment)
+                .get(list_enrollments)
+                .layer(DefaultBodyLimit::max(ENROLLMENT_BODY_BYTES)),
+        )
+        .route("/api/enrollments/{id}", delete(revoke_enrollment))
         .route("/api/tunnel/origins/{name}", delete(release_origin))
         .route("/api/tunnel/proxies/{name}", delete(release_proxy))
         .route(
@@ -136,6 +145,8 @@ const SECRET_BODY_BYTES: usize = 16 * 1024;
 const ACME_SITE_BODY_BYTES: usize = 64 * 1024;
 /// A gateway registration is one name.
 const ACME_GATEWAY_BODY_BYTES: usize = 1024;
+/// A mint body is a role, a name, a few numbers, a URL and the step-up secret.
+const ENROLLMENT_BODY_BYTES: usize = 4 * 1024;
 
 /// The controller's own cap on an install's config is 64 KiB; the rest is the approved set.
 const PLUGIN_CONFIG_BODY_BYTES: usize = 80 * 1024;
@@ -208,6 +219,64 @@ async fn create_acme_gateway(
         "/acme/gateways".to_string(),
         Some(body),
         Some("application/json"),
+        actor,
+    )
+    .await
+}
+
+/// `POST /api/enrollments`: mints a one-time enrollment code. The body may carry the step-up
+/// secret and the answer carries the code, so neither is logged here and the answer is never cached.
+async fn mint_enrollment(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    body: Bytes,
+) -> Response {
+    tracing::info!(
+        actor = actor.as_deref().unwrap_or("-"),
+        "enrollment: mint code"
+    );
+    let mut resp = proxy_typed(
+        &state,
+        Method::POST,
+        "/enrollments".to_string(),
+        Some(body),
+        Some("application/json"),
+        actor,
+    )
+    .await;
+    resp.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    resp
+}
+
+/// `GET /api/enrollments`: codes with their state, never the code itself.
+async fn list_enrollments(State(state): State<AppState>) -> Response {
+    proxy(&state, Method::GET, "/enrollments".to_string(), None, None).await
+}
+
+/// `DELETE /api/enrollments/{id}`: revokes a code, spent or not.
+async fn revoke_enrollment(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(id): Path<String>,
+) -> Response {
+    let Some(segment) = crate::proxy_util::path_segment(&id) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid code id".into(),
+            }),
+        )
+            .into_response();
+    };
+    tracing::info!(actor = actor.as_deref().unwrap_or("-"), enrollment = %id, "enrollment: revoke code");
+    proxy(
+        &state,
+        Method::DELETE,
+        format!("/enrollments/{segment}"),
+        None,
         actor,
     )
     .await
@@ -1668,6 +1737,73 @@ mod tests {
             calls[2],
             ("POST", "/acme/gateways", br#"{"name":"edge-1"}"#.to_vec())
         );
+    }
+
+    #[tokio::test]
+    async fn enrollment_routes_reach_the_controller_and_the_mint_answer_is_not_cached() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        let body = r#"{"role":"proxy","name":"edge-1","step_up":"correct horse battery"}"#;
+        let mint = app
+            .clone()
+            .oneshot(
+                Request::post("/api/enrollments")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mint.status(), StatusCode::OK);
+        assert_eq!(mint.headers()["cache-control"], "no-store");
+        for req in [
+            Request::get("/api/enrollments"),
+            Request::delete("/api/enrollments/abc123"),
+            Request::delete("/api/enrollments/a%2Fb"),
+        ] {
+            let r = app.clone().oneshot(req.body(Body::empty()).unwrap()).await;
+            assert_eq!(r.unwrap().status(), StatusCode::OK);
+        }
+        let seen = seen.lock().unwrap();
+        let calls: Vec<_> = seen
+            .iter()
+            .map(|(m, p, _, b)| (m.as_str(), p.as_str(), b.clone()))
+            .collect();
+        assert_eq!(
+            calls,
+            [
+                ("POST", "/enrollments", body.as_bytes().to_vec()),
+                ("GET", "/enrollments", Vec::new()),
+                ("DELETE", "/enrollments/abc123", Vec::new()),
+                ("DELETE", "/enrollments/a%2Fb", Vec::new()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_mint_body_and_a_dot_segment_id_forward_nothing() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        let big = app
+            .clone()
+            .oneshot(
+                Request::post("/api/enrollments")
+                    .body(Body::from("x".repeat(ENROLLMENT_BODY_BYTES + 1)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(big.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let dots = app
+            .oneshot(
+                Request::delete("/api/enrollments/..")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dots.status(), StatusCode::BAD_REQUEST);
+        assert!(seen.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
