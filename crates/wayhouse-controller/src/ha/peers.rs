@@ -42,16 +42,19 @@ pub fn is_plain_remote(addr: &str) -> bool {
     }
 }
 
-/// Logs a warning when `addr` is a [`is_plain_remote`] peer.
-pub fn warn_if_plain_remote(addr: &str) {
-    if is_plain_remote(addr) {
-        tracing::warn!(
-            %addr,
-            "HA peer is reached over plain http: the --ha-token and all replicated state \
-             cross the network in clear text; use an https:// peer address (see docs/12 \
-             \"HA over TLS\") and --ca-file"
-        );
+/// Refuses a peer the `--ha-token` would reach over plain `http://` beyond loopback, unless
+/// `--allow-insecure-controller` (recorded by `main`) turns that into a warning.
+pub fn check_peer_transport(addr: &str) -> Result<(), String> {
+    if !is_plain_remote(addr) {
+        return Ok(());
     }
+    // `has_token` is true: the Raft token is mandatory with HA (`check_ha_token`).
+    wayhouse_http::bearer::check_bearer_transport_global(
+        "an HA peer address",
+        &peer_url(addr, ""),
+        true,
+    )?;
+    Ok(())
 }
 
 /// Parse `--ha-peers` into the bootstrap membership.
@@ -111,6 +114,23 @@ fn normalise_url(addr: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_raft_token_does_not_go_to_a_plain_http_peer_beyond_loopback() {
+        // (The opt-out is a process-wide flag set by `main`; it is never set in unit tests.)
+        for bad in ["10.0.0.2:9901", "http://ctl-2:9901", "ctl-2.internal:9901"] {
+            let e = check_peer_transport(bad).unwrap_err();
+            assert!(e.contains("--allow-insecure-controller"), "{bad}: {e}");
+        }
+        for ok in [
+            "https://ctl-2:8443",
+            "127.0.0.1:9901",
+            "localhost:9901",
+            "[::1]:9901",
+        ] {
+            assert!(check_peer_transport(ok).is_ok(), "{ok}");
+        }
+    }
 
     #[test]
     fn a_member_address_is_a_bare_host_port_or_a_base_url() {

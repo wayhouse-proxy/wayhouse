@@ -20,8 +20,14 @@ retry() {
   echo "ok: $desc"
 }
 
-CTRL=http://127.0.0.1:9901
-AGG=http://127.0.0.1:9902
+# The solo bundle serves https from the certificates `wayhouse-controller init` made; its env file
+# names their directory. The demo has no such variable and stays plain http.
+CA=${WAYHOUSE_TLS_DIR:+$WAYHOUSE_TLS_DIR/ca.pem}
+SCHEME=${CA:+https}
+SCHEME=${SCHEME:-http}
+curl() { command curl ${CA:+--cacert "$CA"} "$@"; }
+CTRL=$SCHEME://127.0.0.1:9901
+AGG=$SCHEME://127.0.0.1:9902
 UI=http://127.0.0.1:9903
 WAYHOUSE_ADMIN=http://127.0.0.1:9900
 

@@ -6,7 +6,7 @@ PartOf=wayhouse-solo.target
 [Service]
 User=wayhouse
 # The tokens arrive as files under $CREDENTIALS_DIRECTORY; the program reads them from there
-# (sh deploy/solo/init.sh --credentials /etc/wayhouse/credentials writes the sources).
+# (`wayhouse-controller init --target systemd` writes the sources under /etc/wayhouse/credentials).
 LoadCredential=auth-token:/etc/wayhouse/credentials/aggregator-token
 LoadCredential=ingest-token:/etc/wayhouse/credentials/ingest-token
 ExecStart=/usr/local/bin/wayhouse-aggregator \

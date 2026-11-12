@@ -415,6 +415,8 @@ fn check_addr(addr: &str) -> Result<(), Response> {
     // Before anything is sent: the whoami request carries the --ha-token.
     super::peers::validate_addr(addr)
         .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, format!("addr: {e}")))?;
+    super::peers::check_peer_transport(addr)
+        .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     Ok(())
 }
 
@@ -439,7 +441,6 @@ async fn add(State(state): State<MembersState>, headers: HeaderMap, body: String
         );
     }
     let already_learner = members.learners.contains_key(&req.id);
-    super::peers::warn_if_plain_remote(&req.addr);
     if let Err(e) = verify_identity(
         &ha.forward,
         &req.addr,
@@ -525,7 +526,6 @@ async fn readdress(
     if !members.voters.contains_key(&id) && !members.learners.contains_key(&id) {
         return error(StatusCode::NOT_FOUND, format!("node {id} is not a member"));
     }
-    super::peers::warn_if_plain_remote(&req.addr);
     if let Err(e) = verify_identity(&ha.forward, &req.addr, id, ha.ha_token.as_deref(), false).await
     {
         return e.into_response();

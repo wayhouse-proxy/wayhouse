@@ -31,6 +31,7 @@ pub mod confirm;
 pub mod enroll;
 pub mod features;
 pub mod ha;
+pub mod init;
 pub mod intent;
 pub mod kv;
 pub mod lease;

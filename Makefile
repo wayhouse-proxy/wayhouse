@@ -153,15 +153,17 @@ deploy-smoke:
 	exit $$rc
 
 ## deploy-solo-smoke: the solo bundle (compose.solo.yml): demo smoke plus keyring, sealing, UI push, restart (needs Docker)
-## It makes its own env file with init.sh (never the demo's change-me-* one), so the random
-## tokens, the 0600 mode and the refusal to overwrite are what the stack runs on and what is checked.
+## It makes its own env file and certificates with init.sh (never the demo's change-me-* one), so the
+## random tokens, the 0600 mode, the https certificates and the refusal to overwrite are what the
+## stack runs on and what is checked. init.sh runs the prebuilt controller binary when CI has one.
 deploy-solo-smoke:
 	rc=0; \
-	dir=$$(mktemp -d); envf="$$dir/solo.env"; sh deploy/solo/init.sh "$$envf" >/dev/null || exit 1; \
+	initbin=deploy/prebuilt/wayhouse-controller; if [ -f "$$initbin" ]; then chmod +x "$$initbin"; else initbin="cargo run -q -p wayhouse-controller --"; fi; \
+	dir=$$(mktemp -d); envf="$$dir/solo.env"; WAYHOUSE_CONTROLLER_BIN="$$initbin" sh deploy/solo/init.sh "$$envf" >/dev/null || exit 1; \
 	solo="docker compose -p wayhouse-solo-smoke --env-file $$envf -f deploy/compose/docker-compose.yml -f deploy/compose/compose.solo.yml"; \
 	sha="$${WAYHOUSE_GIT_SHA:-$$(git rev-parse HEAD 2>/dev/null)}"; export WAYHOUSE_GIT_SHA=$$(printf %.12s "$$sha"); \
 	$$solo up -d --build || rc=$$?; \
-	[ $$rc -ne 0 ] || { COMPOSE_ENV_FILE="$$envf" sh deploy/smoke.sh && COMPOSE_ENV_FILE="$$envf" COMPOSE="$$solo" SOLO_PROJECT=wayhouse-solo-smoke sh deploy/solo-smoke.sh; } || rc=$$?; \
+	[ $$rc -ne 0 ] || { COMPOSE_ENV_FILE="$$envf" sh deploy/smoke.sh && COMPOSE_ENV_FILE="$$envf" COMPOSE="$$solo" SOLO_PROJECT=wayhouse-solo-smoke WAYHOUSE_CONTROLLER_BIN="$$initbin" sh deploy/solo-smoke.sh; } || rc=$$?; \
 	[ $$rc -eq 0 ] || $$solo logs; \
 	$$solo down -v; \
 	exit $$rc

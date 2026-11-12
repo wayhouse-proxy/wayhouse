@@ -35,6 +35,7 @@ messages; the container disk can fill (`target/debug/incremental` is safe to del
 tracker issue lists the review nits (reload does not re-check secret references, key rotation for cluster
 secrets, a token-file option so tokens stay out of `ps`, and the UI nits). Not yet: the supervisor binary
 (decision: compose and systemd only), proxy-local plugin overlay file and config validate endpoints (S2b, S2c).
+**First controller (enrollment slice 2):** `wayhouse-controller init --target systemd|compose|k8s-secret` makes the tokens, the UI password and a private CA with the controller's and aggregator's certificates; the solo bundles are https from the first start and set no `--allow-insecure-*` flag (the demo compose and the k8s manifests still do; k8s moves in slice 5a). The plain-http token guard now also covers `--parent-url`, HA peers and the aggregator's `admin_url`s. There is no certificate renewal command yet (leaves last 5 years, the CA 10).
 
 **Releases:** the workspace is at 0.3.0. Releases are published to GHCR (six public images,
 amd64 + arm64) by `release.yml` on a `vX.Y.Z` tag. Tags stay manual (release-please runs with

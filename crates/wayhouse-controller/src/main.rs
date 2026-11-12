@@ -27,7 +27,8 @@ use wayhouse_controller::store::Store;
 #[command(
     name = "wayhouse-controller",
     version = wayhouse_http::LONG_VERSION,
-    about = "Tier-1 config/intent controller for a wayhouse fleet (single standalone node — see docs/10)"
+    about = "Tier-1 config/intent controller for a wayhouse fleet (single standalone node — see docs/10)",
+    after_help = "First start: `wayhouse-controller init --help` generates the tokens, UI password and TLS certificates."
 )]
 struct Args {
     /// Directory with this program's settings file (`<program>.json`, written by the UI): its
@@ -256,6 +257,12 @@ struct Args {
     #[arg(long)]
     allow_insecure_secrets: bool,
 
+    /// Send the `--parent-token` and the `--ha-token` over plain `http://` to a non-loopback
+    /// host (a parent controller, an HA peer): the refusal becomes a warning. For a network that
+    /// is private by construction; the default is to refuse and use `https://`.
+    #[arg(long)]
+    allow_insecure_controller: bool,
+
     /// Serve plugin webhooks (`POST /plugins/{id}/hook`) on this separate address. Off by
     /// default; needs `--plugins`. Each install enables its own webhook with its own token
     /// (`POST /plugins/{id}/webhook`). Serve TLS with `--plugin-webhook-tls-cert/-key`: on a
@@ -277,6 +284,11 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `wayhouse-controller init ...` generates a first controller's secrets and certificates and
+    // exits; it never reads the settings layer or starts a server.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "init") {
+        return wayhouse_controller::init::main(std::env::args_os().skip(2));
+    }
     let layered = wayhouse_settings::layer(
         "controller",
         &<Args as clap::CommandFactory>::command(),
@@ -303,6 +315,16 @@ async fn main() -> anyhow::Result<()> {
 
     if args.role == Role::Slave && args.parent_url.is_none() {
         anyhow::bail!("--role slave requires --parent-url");
+    }
+    wayhouse_http::bearer::set_allow_insecure_controller(args.allow_insecure_controller);
+    if let Some(url) = &args.parent_url {
+        wayhouse_http::bearer::check_bearer_transport(
+            "--parent-url",
+            url,
+            args.parent_token.is_some(),
+            args.allow_insecure_controller,
+        )
+        .map_err(anyhow::Error::msg)?;
     }
     ha::check_flags(!args.ha_peers.is_empty(), args.ha_join, args.ha_node_id)
         .map_err(|e| anyhow::anyhow!(e))?;
@@ -536,7 +558,7 @@ async fn main() -> anyhow::Result<()> {
             .filter(|(id, _)| **id != node_id)
             .map(|(_, n)| n)
         {
-            ha::peers::warn_if_plain_remote(&node.addr);
+            ha::peers::check_peer_transport(&node.addr).map_err(anyhow::Error::msg)?;
         }
         // `--ha-join` leaves `peers` empty: this node never initializes.
         let ha_token: Option<Arc<str>> = args.ha_token.clone().map(Arc::from);

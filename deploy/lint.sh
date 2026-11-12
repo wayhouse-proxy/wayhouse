@@ -139,12 +139,25 @@ errs << "wayhouse image must carry wayhouse-certsync" unless wayhouse_stage.incl
 # and mounted read-only, and nothing published beyond the host loopback.
 sc = solo["controller"]["command"]
 errs << "solo: controller needs --plugins and --secret-key-file=/keys/secret.keys" unless sc.include?("--plugins") && sc.include?("--secret-key-file=/keys/secret.keys")
-errs << "solo: controller listens on 0.0.0.0, which its plain-HTTP guard refuses unless --allow-insecure-secrets is set" if sc.include?("--listen=0.0.0.0:9901") && !sc.include?("--allow-insecure-secrets")
+# https from the first start (`wayhouse-controller init` makes the certificates): the controller and
+# the aggregator serve TLS, every client trusts the init CA, and no flag switches a guard off.
+errs << "solo: the controller must serve https from the init certificates (--tls-cert/--tls-key under /tls)" unless sc.include?("--tls-cert=/tls/controller.pem") && sc.include?("--tls-key=/tls/controller.key")
+errs << "solo: the aggregator must serve https from the init certificates" unless solo["aggregator"]["command"].include?("--tls-cert=/tls/aggregator.pem") && solo["aggregator"]["command"].include?("--tls-key=/tls/aggregator.key")
+solo.each { |n, x| (x["command"] || []).each { |a| errs << "solo: #{n} switches off a plain-http guard (#{a}); the bundle is https" if a =~ /\A--allow-insecure-(controller|secrets)/ } }
+%w[ui wayhouse].each do |svc|
+  cmd = solo[svc]["command"]
+  errs << "solo: #{svc} must trust the init CA (--ca-file=/tls/ca.pem) and mount solo-tls" unless cmd.include?("--ca-file=/tls/ca.pem") && solo[svc]["volumes"].any? { |v| v["target"] == "/tls" && v["source"] == "solo-tls" }
+  errs << "solo: #{svc} reaches the controller or aggregator over plain http: #{cmd.grep(/\A--(controller|aggregator)(-url)?=http:/)}" unless cmd.grep(/\A--(controller|aggregator)(-url)?=http:/).empty?
+end
+errs << "solo: the seed step must POST over https with the init CA" unless solo["seed"]["command"].include?("https://controller:9901/config") && solo["seed"]["command"].include?("/tls/ca.pem")
+errs << "solo: the keys step must install the certificates with the key files 0600" unless solo["keys"]["command"].join(" ").include?("chmod 0600 /tls/*.key")
 errs << "solo: controller must wait for the keys step" unless solo["controller"]["depends_on"].dig("keys", "condition") == "service_completed_successfully"
 errs << "solo: the keyring must be mounted read-only into the controller" unless solo["controller"]["volumes"].any? { |v| v["target"] == "/keys" && v["read_only"] == true }
 sw = solo["wayhouse"]
 errs << "solo: the proxy needs --secret-key-file=/keys/secret.keys, or a { secret: name } config stops it at start" unless sw["command"].include?("--secret-key-file=/keys/secret.keys")
-errs << "solo: the proxy must keep every base flag" unless (base["wayhouse"]["command"] - sw["command"]).empty?
+# (The base file's plain-http controller and aggregator URLs are the ones the solo overlay swaps for https.)
+plain_url = ->(a) { a =~ /\A--(controller|controller-url|aggregator|aggregator-url)=http:/ || a == "--allow-insecure-controller" }
+errs << "solo: the proxy must keep every base flag" unless (base["wayhouse"]["command"].reject(&plain_url) - sw["command"]).empty?
 errs << "solo: the keyring must be mounted read-only into the proxy, which must wait for the keys step" unless sw["volumes"].any? { |v| v["target"] == "/keys" && v["read_only"] == true } && sw["depends_on"].dig("keys", "condition") == "service_completed_successfully"
 errs << "solo: keys step must never overwrite an existing keyring, and writes it atomically" unless solo["keys"]["command"].join(" ").include?("[ -s /keys/secret.keys ] ||") && solo["keys"]["command"].join(" ").include?("mv /keys/secret.keys.tmp /keys/secret.keys")
 errs << "solo: ports must stay on the host loopback" unless solo.values.flat_map { |x| x["ports"] || [] }.all? { |pt| pt["host_ip"] == "127.0.0.1" }
@@ -153,7 +166,7 @@ errs << "solo-acme: must keep every solo flag and add --acme with a staging defa
 # Process flags (G1): every program shares one settings volume, and the base flags stay.
 %w[controller aggregator ui wayhouse].each do |svc|
   errs << "solo: #{svc} needs --settings-dir=/settings and the solo-settings volume" unless solo[svc]["command"].include?("--settings-dir=/settings") && solo[svc]["volumes"].any? { |v| v["target"] == "/settings" && v["source"] == "solo-settings" }
-  errs << "solo: #{svc} must keep every base flag" unless (base[svc]["command"] - solo[svc]["command"]).empty?
+  errs << "solo: #{svc} must keep every base flag" unless (base[svc]["command"].reject(&plain_url) - solo[svc]["command"]).empty?
 end
 # systemd units: tokens arrive as credentials (LoadCredential=), never as a flag value.
 Dir["deploy/systemd/*.service"].each do |f|

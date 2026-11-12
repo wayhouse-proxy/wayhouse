@@ -97,6 +97,9 @@ fn in_cidr(net: IpAddr, prefix: u8, ip: IpAddr) -> bool {
 #[derive(Debug, Clone, Default)]
 pub struct AdminUrlPolicy {
     allow: Vec<Allow>,
+    /// The fan-out presents `--instance-token`, so a plain-`http://` URL beyond loopback is
+    /// refused (see [`AdminUrlPolicy::refuse_plain_http`]).
+    refuse_plain_http: bool,
 }
 
 impl AdminUrlPolicy {
@@ -107,7 +110,18 @@ impl AdminUrlPolicy {
             .iter()
             .map(|e| Allow::parse(e.as_ref()))
             .collect::<Result<_, _>>()?;
-        Ok(AdminUrlPolicy { allow })
+        Ok(AdminUrlPolicy {
+            allow,
+            refuse_plain_http: false,
+        })
+    }
+
+    /// With `refuse` the policy also rejects a plain `http://` URL whose host is not loopback,
+    /// because the fan-out would send the instance token there in clear text. Set it when an
+    /// `--instance-token` is configured and `--allow-insecure-controller` is not.
+    pub fn refuse_plain_http(mut self, refuse: bool) -> Self {
+        self.refuse_plain_http = refuse;
+        self
     }
 
     /// `Ok` if `admin_url` may be stored for a payload pushed from `peer`
@@ -126,6 +140,9 @@ impl AdminUrlPolicy {
         }
         if url.query().is_some() || url.fragment().is_some() {
             return Err("admin_url must not have a query or fragment".into());
+        }
+        if self.refuse_plain_http {
+            wayhouse_http::bearer::check_bearer_transport("admin_url", admin_url, true, false)?;
         }
         if self.allow.is_empty() {
             let loopback = match &host {
@@ -175,6 +192,21 @@ mod tests {
 
     fn ip(s: &str) -> Option<IpAddr> {
         Some(s.parse().unwrap())
+    }
+
+    #[test]
+    fn a_plain_http_admin_url_beyond_loopback_is_refused_while_a_token_is_sent() {
+        let p = AdminUrlPolicy::default().refuse_plain_http(true);
+        let e = p.check("http://10.0.0.4:9900", ip("10.0.0.4")).unwrap_err();
+        assert!(e.contains("--allow-insecure-controller"), "{e}");
+        assert!(p.check("https://10.0.0.4:9900", ip("10.0.0.4")).is_ok());
+        let allowed = AdminUrlPolicy::new(&["127.0.0.0/8"])
+            .unwrap()
+            .refuse_plain_http(true);
+        assert!(allowed.check("http://127.0.0.1:9900", None).is_ok());
+        // Not refusing (no token, or the opt-out): plain http to the pusher stays accepted.
+        let open = AdminUrlPolicy::default();
+        assert!(open.check("http://10.0.0.4:9900", ip("10.0.0.4")).is_ok());
     }
 
     #[test]

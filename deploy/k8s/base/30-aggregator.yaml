@@ -23,6 +23,7 @@ spec:
             - --auth-token-file=/run/secrets/wayhouse/auth-token
             - --ingest-token-file=/run/secrets/wayhouse/ingest-token
             - --instance-token-file=/run/secrets/wayhouse/instance-token
+            - --allow-insecure-controller   # each node reports http://<node IP>:9900 and gets the instance token in plain http
           ports: [{ containerPort: 9902 }]
           readinessProbe: { httpGet: { path: /healthz, port: 9902 } }
           livenessProbe: { httpGet: { path: /healthz, port: 9902 }, initialDelaySeconds: 10 }

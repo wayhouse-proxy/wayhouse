@@ -14,7 +14,8 @@ services:
       - --agent-token-file=/run/secrets/agent-token
       - --plugins
       - --secret-key-file=/keys/secret.keys
-      - --allow-insecure-secrets
+      - --tls-cert=/tls/controller.pem
+      - --tls-key=/tls/controller.key
       - --settings-dir=/settings
       - --acme
       - --acme-ca=${WAYHOUSE_ACME_CA:-letsencrypt-staging}

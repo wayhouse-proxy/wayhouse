@@ -1,40 +1,29 @@
 #!/bin/sh
-# Writes the tokens and the UI password a solo box needs into an env file (default
-# deploy/compose/.env), random and readable by you only. It never prints a value and never
-# overwrites a file that exists, so running it twice cannot change a token under a running stack.
+# Thin wrapper over `wayhouse-controller init`, which generates the tokens, the UI password and a
+# private CA with the controller's and aggregator's TLS certificates. It never prints a secret
+# value and never overwrites a file that exists, so running it twice cannot change a token under a
+# running stack. Same arguments as before:
 #   sh deploy/solo/init.sh [FILE]
-# With --credentials DIR it writes one file per secret instead (controller-token, proxy-token,
-# agent-token, aggregator-token, ingest-token, ui-password): the sources for systemd's LoadCredential= in deploy/systemd/.
-#   sh deploy/solo/init.sh --credentials /etc/wayhouse/credentials
+#     compose: writes FILE (default deploy/compose/.env) and a tls/ directory next to it.
+#   sh deploy/solo/init.sh --credentials DIR
+#     systemd: one file per secret (controller-token, proxy-token, agent-token, aggregator-token,
+#     ingest-token, ui-password) in DIR, the sources for LoadCredential= in deploy/systemd/, and the
+#     certificates in DIR/../tls.
+# The binary is `wayhouse-controller` on PATH, or WAYHOUSE_CONTROLLER_BIN (a path, or a command such
+# as "cargo run -q -p wayhouse-controller --"). The program has other targets (k8s-secret) and
+# options (--san for the names other hosts reach the controller by): see `wayhouse-controller init --help`.
 set -eu
-umask 077
-rand() { od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'; }
+bin="${WAYHOUSE_CONTROLLER_BIN:-wayhouse-controller}"
+if ! command -v "${bin%% *}" >/dev/null 2>&1; then
+  echo "init.sh needs wayhouse-controller: put it on PATH or set WAYHOUSE_CONTROLLER_BIN" >&2
+  exit 127
+fi
+# $bin may be a command with arguments, so it is deliberately not quoted.
 if [ "${1:-}" = "--credentials" ]; then
   dir="${2:?usage: init.sh --credentials DIR}"
-  if [ -e "$dir/controller-token" ]; then
-    echo "$dir/controller-token exists; not touching it. Delete the files first to start over." >&2
-    exit 1
-  fi
-  mkdir -p "$dir"
-  chmod 0700 "$dir"
-  for name in controller-token proxy-token agent-token aggregator-token ingest-token; do rand 24 > "$dir/$name"; done
-  rand 12 > "$dir/ui-password"
-  chmod 0600 "$dir"/*
-  echo "wrote $dir/{controller-token,proxy-token,agent-token,aggregator-token,ingest-token,ui-password} (mode 0600). The values stay out of your terminal."
-  exit 0
+  # shellcheck disable=SC2086
+  exec $bin init --target systemd --dir "$(dirname "$dir")" --credentials-dir "$dir"
 fi
 file="${1:-$(dirname "$0")/../compose/.env}"
-if [ -e "$file" ]; then
-  echo "$file exists; not touching it. Delete it first to start over." >&2
-  exit 1
-fi
-{
-  echo "WAYHOUSE_CONTROLLER_TOKEN=$(rand 24)"
-  echo "WAYHOUSE_PROXY_TOKEN=$(rand 24)"
-  echo "WAYHOUSE_AGENT_TOKEN=$(rand 24)"
-  echo "WAYHOUSE_AGGREGATOR_TOKEN=$(rand 24)"
-  echo "WAYHOUSE_INGEST_TOKEN=$(rand 24)"
-  echo "WAYHOUSE_UI_PASSWORD=$(rand 12)"
-} > "$file"
-chmod 0600 "$file"
-echo "wrote $file (mode 0600). The UI password is WAYHOUSE_UI_PASSWORD in it; the tokens stay out of your terminal and your shell history."
+# shellcheck disable=SC2086
+exec $bin init --target compose --dir "$(dirname "$file")" --env-file "$file"

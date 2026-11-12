@@ -100,27 +100,51 @@ loopback:
 
 ```sh
 cd deploy/compose
-sh ../solo/init.sh                  # once: random tokens into .env (mode 0600); prints no value
+wayhouse-controller init --target compose   # once: tokens in .env (mode 0600), CA and certificates in tls/; prints no secret
 docker compose -f docker-compose.yml -f compose.solo.yml up -d --build
 ```
 
-Open <http://127.0.0.1:9903>; the password is `WAYHOUSE_UI_PASSWORD` in `.env`. Compose passes the tokens to each container
+`sh ../solo/init.sh` is the same command for a checkout without the binary on `PATH` (it runs
+`$WAYHOUSE_CONTROLLER_BIN`). Open <http://127.0.0.1:9903>; the password is `WAYHOUSE_UI_PASSWORD` in `.env`. Compose passes the tokens to each container
 as a Docker secret file under `/run/secrets`, never on a command line. `compose.solo.yml`
 adds a one-shot `keys` step that creates the sealed-secret keyring on first start and never
 replaces it, and starts the controller with `--plugins` and `--secret-key-file`, so plugin secrets
 and `{ secret: name }` config references work (UI: Settings, Secrets). **Back up the `solo-keys`
-volume with the controller's data**: without the key every stored secret is unreadable. The
-controller listens on `0.0.0.0` inside the compose network, which its plain-HTTP guard refuses
-once it holds a key, so the overlay sets `--allow-insecure-secrets`; the network is private to the
-host and the published ports are loopback only. Add `compose.web.yml` for the Caddy front door and
-`compose.solo-acme.yml` for certificates ([`acme.md`](acme.md#one-box)).
+volume with the controller's data**: without the key every stored secret is unreadable.
+
+**https from the first start.** `init` makes a private CA and two certificates under `tls/`: the
+controller's (valid for `localhost`, `127.0.0.1`, `::1` and the service name `controller`) and the
+aggregator's. The `keys` step copies them into the `solo-tls` volume (keys `0600` for uid 65532,
+certificates public), the controller and aggregator serve TLS from them, and the UI and the proxy
+trust only that CA (`--ca-file=/tls/ca.pem`). So neither plain-http guard has to be switched off:
+the overlay sets no `--allow-insecure-controller` and no `--allow-insecure-secrets`. The published
+ports are loopback only. The UI itself stays on plain http on the host loopback; put a TLS front
+door (`compose.web.yml`) in front of it to expose it. To reach the controller from another host,
+add its name with `init --san controller.example.org` (before the first start; `init` never
+overwrites). The certificates are valid for five years and the CA for ten; there is no renewal
+command yet, so replace the files in `tls/` (the controller re-reads them without a restart on
+systemd, and the `keys` step copies them again on the next `docker compose up`). Add
+`compose.web.yml` for the Caddy front door and `compose.solo-acme.yml` for certificates
+([`acme.md`](acme.md#one-box)).
 
 Without containers, [`deploy/systemd/`](../deploy/systemd/) has the same bundle as units
-(`systemctl enable --now wayhouse-solo.target`). There is no supervisor binary: systemd or Docker's
-restart policy does that job. Both forms take their tokens as command-line flags, which any local
-user can read in `ps` or `docker inspect`; run them on a box you control. CI runs
-`make deploy-solo-smoke` (keyring mode and owner, a sealed secret that is listed but never shown,
-a config pushed through the UI, a clean restart, no token in any log).
+(`sudo wayhouse-controller init --target systemd` writes `/etc/wayhouse/credentials` and
+`/etc/wayhouse/tls`, then `systemctl enable --now wayhouse-solo.target`). The controller serves
+https on `127.0.0.1:9901` from `/etc/wayhouse/tls/controller.pem` (its key arrives as a systemd
+credential) and the other units trust `/etc/wayhouse/tls/ca.pem`; the aggregator stays on loopback
+http, which the guard allows. There is no supervisor binary: systemd or Docker's restart policy
+does that job. Tokens reach each program as files (`LoadCredential=` or Docker secrets), never as
+flags. CI runs `make deploy-solo-smoke` (the certificates and key modes, https-only controller,
+keyring mode and owner, a sealed secret that is listed but never shown, a config pushed through the
+UI, a clean restart, no token in any log).
+
+`wayhouse-controller init --target k8s-secret | kubectl apply -f -` prints three Secret manifests
+(`wayhouse-tokens` with every key the example Secret has, `wayhouse-keyring`, `wayhouse-tls` with
+the CA certificate and the two leaves, not the CA key) for the `wayhouse` namespace (`--namespace`).
+It refuses to print to a terminal (use `--output FILE`). The Kubernetes manifests do not mount the
+TLS Secret yet, so they still set `--allow-insecure-controller` for the UI and the node proxy.
+Every `init` run also prints the controller certificate's SHA-256 fingerprint, which is public:
+`wayhouse-agent enroll --pin` takes it, or pass the CA with `--controller-ca`.
 
 ## Process flags from a settings file (`--settings-dir`)
 
@@ -511,7 +535,10 @@ wayhouse-controller --listen 127.0.0.1:9901 --ha-node-id 1 --ca-file /etc/wayhou
 
 Raft RPCs (`/raft/append`, `/raft/vote`, `/raft/snapshot`) and writes a follower
 forwards to the leader then go over HTTPS. `id=host:port` still means plain HTTP, and
-the two forms can be mixed. An entry that is not `http(s)://host[:port]` (another
+the two forms can be mixed. Raft carries the `--ha-token`, so a replica **refuses to start** with a
+plain-HTTP peer beyond loopback (and `POST /admin/ha/members` refuses such an address with a `422`)
+unless `--allow-insecure-controller` is set, for a cluster network that is private by construction
+(the Kubernetes HA overlay sets it); the same flag covers a slave's `--parent-url`. An entry that is not `http(s)://host[:port]` (another
 scheme, a path, a query, user info) stops the replica at startup naming the entry.
 Verified by `wayhouse-fleet-tests` `ha_tls.rs`: three replicas that reach each other only
 through private-CA terminators elect a leader, forward writes and all serve the last

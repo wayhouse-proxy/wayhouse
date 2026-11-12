@@ -21,7 +21,7 @@ fn every_client_binary_refuses_a_token_over_plain_http_to_a_remote_host() -> Res
     let dir = tempfile::tempdir()?;
     let tok = token_file(&dir)?;
     let data = dir.path().to_str().unwrap();
-    let cases: [(&str, Vec<String>); 4] = [
+    let cases: [(&str, Vec<String>); 6] = [
         (
             "wayhouse",
             vec![
@@ -51,6 +51,24 @@ fn every_client_binary_refuses_a_token_over_plain_http_to_a_remote_host() -> Res
             vec![
                 format!("--controller-url={REMOTE}"),
                 format!("--controller-token-file={tok}"),
+            ],
+        ),
+        (
+            "wayhouse-controller",
+            vec![
+                "--role=slave".into(),
+                format!("--parent-url={REMOTE}"),
+                format!("--parent-token-file={tok}"),
+                format!("--data-dir={data}/slave"),
+            ],
+        ),
+        (
+            "wayhouse-controller",
+            vec![
+                "--ha-node-id=1".into(),
+                format!("--ha-peers=1=127.0.0.1:1,2={}", &REMOTE["http://".len()..]),
+                format!("--ha-token-file={tok}"),
+                format!("--data-dir={data}/ha"),
             ],
         ),
     ];

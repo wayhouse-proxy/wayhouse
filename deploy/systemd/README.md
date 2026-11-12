@@ -11,7 +11,7 @@ walk-through.
 sudo install -m 0644 deploy/systemd/wayhouse.sysusers /etc/sysusers.d/wayhouse.conf
 sudo systemd-sysusers
 sudo install -d -m 0755 /etc/wayhouse
-sudo sh deploy/solo/init.sh --credentials /etc/wayhouse/credentials   # random tokens, mode 0600, nothing printed
+sudo wayhouse-controller init --target systemd   # tokens in /etc/wayhouse/credentials, CA and certificates in /etc/wayhouse/tls; prints no secret
 sudo install -m 0644 deploy/systemd/*.service deploy/systemd/*.target /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now wayhouse-solo.target
@@ -19,7 +19,13 @@ sudo systemctl enable --now wayhouse-solo.target
 
 The UI is at <http://127.0.0.1:9903>; the password is in
 `/etc/wayhouse/credentials/ui-password`. The first proxy config goes in through the UI (Settings) or
-`curl --data-binary @wayhouse.yaml -H "Authorization: Bearer $TOKEN" http://127.0.0.1:9901/config`.
+`curl --cacert /etc/wayhouse/tls/ca.pem --data-binary @wayhouse.yaml -H "Authorization: Bearer $TOKEN" https://127.0.0.1:9901/config`.
+
+The controller serves **https** with the certificate `init` made (its key is a credential, `%d/tls-key`),
+and the UI and the proxy trust `/etc/wayhouse/tls/ca.pem`, so no `--allow-insecure-*` flag is needed.
+The aggregator stays on loopback http, which the plain-http guard allows. A name other hosts reach the
+controller by goes in with `init --san NAME`; the controller's fingerprint (public) is printed by `init`
+for `wayhouse-agent enroll --pin`.
 
 `wayhouse-keygen.service` creates `/var/lib/wayhouse/secret.keys` once and never replaces it. **Back it
 up with the controller's data**: without it every stored secret is unreadable.

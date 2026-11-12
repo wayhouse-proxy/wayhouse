@@ -107,8 +107,10 @@ struct Args {
     #[arg(long)]
     tier_name: Option<String>,
 
-    /// Send bearer tokens over plain `http://` to a non-loopback host. Without it the start is
-    /// refused. Only for a network that is private by construction.
+    /// Send bearer tokens over plain `http://` to a non-loopback host: the `--parent-url`, and
+    /// the `admin_url` of each instance (which gets the `--instance-token`). Without it the start
+    /// is refused and such an `admin_url` is rejected at ingest. Only for a network that is
+    /// private by construction.
     #[arg(long)]
     allow_insecure_controller: bool,
 
@@ -185,7 +187,8 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!(e))?;
     let admin_url_policy =
         wayhouse_aggregator::trust::AdminUrlPolicy::new(&args.instance_url_allow)
-            .map_err(|e| anyhow::anyhow!("--instance-url-allow: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("--instance-url-allow: {e}"))?
+            .refuse_plain_http(args.instance_token.is_some() && !args.allow_insecure_controller);
     wayhouse_http::policy::check_optional_secret("--metrics-token", args.metrics_token.as_deref())
         .map_err(|e| anyhow::anyhow!(e))?;
 

@@ -94,6 +94,9 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", 
 tokio-stream = "0.1"
 similar = "2"
 rand = "0.8"
+# X.509 for `wayhouse-controller init` (a private CA and the leaf certificates it signs); the aws-lc-rs
+# provider, like the TLS stack, so no second crypto library comes in.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 # Phase 14 backend transport (docs/11): used by both `wayhouse-agent` (the
 # origin-side agent) and `wayhouse` itself (slice 4's proxy-side reconcile task),
 # so — unlike a single-crate dependency such as `foca`/`openraft` — this one
