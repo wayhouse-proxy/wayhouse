@@ -1,6 +1,6 @@
 import { StatusMark } from "../components/ui/StatusMark";
 import { useRef, useState } from "react";
-import { ApiError, checkUpdates, listRegistrySniffers } from "../api";
+import { ApiError, checkUpdates, getRegistrySniffer } from "../api";
 import type { RegistrySniffer, RegistryRef, UpdateCheck, UpdateCheckRow } from "../types";
 import { AlertBar } from "../components/shell/Page";
 import { EmptyState } from "../components/shell/States";
@@ -56,13 +56,8 @@ export function UpdatesSection({ onChanged }: { onChanged: (notice: string) => v
     setOpening(true);
     setError(null);
     try {
-      const listing = await listRegistrySniffers(update.registry_id);
-      const sniffer = listing.sniffers.find((s) => s.name === row.sniffer);
-      if (!sniffer) {
-        setError(`${row.sniffer} is no longer listed in ${listing.registry.name}`);
-        return;
-      }
-      setPending({ registry: listing.registry, sniffer, version: update.version });
+      const detail = await getRegistrySniffer(update.registry_id, row.sniffer);
+      setPending({ registry: detail.registry, sniffer: detail.sniffer, version: update.version });
     } catch (err) {
       setError(message(err));
     } finally {

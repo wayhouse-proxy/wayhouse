@@ -129,12 +129,43 @@ export interface RegistrySniffer {
   compatible: { version: string } | { reason: string };
 }
 
+/** What a catalog entry carries without its versions (the list of `GET /api/registries/{id}/sniffers`). */
+export interface RegistryCatalogEntry {
+  name: string;
+  description: string;
+  license: string;
+  /** The registry validates it as https at parse time, but a UI that renders it as a link must still allow https only. */
+  homepage?: string;
+  categories: string[];
+  tags: string[];
+  /** Newest version. */
+  latest: string;
+  abi: string;
+  /** The newest version lists a signature. A hint: installing checks the version itself. */
+  signed: boolean;
+  /** YYYY-MM-DD */
+  updated: string;
+  /** Only when the registry publishes download counts. */
+  downloads?: number;
+  /** Built for this release's ABI (the newest version only; the detail has the full check). */
+  abi_compatible: boolean;
+}
+
 export interface RegistrySniffers {
   registry: RegistryRef;
   index_name: string;
+  /** Where the registry publishes download counts, if it does. */
+  stats_url?: string | null;
+  host_abi: string;
+  sniffers: RegistryCatalogEntry[];
+}
+
+/** `GET /api/registries/{id}/sniffers/{name}`: one sniffer with every version. */
+export interface RegistrySnifferDetail {
+  registry: RegistryRef;
+  sniffer: RegistrySniffer;
   host_abi: string;
   min_proxy_checked: boolean;
-  sniffers: RegistrySniffer[];
 }
 
 export interface InstallInstanceResult {
@@ -422,11 +453,34 @@ export interface RegistryPlugin {
   compatible: boolean;
 }
 
+/** A plugin catalog entry, without versions (the list of `GET /api/plugin-registries/{id}/plugins`). */
+export interface RegistryPluginCatalogEntry {
+  name: string;
+  description: string;
+  license: string;
+  homepage?: string;
+  categories: string[];
+  tags: string[];
+  latest: string;
+  abi: string;
+  signed: boolean;
+  updated: string;
+  downloads?: number;
+  abi_compatible: boolean;
+}
+
 export interface RegistryPlugins {
   registry: RegistryRef;
   index_name: string;
+  stats_url?: string | null;
   host_abi: string;
-  plugins: RegistryPlugin[];
+  plugins: RegistryPluginCatalogEntry[];
+}
+
+/** `GET /api/plugin-registries/{id}/plugins/{name}` */
+export interface RegistryPluginDetail {
+  plugin: RegistryPlugin;
+  host_abi: string;
 }
 
 /** What a registry fetch answers: the module is uploaded and inspected, nothing is installed. */

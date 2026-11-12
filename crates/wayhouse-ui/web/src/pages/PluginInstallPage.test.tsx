@@ -56,7 +56,7 @@ beforeEach(() => {
     registry: reg,
     index_name: "plugins",
     host_abi: "0.2",
-    plugins: [{ name: "pelican-sync", description: "Syncs", license: "MIT", compatible: true, versions: [{ version: "0.2.0", abi: "0.2", size: 2048, compatible: true, verifiable: false }] }],
+    plugins: [{ name: "pelican-sync", description: "Syncs", license: "MIT", categories: [], tags: [], latest: "0.2.0", abi: "0.2", signed: false, updated: "2026-11-12", abi_compatible: true }],
   });
   api.fetchRegistryPlugin.mockReset();
 });

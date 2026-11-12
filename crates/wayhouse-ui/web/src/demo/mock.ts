@@ -99,15 +99,21 @@ const REGISTRIES = [
   { id: "community", name: "Community mirror", url: "https://sniffers.example.org/index.json", official: false, risk: "external" as const },
 ];
 const sver = (version: string, n: number) => ({ version, abi: "0.1", min_proxy: "0.3.0", url: `https://sniffers.wayhouse-proxy.dev/${version}.wasm`, sha256: n.toString(16).repeat(64).slice(0, 64), size: 40_000 + n * 1000, verifiable: true, limits: { max_memory_bytes: 16_777_216, call_timeout_ms: 20 } });
+const demoSniffers = (id: string) => [
+  { name: "minecraft_handshake", description: "Minecraft Java handshake: host name and protocol version.", license: "MIT OR Apache-2.0", homepage: "https://github.com/wayhouse-proxy/sniffers", categories: ["game"], tags: ["minecraft", "java-edition"], updated: "2026-11-12", downloads: 1200, versions: [sver("0.1.1", 5), sver("0.1.0", 4)], verifiable: id === "official", compatible: { version: "0.1.1" } },
+  { name: "a2s_query", description: "Source engine A2S queries (CS2, Rust, ARK).", license: "MIT OR Apache-2.0", categories: ["game"], tags: ["source", "query"], updated: "2026-10-20", downloads: 2300, versions: [sver("0.1.0", 6)], verifiable: id === "official", compatible: { version: "0.1.0" } },
+  { name: "raknet_ping", description: "Bedrock RakNet unconnected ping.", license: "MIT OR Apache-2.0", categories: ["game"], tags: ["minecraft", "bedrock"], updated: "2026-10-02", downloads: 800, versions: [sver("0.1.0", 7)], verifiable: id === "official", compatible: { version: "0.1.0" } },
+  { name: "valheim_steam", description: "Valheim Steam query packets.", license: "MIT", categories: ["game"], tags: ["source", "valheim"], updated: "2026-09-14", versions: [sver("0.2.0", 8)], verifiable: id === "official", compatible: { reason: "needs wayhouse 0.5.0 or newer" } },
+].slice(0, id === "official" ? 4 : 2);
 const registrySniffers = (id: string) => ({
-  registry: REGISTRIES.find((r) => r.id === id)!, index_name: id === "official" ? "wayhouse-official" : "community", host_abi: "0.1", min_proxy_checked: true,
-  sniffers: [
-    { name: "minecraft_handshake", description: "Minecraft Java handshake: host name and protocol version.", license: "MIT OR Apache-2.0", homepage: "https://github.com/wayhouse-proxy/sniffers", versions: [sver("0.1.1", 5), sver("0.1.0", 4)], verifiable: id === "official", compatible: { version: "0.1.1" } },
-    { name: "a2s_query", description: "Source engine A2S queries (CS2, Rust, ARK).", license: "MIT OR Apache-2.0", versions: [sver("0.1.0", 6)], verifiable: id === "official", compatible: { version: "0.1.0" } },
-    { name: "raknet_ping", description: "Bedrock RakNet unconnected ping.", license: "MIT OR Apache-2.0", versions: [sver("0.1.0", 7)], verifiable: id === "official", compatible: { version: "0.1.0" } },
-    { name: "valheim_steam", description: "Valheim Steam query packets.", license: "MIT", versions: [sver("0.2.0", 8)], verifiable: id === "official", compatible: { reason: "needs wayhouse 0.5.0 or newer" } },
-  ].slice(0, id === "official" ? 4 : 2),
+  registry: REGISTRIES.find((r) => r.id === id)!, index_name: id === "official" ? "wayhouse-official" : "community", host_abi: "0.1",
+  stats_url: id === "official" ? "https://sniffers.wayhouse-proxy.dev/stats.json" : null,
+  sniffers: demoSniffers(id).map(({ versions, verifiable: _v, compatible, ...c }) => ({ ...c, latest: versions[0].version, abi: "0.1", signed: id === "official", abi_compatible: "version" in compatible })),
 });
+const registrySniffer = (id: string, name: string) => {
+  const s = demoSniffers(id).find((x) => x.name === name);
+  return s ? { registry: REGISTRIES.find((r) => r.id === id)!, sniffer: s, host_abi: "0.1", min_proxy_checked: true } : null;
+};
 
 // --- enrollment codes ---
 const enrollments: any[] = [];
@@ -214,6 +220,7 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
       ], instance_errors: [{ instance: nodes[17].instance, status: 504, detail: "no answer from the admin API" }] });
   }
   if ((r = m(/^\/api\/registries\/([^/]+)\/sniffers$/))) return ok(registrySniffers(r[1]));
+  if ((r = m(/^\/api\/registries\/([^/]+)\/sniffers\/([^/]+)$/))) { const d = registrySniffer(r[1], decodeURIComponent(r[2])); return d ? ok(d) : err(404, "no such sniffer in this registry"); }
   if ((r = m(/^\/api\/registries\/([^/]+)\/install$/))) {
     const b = await json();
     return ok({ sniffer: b.name, version: b.version ?? "0.1.1", signed: r[1] === "official", risk: r[1] === "official" ? "official" : "external", sha256: "ab".repeat(32),
@@ -308,7 +315,11 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
   if (path === "/api/plugin-registries/official-plugins/plugins" && method === "GET") return ok({
     registry: { id: "official-plugins", name: "wayhouse plugins", url: "https://wayhouse-proxy.dev/plugins/index.json", official: true, risk: "official" },
     index_name: "wayhouse plugins", host_abi: "0.2",
-    plugins: [{ name: "pelican-sync", description: "Keeps pools in step with a Pelican panel", license: "MIT", compatible: true, versions: [{ version: "0.2.0", abi: "0.2", size: 412000, compatible: true, verifiable: false, options_schema: { properties: { panel: { title: "Panel host", description: "where Pelican runs" } } } }] }],
+    plugins: [{ name: "pelican-sync", description: "Keeps pools in step with a Pelican panel", license: "MIT", categories: ["integration"], tags: ["pelican", "panel"], latest: "0.2.0", abi: "0.2", signed: false, updated: "2026-11-05", abi_compatible: true }],
+  });
+  if (path === "/api/plugin-registries/official-plugins/plugins/pelican-sync" && method === "GET") return ok({
+    host_abi: "0.2",
+    plugin: { name: "pelican-sync", description: "Keeps pools in step with a Pelican panel", license: "MIT", compatible: true, versions: [{ version: "0.2.0", abi: "0.2", size: 412000, compatible: true, verifiable: false, options_schema: { properties: { panel: { title: "Panel host", description: "where Pelican runs" } } } }] },
   });
   if (path === "/api/plugin-registries/official-plugins/fetch" && method === "POST") { const b = await json(); if (!b.allow_unsigned) return err(409, "this module's signature could not be verified; confirm to fetch it anyway", { needs_confirm: true, risk: "official", signed: false }); return ok({ plugin: b.name, version: "0.2.0", signed: false, risk: "official", status: "uploaded, awaiting approval", upload: { sha256: MODULE_SHA, size: 412000, abi: "0.2", capabilities: { ...PLUGIN_CAPS.pelican, http: null, secrets: [], port_routes: null }, manifest: PELICAN_MANIFEST } }); }
 

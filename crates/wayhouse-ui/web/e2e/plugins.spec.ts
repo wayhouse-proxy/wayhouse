@@ -78,7 +78,7 @@ test("registry install: list, fetch an unsigned module only after confirming, la
         registry: REG,
         index_name: "plugins",
         host_abi: "0.2",
-        plugins: [{ name: "bound", description: "Panel sync", license: "MIT", compatible: true, versions: [{ version: "0.2.0", abi: "0.2", size: 4096, compatible: true, verifiable: false }] }],
+        plugins: [{ name: "bound", description: "Panel sync", license: "MIT", categories: [], tags: [], latest: "0.2.0", abi: "0.2", signed: false, updated: "2026-11-12", abi_compatible: true }],
       },
     }),
   );

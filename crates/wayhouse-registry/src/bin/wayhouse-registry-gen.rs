@@ -9,7 +9,8 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use wayhouse_registry::catalog::parse_categories;
 use wayhouse_registry::{
-    generate, parse_detail, parse_index, parse_manifest, to_json, Artifact, GenerateOptions, Index,
+    generate, parse_detail, parse_index, parse_manifest, to_json, upgrade_v1, Artifact,
+    GenerateOptions, Index, IndexError,
 };
 
 #[derive(Parser)]
@@ -79,13 +80,22 @@ fn main() -> Result<()> {
         } => {
             // Regenerating into an existing index must still honour version immutability,
             // so an existing --out is the comparison source unless --previous says otherwise.
+            let today = date.unwrap_or_else(utc_today);
             let previous = previous
                 .or_else(|| out.exists().then(|| out.clone()))
                 .map(|p| -> Result<_> {
                     let bytes =
                         std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?;
-                    let index = parse_index(&bytes)
-                        .with_context(|| format!("{} is not a valid index", p.display()))?;
+                    let index = match parse_index(&bytes) {
+                        // A schema 1 file is carried forward, not refused: its versions are
+                        // published and immutable.
+                        Err(IndexError::UnsupportedSchema(1)) => {
+                            eprintln!("upgrading {} from schema 1", p.display());
+                            upgrade_v1(&bytes, &today)
+                        }
+                        other => other,
+                    }
+                    .with_context(|| format!("{} is not a valid index", p.display()))?;
                     resolve_details(index, details_dir.as_deref())
                 })
                 .transpose()?;
@@ -98,7 +108,7 @@ fn main() -> Result<()> {
                 .transpose()?;
             let opts = GenerateOptions {
                 registry_name: name,
-                today: date.unwrap_or_else(utc_today),
+                today,
                 allowed_categories,
                 stats_url,
             };

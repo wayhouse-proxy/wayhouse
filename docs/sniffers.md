@@ -163,6 +163,8 @@ run reads the old versions back from those files, so keep the directory next to 
 If `--previous` is left out and `--out` already exists, `--out` is read as the previous
 index, so a plain regenerate cannot replace a published version. If that file exists but is
 not a valid index, the run fails instead of overwriting it; fix or remove the file first.
+A schema 1 previous index is the exception: it is upgraded in place (versions kept, `updated` set to
+the run date, no categories or tags until the next published version brings them).
 
 ## Installing from a registry (UI backend)
 
