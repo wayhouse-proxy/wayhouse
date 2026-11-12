@@ -73,8 +73,9 @@ fn is_loopback(host: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
-/// The URL's host when it may carry a code: `https`, or `http` to loopback.
-fn check_url(url: &str) -> Result<(), EnrollError> {
+/// Accepts a URL that may carry a credential (a code or a bearer token): `https`, or `http` to
+/// loopback.
+pub fn check_url(url: &str) -> Result<(), EnrollError> {
     let u = reqwest::Url::parse(url).map_err(|_| EnrollError::BadUrl)?;
     match (u.scheme(), u.host_str()) {
         ("https", Some(_)) => Ok(()),
