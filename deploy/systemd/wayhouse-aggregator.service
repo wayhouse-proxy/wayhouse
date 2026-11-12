@@ -5,11 +5,12 @@ PartOf=wayhouse-solo.target
 
 [Service]
 User=wayhouse
-EnvironmentFile=/etc/wayhouse/solo.env
+# The tokens arrive as files under $CREDENTIALS_DIRECTORY; the program reads them from there
+# (sh deploy/solo/init.sh --credentials /etc/wayhouse/credentials writes the sources).
+LoadCredential=auth-token:/etc/wayhouse/credentials/aggregator-token
+LoadCredential=ingest-token:/etc/wayhouse/credentials/ingest-token
 ExecStart=/usr/local/bin/wayhouse-aggregator \
   --listen=127.0.0.1:9902 \
-  --auth-token=${WAYHOUSE_AGGREGATOR_TOKEN} \
-  --ingest-token=${WAYHOUSE_INGEST_TOKEN} \
   --instance-url-allow=127.0.0.0/8
 Restart=on-failure
 RestartSec=2

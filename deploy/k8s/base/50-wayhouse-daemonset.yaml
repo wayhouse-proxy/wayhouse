@@ -7,6 +7,7 @@ spec:
     metadata: { labels: { app: wayhouse } }
     spec:
       serviceAccountName: wayhouse                # 45-wayhouse-rbac.yaml: reads EndpointSlices
+      securityContext: { fsGroup: 65532 }   # lets the non-root image read the token files
       hostNetwork: true                      # docs/12 default for an edge proxy
       dnsPolicy: ClusterFirstWithHostNet     # else wayhouse-aggregator below won't resolve
       # Only needed if you pull from a mirror that requires auth (the ghcr.io images are public).
@@ -17,7 +18,7 @@ spec:
           args:
             - --config=/etc/wayhouse/wayhouse.yaml
             - --aggregator=http://wayhouse-aggregator.wayhouse.svc:9902
-            - --aggregator-token=$(INGEST_TOKEN)
+            - --aggregator-token-file=/run/secrets/wayhouse/aggregator-token
             # Default instance name is the admin listen addr (0.0.0.0:9900 on every
             # node) — all nodes would overwrite one aggregator entry.
             - --aggregator-instance=$(NODE_NAME)
@@ -30,12 +31,12 @@ spec:
               valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
             - name: NODE_IP
               valueFrom: { fieldRef: { fieldPath: status.hostIP } }
-            - name: INGEST_TOKEN
-              valueFrom: { secretKeyRef: { name: wayhouse-tokens, key: ingest-token } }
           # With settings.admin.tls set, add `scheme: HTTPS` to both probes.
           readinessProbe: { httpGet: { path: /healthz, port: 9900 } }
           livenessProbe: { httpGet: { path: /healthz, port: 9900 }, initialDelaySeconds: 10 }
-          volumeMounts: [{ name: config, mountPath: /etc/wayhouse, readOnly: true }]
+          volumeMounts:
+            - { name: config, mountPath: /etc/wayhouse, readOnly: true }
+            - { name: tokens, mountPath: /run/secrets/wayhouse, readOnly: true }
           # Phase-14 tunnel (docs/12): uncomment, add the --tunnel-* args, and
           # mount /dev/net/tun (hostPath volume).
           # NET_ADMIN is only in the bounding set for a non-root user, so the
@@ -51,3 +52,8 @@ spec:
       volumes:
         - name: config
           secret: { secretName: wayhouse-config }
+        - name: tokens
+          secret:
+            secretName: wayhouse-tokens
+            defaultMode: 0440   # group-readable; fsGroup gives the container its group
+            items: [{ key: ingest-token, path: aggregator-token }]

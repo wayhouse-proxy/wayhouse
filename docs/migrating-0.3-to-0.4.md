@@ -140,13 +140,13 @@ item"). Declare `schema_version: 4` only once every proxy that receives the docu
 
 ## Controller tokens: proxies and agents get their own
 
-A controller started with `--auth-token` now refuses to start without `--proxy-token` and
-`--agent-token` (16 bytes each, all three different). Proxies and agents used to present the admin
+A controller started with `--auth-token` now refuses to start without a proxy token and an agent
+token (`--proxy-token-file`, `--agent-token-file`; 16 bytes each, all three different). Proxies and agents used to present the admin
 token, so one compromised edge box could submit config, install plugins and overwrite cluster
 secrets. Now:
 
-1. Generate two tokens (`openssl rand -hex 32`) and add `--proxy-token` and `--agent-token` to every
-   controller replica.
+1. Generate two tokens (`openssl rand -hex 32`) and give every controller replica `--proxy-token-file`
+   and `--agent-token-file` (see the next section: tokens are files now).
 2. Point every `wayhouse` proxy's `--controller-token` and `--tunnel-controller-token` at the proxy
    token, and every `wayhouse-agent`'s `--controller-token` at the agent token.
 3. Keep the admin token for the UI, operators, slave controllers (`--parent-token`) and
@@ -165,8 +165,26 @@ the host loopback), `compose.solo-acme.yml` (adds `--acme`, staging CA by defaul
 your acceptance of the CA's terms) and the existing `compose.web.yml` and `compose.tunnel.yml`.
 `sh deploy/solo/init.sh` writes random tokens and a UI password into `deploy/compose/.env` (mode
 0600, never overwrites). Without Docker, `deploy/systemd/` has the same units and a
-`wayhouse-solo.target`. Both forms pass tokens as command-line flags, so any local user can read
-them in `ps`: keep the box single-user. See [deployment](12-deployment.md).
+`wayhouse-solo.target`. Compose hands the tokens to each container as Docker secrets and the units
+use `LoadCredential=`, so no token is on a command line. See [deployment](12-deployment.md).
+
+## Tokens and passwords are no longer command-line flags (breaking)
+
+`--auth-token`, `--proxy-token`, `--agent-token`, `--ingest-token`, `--metrics-token`, `--instance-token`, `--parent-token`,
+`--ha-token`, `--controller-token`, `--aggregator-token`, `--tunnel-controller-token`,
+`--plugin-overlay-token` and `--ui-password` are gone: a value on the command line is visible in
+`ps`, `/proc/<pid>/cmdline` and `docker inspect`. Each has a `--<name>-file PATH` flag instead (for
+example `--auth-token-file`). A program finds each secret `<name>` in this order:
+
+1. the file given with `--<name>-file`,
+2. `$CREDENTIALS_DIRECTORY/<name>` (what systemd's `LoadCredential=<name>:<path>` provides),
+3. the environment variable `WAYHOUSE_<NAME>` (`WAYHOUSE_AUTH_TOKEN`, `WAYHOUSE_UI_PASSWORD`, ...).
+
+A file's trailing newline is dropped, and an empty value is an error. The `-file` flags are not
+read from a settings file, like the other credentials. To migrate, write each value to a file (mode
+0400, readable by the service user) and replace `--auth-token=$X` with `--auth-token-file=/path`.
+Docker secrets (`/run/secrets/<name>`), Kubernetes secret volumes and `LoadCredential=` all produce
+such files. `wayhouse-web-sync` already read its tokens from the environment and is unchanged.
 
 ## What works on one instance
 

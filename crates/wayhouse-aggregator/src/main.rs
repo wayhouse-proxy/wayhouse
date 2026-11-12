@@ -37,7 +37,12 @@ struct Args {
     /// Bearer token every request except /healthz must present, at least 16
     /// bytes. Omit to leave this aggregator's own API open, which is only
     /// accepted on a loopback `--listen` (or with `--insecure-no-auth`).
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    auth_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--auth-token-file`, `$CREDENTIALS_DIRECTORY/auth-token` or `$WAYHOUSE_AUTH_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     auth_token: Option<String>,
 
     /// Bearer token `POST /ingest` accepts instead of `--auth-token`, at least
@@ -45,7 +50,12 @@ struct Args {
     /// that also unlocks `/fleet/*` (including drain and backend edits). It
     /// unlocks only `/ingest`; `--auth-token` then gates `/fleet/*` alone.
     /// Required whenever `--auth-token` is set, and must differ from it.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    ingest_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--ingest-token-file`, `$CREDENTIALS_DIRECTORY/ingest-token` or `$WAYHOUSE_INGEST_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     ingest_token: Option<String>,
 
     /// Which `admin_url` hosts an ingested push may report (the fan-out calls
@@ -59,7 +69,12 @@ struct Args {
     /// 16 bytes, so a Prometheus scraper need not hold the admin token. It
     /// unlocks only `/metrics`. Omitted: `/metrics` is gated by `--auth-token`
     /// like the rest of the API.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    metrics_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--metrics-token-file`, `$CREDENTIALS_DIRECTORY/metrics-token` or `$WAYHOUSE_METRICS_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     metrics_token: Option<String>,
 
     /// Allow a non-loopback `--listen` with no `--auth-token`. Only for
@@ -71,7 +86,12 @@ struct Args {
     /// to each instance's admin API (`settings.admin.auth_token` on `wayhouse`).
     /// A separate secret from `--auth-token`: one gates calls into this
     /// aggregator, this one is what it presents going out.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    instance_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--instance-token-file`, `$CREDENTIALS_DIRECTORY/instance-token` or `$WAYHOUSE_INSTANCE_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     instance_token: Option<String>,
 
     /// Parent aggregator's base URL — when set, this tier also pushes its
@@ -88,7 +108,12 @@ struct Args {
     tier_name: Option<String>,
 
     /// Bearer token this tier presents pushing to `--parent-url`.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    parent_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--parent-token-file`, `$CREDENTIALS_DIRECTORY/parent-token` or `$WAYHOUSE_PARENT_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     parent_token: Option<String>,
 
     /// How often this tier pushes its merged view to `--parent-url`.
@@ -127,7 +152,22 @@ async fn main() -> anyhow::Result<()> {
         &<Args as clap::CommandFactory>::command(),
         std::env::args_os().collect(),
     );
-    let args = Args::parse_from(&layered.argv);
+    let mut args = Args::parse_from(&layered.argv);
+    args.auth_token =
+        wayhouse_http::secret_arg::resolve("auth-token", args.auth_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.parent_token =
+        wayhouse_http::secret_arg::resolve("parent-token", args.parent_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.ingest_token =
+        wayhouse_http::secret_arg::resolve("ingest-token", args.ingest_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.metrics_token =
+        wayhouse_http::secret_arg::resolve("metrics-token", args.metrics_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.instance_token =
+        wayhouse_http::secret_arg::resolve("instance-token", args.instance_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
 
     if args.parent_url.is_some() && args.tier_name.is_none() {
         anyhow::bail!("--parent-url requires --tier-name");

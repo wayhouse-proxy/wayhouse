@@ -8,15 +8,15 @@ PartOf=wayhouse-solo.target
 [Service]
 User=wayhouse
 StateDirectory=wayhouse
-# /etc/wayhouse/solo.env (mode 0600, root): WAYHOUSE_CONTROLLER_TOKEN=..., WAYHOUSE_PROXY_TOKEN=..., WAYHOUSE_AGENT_TOKEN=... (sh deploy/solo/init.sh <file>)
-EnvironmentFile=/etc/wayhouse/solo.env
 # Loopback only (the default listener), so the plain-HTTP guard needs no override.
+# The tokens arrive as files under $CREDENTIALS_DIRECTORY; the program reads them from there
+# (sh deploy/solo/init.sh --credentials /etc/wayhouse/credentials writes the sources).
+LoadCredential=auth-token:/etc/wayhouse/credentials/controller-token
+LoadCredential=proxy-token:/etc/wayhouse/credentials/proxy-token
+LoadCredential=agent-token:/etc/wayhouse/credentials/agent-token
 ExecStart=/usr/local/bin/wayhouse-controller \
   --listen=127.0.0.1:9901 \
   --data-dir=/var/lib/wayhouse/controller \
-  --auth-token=${WAYHOUSE_CONTROLLER_TOKEN} \
-  --proxy-token=${WAYHOUSE_PROXY_TOKEN} \
-  --agent-token=${WAYHOUSE_AGENT_TOKEN} \
   --plugins \
   --secret-key-file=/var/lib/wayhouse/secret.keys
 Restart=on-failure

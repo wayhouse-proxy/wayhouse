@@ -53,7 +53,7 @@ k8s.each do |o, docs|
   errs << "k8s #{o}: wayhouse lacks --aggregator-instance=$(NODE_NAME)" unless c["args"].include?("--aggregator-instance=$(NODE_NAME)")
   errs << "k8s #{o}: wayhouse lacks NODE_NAME from spec.nodeName" unless c["env"].any? { |e| e["name"] == "NODE_NAME" && e.dig("valueFrom", "fieldRef", "fieldPath") == "spec.nodeName" }
 end
-# HA overlay: a 3-node StatefulSet replaces the Deployment, node ids come from the pod ordinal, and the peer token is wired.
+# HA overlay: a 3-node StatefulSet replaces the Deployment, node ids come from the pod ordinal, and the peer token is wired (as a file).
 ha = k8s["ha"]
 errs << "k8s ha: the single-writer controller Deployment must be gone" if ha.any? { |d| d["kind"] == "Deployment" && d.dig("metadata", "name") == "wayhouse-controller" }
 errs << "k8s ha: the shared controller PVC must be gone" if ha.any? { |d| d["kind"] == "PersistentVolumeClaim" }
@@ -61,7 +61,7 @@ sts = ha.find { |d| d["kind"] == "StatefulSet" && d.dig("metadata", "name") == "
 errs << "k8s ha: no wayhouse-controller StatefulSet with 3 replicas" unless sts && sts["spec"]["replicas"] == 3
 if sts
   a = sts["spec"]["template"]["spec"]["containers"][0]["args"]
-  errs << "k8s ha: controller needs --ha-node-id=$(POD_INDEX), --ha-token and 3 --ha-peers" unless a.include?("--ha-node-id=$(POD_INDEX)") && a.include?("--ha-token=$(HA_TOKEN)") && a.any? { |x| x.start_with?("--ha-peers=") && x.split(",").size == 3 }
+  errs << "k8s ha: controller needs --ha-node-id=$(POD_INDEX), --ha-token and 3 --ha-peers" unless a.include?("--ha-node-id=$(POD_INDEX)") && a.include?("--ha-token-file=/run/secrets/wayhouse/ha-token") && a.any? { |x| x.start_with?("--ha-peers=") && x.split(",").size == 3 }
 end
 errs << "k8s single/web-gateway must keep the one-replica controller Deployment" unless %w[single web-gateway].all? { |o| k8s[o].any? { |d| d["kind"] == "Deployment" && d.dig("metadata", "name") == "wayhouse-controller" } }
 
@@ -106,7 +106,7 @@ errs << "tunnel override: controller needs --tunnel-network=fd49:89c1:4b5e:60::/
 # Both tunnel services share the host network namespace, where runc refuses
 # net.* sysctls ("not allowed in host network namespace"): `up` would fail.
 %w[wayhouse agent].each { |s| errs << "tunnel #{s} sets a net.* sysctl, which host networking refuses" if (tunnel[s]["sysctls"] || {}).keys.any? { |k| k.start_with?("net.") } }
-errs << "tunnel override: controller lost the base flags" unless %w[--listen=0.0.0.0:9901 --data-dir=/data].all? { |f| ctl_cmd.include?(f) } && ctl_cmd.any? { |a| a.start_with?("--auth-token=") }
+errs << "tunnel override: controller lost the base flags" unless %w[--listen=0.0.0.0:9901 --data-dir=/data].all? { |f| ctl_cmd.include?(f) } && ctl_cmd.any? { |a| a.start_with?("--auth-token-file=") }
 { "wayhouse" => %w[DAC_OVERRIDE NET_ADMIN NET_BIND_SERVICE], "agent" => %w[DAC_OVERRIDE NET_ADMIN] }.each { |s, caps| errs << "tunnel #{s}: must drop all capabilities except #{caps.join("/")} and set no-new-privileges and read_only" unless tunnel[s]["cap_drop"] == ["ALL"] && (tunnel[s]["cap_add"] || []).sort == caps && tunnel[s]["read_only"] == true && tunnel[s]["security_opt"] == ["no-new-privileges:true"] }
 errs << "tunnel override: wayhouse must not hand-pick --tunnel-address" if tunnel["wayhouse"]["command"].any? { |a| a.start_with?("--tunnel-address") }
 agent_cmd = tunnel["agent"]["command"]
@@ -148,20 +148,33 @@ errs << "solo: the proxy must keep every base flag" unless (base["wayhouse"]["co
 errs << "solo: the keyring must be mounted read-only into the proxy, which must wait for the keys step" unless sw["volumes"].any? { |v| v["target"] == "/keys" && v["read_only"] == true } && sw["depends_on"].dig("keys", "condition") == "service_completed_successfully"
 errs << "solo: keys step must never overwrite an existing keyring, and writes it atomically" unless solo["keys"]["command"].join(" ").include?("[ -s /keys/secret.keys ] ||") && solo["keys"]["command"].join(" ").include?("mv /keys/secret.keys.tmp /keys/secret.keys")
 errs << "solo: ports must stay on the host loopback" unless solo.values.flat_map { |x| x["ports"] || [] }.all? { |pt| pt["host_ip"] == "127.0.0.1" }
-errs << "solo: tokens must be required (${VAR:?}), not defaulted" if sc.grep(/\A--auth-token=/).any? { |a| a.empty? || a == "--auth-token=" }
+errs << "solo: tokens must be required (${VAR:?}), not defaulted" if sc.grep(/\A--auth-token-file=/).empty?
 errs << "solo-acme: must keep every solo flag and add --acme with a staging default" unless (sc - solo_acme["controller"]["command"]).empty? && solo_acme["controller"]["command"].include?("--acme") && solo_acme["controller"]["command"].include?("--acme-ca=letsencrypt-staging") && solo_acme["controller"]["command"].include?("--acme-accept-tos")
 # Process flags (G1): every program shares one settings volume, and the base flags stay.
 %w[controller aggregator ui wayhouse].each do |svc|
   errs << "solo: #{svc} needs --settings-dir=/settings and the solo-settings volume" unless solo[svc]["command"].include?("--settings-dir=/settings") && solo[svc]["volumes"].any? { |v| v["target"] == "/settings" && v["source"] == "solo-settings" }
   errs << "solo: #{svc} must keep every base flag" unless (base[svc]["command"] - solo[svc]["command"]).empty?
 end
-# systemd units: tokens come from the env file, never written into a unit.
+# systemd units: tokens arrive as credentials (LoadCredential=), never as a flag value.
 Dir["deploy/systemd/*.service"].each do |f|
   t = File.read(f)
-  errs << "#{f}: must read its tokens from EnvironmentFile=/etc/wayhouse/solo.env" if t =~ /--[a-z-]*(token|password)=/ && !t.include?("EnvironmentFile=/etc/wayhouse/solo.env")
-  errs << "#{f}: puts a literal token on the command line" if t =~ /--[a-z-]*(token|password)=(?!\$\{)\S/
+  errs << "#{f}: puts a token or password on the command line" if t =~ /--[a-z-]*(token|password)(=|\s)/
+  errs << "#{f}: must not read tokens from an EnvironmentFile" if t.include?("EnvironmentFile=") && t =~ /TOKEN|PASSWORD/
   errs << "#{f}: NoNewPrivileges missing" unless t.include?("NoNewPrivileges=yes")
 end
 
+# No compose or k8s command carries a token value: only `--<name>-file` flags.
+[base, tunnel, web, solo, solo_acme].each do |cfg|
+  cfg.each_value { |x| (x["command"] || []).each { |a| errs << "compose: #{a} puts a secret on the command line" if a =~ /\A--[a-z-]*(token|password)(=|\z)/ } }
+end
+# k8s args and commands too: only the -file flags may name a token or password.
+k8s.each do |o, docs|
+  docs.each do |d|
+    pod = d.dig("spec", "template", "spec") or next
+    (pod["containers"] || []).each do |c|
+      ((c["args"] || []) + (c["command"] || [])).each { |a| errs << "k8s #{o}: #{c["name"]} puts a secret on its command line: #{a}" if a =~ /\A--[a-z-]*(token|password)(=|\z)/ }
+    end
+  end
+end
 if errs.empty? then puts "deploy lint: ok" else warn errs.map { |e| "LINT FAIL: #{e}" }; exit 1 end
 '

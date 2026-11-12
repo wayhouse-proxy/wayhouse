@@ -82,7 +82,9 @@ async fn an_admin_token_needs_both_scoped_tokens() -> Result<()> {
         Command::new(bin_path("wayhouse-controller"))
             .args(["--listen", &listen, "--data-dir"])
             .arg(dir.path())
-            .args(["--auth-token", ADMIN, "--proxy-token", PROXY])
+            .args(wayhouse_fleet_tests::secret_files(
+                &["--auth-token", ADMIN, "--proxy-token", PROXY].map(String::from),
+            ))
             .kill_on_drop(true)
             .output(),
     )

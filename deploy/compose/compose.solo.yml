@@ -38,9 +38,9 @@ services:
     command:
       - --listen=0.0.0.0:9901
       - --data-dir=/data
-      - --auth-token=${WAYHOUSE_CONTROLLER_TOKEN:?set WAYHOUSE_CONTROLLER_TOKEN in .env (sh ../solo/init.sh writes it)}
-      - --proxy-token=${WAYHOUSE_PROXY_TOKEN:?set WAYHOUSE_PROXY_TOKEN in .env}
-      - --agent-token=${WAYHOUSE_AGENT_TOKEN:?set WAYHOUSE_AGENT_TOKEN in .env}
+      - --auth-token-file=/run/secrets/auth-token
+      - --proxy-token-file=/run/secrets/proxy-token
+      - --agent-token-file=/run/secrets/agent-token
       - --plugins
       - --secret-key-file=/keys/secret.keys
       - --allow-insecure-secrets
@@ -55,9 +55,9 @@ services:
   wayhouse:
     command:
       - --controller=http://127.0.0.1:9901
-      - --controller-token=${WAYHOUSE_PROXY_TOKEN}
+      - --controller-token-file=/run/secrets/controller-token
       - --aggregator=http://127.0.0.1:9902
-      - --aggregator-token=${WAYHOUSE_INGEST_TOKEN}
+      - --aggregator-token-file=/run/secrets/aggregator-token
       - --aggregator-instance=demo-wayhouse
       - --secret-key-file=/keys/secret.keys
       - --settings-dir=/settings
@@ -70,8 +70,8 @@ services:
   aggregator:
     command:
       - --listen=0.0.0.0:9902
-      - --auth-token=${WAYHOUSE_AGGREGATOR_TOKEN:?set WAYHOUSE_AGGREGATOR_TOKEN in .env}
-      - --ingest-token=${WAYHOUSE_INGEST_TOKEN:?set WAYHOUSE_INGEST_TOKEN in .env}
+      - --auth-token-file=/run/secrets/auth-token
+      - --ingest-token-file=/run/secrets/ingest-token
       - --instance-url-allow=127.0.0.0/8
       - --settings-dir=/settings
     volumes: ["solo-settings:/settings"]
@@ -81,11 +81,11 @@ services:
   ui:
     command:
       - --listen=0.0.0.0:9903
-      - --ui-password=${WAYHOUSE_UI_PASSWORD:?set WAYHOUSE_UI_PASSWORD in .env}
+      - --ui-password-file=/run/secrets/ui-password
       - --controller-url=http://controller:9901
-      - --controller-token=${WAYHOUSE_CONTROLLER_TOKEN}
+      - --controller-token-file=/run/secrets/controller-token
       - --aggregator-url=http://aggregator:9902
-      - --aggregator-token=${WAYHOUSE_AGGREGATOR_TOKEN}
+      - --aggregator-token-file=/run/secrets/aggregator-token
       - --settings-dir=/settings
     volumes: ["solo-settings:/settings"]
     depends_on:

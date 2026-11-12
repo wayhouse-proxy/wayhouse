@@ -47,25 +47,45 @@ struct Args {
     /// Omit to leave the API open, which is only accepted on a loopback
     /// `--listen` (or with `--insecure-no-auth`). Not a full RBAC/identity
     /// story, just a shared secret (see `wayhouse_http::server`).
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    auth_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--auth-token-file`, `$CREDENTIALS_DIRECTORY/auth-token` or `$WAYHOUSE_AUTH_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     auth_token: Option<String>,
 
     /// Bearer token for proxies: unlocks only what a proxy calls (config fetch and subscribe,
     /// sealed secrets, plugin routes, intent, tunnel peers), so a compromised proxy cannot
     /// administer the fleet. At least 16 bytes. Required with `--auth-token`.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    proxy_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--proxy-token-file`, `$CREDENTIALS_DIRECTORY/proxy-token` or `$WAYHOUSE_PROXY_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     proxy_token: Option<String>,
 
     /// Bearer token for tunnel agents: unlocks only peer registration and the proxy-peers
     /// stream. At least 16 bytes. Required with `--auth-token`.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    agent_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--agent-token-file`, `$CREDENTIALS_DIRECTORY/agent-token` or `$WAYHOUSE_AGENT_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     agent_token: Option<String>,
 
     /// Bearer token `GET /metrics` accepts instead of `--auth-token`, at least
     /// 16 bytes, so a Prometheus scraper need not hold the admin token. It
     /// unlocks only `/metrics`. Omitted: `/metrics` is gated by `--auth-token`
     /// like the rest of the API.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    metrics_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--metrics-token-file`, `$CREDENTIALS_DIRECTORY/metrics-token` or `$WAYHOUSE_METRICS_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     metrics_token: Option<String>,
 
     /// `standalone` (default) accepts writes directly. `slave` never does —
@@ -79,7 +99,12 @@ struct Args {
     parent_url: Option<String>,
 
     /// Bearer token this tier presents to its parent's `/config*` API.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    parent_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--parent-token-file`, `$CREDENTIALS_DIRECTORY/parent-token` or `$WAYHOUSE_PARENT_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     parent_token: Option<String>,
 
     /// This node's own ID within its tier's Raft group. Required with
@@ -113,7 +138,12 @@ struct Args {
     /// Peer-only shared secret gating `/raft/*` — a separate secret from
     /// `--auth-token` (client-facing), matching every other peer-to-peer
     /// credential in this fleet.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    ha_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--ha-token-file`, `$CREDENTIALS_DIRECTORY/ha-token` or `$WAYHOUSE_HA_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     ha_token: Option<String>,
 
     /// Allow a non-loopback `--listen` with no `--auth-token`. Without it the
@@ -252,7 +282,24 @@ async fn main() -> anyhow::Result<()> {
         &<Args as clap::CommandFactory>::command(),
         std::env::args_os().collect(),
     );
-    let args = Args::parse_from(&layered.argv);
+    let mut args = Args::parse_from(&layered.argv);
+    args.metrics_token =
+        wayhouse_http::secret_arg::resolve("metrics-token", args.metrics_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.proxy_token =
+        wayhouse_http::secret_arg::resolve("proxy-token", args.proxy_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.agent_token =
+        wayhouse_http::secret_arg::resolve("agent-token", args.agent_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.parent_token =
+        wayhouse_http::secret_arg::resolve("parent-token", args.parent_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.ha_token = wayhouse_http::secret_arg::resolve("ha-token", args.ha_token_file.as_deref())
+        .map_err(anyhow::Error::msg)?;
+    args.auth_token =
+        wayhouse_http::secret_arg::resolve("auth-token", args.auth_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
 
     if args.role == Role::Slave && args.parent_url.is_none() {
         anyhow::bail!("--role slave requires --parent-url");

@@ -104,7 +104,8 @@ sh ../solo/init.sh                  # once: random tokens into .env (mode 0600);
 docker compose -f docker-compose.yml -f compose.solo.yml up -d --build
 ```
 
-Open <http://127.0.0.1:9903>; the password is `WAYHOUSE_UI_PASSWORD` in `.env`. `compose.solo.yml`
+Open <http://127.0.0.1:9903>; the password is `WAYHOUSE_UI_PASSWORD` in `.env`. Compose passes the tokens to each container
+as a Docker secret file under `/run/secrets`, never on a command line. `compose.solo.yml`
 adds a one-shot `keys` step that creates the sealed-secret keyring on first start and never
 replaces it, and starts the controller with `--plugins` and `--secret-key-file`, so plugin secrets
 and `{ secret: name }` config references work (UI: Settings, Secrets). **Back up the `solo-keys`

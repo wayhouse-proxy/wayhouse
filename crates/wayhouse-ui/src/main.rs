@@ -40,7 +40,12 @@ struct Args {
     /// Omit to leave the UI open (no login required), which is only accepted
     /// on a loopback `--listen` (or with `--insecure-no-auth`). Mutually
     /// exclusive with `--users-file`.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    ui_password_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--ui-password-file`, `$CREDENTIALS_DIRECTORY/ui-password` or `$WAYHOUSE_UI_PASSWORD`;
+    /// never a command-line value.
+    #[arg(skip)]
     ui_password: Option<String>,
 
     /// Multi-operator accounts (phase 12 slice 8): a YAML file of
@@ -54,7 +59,12 @@ struct Args {
     /// login is a browser session a scraper cannot hold, so `/metrics` has a
     /// token of its own. Omitted: `/metrics` is served only when no login is
     /// configured (an open UI); with a login it is not served at all.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    metrics_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--metrics-token-file`, `$CREDENTIALS_DIRECTORY/metrics-token` or `$WAYHOUSE_METRICS_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     metrics_token: Option<String>,
 
     /// Allow a non-loopback `--listen` with neither `--ui-password` nor
@@ -91,7 +101,12 @@ struct Args {
 
     /// Bearer token this UI presents to `--aggregator-url`, if it requires
     /// one (its own `--auth-token`).
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    aggregator_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--aggregator-token-file`, `$CREDENTIALS_DIRECTORY/aggregator-token` or `$WAYHOUSE_AGGREGATOR_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     aggregator_token: Option<String>,
 
     /// `wayhouse-controller` base URL (e.g. "http://127.0.0.1:9901") that
@@ -101,7 +116,12 @@ struct Args {
 
     /// Bearer token this UI presents to `--controller-url`, if it requires
     /// one (its own `--auth-token`).
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    controller_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--controller-token-file`, `$CREDENTIALS_DIRECTORY/controller-token` or `$WAYHOUSE_CONTROLLER_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     controller_token: Option<String>,
 
     /// Directory holding the built frontend (`web/`'s `npm run build`
@@ -140,7 +160,23 @@ async fn main() -> anyhow::Result<()> {
         &<Args as clap::CommandFactory>::command(),
         std::env::args_os().collect(),
     );
-    let args = Args::parse_from(&layered.argv);
+    let mut args = Args::parse_from(&layered.argv);
+    args.ui_password =
+        wayhouse_http::secret_arg::resolve("ui-password", args.ui_password_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.metrics_token =
+        wayhouse_http::secret_arg::resolve("metrics-token", args.metrics_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.aggregator_token = wayhouse_http::secret_arg::resolve(
+        "aggregator-token",
+        args.aggregator_token_file.as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    args.controller_token = wayhouse_http::secret_arg::resolve(
+        "controller-token",
+        args.controller_token_file.as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
 
     if args.hash_password {
         // No server, no logging setup — a one-shot CLI utility mode.
@@ -151,7 +187,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if args.ui_password.is_some() && args.users_file.is_some() {
-        anyhow::bail!("--ui-password and --users-file are mutually exclusive");
+        anyhow::bail!("--ui-password-file and --users-file are mutually exclusive");
     }
     for (flag, secret) in [
         ("--ui-password", args.ui_password.as_deref()),

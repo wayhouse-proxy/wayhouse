@@ -67,7 +67,8 @@ cp .env.example .env        # then change every value
 docker compose up -d --build
 ```
 
-Open <http://127.0.0.1:9903> (password = `WAYHOUSE_UI_PASSWORD`). The `seed`
+Open <http://127.0.0.1:9903> (password = `WAYHOUSE_UI_PASSWORD`). The programs read their tokens from
+Docker secret files (`/run/secrets/...`, built from `.env`), not from flags. The `seed`
 one-shot posts `wayhouse.yaml` to the controller first; `wayhouse` then pulls it and
 pushes its state to the aggregator. `make deploy-smoke` (repo root) does the
 same and runs `smoke.sh` against it.
@@ -150,8 +151,8 @@ Ingress/LoadBalancer (with TLS) in front of it.
   controller is empty; the `seed` service must have succeeded.
 - `GLIBC_… not found` at container start — builder and runtime base are on
   different Debian releases; keep them on the same one.
-- `required variable … is missing` — `.env` is missing or a value is empty.
+- `required variable … is missing` — `.env` is missing or a value is empty (Compose builds the secret files from it).
 
 ## Authentication at startup
 
-The image defaults bind `0.0.0.0` without a token, and the services now refuse that: a bare `docker run` of the controller, aggregator or UI image exits with an explanation. Pass a token (`--auth-token`, `--ui-password`, at least 16 bytes) as the compose and k8s examples do, or `--insecure-no-auth` if the network boundary is your only control. See `docs/12-deployment.md`.
+The image defaults bind `0.0.0.0` without a token, and the services now refuse that: a bare `docker run` of the controller, aggregator or UI image exits with an explanation. Give it a token file (`--auth-token-file`, `--ui-password-file`, at least 16 bytes) as the compose and k8s examples do, or `--insecure-no-auth` if the network boundary is your only control. See `docs/12-deployment.md`.

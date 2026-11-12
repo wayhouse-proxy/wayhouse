@@ -59,7 +59,12 @@ struct Args {
     controller_url: String,
 
     /// Bearer token for the controller, if `--auth-token` is set there.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    controller_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--controller-token-file`, `$CREDENTIALS_DIRECTORY/controller-token` or `$WAYHOUSE_CONTROLLER_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     controller_token: Option<String>,
 
     /// This origin's stable identity — what a pool's `backend_sources[].
@@ -131,7 +136,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    args.controller_token = wayhouse_http::secret_arg::resolve(
+        "controller-token",
+        args.controller_token_file.as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
 
     tracing_subscriber::fmt()
         .with_env_filter(

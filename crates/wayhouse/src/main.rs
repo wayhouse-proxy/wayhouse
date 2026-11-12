@@ -91,7 +91,12 @@ struct Args {
 
     /// Bearer token to present to `--controller`, if it requires one (its
     /// own `--auth-token`).
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    controller_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--controller-token-file`, `$CREDENTIALS_DIRECTORY/controller-token` or `$WAYHOUSE_CONTROLLER_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     controller_token: Option<String>,
 
     /// Controller base URL to take plugin routes from while running from `--config`: the
@@ -101,7 +106,12 @@ struct Args {
     plugin_overlay_url: Option<String>,
 
     /// Bearer token for `--plugin-overlay-url`, if the controller requires one.
-    #[arg(long, requires = "plugin_overlay_url")]
+    #[arg(long, value_name = "PATH", requires = "plugin_overlay_url")]
+    plugin_overlay_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--plugin-overlay-token-file`, `$CREDENTIALS_DIRECTORY/plugin-overlay-token` or `$WAYHOUSE_PLUGIN_OVERLAY_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     plugin_overlay_token: Option<String>,
 
     /// Key file for `{ secret: name }` config values: one base64 32-byte key per line, the last
@@ -174,7 +184,12 @@ struct Args {
 
     /// Bearer token to present on every push to `--aggregator`, if it
     /// requires one (its own `--auth-token`).
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    aggregator_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--aggregator-token-file`, `$CREDENTIALS_DIRECTORY/aggregator-token` or `$WAYHOUSE_AGGREGATOR_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     aggregator_token: Option<String>,
 
     /// Base URL the aggregator should use to reach this instance's admin API
@@ -223,7 +238,12 @@ struct Args {
     tunnel_controller_url: Option<String>,
 
     /// Bearer token for `--tunnel-controller-url`, if it requires one.
-    #[arg(long)]
+    #[arg(long, value_name = "PATH")]
+    tunnel_controller_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--tunnel-controller-token-file`, `$CREDENTIALS_DIRECTORY/tunnel-controller-token` or `$WAYHOUSE_TUNNEL_CONTROLLER_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
     tunnel_controller_token: Option<String>,
 
     /// Skip the kernel WireGuard backend and use boringtun userspace
@@ -305,7 +325,27 @@ fn main() -> anyhow::Result<()> {
         &<Args as clap::CommandFactory>::command(),
         std::env::args_os().collect(),
     );
-    let args = Args::parse_from(&layered.argv);
+    let mut args = Args::parse_from(&layered.argv);
+    args.controller_token = wayhouse_http::secret_arg::resolve(
+        "controller-token",
+        args.controller_token_file.as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    args.plugin_overlay_token = wayhouse_http::secret_arg::resolve(
+        "plugin-overlay-token",
+        args.plugin_overlay_token_file.as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    args.aggregator_token = wayhouse_http::secret_arg::resolve(
+        "aggregator-token",
+        args.aggregator_token_file.as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    args.tunnel_controller_token = wayhouse_http::secret_arg::resolve(
+        "tunnel-controller-token",
+        args.tunnel_controller_token_file.as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
     if manage_secrets(&args)? {
         return Ok(());
     }
