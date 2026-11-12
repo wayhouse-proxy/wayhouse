@@ -155,7 +155,7 @@ errs << "solo: controller must wait for the keys step" unless solo["controller"]
 errs << "solo: the keyring must be mounted read-only into the controller" unless solo["controller"]["volumes"].any? { |v| v["target"] == "/keys" && v["read_only"] == true }
 sw = solo["wayhouse"]
 errs << "solo: the proxy needs --secret-key-file=/keys/secret.keys, or a { secret: name } config stops it at start" unless sw["command"].include?("--secret-key-file=/keys/secret.keys")
-# (The base file's plain-http controller and aggregator URLs are the ones the solo overlay swaps for https.)
+# (The base file URLs are plain http; those are the ones the solo overlay swaps for https.)
 plain_url = ->(a) { a =~ /\A--(controller|controller-url|aggregator|aggregator-url)=http:/ || a == "--allow-insecure-controller" }
 errs << "solo: the proxy must keep every base flag" unless (base["wayhouse"]["command"].reject(&plain_url) - sw["command"]).empty?
 errs << "solo: the keyring must be mounted read-only into the proxy, which must wait for the keys step" unless sw["volumes"].any? { |v| v["target"] == "/keys" && v["read_only"] == true } && sw["depends_on"].dig("keys", "condition") == "service_completed_successfully"
