@@ -89,10 +89,36 @@ describe("AddNodePage form", () => {
     expect(screen.getByText(/sha256: followed by 64 hex/)).toBeInTheDocument();
   });
 
-  it("offers the controller replica role only as a disabled placeholder", () => {
+  it("mints a controller replica code with the step-up secret and shows its node id and command", async () => {
+    api.mintEnrollment.mockImplementation(async (req) => ({
+      id: "k7f2a9", code: CODE, role: req.role, name: req.name, expires_at: NOW + req.ttl_secs, uses: req.uses, node_id: 4,
+    }));
     render();
-    const opt = screen.getByRole("option", { name: /Controller replica/ });
-    expect(opt).toBeDisabled();
+    await userEvent.selectOptions(screen.getByLabelText(/^Role/), "controller");
+    await fillCommon("ctl-4");
+    await userEvent.click(screen.getByRole("button", { name: "Create code" }));
+    expect(await screen.findByText(/URL with a port/)).toBeInTheDocument();
+    expect(api.mintEnrollment).not.toHaveBeenCalled();
+
+    await userEvent.type(screen.getByLabelText(/^Advertise address/), "https://ctl-4.example:9901");
+    await userEvent.type(screen.getByLabelText(/^Step-up secret/), "a long enough step-up secret");
+    await userEvent.click(screen.getByRole("button", { name: "Create code" }));
+    expect(api.mintEnrollment).toHaveBeenCalledWith({
+      role: "controller", name: "ctl-4", ttl_secs: 900, uses: 1, step_up: "a long enough step-up secret",
+    });
+    const step = await screen.findByLabelText("Step 1 text");
+    expect(step.textContent).toContain("wayhouse-controller install --systemd");
+    expect(step.textContent).toContain("--advertise=https://ctl-4.example:9901");
+    expect(screen.getByText(/node id 4/)).toBeInTheDocument();
+  });
+
+  it("refuses a controller replica for anything but systemd", async () => {
+    render();
+    await userEvent.selectOptions(screen.getByLabelText(/^Role/), "controller");
+    await userEvent.selectOptions(screen.getByLabelText(/^Set up with/), "compose");
+    expect(screen.getByText(/installed with systemd/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Create code" }));
+    expect(api.mintEnrollment).not.toHaveBeenCalled();
   });
 
   it("explains that an agent cannot go to Kubernetes yet and refuses to mint it", async () => {
@@ -263,6 +289,29 @@ describe("AddNodePage step-up", () => {
 });
 
 describe("AddNodePage codes list", () => {
+  it("shows a replica that redeemed its code as joining until the cluster adds it", async () => {
+    api.listEnrollments.mockResolvedValue({
+      items: [row("c3", { role: "controller", status: "joining", uses_left: 0 }), row("d4", { role: "controller", status: "joined", uses_left: 0 })],
+    });
+    render();
+    expect(within((await screen.findByText("node-c3")).closest("tr")!).getByText("joining")).toBeInTheDocument();
+    expect(within(screen.getByText("node-d4").closest("tr")!).getByText("joined")).toBeInTheDocument();
+  });
+
+  it("refreshes the list on its own while a replica is joining", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      api.listEnrollments.mockResolvedValue({ items: [row("c3", { role: "controller", status: "joining", uses_left: 0 })] });
+      render();
+      await screen.findByText("joining");
+      api.listEnrollments.mockResolvedValue({ items: [row("c3", { role: "controller", status: "joined", uses_left: 0 })] });
+      await vi.advanceTimersByTimeAsync(5100);
+      expect(await screen.findByText("joined")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("lists pending, used and expired codes and never a code", async () => {
     api.listEnrollments.mockResolvedValue({
       items: [

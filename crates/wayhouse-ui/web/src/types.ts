@@ -535,14 +535,14 @@ export interface ProcessList {
 /** One row of the controller's `GET /enrollments`: a code's state, never the code itself. */
 export interface EnrollmentCode {
   id: string;
-  role: "agent" | "proxy" | "aggregator" | "ui";
+  role: "agent" | "proxy" | "aggregator" | "ui" | "controller";
   /** The node's name. */
   origin: string;
   created_at: number;
   expires_at: number;
   uses: number;
   uses_left: number;
-  status: "pending" | "used" | "expired";
+  status: "pending" | "used" | "expired" | "joining" | "joined";
   created_by?: string;
   parent_url?: string;
 }
@@ -555,4 +555,6 @@ export interface MintedEnrollment {
   name: string;
   expires_at: number;
   uses: number;
+  /** A controller replica code: the Raft node id the replica will have. */
+  node_id?: number;
 }

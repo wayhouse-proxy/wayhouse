@@ -2,7 +2,7 @@
 // nothing here touches the network, storage or the clipboard. The code appears only in a step
 // marked `holdsCode`, and only when the operator did not choose the prompt form.
 
-export type EnrollRole = "agent" | "proxy" | "aggregator" | "ui";
+export type EnrollRole = "agent" | "proxy" | "aggregator" | "ui" | "controller";
 export type Target = "systemd" | "docker" | "compose" | "k8s";
 
 export const ROLES: { role: EnrollRole; label: string; what: string }[] = [
@@ -10,6 +10,11 @@ export const ROLES: { role: EnrollRole; label: string; what: string }[] = [
   { role: "proxy", label: "Proxy", what: "A wayhouse data-plane node. Receives the cluster keyring." },
   { role: "aggregator", label: "Aggregator", what: "Collects fleet state from proxies." },
   { role: "ui", label: "UI", what: "Another admin UI. Receives the admin token." },
+  {
+    role: "controller",
+    label: "Controller replica",
+    what: "Joins this controller's HA group. Receives every token, the keyring and the Raft credential.",
+  },
 ];
 
 export const TARGETS: { target: Target; label: string }[] = [
@@ -20,10 +25,13 @@ export const TARGETS: { target: Target; label: string }[] = [
 ];
 
 /** Roles whose grant is the keyring or the admin token: minting needs the step-up secret. */
-export const needsStepUp = (role: EnrollRole) => role === "proxy" || role === "ui";
+export const needsStepUp = (role: EnrollRole) => role === "proxy" || role === "ui" || role === "controller";
 
 /** Why `role` cannot go to `target` yet, or null. */
 export function unsupported(role: EnrollRole, target: Target): string | null {
+  if (role === "controller" && target !== "systemd") {
+    return "A controller replica is installed with systemd. A Kubernetes StatefulSet joins through the per-pod init container, which is not shipped yet.";
+  }
   if (role === "agent" && target === "k8s") {
     return "An agent on Kubernetes needs the per-pod init container, which is not shipped yet. Use systemd, docker run or Compose on the origin host.";
   }
@@ -35,6 +43,7 @@ const BIN: Record<EnrollRole, string> = {
   proxy: "wayhouse",
   aggregator: "wayhouse-aggregator",
   ui: "wayhouse-ui",
+  controller: "wayhouse-controller",
 };
 
 export interface Spec {
@@ -54,6 +63,8 @@ export interface Spec {
   aggregatorUrl: string;
   /** Aggregator: the parent tier, as minted. */
   parentUrl: string;
+  /** Controller replica: how the other replicas reach it, `https://host:port`. */
+  advertise: string;
   namespace: string;
 }
 
@@ -71,6 +82,9 @@ export interface Step {
 export const validName = (s: string) => /^[A-Za-z0-9._-]{1,64}$/.test(s) && s !== "subscribe";
 export const validPin = (s: string) => /^sha256:[0-9a-fA-F]{64}$/.test(s);
 export const validTag = (s: string) => /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(s);
+/** Like the enroll CLI's check, plus what a replica needs: https and an explicit port. */
+// shortcut: mirrors the CLI check (no whitespace, control, quote, backslash, % or $; 256 bytes max) by hand.
+export const validAdvertise = (s: string) => s.length <= 256 && !/[\x00-\x1f\x7f]/.test(s) && validUrl(s, { httpsOnly: true }) && /^https:\/\/[^/]+:\d{1,5}\/?$/.test(s) && !s.includes("%");
 export const validNamespace = (s: string) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(s);
 
 export function validUrl(s: string, opts: { httpsOnly?: boolean } = {}): boolean {
@@ -112,6 +126,7 @@ function runFlags(s: Spec): string[] {
     case "ui":
       return s.aggregatorUrl ? [`--aggregator-url=${s.aggregatorUrl}`] : [];
     case "aggregator":
+    case "controller":
       return [];
   }
 }
@@ -137,7 +152,20 @@ function containerArgs(s: Spec, secretsDir: string): string[] {
         `--ui-password-file=${secretsDir}/ui-password`,
         ...runFlags(s),
       ];
+    case "controller":
+      return [];
   }
+}
+
+/** The replica listens on the port it advertises; the certificate files are the operator's to place. */
+function controllerFlags(s: Spec): string[] {
+  const port = /:(\d+)\/?$/.exec(s.advertise)?.[1] ?? "9901";
+  return [
+    `--listen=0.0.0.0:${port}`,
+    `--tls-cert=/etc/wayhouse/${s.name}.pem`,
+    `--tls-key=/etc/wayhouse/${s.name}.key`,
+    `--ca-file=/etc/wayhouse/ca.pem`,
+  ];
 }
 
 const enrollFlags = (s: Spec) => [`--controller-url=${s.controllerUrl}`, `--pin=${s.pin}`];
@@ -146,8 +174,9 @@ function systemd(s: Spec): Step[] {
   const bin = BIN[s.role];
   const lines = [`sudo ${s.code ? `env WAYHOUSE_ENROLL_CODE=${sh(s.code)} ` : ""}${bin} install --systemd`];
   lines.push(...enrollFlags(s).map((f) => sh(f)));
+  if (s.role === "controller") lines.push(`--advertise=${sh(s.advertise)}`);
   if (s.role === "ui") lines.push(`--credential ui-password=/etc/wayhouse/ui/ui-password`);
-  const extra = runFlags(s);
+  const extra = s.role === "controller" ? controllerFlags(s) : runFlags(s);
   if (extra.length) lines.push("--", ...extra.map(sh));
   const steps: Step[] = [];
   if (s.role === "ui") {
@@ -164,9 +193,13 @@ function systemd(s: Spec): Step[] {
     language: "sh",
     holdsCode: s.code !== null,
     text: lines.join(" \\\n  "),
-    note: s.code
-      ? "The code is not on the node binary's command line, but it is in this command, so it is in your shell history and briefly in the process list. Tick \"Keep the code out of the command\" to avoid that."
-      : "The command asks for the code on the terminal; paste it there.",
+    note:
+      (s.role === "controller"
+        ? `Put this replica's certificate and key at /etc/wayhouse/${s.name}.pem and .key and the cluster CA at /etc/wayhouse/ca.pem first, or change the paths. The service runs as a dynamic user, so the key must be readable by it (a root-only 0600 key is not). `
+        : "") +
+      (s.code
+        ? "The code is not on the node binary's command line, but it is in this command, so it is in your shell history and briefly in the process list. Tick \"Keep the code out of the command\" to avoid that."
+        : "The command asks for the code on the terminal; paste it there."),
   });
   return steps;
 }
@@ -204,6 +237,8 @@ function dockerRun(s: Spec): Step[] {
   const steps: Step[] = [];
   let mid: string[];
   switch (s.role) {
+    case "controller":
+      return [];
     case "agent":
       mid = [`--network host --user 0 --cap-add NET_ADMIN --cap-add DAC_OVERRIDE --device /dev/net/tun`, `--tmpfs /tmp`, `-v "$PWD/${dir}:/data"`];
       break;

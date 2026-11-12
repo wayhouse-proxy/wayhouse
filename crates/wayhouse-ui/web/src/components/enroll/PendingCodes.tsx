@@ -12,7 +12,7 @@ export function relative(unixSecs: number, nowMs = Date.now()): string {
   return diff >= 0 ? `in ${span}` : `${span} ago`;
 }
 
-const TONE = { pending: "warn", used: "good", expired: "neutral" } as const;
+const TONE = { pending: "warn", used: "good", expired: "neutral", joining: "warn", joined: "good" } as const;
 
 /** Every code the controller still holds, never the code itself. Revoking works on any row. */
 export function PendingCodes({
