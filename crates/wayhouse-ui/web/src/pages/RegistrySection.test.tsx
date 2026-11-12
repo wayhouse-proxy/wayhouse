@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -7,6 +8,7 @@ const api = vi.hoisted(() => ({
   addRegistry: vi.fn(),
   removeRegistry: vi.fn(),
   listRegistrySniffers: vi.fn(),
+  getRegistrySniffer: vi.fn(),
   installFromRegistry: vi.fn(),
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
@@ -31,28 +33,51 @@ function version(extra: object = {}) {
   };
 }
 
+const view = () =>
+  render(
+    <MemoryRouter>
+      <RegistrySection />
+    </MemoryRouter>,
+  );
+
+const entry = (name: string, extra: object = {}) => ({
+  name,
+  description: name === "demo" ? "Detects demo traffic" : "Built for another ABI",
+  license: "MIT",
+  categories: ["game"],
+  tags: ["demo-tag"],
+  latest: "1.2.0",
+  abi: "0.1",
+  signed: true,
+  updated: "2026-11-12",
+  abi_compatible: true,
+  ...extra,
+});
+
 function listing(registry = OFFICIAL) {
   return {
     registry,
     index_name: "demo registry",
+    stats_url: null,
+    host_abi: "0.1",
+    sniffers: [entry("demo"), entry("old", { abi: "0.9", abi_compatible: false })],
+  };
+}
+
+/** What opening a sniffer fetches: the full version list. */
+function detail(name: string, registry = OFFICIAL, extra: object = {}) {
+  return {
+    registry,
     host_abi: "0.1",
     min_proxy_checked: false,
-    sniffers: [
-      {
-        name: "demo",
-        description: "Detects demo traffic",
-        license: "MIT",
-        versions: [version()],
-        compatible: { version: "1.2.0" },
-      },
-      {
-        name: "old",
-        description: "Built for another ABI",
-        license: "MIT",
-        versions: [version({ abi: "0.9" })],
-        compatible: { reason: "no version matches sniffer ABI 0.1" },
-      },
-    ],
+    sniffer: {
+      name,
+      description: entry(name).description,
+      license: "MIT",
+      versions: [version(name === "old" ? { abi: "0.9" } : {})],
+      compatible: name === "old" ? { reason: "no version matches sniffer ABI 0.1" } : { version: "1.2.0" },
+      ...extra,
+    },
   };
 }
 
@@ -74,6 +99,9 @@ beforeEach(() => {
   api.listRegistrySniffers.mockReset().mockImplementation(async (id: string) =>
     listing(id === EXTERNAL.id ? EXTERNAL : OFFICIAL),
   );
+  api.getRegistrySniffer.mockReset().mockImplementation(async (id: string, name: string) =>
+    detail(name, id === EXTERNAL.id ? EXTERNAL : OFFICIAL),
+  );
   api.addRegistry.mockReset().mockResolvedValue(EXTERNAL);
   api.removeRegistry.mockReset().mockResolvedValue(undefined);
   api.installFromRegistry.mockReset().mockResolvedValue(installed());
@@ -87,7 +115,7 @@ async function openInstall(name = "demo") {
 
 describe("RegistrySection", () => {
   it("lists registries and marks external ones", async () => {
-    render(<RegistrySection />);
+    view();
     const select = await screen.findByLabelText("Registry");
     expect(within(select).getByRole("option", { name: /official/ })).toBeInTheDocument();
     expect(within(select).getByRole("option", { name: /mine/ })).toBeInTheDocument();
@@ -98,12 +126,12 @@ describe("RegistrySection", () => {
 
   it("warns that the list is lost on restart when it is not persisted", async () => {
     api.listRegistries.mockResolvedValue({ registries: [OFFICIAL], persistent: false });
-    render(<RegistrySection />);
+    view();
     expect(await screen.findByText(/lost on restart/i)).toBeInTheDocument();
   });
 
   it("adding an external registry requires confirming the risk", async () => {
-    render(<RegistrySection />);
+    view();
     await userEvent.click(await screen.findByRole("button", { name: "Add registry" }));
     const dlg = screen.getByRole("dialog");
     await userEvent.type(within(dlg).getByLabelText("Index URL"), "https://x.example/index.json");
@@ -115,15 +143,42 @@ describe("RegistrySection", () => {
     expect(api.addRegistry).toHaveBeenCalledWith("https://x.example/index.json", undefined);
   });
 
-  it("an incompatible sniffer shows the reason and disables install", async () => {
-    render(<RegistrySection />);
+  it("an incompatible newest version shows its ABI in the table", async () => {
+    view();
     const row = (await screen.findByText("old")).closest("tr")!;
-    expect(row).toHaveTextContent("no version matches sniffer ABI 0.1");
-    expect(within(row).getByRole("button", { name: "Install" })).toHaveAttribute("aria-disabled", "true");
+    expect(row).toHaveTextContent("built for sniffer ABI 0.9");
+  });
+
+  it("opening a sniffer fetches its versions, not the listing", async () => {
+    view();
+    await screen.findByText("demo");
+    expect(api.getRegistrySniffer).not.toHaveBeenCalled();
+    await openInstall();
+    expect(api.getRegistrySniffer).toHaveBeenCalledWith(OFFICIAL.id, "demo");
+  });
+
+  it("filters the catalog by search, category and tag, and says when nothing matches", async () => {
+    view();
+    await screen.findByText("demo");
+    await userEvent.type(screen.getByLabelText("Search"), "another");
+    expect(screen.queryByText("Detects demo traffic")).toBeNull();
+    expect(screen.getByText("Built for another ABI")).toBeInTheDocument();
+    await userEvent.clear(screen.getByLabelText("Search"));
+    await userEvent.click(within(screen.getByRole("group", { name: "Categories" })).getByRole("button", { name: /game/ }));
+    expect(screen.getByText("Detects demo traffic")).toBeInTheDocument();
+    await userEvent.click(within(screen.getByRole("group", { name: "Tags" })).getByRole("button", { name: /demo-tag/ }));
+    await userEvent.type(screen.getByLabelText("Search"), "zzz");
+    expect(screen.getByText("Nothing matches these filters.")).toBeInTheDocument();
+  });
+
+  it("offers the popular sort only when the registry reports downloads", async () => {
+    view();
+    await screen.findByText("demo");
+    expect(screen.queryByRole("option", { name: "popular" })).toBeNull();
   });
 
   it("the install dialog shows limits and config", async () => {
-    render(<RegistrySection />);
+    view();
     const dlg = await openInstall();
     expect(dlg).toHaveTextContent("1.2.0");
     expect(dlg).toHaveTextContent("16 MiB");
@@ -133,33 +188,28 @@ describe("RegistrySection", () => {
   });
 
   it("does not suggest a listed signature protects the install", async () => {
-    render(<RegistrySection />);
+    view();
     const dlg = await openInstall();
     expect(dlg).toHaveTextContent("listed, not verified");
     expect(dlg).not.toHaveTextContent("listed in the registry");
   });
 
-  it("the table has a signature column that says the install is not verified", async () => {
-    render(<RegistrySection />);
+  it("the table only claims a signature is listed, never that the install is verified", async () => {
+    view();
     const row = (await screen.findByText("demo")).closest("tr")!;
-    expect(row).toHaveTextContent("not verified");
-    expect(row).not.toHaveTextContent("verified on install");
+    expect(row).toHaveTextContent("signature listed");
+    expect(row).not.toHaveTextContent("verified");
   });
 
-  it("a verifiable version shows in the column and in the dialog for that version", async () => {
-    api.listRegistrySniffers.mockResolvedValue({
-      ...listing(),
-      sniffers: [{ ...listing().sniffers[0], verifiable: true, versions: [version({ verifiable: true })] }],
-    });
-    render(<RegistrySection />);
-    const row = (await screen.findByText("demo")).closest("tr")!;
-    expect(row).toHaveTextContent("verified on install");
+  it("a verifiable version shows in the dialog for that version", async () => {
+    api.getRegistrySniffer.mockResolvedValue(detail("demo", OFFICIAL, { versions: [version({ verifiable: true })] }));
+    view();
     const dlg = await openInstall();
     expect(dlg).toHaveTextContent("listed, verified on install");
   });
 
   it("an external install dialog shows the risk text and needs it confirmed", async () => {
-    render(<RegistrySection />);
+    view();
     await userEvent.selectOptions(await screen.findByLabelText("Registry"), EXTERNAL.id);
     const dlg = await openInstall();
     expect(dlg).toHaveTextContent(/at your own risk/i);
@@ -171,7 +221,7 @@ describe("RegistrySection", () => {
   });
 
   it("an official install needs no risk confirmation", async () => {
-    render(<RegistrySection />);
+    view();
     const dlg = await openInstall();
     expect(within(dlg).queryByRole("checkbox")).toBeNull();
     await userEvent.click(within(dlg).getByRole("button", { name: "Install on every instance" }));
@@ -196,7 +246,7 @@ describe("RegistrySection", () => {
         ],
       }),
     );
-    render(<RegistrySection />);
+    view();
     const dlg = await openInstall();
     await userEvent.click(within(dlg).getByRole("button", { name: "Install on every instance" }));
     expect(await screen.findByText("ams-1")).toBeInTheDocument();
@@ -215,7 +265,7 @@ describe("RegistrySection", () => {
     );
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    render(<RegistrySection />);
+    view();
     const dlg = await openInstall();
     await userEvent.click(within(dlg).getByRole("button", { name: "Install on every instance" }));
     const snippet = await screen.findByText(new RegExp(`sha256: ${sha}`));
@@ -226,14 +276,14 @@ describe("RegistrySection", () => {
 
   it("shows a registry error instead of an empty list", async () => {
     api.listRegistrySniffers.mockRejectedValue(new Error("registry: timed out"));
-    render(<RegistrySection />);
+    view();
     expect(await screen.findByText(/timed out/)).toBeInTheDocument();
   });
 
   it("removing a registry shows it is pending and cannot be started twice", async () => {
     let finish!: () => void;
     api.removeRegistry.mockReset().mockImplementation(() => new Promise<void>((r) => (finish = r)));
-    render(<RegistrySection />);
+    view();
     await userEvent.click(await screen.findByRole("button", { name: "remove registry" }));
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Remove" }));
     const btn = await screen.findByRole("button", { name: "removing…" });

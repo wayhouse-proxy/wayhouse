@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -8,6 +9,7 @@ const api = vi.hoisted(() => ({
   uploadSniffer: vi.fn(),
   listRegistries: vi.fn(),
   listRegistrySniffers: vi.fn(),
+  getRegistrySniffer: vi.fn(),
   checkUpdates: vi.fn(),
   rollbackSniffer: vi.fn(),
   installFromRegistry: vi.fn(),
@@ -31,6 +33,10 @@ beforeEach(() => {
   api.checkUpdates.mockReset().mockResolvedValue(checked([]));
   api.rollbackSniffer.mockReset().mockResolvedValue({ results: [] });
   api.installFromRegistry.mockReset();
+  api.getRegistrySniffer.mockReset();
+  api.listRegistrySniffers
+    .mockReset()
+    .mockResolvedValue({ registry: OFFICIAL, index_name: "official", host_abi: "0.1", sniffers: [] });
 });
 
 const OFFICIAL = {
@@ -77,25 +83,22 @@ function installable() {
     });
     return {
         registry: OFFICIAL,
-        index_name: "official",
         host_abi: "0.1",
         min_proxy_checked: false,
-        sniffers: [
-            {
-                name: "demo",
-                description: "Detects demo traffic",
-                license: "MIT",
-                versions: [version("0.2.0"), version("0.1.0")],
-                compatible: { version: "0.2.0" },
-            },
-        ],
+        sniffer: {
+            name: "demo",
+            description: "Detects demo traffic",
+            license: "MIT",
+            versions: [version("0.2.0"), version("0.1.0")],
+            compatible: { version: "0.2.0" },
+        },
     };
 }
 
 
 describe("SniffersPage remove", () => {
   it("asks first, warns it is fleet-wide, and only then deletes", async () => {
-    render(<SniffersPage />);
+    render(<SniffersPage />, { wrapper: MemoryRouter });
     await userEvent.click(await screen.findByRole("button", { name: "remove" }));
     expect(api.deleteSniffer).not.toHaveBeenCalled();
     const dlg = screen.getByRole("dialog");
@@ -110,7 +113,7 @@ describe("SniffersPage updates and rollback", () => {
     it("calls the check route once on click and never polls", async () => {
         vi.useFakeTimers({ shouldAdvanceTime: true });
         try {
-            render(<SniffersPage />);
+            render(<SniffersPage />, { wrapper: MemoryRouter });
             await screen.findByRole("button", { name: "remove" });
             expect(api.checkUpdates).not.toHaveBeenCalled();
             await userEvent.click(screen.getByRole("button", { name: "Check for updates" }));
@@ -125,7 +128,7 @@ describe("SniffersPage updates and rollback", () => {
     it("shows the newer version and opens the install dialog for it", async () => {
         api.checkUpdates.mockResolvedValue(checked([row()]));
         api.listRegistries.mockResolvedValue({ registries: [OFFICIAL], persistent: true });
-        api.listRegistrySniffers.mockResolvedValue(installable());
+        api.getRegistrySniffer.mockResolvedValue(installable());
         api.installFromRegistry.mockResolvedValue({
             sniffer: "demo",
             version: "0.2.0",
@@ -135,7 +138,7 @@ describe("SniffersPage updates and rollback", () => {
             results: [{ instance: "fra-1", ok: true, pinned: false, error: null, status: 200 }],
             pinned_instances: [],
         });
-        render(<SniffersPage />);
+        render(<SniffersPage />, { wrapper: MemoryRouter });
         await userEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
         const updates = await screen.findByRole("region", { name: "Updates" });
         expect(updates).toHaveTextContent("0.1.0");
@@ -166,7 +169,7 @@ describe("SniffersPage updates and rollback", () => {
                 fallback: false,
             },
         ]);
-        render(<SniffersPage />);
+        render(<SniffersPage />, { wrapper: MemoryRouter });
         const rollbacks = await screen.findAllByRole("button", { name: "roll back" });
         expect(rollbacks).toHaveLength(1);
         await userEvent.click(rollbacks[0]);
@@ -189,7 +192,7 @@ describe("SniffersPage updates and rollback", () => {
                 fallback: true,
             },
         ]);
-        render(<SniffersPage />);
+        render(<SniffersPage />, { wrapper: MemoryRouter });
         expect(await screen.findByText("fallback active")).toBeInTheDocument();
     });
 
@@ -197,7 +200,7 @@ describe("SniffersPage updates and rollback", () => {
         api.checkUpdates.mockResolvedValue(
             checked([row({ known: false, installed_version: null, update: null })]),
         );
-        render(<SniffersPage />);
+        render(<SniffersPage />, { wrapper: MemoryRouter });
         await userEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
         const updates = await screen.findByRole("region", { name: "Updates" });
         expect(updates).toHaveTextContent(/unknown build/i);
@@ -209,7 +212,7 @@ describe("SniffersPage updates and rollback", () => {
       ...checked([row({ update: null })]),
       registries: [{ id: OFFICIAL.id, name: "official", ok: false, error: "timed out" }],
     });
-    render(<SniffersPage />);
+    render(<SniffersPage />, { wrapper: MemoryRouter });
     await userEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
     const updates = await screen.findByRole("region", { name: "Updates" });
     expect(updates).toHaveTextContent("no update found in reachable registries");
@@ -221,14 +224,14 @@ describe("SniffersPage updates and rollback", () => {
       ...checked([row({ update: null })]),
       registries: [{ id: OFFICIAL.id, name: "official", ok: true, error: null }],
     });
-    render(<SniffersPage />);
+    render(<SniffersPage />, { wrapper: MemoryRouter });
     await userEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
     expect(await screen.findByText("up to date")).toBeInTheDocument();
   });
 
   it("drops the old results when a new check fails", async () => {
     api.checkUpdates.mockResolvedValueOnce(checked([row()])).mockRejectedValueOnce(new Error("aggregator down"));
-    render(<SniffersPage />);
+    render(<SniffersPage />, { wrapper: MemoryRouter });
     await userEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
     const updates = await screen.findByRole("region", { name: "Updates" });
     expect(await within(updates).findByRole("button", { name: "Update to 0.2.0" })).toBeInTheDocument();
@@ -240,7 +243,7 @@ describe("SniffersPage updates and rollback", () => {
   it("drops the results once an update was installed", async () => {
     api.checkUpdates.mockResolvedValue(checked([row()]));
     api.listRegistries.mockResolvedValue({ registries: [OFFICIAL], persistent: true });
-    api.listRegistrySniffers.mockResolvedValue(installable());
+    api.getRegistrySniffer.mockResolvedValue(installable());
     api.installFromRegistry.mockResolvedValue({
       sniffer: "demo",
       version: "0.2.0",
@@ -250,7 +253,7 @@ describe("SniffersPage updates and rollback", () => {
       results: [{ instance: "fra-1", ok: true, pinned: false, error: null, status: 200 }],
       pinned_instances: [],
     });
-    render(<SniffersPage />);
+    render(<SniffersPage />, { wrapper: MemoryRouter });
     await userEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
     const updates = await screen.findByRole("region", { name: "Updates" });
     await userEvent.click(within(updates).getByRole("button", { name: "Update to 0.2.0" }));
@@ -267,7 +270,7 @@ describe("SniffersPage updates and rollback", () => {
     api.checkUpdates.mockImplementationOnce(() => new Promise((r) => (finish = r)));
     api.listRegistries.mockResolvedValue({ registries: [OFFICIAL], persistent: true });
     let listed: (l: ReturnType<typeof installable>) => void = () => {};
-    api.listRegistrySniffers.mockImplementation(() => new Promise((r) => (listed = r)));
+    api.getRegistrySniffer.mockImplementation(() => new Promise((r) => (listed = r)));
     api.installFromRegistry.mockResolvedValue({
       sniffer: "demo",
       version: "0.2.0",
@@ -277,7 +280,7 @@ describe("SniffersPage updates and rollback", () => {
       results: [{ instance: "fra-1", ok: true, pinned: false, error: null, status: 200 }],
       pinned_instances: [],
     });
-    render(<SniffersPage />);
+    render(<SniffersPage />, { wrapper: MemoryRouter });
     await userEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
     const updates = await screen.findByRole("region", { name: "Updates" });
     // The update's dialog is still loading when a second check starts; the update lands before it answers.
@@ -297,7 +300,7 @@ describe("SniffersPage updates and rollback", () => {
       { name: "kept", sha256: "ab".repeat(32), size_bytes: 1, loaded: true, has_previous: true, fallback: false },
     ]);
     api.rollbackSniffer.mockResolvedValue({ results: [{ instance: "fra-1", status: 404, error: null }] });
-    render(<SniffersPage />);
+    render(<SniffersPage />, { wrapper: MemoryRouter });
     await userEvent.click(await screen.findByRole("button", { name: "roll back" }));
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Roll back" }));
     expect(await screen.findByText("roll back kept failed on all 1 instances")).toBeInTheDocument();
@@ -306,10 +309,10 @@ describe("SniffersPage updates and rollback", () => {
   it("opens the update dialog once and clears an old error", async () => {
     api.checkUpdates.mockResolvedValue(checked([row()]));
     let release: (l: ReturnType<typeof installable>) => void = () => {};
-    api.listRegistrySniffers
+    api.getRegistrySniffer
       .mockRejectedValueOnce(new Error("registry down"))
       .mockImplementationOnce(() => new Promise((r) => (release = r)));
-    render(<SniffersPage />);
+    render(<SniffersPage />, { wrapper: MemoryRouter });
     await userEvent.click(await screen.findByRole("button", { name: "Check for updates" }));
     const updates = await screen.findByRole("region", { name: "Updates" });
     await userEvent.click(within(updates).getByRole("button", { name: "Update to 0.2.0" }));

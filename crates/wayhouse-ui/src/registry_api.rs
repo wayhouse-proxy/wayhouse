@@ -279,6 +279,7 @@ async fn sniffer_detail(
         v["versions"][j]["verifiable"] = json!(version_verifiable(&reg, version));
     }
     Json(json!({
+        "registry": registry_json(&reg),
         "sniffer": v,
         "host_abi": host_abi(),
         "min_proxy_checked": fleet.min_proxy_checked,
@@ -1460,6 +1461,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["sniffer"]["versions"][0]["version"], "0.1.0");
         assert_eq!(body["sniffer"]["compatible"]["version"], "0.1.0");
+        assert_eq!(body["registry"]["id"], h.registry_id);
         let (status, body) = h.install().await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(uploads.lock().unwrap().as_slice(), [module]);
