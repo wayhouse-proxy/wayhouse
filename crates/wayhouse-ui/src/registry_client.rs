@@ -20,6 +20,8 @@ use wayhouse_registry::{
 /// Largest signature file fetched.
 pub const MAX_SIGNATURE_BYTES: u64 = 4 * 1024;
 const MAX_REDIRECTS: usize = 5;
+/// Detail files kept at once (each up to 1 MiB).
+const MAX_DETAIL_CACHE: usize = 64;
 const INDEX_TTL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, thiserror::Error)]
@@ -175,10 +177,19 @@ impl RegistryClient {
             }
         }
         let bytes = Arc::new(self.get(url, MAX_DETAIL_BYTES as u64).await?);
-        self.detail_cache
-            .lock()
-            .unwrap()
-            .insert(url.to_string(), (Instant::now(), bytes.clone()));
+        let mut cache = self.detail_cache.lock().unwrap();
+        cache.retain(|_, (at, _)| at.elapsed() < self.ttl);
+        if cache.len() >= MAX_DETAIL_CACHE {
+            // Still full of live entries: drop the oldest.
+            if let Some(oldest) = cache
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(k, _)| k.clone())
+            {
+                cache.remove(&oldest);
+            }
+        }
+        cache.insert(url.to_string(), (Instant::now(), bytes.clone()));
         Ok(bytes)
     }
 

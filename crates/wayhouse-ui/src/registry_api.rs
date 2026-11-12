@@ -761,15 +761,24 @@ async fn check_updates(
 
     // Only the installed sniffers need their version lists, so only their detail files
     // are fetched. A detail that cannot be had hides that sniffer's update, nothing else.
+    let installed: std::collections::HashSet<&str> =
+        groups.keys().map(|(n, _)| n.as_str()).collect();
     let mut resolved: Vec<(RegistryRef, Vec<SnifferEntry>)> = Vec::new();
     for (reg, index) in &indexes {
-        let mut entries = Vec::new();
-        for catalog in index
+        let wanted: Vec<_> = index
             .sniffers
             .iter()
-            .filter(|e| groups.keys().any(|(name, _)| *name == e.name))
-        {
-            match state.registry_client.resolve_sniffer(catalog).await {
+            .filter(|e| installed.contains(e.name.as_str()))
+            .collect();
+        let fetched = futures_util::future::join_all(
+            wanted
+                .iter()
+                .map(|c| state.registry_client.resolve_sniffer(c)),
+        )
+        .await;
+        let mut entries = Vec::new();
+        for (catalog, result) in wanted.iter().zip(fetched) {
+            match result {
                 Ok(e) => entries.push(e),
                 Err(e) => {
                     tracing::warn!(registry = %reg.id, sniffer = %catalog.name, error = %e, "detail file unavailable for the update check")
