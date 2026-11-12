@@ -132,12 +132,34 @@ impl Rotation {
                 &self.reg,
             )
             .await;
+            self.kick_proxies();
             if let Err(e) = acked {
                 // The periodic registration carries the same generation and tries again.
                 tracing::warn!(error = %e, "could not acknowledge the rotated tunnel key yet; will retry");
             }
         }
         Ok(true)
+    }
+
+    /// The proxies re-peer this origin when they see the acknowledgement, which drops the
+    /// session and the endpoint they had learned from it, and a proxy cannot dial an origin
+    /// behind a NAT. So the origin starts the new handshake itself, a few times, spread over
+    /// the seconds the registration needs to reach them, instead of waiting for a keepalive.
+    fn kick_proxies(&self) {
+        let live = self.live.clone();
+        tokio::spawn(async move {
+            for wait in [1u64, 1, 2, 4, 8] {
+                tokio::time::sleep(Duration::from_secs(wait)).await;
+                let Ok(host) = live.api().read_interface_data() else {
+                    continue;
+                };
+                for peer in host.peers.values() {
+                    for ip in &peer.allowed_ips {
+                        crate::interface::kick_handshake(ip.address);
+                    }
+                }
+            }
+        });
     }
 
     pub async fn run(self) {

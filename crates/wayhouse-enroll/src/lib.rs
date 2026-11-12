@@ -177,7 +177,7 @@ mod gen_tests {
             "-99999999999999999999",
         ] {
             let name = format!("{}{bad}", psk_secret_name("home"));
-            assert_eq!(psk_secret_gen("home", &name), None, "{name}");
+            assert_eq!(psk_secret_gen("home", &name), None, "suffix {bad}");
         }
         assert_eq!(psk_secret_gen("home", "gossip-psk"), None);
     }

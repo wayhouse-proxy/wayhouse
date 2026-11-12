@@ -378,7 +378,7 @@ async fn rotate(
     {
         return r;
     }
-    tracing::warn!(origin = %name, gen = next, actor = ?actor(&headers), "tunnel key rotation started");
+    tracing::warn!(origin = %name, actor = ?actor(&headers), "tunnel key rotation started");
     (
         StatusCode::ACCEPTED,
         Json(json!({ "name": name, "active": active, "pending": next })),
