@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ApiError,
   addRegistry,
+  getRegistrySniffer,
   installFromRegistry,
   listRegistries,
   listRegistrySniffers,
@@ -14,6 +15,7 @@ import {
 import type {
   InstallInstanceResult,
   InstallResponse,
+  RegistryCatalogEntry,
   RegistryRef,
   RegistrySniffer,
   RegistrySniffers,
@@ -26,6 +28,7 @@ import { Dialog } from "../components/ui/Dialog";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { RegistryRiskDialog } from "../components/RegistryRiskDialog";
 import { useCan } from "../lib/session";
+import { CatalogBrowser } from "../components/CatalogBrowser";
 
 function message(err: unknown): string {
   return err instanceof ApiError || err instanceof Error ? err.message : String(err);
@@ -59,7 +62,8 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
   const [listing, setListing] = useState<RegistrySniffers | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [installing, setInstalling] = useState<RegistrySniffer | null>(null);
+  const [installing, setInstalling] = useState<{ sniffer: RegistrySniffer; minProxyChecked: boolean } | null>(null);
+  const [opening, setOpening] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
   const canWrite = useCan("operator");
@@ -104,6 +108,21 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
   }, [selectedId]);
 
   const selected = registries?.find((r) => r.id === selectedId) ?? null;
+
+  // The version list is not part of the catalog: fetch it when the operator opens a sniffer.
+  async function openInstall(name: string) {
+    if (!selected || opening) return;
+    setOpening(name);
+    setNotice(null);
+    try {
+      const d = await getRegistrySniffer(selected.id, name);
+      setInstalling({ sniffer: d.sniffer, minProxyChecked: d.min_proxy_checked });
+    } catch (err) {
+      setNotice(`could not open ${name}: ${message(err)}`);
+    } finally {
+      setOpening(null);
+    }
+  }
 
   async function handleRemove() {
     if (!selected || removing) return;
@@ -178,55 +197,52 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
           <EmptyState>This registry lists no sniffers.</EmptyState>
         )}
         {!error && listing && listing.sniffers.length > 0 && (
-          <Table>
-            <THead>
-              <TR>
-                <TH>name</TH>
-                <TH>description</TH>
-                <TH>version</TH>
-                <TH>signature</TH>
-                <TH></TH>
-              </TR>
-            </THead>
-            <TBody>
-              {listing.sniffers.map((s) => {
-                const ok = "version" in s.compatible;
-                return (
-                  <TR key={s.name} className="align-top">
-                    <TD className="font-mono text-ink">{s.name}</TD>
-                    <TD className="text-ink-muted">
-                      {s.description}
-                      <span className="ml-2 text-xs text-ink-muted">{s.license}</span>
-                    </TD>
-                    <TD className="text-ink-muted">
-                      {"version" in s.compatible ? (
-                        s.compatible.version
-                      ) : (
-                        <StatusMark state="degraded" word={s.compatible.reason} />
-                      )}
-                    </TD>
-                    <TD className="text-ink-muted">
-                      {s.verifiable ? "verified on install" : "not verified"}
-                    </TD>
-                    <TD className="text-right">
-                      <Button disabled={!ok || !canWrite} title={needsOperator} onClick={() => setInstalling(s)}>
-                        Install
-                      </Button>
-                    </TD>
+          <CatalogBrowser items={listing.sniffers}>
+            {(page) => (
+              <Table>
+                <THead>
+                  <TR>
+                    <TH>name</TH>
+                    <TH>description</TH>
+                    <TH>latest</TH>
+                    <TH>signature</TH>
+                    <TH></TH>
                   </TR>
-                );
-              })}
-            </TBody>
-          </Table>
+                </THead>
+                <TBody>
+                  {page.map((s: RegistryCatalogEntry) => (
+                    <TR key={s.name} className="align-top">
+                      <TD className="font-mono text-ink">{s.name}</TD>
+                      <TD className="text-ink-muted">
+                        {s.description}
+                        <span className="ml-2 text-xs text-ink-muted">{s.license}</span>
+                        {(s.categories.length > 0 || s.tags.length > 0) && (
+                          <span className="mt-0.5 block text-xs">{[...s.categories, ...s.tags].join(" · ")}</span>
+                        )}
+                      </TD>
+                      <TD className="text-ink-muted">
+                        {s.abi_compatible ? s.latest : <StatusMark state="degraded" word={`${s.latest}: built for sniffer ABI ${s.abi}`} />}
+                      </TD>
+                      <TD className="text-ink-muted">{s.signed ? "signature listed" : "unsigned"}</TD>
+                      <TD className="text-right">
+                        <Button
+                          disabled={!canWrite}
+                          loading={opening === s.name}
+                          title={needsOperator}
+                          aria-label={`Install ${s.name}`}
+                          onClick={() => openInstall(s.name)}
+                        >
+                          Install
+                        </Button>
+                      </TD>
+                    </TR>
+                  ))}
+                </TBody>
+              </Table>
+            )}
+          </CatalogBrowser>
         )}
       </div>
-      {listing && !listing.min_proxy_checked && (
-        <p className="mt-2 text-xs text-ink-muted">
-          Compatibility is checked against sniffer ABI {listing.host_abi}. Each sniffer&apos;s minimum proxy version
-          could not be checked against every proxy: the aggregator is unreachable, no proxy is registered, or one
-          runs a build that reports no version.
-        </p>
-      )}
 
       {dialog}
       <AddRegistryDialog
@@ -240,7 +256,8 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
       {selected && installing && (
         <InstallDialog
           registry={selected}
-          sniffer={installing}
+          sniffer={installing.sniffer}
+          minProxyChecked={installing.minProxyChecked}
           onClose={() => setInstalling(null)}
           onInstalled={onInstalled}
         />
@@ -329,6 +346,7 @@ export function InstallDialog({
   sniffer,
   version: wantedVersion,
   verb = "Install",
+  minProxyChecked = true,
   onClose,
   onInstalled,
 }: {
@@ -337,6 +355,8 @@ export function InstallDialog({
   /** Install exactly this version (an update) instead of the newest compatible one. */
   version?: string;
   verb?: "Install" | "Update";
+  /** False when some proxy's minimum version could not be checked against this sniffer. */
+  minProxyChecked?: boolean;
   onClose: () => void;
   onInstalled?: (name: string) => void;
 }) {
@@ -374,6 +394,12 @@ export function InstallDialog({
     <>
       <p className="text-sm text-ink-muted">{sniffer.description}</p>
       {version && <VersionDetails version={version} />}
+      {!minProxyChecked && (
+        <p className="text-xs text-ink-muted">
+          The minimum proxy version could not be checked against every proxy: the aggregator is unreachable, no proxy
+          is registered, or one runs a build that reports no version.
+        </p>
+      )}
       <p className="text-sm text-ink-muted">
         Installs on every instance, from <span className="font-mono">{registry.name}</span>.
       </p>

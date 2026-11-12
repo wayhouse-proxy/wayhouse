@@ -16,6 +16,7 @@ import type {
   PluginInstall,
   PluginSecretSlot,
   PluginFetchResult,
+  RegistryPluginDetail,
   RegistryPlugins,
   ClusterSecret,
   ProcessFile,
@@ -28,6 +29,7 @@ import type {
   PluginCapabilities,
   RegistryList,
   RegistryRef,
+  RegistrySnifferDetail,
   RegistrySniffers,
   RevisionSummary,
   SnifferInfo,
@@ -199,6 +201,11 @@ export function removeRegistry(id: string): Promise<void> {
 
 export function listRegistrySniffers(id: string): Promise<RegistrySniffers> {
   return requestJson(`/api/registries/${encodeURIComponent(id)}/sniffers`);
+}
+
+/** One sniffer with every version, fetched when the operator opens it. */
+export function getRegistrySniffer(id: string, name: string): Promise<RegistrySnifferDetail> {
+  return requestJson(`/api/registries/${encodeURIComponent(id)}/sniffers/${encodeURIComponent(name)}`);
 }
 
 /**
@@ -640,6 +647,10 @@ export function listPluginRegistries(): Promise<RegistryList> {
 
 export function listRegistryPlugins(id: string): Promise<RegistryPlugins> {
   return requestJson(`/api/plugin-registries/${encodeURIComponent(id)}/plugins`);
+}
+
+export function getRegistryPlugin(id: string, name: string): Promise<RegistryPluginDetail> {
+  return requestJson(`/api/plugin-registries/${encodeURIComponent(id)}/plugins/${encodeURIComponent(name)}`);
 }
 
 /**
