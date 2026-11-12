@@ -1,0 +1,27 @@
+[package]
+name = "wayhouse-enroll"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "One-time-code enrollment: code format, wire types, file layout and the pinned-TLS redeem client shared by the controller and the node binaries."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rand.workspace = true
+sha2.workspace = true
+base64 = "0.22"
+zeroize = "1"
+tokio-rustls.workspace = true
+wayhouse-http.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true
