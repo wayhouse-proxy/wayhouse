@@ -110,7 +110,7 @@ pub enum PluginIndexError {
     TooLarge(usize),
     #[error("index is not valid JSON for a plugin registry: {0}")]
     Json(String),
-    #[error("unsupported index schema {0} (this client understands schema {INDEX_SCHEMA})")]
+    #[error("unsupported index schema {0} (this client understands schema {INDEX_SCHEMA}; an older index needs regenerating with a current generator)")]
     UnsupportedSchema(u32),
     #[error("this is a {0:?} registry, not a plugin registry")]
     WrongKind(Kind),
@@ -175,6 +175,7 @@ pub enum PluginIndexError {
 #[derive(Deserialize)]
 struct Head {
     kind: Option<Kind>,
+    schema: Option<u32>,
 }
 
 /// Parse and validate a plugin index. Never panics on hostile input.
@@ -183,11 +184,13 @@ pub fn parse_plugin_index(bytes: &[u8]) -> Result<PluginIndex, PluginIndexError>
         return Err(PluginIndexError::TooLarge(bytes.len()));
     }
     // Look at `kind` first, so a sniffer index is told apart from a malformed plugin one.
-    if let Ok(Head {
-        kind: Some(kind @ Kind::Sniffer),
-    }) = serde_json::from_slice(bytes)
-    {
-        return Err(PluginIndexError::WrongKind(kind));
+    if let Ok(head) = serde_json::from_slice::<Head>(bytes) {
+        if let Some(kind @ Kind::Sniffer) = head.kind {
+            return Err(PluginIndexError::WrongKind(kind));
+        }
+        if let Some(schema) = head.schema.filter(|s| *s != INDEX_SCHEMA) {
+            return Err(PluginIndexError::UnsupportedSchema(schema));
+        }
     }
     let index: PluginIndex =
         serde_json::from_slice(bytes).map_err(|e| PluginIndexError::Json(e.to_string()))?;
@@ -710,6 +713,15 @@ mod tests {
         assert!(matches!(
             parse_plugin_detail(&serde_json::to_vec(&detail).unwrap(), &stale),
             Err(PluginIndexError::Catalog { .. })
+        ));
+    }
+
+    #[test]
+    fn a_real_schema_1_plugin_file_is_told_its_schema_not_a_missing_field() {
+        let v1 = br#"{"schema":1,"kind":"plugin","name":"o","plugins":[]}"#;
+        assert!(matches!(
+            parse_plugin_index(v1),
+            Err(PluginIndexError::UnsupportedSchema(1))
         ));
     }
 }

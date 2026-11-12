@@ -103,7 +103,7 @@ pub enum IndexError {
     TooLarge(usize),
     #[error("index is not valid JSON for this format: {0}")]
     Json(String),
-    #[error("unsupported index schema {0} (this client understands schema {INDEX_SCHEMA})")]
+    #[error("unsupported index schema {0} (this client understands schema {INDEX_SCHEMA}; an older index needs regenerating with a current wayhouse-registry-gen)")]
     UnsupportedSchema(u32),
     #[error("registry kind {0:?} is not supported yet (only sniffer registries)")]
     UnsupportedKind(Kind),
@@ -168,6 +168,7 @@ pub enum IndexError {
 #[derive(Deserialize)]
 struct Head {
     kind: Option<Kind>,
+    schema: Option<u32>,
 }
 
 /// Parse and validate an index. Never panics on hostile input.
@@ -175,13 +176,15 @@ pub fn parse_index(bytes: &[u8]) -> Result<Index, IndexError> {
     if bytes.len() > MAX_INDEX_BYTES {
         return Err(IndexError::TooLarge(bytes.len()));
     }
-    // Look at `kind` first: another kind of registry has a different payload, and
-    // "missing field `sniffers`" would not tell the operator what they added.
-    if let Ok(Head {
-        kind: Some(kind @ Kind::Plugin),
-    }) = serde_json::from_slice(bytes)
-    {
-        return Err(IndexError::UnsupportedKind(kind));
+    // Look at `kind` and `schema` first: another kind of registry has a different payload, and an
+    // older schema lacks fields, so "missing field `latest`" would not say what is wrong.
+    if let Ok(head) = serde_json::from_slice::<Head>(bytes) {
+        if let Some(kind @ Kind::Plugin) = head.kind {
+            return Err(IndexError::UnsupportedKind(kind));
+        }
+        if let Some(schema) = head.schema.filter(|s| *s != INDEX_SCHEMA) {
+            return Err(IndexError::UnsupportedSchema(schema));
+        }
     }
     let index: Index =
         serde_json::from_slice(bytes).map_err(|e| IndexError::Json(e.to_string()))?;
@@ -689,16 +692,17 @@ mod tests {
 
     #[test]
     fn rejects_garbage_json_without_panic() {
-        for garbage in [
-            &b""[..],
-            b"{",
-            b"null",
-            b"[]",
-            b"\xff\xfe",
-            b"{\"schema\":1}",
-        ] {
+        for garbage in [&b""[..], b"{", b"null", b"[]", b"\xff\xfe"] {
             assert!(matches!(parse_index(garbage), Err(IndexError::Json(_))));
         }
+    }
+
+    #[test]
+    fn a_bare_schema_1_object_is_an_unsupported_schema() {
+        assert!(matches!(
+            parse_index(b"{\"schema\":1}"),
+            Err(IndexError::UnsupportedSchema(1))
+        ));
     }
 
     #[test]
@@ -814,5 +818,11 @@ mod tests {
             Err(IndexError::DetailTooLarge(_))
         ));
         assert!(parse_detail(b"{}", &catalog).is_err());
+    }
+
+    #[test]
+    fn a_real_schema_1_file_is_told_its_schema_not_a_missing_field() {
+        let v1 = br#"{"schema":1,"kind":"sniffer","name":"o","sniffers":[{"name":"x","description":"","license":"MIT","versions":[]}]}"#;
+        assert_eq!(parse_index(v1), Err(IndexError::UnsupportedSchema(1)));
     }
 }
