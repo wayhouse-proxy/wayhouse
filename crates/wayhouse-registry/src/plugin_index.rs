@@ -110,7 +110,7 @@ pub enum PluginIndexError {
     TooLarge(usize),
     #[error("index is not valid JSON for a plugin registry: {0}")]
     Json(String),
-    #[error("unsupported index schema {0} (this client understands schema {INDEX_SCHEMA}); regenerate the index with a current generator")]
+    #[error("unsupported index schema {0} (this client understands schema {INDEX_SCHEMA}; an older index needs regenerating with a current generator)")]
     UnsupportedSchema(u32),
     #[error("this is a {0:?} registry, not a plugin registry")]
     WrongKind(Kind),
@@ -713,6 +713,15 @@ mod tests {
         assert!(matches!(
             parse_plugin_detail(&serde_json::to_vec(&detail).unwrap(), &stale),
             Err(PluginIndexError::Catalog { .. })
+        ));
+    }
+
+    #[test]
+    fn a_real_schema_1_plugin_file_is_told_its_schema_not_a_missing_field() {
+        let v1 = br#"{"schema":1,"kind":"plugin","name":"o","plugins":[]}"#;
+        assert!(matches!(
+            parse_plugin_index(v1),
+            Err(PluginIndexError::UnsupportedSchema(1))
         ));
     }
 }

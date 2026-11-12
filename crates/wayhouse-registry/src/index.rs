@@ -103,7 +103,7 @@ pub enum IndexError {
     TooLarge(usize),
     #[error("index is not valid JSON for this format: {0}")]
     Json(String),
-    #[error("unsupported index schema {0} (this client understands schema {INDEX_SCHEMA}); regenerate the index with a current wayhouse-registry-gen")]
+    #[error("unsupported index schema {0} (this client understands schema {INDEX_SCHEMA}; an older index needs regenerating with a current wayhouse-registry-gen)")]
     UnsupportedSchema(u32),
     #[error("registry kind {0:?} is not supported yet (only sniffer registries)")]
     UnsupportedKind(Kind),
