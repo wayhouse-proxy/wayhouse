@@ -17,6 +17,7 @@ import {
   generate,
   needsStepUp,
   unsupported,
+  validAdvertise,
   validBackends,
   validName,
   validNamespace,
@@ -69,6 +70,7 @@ interface Minted {
   backends: string;
   aggregatorUrl: string;
   parentUrl: string;
+  advertise: string;
   controllerUrl: string;
   pin: string;
   imageTag: string;
@@ -92,6 +94,7 @@ export function AddNodePage() {
   const [backends, setBackends] = useState(":25565");
   const [aggregatorUrl, setAggregatorUrl] = useState("");
   const [parentUrl, setParentUrl] = useState("");
+  const [advertise, setAdvertise] = useState("");
   const [ttl, setTtl] = useState(900);
   const [uses, setUses] = useState(1);
   const [prompt, setPrompt] = useState(false);
@@ -125,7 +128,7 @@ export function AddNodePage() {
   const maxTtl = stepUpRole ? 86_400 : 604_800;
   const ttlChoices = TTLS.filter((t) => !stepUpRole || t.stepUpOk);
   const effectiveTtl = Math.min(ttl, maxTtl);
-  const usesFixed = role === "ui";
+  const usesFixed = role === "ui" || role === "controller";
   const effectiveUses = usesFixed ? 1 : uses;
   const containerTarget = target !== "systemd";
 
@@ -135,6 +138,7 @@ export function AddNodePage() {
     if (!validUrl(prefs.controllerUrl, { httpsOnly: true })) e.controllerUrl = "An https:// URL the new node can reach.";
     if (!validPin(prefs.pin)) e.pin = "sha256: followed by 64 hex digits, as `wayhouse-controller init` printed it.";
     if (role === "agent" && !validBackends(backends)) e.backends = "host:port or :port, comma separated.";
+    if (role === "controller" && !validAdvertise(advertise)) e.advertise = "An https:// URL with a port, as the other replicas reach this node.";
     if ((role === "proxy" || role === "ui") && aggregatorUrl && !validUrl(aggregatorUrl)) e.aggregatorUrl = "An http(s) URL.";
     if (role === "aggregator" && parentUrl && !validUrl(parentUrl)) e.parentUrl = "An http(s) URL without credentials.";
     if (containerTarget && !validTag(prefs.imageTag)) e.imageTag = "A valid image tag.";
@@ -142,7 +146,7 @@ export function AddNodePage() {
     if (stepUpRole && stepUp.length === 0) e.stepUp = "Required for this role.";
     if (!Number.isInteger(effectiveUses) || effectiveUses < 1 || effectiveUses > 1000) e.uses = "1 to 1000.";
     return e;
-  }, [name, prefs, role, backends, aggregatorUrl, parentUrl, containerTarget, target, stepUpRole, stepUp, effectiveUses]);
+  }, [name, prefs, role, backends, aggregatorUrl, parentUrl, advertise, containerTarget, target, stepUpRole, stepUp, effectiveUses]);
   const valid = Object.keys(errors).length === 0 && !blocked;
 
   // Errors show once the field has been touched or a mint was tried.
@@ -176,6 +180,7 @@ export function AddNodePage() {
         backends,
         aggregatorUrl,
         parentUrl,
+        advertise,
         controllerUrl: prefs.controllerUrl,
         pin: prefs.pin,
         imageTag: prefs.imageTag,
@@ -229,6 +234,7 @@ export function AddNodePage() {
       backends: minted.backends,
       aggregatorUrl: minted.aggregatorUrl,
       parentUrl: minted.parentUrl,
+      advertise: minted.advertise,
       namespace: minted.namespace,
     });
   }, [minted]);
@@ -265,6 +271,12 @@ export function AddNodePage() {
           {steps.map((s, i) => (
             <StepBlock key={`${minted.code.id}-${i}`} step={s} index={i} />
           ))}
+          {minted.code.node_id !== undefined && (
+            <p className="mb-4 max-w-(--measure) text-xs text-ink-muted">
+              The replica will be Raft node id {minted.code.node_id}. Its row below goes <strong>joining</strong> when it has enrolled and{" "}
+              <strong>joined</strong> once the cluster has added it.
+            </p>
+          )}
           <p className="mb-4 max-w-(--measure) text-xs text-ink-muted">
             The node finishes in seconds. Watch its row in the list below turn <strong>used</strong>.
           </p>
@@ -284,14 +296,9 @@ export function AddNodePage() {
                     {r.label}
                   </option>
                 ))}
-                <option disabled value="controller">
-                  Controller replica (not available yet)
-                </option>
               </Select>
             )}
           />
-          {/* TODO(slice 4): offer a "Controller replica" role once the HA join code API
-              (`--ha-join` enrollment) is on main; the disabled option above is its placeholder. */}
           <FieldRow
             label="Name"
             required
@@ -347,6 +354,15 @@ export function AddNodePage() {
               render={(a) => <Input {...a} value={aggregatorUrl} onChange={(e) => setAggregatorUrl(e.target.value.trim())} mono placeholder="https://aggregator.example:9902" className="w-full max-w-xl" />}
             />
           )}
+          {role === "controller" && (
+            <FieldRow
+              label="Advertise address"
+              required
+              help="How the other replicas reach the new node. It listens on this port."
+              error={shown("advertise")}
+              render={(a) => <Input {...a} value={advertise} onChange={(e) => setAdvertise(e.target.value.trim())} mono placeholder="https://ctl-4.example:9901" className="w-full max-w-xl" />}
+            />
+          )}
           {role === "aggregator" && (
             <FieldRow
               label="Parent aggregator URL"
@@ -385,7 +401,7 @@ export function AddNodePage() {
           />
           <FieldRow
             label="Uses"
-            help={usesFixed ? "A UI code works once." : "More than one only for a fleet that shares a code, such as per-pod init containers."}
+            help={usesFixed ? "A UI or controller code works once." : "More than one only for a fleet that shares a code, such as per-pod init containers."}
             error={shown("uses")}
             render={(a) => (
               <Input {...a} type="number" min={1} max={1000} disabled={usesFixed} value={effectiveUses} onChange={(e) => setUses(Number(e.target.value))} className="w-24" />
@@ -395,7 +411,7 @@ export function AddNodePage() {
             <FieldRow
               label="Step-up secret"
               required
-              help={`${role === "proxy" ? "This code hands out the cluster keyring" : "This code hands out the admin token"}. Type the controller's step-up secret again; it is sent with this request only and kept nowhere.`}
+              help={`${role === "proxy" ? "This code hands out the cluster keyring" : role === "controller" ? "This code hands out every token, the keyring and the Raft credential" : "This code hands out the admin token"}. Type the controller's step-up secret again; it is sent with this request only and kept nowhere.`}
               error={stepUpError ?? shown("stepUp")}
               render={(a) => (
                 <Input {...a} type="password" autoComplete="new-password" data-1p-ignore data-lpignore="true" data-form-type="other" value={stepUp} onChange={(e) => setStepUp(e.target.value)} className="w-full max-w-xl" />

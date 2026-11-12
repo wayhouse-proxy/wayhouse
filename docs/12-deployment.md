@@ -497,8 +497,11 @@ waits for the per-pod init container). Fill in the controller URL and the certif
   node asks, so it stays out of shell history and process lists.
 - The list under the form shows every code (pending, used or expired) and revokes any of them.
   On **Tunnel addresses**, an origin row has **Re-enroll**, which opens the form pre-filled.
-- Not yet: rotating a tunnel key from the UI (needs the rotation API) and the controller replica
-  role (waits for the HA join code).
+- A **Controller replica** code (systemd only) needs the HA group's step-up secret and the new node's
+  advertise address. The page shows the Raft node id the replica gets, and the list shows the code as
+  `joining` until the cluster has added it, then `joined`. The replica's own certificate, key and
+  the cluster CA go in the paths the command names (change them as needed).
+- Not yet: a controller replica on Kubernetes (waits for the per-pod init container).
 
 ## TLS for the fleet services
 

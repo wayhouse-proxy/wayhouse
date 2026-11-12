@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   generate,
   sh,
+  needsStepUp,
   unsupported,
+  validAdvertise,
   validBackends,
   validName,
   validPin,
@@ -26,13 +28,43 @@ const spec = (role: EnrollRole, target: Target, over: Partial<Spec> = {}): Spec 
   backends: ":25565",
   aggregatorUrl: "",
   parentUrl: "",
+  advertise: "",
   namespace: "wayhouse",
   ...over,
 });
 
-const ROLES: EnrollRole[] = ["agent", "proxy", "aggregator", "ui"];
+const ROLES: EnrollRole[] = ["agent", "proxy", "aggregator", "ui", "controller"];
 const TARGETS: Target[] = ["systemd", "docker", "compose", "k8s"];
 const combos = ROLES.flatMap((r) => TARGETS.map((t) => [r, t] as const)).filter(([r, t]) => !unsupported(r, t));
+
+describe("controller replica", () => {
+  const ctl = (over: Partial<Spec> = {}) =>
+    spec("controller", "systemd", { name: "ctl-4", advertise: "https://ctl-4.example:9901", ...over });
+
+  it("is installed by systemd with its advertise address and the flags that make it reachable", () => {
+    const [step] = generate(ctl());
+    expect(step.text).toBe(
+      `sudo env WAYHOUSE_ENROLL_CODE=${CODE} wayhouse-controller install --systemd \\\n  --controller-url=https://ctl.example:9901 \\\n  --pin=${PIN} \\\n  --advertise=https://ctl-4.example:9901 \\\n  -- \\\n  --listen=0.0.0.0:9901 \\\n  --tls-cert=/etc/wayhouse/ctl-4.pem \\\n  --tls-key=/etc/wayhouse/ctl-4.key \\\n  --ca-file=/etc/wayhouse/ca.pem`,
+    );
+  });
+
+  it("listens on the port it advertises", () => {
+    const [step] = generate(ctl({ advertise: "https://ctl-4.example:7443" }));
+    expect(step.text).toContain("--listen=0.0.0.0:7443");
+  });
+
+  it("needs the step-up secret and only supports systemd", () => {
+    expect(needsStepUp("controller")).toBe(true);
+    expect(unsupported("controller", "systemd")).toBeNull();
+    for (const t of ["docker", "compose", "k8s"] as const) expect(unsupported("controller", t)).toMatch(/systemd/);
+  });
+
+  it("checks the advertise address like the enroll CLI does", () => {
+    expect(validAdvertise("https://ctl-4.example:9901")).toBe(true);
+    for (const bad of ["", "http://ctl-4.example:9901", "https://ctl-4.example", "ctl-4:9901", "https://a b:1", "https://x:1/$y"])
+      expect(validAdvertise(bad)).toBe(false);
+  });
+});
 
 describe("generate", () => {
   it.each(combos)("%s on %s puts the code only in steps that say they hold it", (role, target) => {
