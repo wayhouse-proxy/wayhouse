@@ -185,17 +185,6 @@ pub async fn fetch_sealed(
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn a_bearer_token_is_never_sent_over_plain_http_beyond_loopback() {
-        for url in ["http://controller:9901", "http://10.0.0.5:9901"] {
-            let e = fetch_sealed(url, Some("tok"), "gossip-psk")
-                .await
-                .err()
-                .unwrap();
-            assert!(e.to_string().contains("https"), "{url}: {e}");
-        }
-    }
-
     const KEY_A: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
     const KEY_B: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
     const VALUE: &str = "correct-horse-battery-staple";

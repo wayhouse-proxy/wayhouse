@@ -195,8 +195,8 @@ struct PeerRegistration {
     #[serde(default)]
     tunnel_address: Option<String>,
     /// The sealed secret holding this origin's tunnel preshared key, when it has one.
-    #[serde(default)]
-    psk_secret: Option<String>,
+    #[serde(default, rename = "psk_secret")]
+    key_ref: Option<String>,
 }
 
 /// Builds the WireGuard peer this registration implies: a **host route to the
@@ -363,7 +363,7 @@ async fn psk_for(
     keyring: Option<&wayhouse_secrets::KeyringHandle>,
     reg: &PeerRegistration,
 ) -> Result<Option<Key>, String> {
-    let Some(name) = &reg.psk_secret else {
+    let Some(name) = &reg.key_ref else {
         return Ok(None);
     };
     let fetched = crate::secrets::fetch_sealed(base_url, token, name)
@@ -383,7 +383,7 @@ fn open_psk(
     keyring: Option<&wayhouse_secrets::Keyring>,
     fetched: crate::secrets::Fetched,
 ) -> Result<Option<Key>, String> {
-    let Some(name) = &reg.psk_secret else {
+    let Some(name) = &reg.key_ref else {
         return Ok(None);
     };
     // Only the key enrollment made for this very origin; never another origin's or a cluster secret.
@@ -664,7 +664,7 @@ mod tests {
             endpoint: None,
             backends: vec![],
             tunnel_address: Some("10.60.0.2".into()),
-            psk_secret: None,
+            key_ref: None,
         };
         let ev = Event::Registered(reg.clone());
         let mut applied = HashMap::new();
@@ -686,14 +686,14 @@ mod tests {
         assert_eq!(applied.get("home"), Some(&reg));
     }
 
-    fn origin(name: &str, psk_secret: Option<String>) -> PeerRegistration {
+    fn origin(name: &str, key_ref: Option<String>) -> PeerRegistration {
         PeerRegistration {
             name: name.into(),
             pubkey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
             endpoint: None,
             backends: vec![],
             tunnel_address: Some("10.60.0.2".into()),
-            psk_secret,
+            key_ref,
         }
     }
 
@@ -807,7 +807,7 @@ mod tests {
             endpoint: None,
             backends: vec![],
             tunnel_address: Some("10.60.0.2".into()),
-            psk_secret: None,
+            key_ref: None,
         };
         let mut applied = HashMap::new();
         apply_event(
@@ -888,7 +888,7 @@ mod tests {
             endpoint: None,
             backends: vec![],
             tunnel_address: None,
-            psk_secret: None,
+            key_ref: None,
         };
         assert!(to_wg_peer(&reg).is_err());
     }
@@ -901,7 +901,7 @@ mod tests {
             endpoint: None,
             backends: vec![],
             tunnel_address: Some("10.60.0.5".into()),
-            psk_secret: None,
+            key_ref: None,
         };
         let peer = to_wg_peer(&reg).unwrap();
         assert!(peer.endpoint.is_none());
@@ -914,7 +914,7 @@ mod tests {
             endpoint: None,
             backends: vec![],
             tunnel_address: addr.map(str::to_string),
-            psk_secret: None,
+            key_ref: None,
         }
     }
 
