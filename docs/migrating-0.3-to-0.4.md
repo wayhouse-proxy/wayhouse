@@ -24,6 +24,14 @@ Without the flag nothing changes.
    `{ secret: name }`: an older proxy refuses it.
 5. Rebuild and re-approve plugins (below).
 
+## Enrollment codes and tunnel keys (new, opt-in)
+
+`wayhouse-agent enroll` with a one-time code gives an origin a controller-made tunnel preshared
+key ([how](12-deployment.md#enrolling-an-origin-agent-with-a-one-time-code)). Nothing changes
+for an origin that does not enroll. Upgrade every controller replica first (the stored-data level
+is now 6 and a mixed HA cluster refuses to mint or redeem), then every proxy, then enroll origins:
+a 0.3.0 proxy ignores the key and cannot complete the handshake with an enrolled origin.
+
 ## Aggregator: loopback `admin_url`s need `--instance-url-allow`
 
 Breaking, security. Without `--instance-url-allow`, the aggregator used to accept an `admin_url`
