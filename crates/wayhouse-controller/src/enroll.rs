@@ -127,6 +127,7 @@ pub fn router(ui: UiState, agent_token: Option<Arc<str>>) -> Router {
 
 /// Applies `op`: locally on a standalone controller, through Raft under HA. Only entries that
 /// carry no plaintext secret go through here.
+#[allow(clippy::result_large_err)] // axum `Response` is this module's error type
 async fn apply(ui: &UiState, op: UiOp) -> Result<Applied, Response> {
     let Some(ha) = &ui.ha else {
         return ui.store.apply_local(&op).map_err(internal);
@@ -342,6 +343,7 @@ async fn redeem(
 }
 
 /// Seals `psk` as the origin's tunnel secret and replicates the ciphertext.
+#[allow(clippy::result_large_err)]
 async fn store_psk(ui: &UiState, origin: &str, psk: &Zeroizing<String>) -> Result<(), Response> {
     let name = wayhouse_enroll::psk_secret_name(origin);
     let sealed = ui
