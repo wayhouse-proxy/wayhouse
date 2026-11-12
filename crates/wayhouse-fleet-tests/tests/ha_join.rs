@@ -254,20 +254,28 @@ async fn two_replicas_join_by_code_with_distinct_ids_and_the_group_survives_losi
 
     // The codes show as joined, and the joined node serves the API with the delivered tokens: a
     // write through it is forwarded to the leader.
-    let list: Value = c
-        .http
-        .get(format!("{}/enrollments", c.base1))
-        .bearer_auth(ADMIN)
-        .send()
-        .await?
-        .json()
-        .await?;
-    ensure!(
-        list["items"]
-            .as_array()
-            .is_some_and(|i| i.iter().all(|r| r["status"] == "joined")),
-        "{list}"
-    );
+    // The mark follows the membership change by a moment, so wait for it.
+    wait_until(
+        || {
+            let c = &c;
+            async move {
+                let list: Value = c
+                    .http
+                    .get(format!("{}/enrollments", c.base1))
+                    .bearer_auth(ADMIN)
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                Ok(list["items"]
+                    .as_array()
+                    .is_some_and(|i| i.iter().all(|r| r["status"] == "joined")))
+            }
+        },
+        Duration::from_secs(30),
+        "both codes to show as joined",
+    )
+    .await?;
     let via_a = format!("http://127.0.0.1:{port_a_http}");
     wait_http_up(&format!("{via_a}/healthz"), STARTUP_TIMEOUT).await?;
 
