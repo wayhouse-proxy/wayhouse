@@ -1,4 +1,5 @@
 import { StrictMode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +8,7 @@ import { ApiError } from "../../api";
 const api = vi.hoisted(() => ({
   listPluginRegistries: vi.fn(),
   listRegistryPlugins: vi.fn(),
+  getRegistryPlugin: vi.fn(),
   fetchRegistryPlugin: vi.fn(),
 }));
 vi.mock("../../api", async (orig) => ({ ...(await orig<typeof import("../../api")>()), ...api }));
@@ -19,33 +21,57 @@ const REG = { id: "r1", name: "wayhouse plugins", url: "https://example.test/ind
 const EXT = { ...REG, id: "r2", name: "somebody's plugins", official: false, risk: "external" as const };
 
 const version = (v: string, over = {}) => ({ version: v, abi: "0.2", size: 4096, compatible: true, verifiable: false, ...over });
+const entry = (name: string, extra = {}) => ({
+  name,
+  description: "Syncs backends from Pelican",
+  license: "MIT",
+  categories: ["integration"],
+  tags: ["pelican"],
+  latest: "0.2.0",
+  abi: "0.2",
+  signed: false,
+  updated: "2026-11-12",
+  abi_compatible: true,
+  ...extra,
+});
 const plugins = (registry: typeof REG | typeof EXT = REG) => ({
   registry,
   index_name: "plugins",
+  stats_url: null,
   host_abi: "0.2",
   plugins: [
-    {
-      name: "pelican-sync",
-      description: "Syncs backends from Pelican",
-      license: "MIT",
-      compatible: true,
-      versions: [
-        version("0.2.0", { options_schema: { properties: { panel: { title: "Panel host", description: "where Pelican runs" } } } }),
-        version("0.1.0", { abi: "0.1", compatible: false }),
-      ],
-    },
-    { name: "old-thing", description: "Built for an older ABI", license: "MIT", compatible: false, versions: [version("0.1.0", { abi: "0.1", compatible: false })] },
+    entry("pelican-sync"),
+    entry("old-thing", { description: "Built for an older ABI", latest: "0.1.0", abi: "0.1", abi_compatible: false, tags: [] }),
   ],
+});
+const detail = () => ({
+  host_abi: "0.2",
+  plugin: {
+    name: "pelican-sync",
+    description: "Syncs backends from Pelican",
+    license: "MIT",
+    compatible: true,
+    versions: [
+      version("0.2.0", { options_schema: { properties: { panel: { title: "Panel host", description: "where Pelican runs" } } } }),
+      version("0.1.0", { abi: "0.1", compatible: false }),
+    ],
+  },
 });
 
 const done = vi.fn();
-const section = () => render(<PluginRegistrySection onFetched={done} />);
+const section = () =>
+  render(
+    <MemoryRouter>
+      <PluginRegistrySection onFetched={done} />
+    </MemoryRouter>,
+  );
 
 beforeEach(() => {
   Object.values(api).forEach((f) => f.mockReset());
   done.mockReset();
   api.listPluginRegistries.mockResolvedValue({ registries: [REG, EXT], persistent: true });
   api.listRegistryPlugins.mockImplementation(async (id: string) => plugins(id === "r2" ? EXT : REG));
+  api.getRegistryPlugin.mockResolvedValue(detail());
   api.fetchRegistryPlugin.mockResolvedValue({ plugin: "pelican-sync", version: "0.2.0", signed: true, risk: "official", upload: MODULE });
 });
 
@@ -53,7 +79,10 @@ describe("PluginRegistrySection", () => {
   it("shows the options a plugin takes before anything is downloaded", async () => {
     section();
     const card = (await screen.findByText("pelican-sync")).closest("li")!;
-    expect(within(card).getByText("Panel host")).toBeInTheDocument();
+    expect(api.getRegistryPlugin).not.toHaveBeenCalled();
+    await userEvent.click(within(card).getByText("Details"));
+    expect(await within(card).findByText("Panel host")).toBeInTheDocument();
+    expect(api.getRegistryPlugin).toHaveBeenCalledWith("r1", "pelican-sync");
     expect(within(card).getByText(/where Pelican runs/)).toBeInTheDocument();
     expect(api.fetchRegistryPlugin).not.toHaveBeenCalled();
   });
@@ -61,7 +90,7 @@ describe("PluginRegistrySection", () => {
   it("marks a version nobody can verify as unverified, and one built for another ABI as incompatible", async () => {
     section();
     const card = (await screen.findByText("pelican-sync")).closest("li")!;
-    expect(within(card).getByText("signature not verified")).toBeInTheDocument();
+    expect(within(card).getByText("unsigned")).toBeInTheDocument();
     expect(screen.queryByText(/^signed$/)).toBeNull();
     const old = screen.getByText("old-thing").closest("li")!;
     expect(within(old).getByText(/plugin ABI 0\.1/)).toBeInTheDocument();
@@ -75,7 +104,7 @@ describe("PluginRegistrySection", () => {
     section();
     await screen.findByText("pelican-sync");
     await user.click(screen.getByRole("button", { name: "Fetch pelican-sync" }));
-    expect(api.fetchRegistryPlugin).toHaveBeenCalledWith("r1", "pelican-sync", "0.2.0", false);
+    expect(api.fetchRegistryPlugin).toHaveBeenCalledWith("r1", "pelican-sync", undefined, false);
     expect(done).toHaveBeenCalledWith(expect.objectContaining({ upload: MODULE, plugin: "pelican-sync", version: "0.2.0", signed: true }), REG);
   });
 
@@ -92,7 +121,7 @@ describe("PluginRegistrySection", () => {
     expect(done).not.toHaveBeenCalled();
     await user.click(within(dialog).getByRole("checkbox"));
     await user.click(go);
-    expect(api.fetchRegistryPlugin).toHaveBeenLastCalledWith("r1", "pelican-sync", "0.2.0", true);
+    expect(api.fetchRegistryPlugin).toHaveBeenLastCalledWith("r1", "pelican-sync", undefined, true);
     expect(done).toHaveBeenCalledTimes(1);
   });
 
@@ -146,7 +175,9 @@ describe("PluginRegistrySection", () => {
     const user = userEvent.setup();
     render(
       <StrictMode>
-        <PluginRegistrySection onFetched={done} />
+        <MemoryRouter>
+          <PluginRegistrySection onFetched={done} />
+        </MemoryRouter>
       </StrictMode>,
     );
     await screen.findByText("pelican-sync");

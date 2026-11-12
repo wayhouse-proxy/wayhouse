@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, fetchRegistryPlugin, listPluginRegistries, listRegistryPlugins } from "../../api";
-import type { PluginFetchResult, RegistryPlugin, RegistryPlugins, RegistryRef } from "../../types";
+import { ApiError, fetchRegistryPlugin, getRegistryPlugin, listPluginRegistries, listRegistryPlugins } from "../../api";
+import type { PluginFetchResult, RegistryPlugin, RegistryPluginCatalogEntry, RegistryPlugins, RegistryRef } from "../../types";
+import { CatalogBrowser } from "../CatalogBrowser";
 import { RegistryRiskDialog } from "../RegistryRiskDialog";
 import { ErrorState, Loading } from "../shell/States";
 import { Badge } from "../ui/Badge";
@@ -20,6 +21,50 @@ const EXTERNAL_TEXT =
 /** The newest version built for this controller's ABI (the index is sorted newest first). */
 const newestCompatible = (p: RegistryPlugin) => p.versions.find((v) => v.compatible);
 
+/** Size and the options a plugin asks for come with its detail file, fetched when the operator opens this. */
+function PluginDetails({ registryId, name }: { registryId: string; name: string }) {
+  const [open, setOpen] = useState(false);
+  const [plugin, setPlugin] = useState<RegistryPlugin | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open || plugin) return;
+    let live = true;
+    getRegistryPlugin(registryId, name)
+      .then((d) => live && setPlugin(d.plugin))
+      .catch((err) => live && setError(errorText(err)));
+    return () => {
+      live = false;
+    };
+  }, [open, plugin, registryId, name]);
+  const v = plugin && newestCompatible(plugin);
+  const options = Object.entries(v?.options_schema?.properties ?? {});
+  return (
+    <details className="mt-1 text-sm" onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="cursor-pointer text-ink-muted">Details</summary>
+      {error && <p className="mt-1 text-bad">{error}</p>}
+      {open && !plugin && !error && <p className="mt-1 text-ink-muted">Loading…</p>}
+      {plugin && !v && <p className="mt-1 text-bad">No version is built for this controller; the newest is built for plugin ABI {plugin.versions[0]?.abi}.</p>}
+      {v && (
+        <>
+          <p className="mt-1 text-ink-muted">
+            {v.version} · {bytes(v.size)} · {v.verifiable ? "signature checked on fetch" : "signature not verified"}
+          </p>
+          {options.length > 0 && (
+            <ul className="mt-1 list-disc pl-5 text-ink-muted">
+              {options.map(([key, o]) => (
+                <li key={key}>
+                  <span className="text-ink">{o.title ?? key}</span>
+                  {o.description && ` — ${o.description}`}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </details>
+  );
+}
+
 // Fetching from a plugin registry only uploads the module to the controller; the install wizard still shows the
 // options, the capabilities and asks for the approval.
 export function PluginRegistrySection({ onFetched }: { onFetched: (result: PluginFetchResult, registry: RegistryRef) => void }) {
@@ -36,7 +81,7 @@ export function PluginRegistrySection({ onFetched }: { onFetched: (result: Plugi
       alive.current = false;
     };
   }, []);
-  const [confirming, setConfirming] = useState<{ plugin: string; version: string; risk: "official" | "external" } | null>(null);
+  const [confirming, setConfirming] = useState<{ plugin: string; version: string | undefined; risk: "official" | "external" } | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -65,7 +110,7 @@ export function PluginRegistrySection({ onFetched }: { onFetched: (result: Plugi
     if (registryId) load(registryId);
   }, [registryId, load]);
 
-  async function fetchIt(plugin: string, version: string, allowUnsigned: boolean) {
+  async function fetchIt(plugin: string, version: string | undefined, allowUnsigned: boolean) {
     if (!listing || busy) return;
     const registry = listing.registry;
     setBusy(plugin);
@@ -109,49 +154,43 @@ export function PluginRegistrySection({ onFetched }: { onFetched: (result: Plugi
       {error && <ErrorState onRetry={registryId ? () => load(registryId) : undefined}>{error}</ErrorState>}
       {registryId && !listing && !error && <Loading />}
       {listing && (
-        <ul className="flex flex-col gap-2">
-          {listing.plugins.map((p) => {
-            const v = newestCompatible(p);
-            const options = Object.entries(v?.options_schema?.properties ?? {});
-            return (
-              <li key={p.name} className="rounded-sm border border-line p-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono text-ink">{p.name}</span>
-                  {v && <span className="text-xs text-ink-muted">{v.version}</span>}
-                  {v && (v.verifiable ? <Badge tone="neutral">signature checked on fetch</Badge> : <Badge tone="warn">signature not verified</Badge>)}
-                  <span className="ml-auto" />
-                  <Button
-                    variant="primary"
-                    disabled={!v || busy !== null}
-                    loading={busy === p.name}
-                    aria-label={`Fetch ${p.name}`}
-                    onClick={() => v && fetchIt(p.name, v.version, false)}
-                  >
-                    Fetch
-                  </Button>
-                </div>
-                <p className="mt-1 text-sm text-ink-muted">
-                  {p.description} · {p.license}
-                  {v && ` · ${bytes(v.size)}`}
-                </p>
-                {!v && <p className="mt-1 text-sm text-bad">No version is built for this controller (plugin ABI {listing.host_abi}); the newest is built for plugin ABI {p.versions[0]?.abi}.</p>}
-                {options.length > 0 && (
-                  <details className="mt-1 text-sm">
-                    <summary className="cursor-pointer text-ink-muted">Options it asks for</summary>
-                    <ul className="mt-1 list-disc pl-5 text-ink-muted">
-                      {options.map(([key, o]) => (
-                        <li key={key}>
-                          <span className="text-ink">{o.title ?? key}</span>
-                          {o.description && ` — ${o.description}`}
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        <CatalogBrowser items={listing.plugins}>
+          {(page) => (
+            <ul className="flex flex-col gap-2">
+              {page.map((p: RegistryPluginCatalogEntry) => (
+                <li key={p.name} className="rounded-sm border border-line p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-ink">{p.name}</span>
+                    <span className="text-xs text-ink-muted">{p.latest}</span>
+                    {p.signed ? <Badge tone="neutral">signature listed</Badge> : <Badge tone="warn">unsigned</Badge>}
+                    <span className="ml-auto" />
+                    <Button
+                      variant="primary"
+                      disabled={!p.abi_compatible || busy !== null}
+                      loading={busy === p.name}
+                      aria-label={`Fetch ${p.name}`}
+                      onClick={() => fetchIt(p.name, undefined, false)}
+                    >
+                      Fetch
+                    </Button>
+                  </div>
+                  <p className="mt-1 text-sm text-ink-muted">
+                    {p.description} · {p.license}
+                  </p>
+                  {(p.categories.length > 0 || p.tags.length > 0) && (
+                    <p className="mt-0.5 text-xs text-ink-muted">{[...p.categories, ...p.tags].join(" · ")}</p>
+                  )}
+                  {!p.abi_compatible && (
+                    <p className="mt-1 text-sm text-bad">
+                      The newest version is built for plugin ABI {p.abi}, this controller speaks {listing.host_abi}; open Details to see whether an older one fits.
+                    </p>
+                  )}
+                  <PluginDetails registryId={listing.registry.id} name={p.name} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </CatalogBrowser>
       )}
       <p className="text-sm text-ink-muted">Fetching only uploads the module to the controller. You still see its options and approve what it may do before anything is installed.</p>
       {confirming && (
@@ -165,7 +204,7 @@ export function PluginRegistrySection({ onFetched }: { onFetched: (result: Plugi
           onConfirm={() => fetchIt(confirming.plugin, confirming.version, true)}
         >
           <p className="text-ink-muted">
-            {confirming.plugin} {confirming.version} from {listing?.registry.name}.
+            {confirming.plugin} {confirming.version ?? ""} from {listing?.registry.name}.
           </p>
         </RegistryRiskDialog>
       )}

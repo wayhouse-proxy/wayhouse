@@ -229,7 +229,6 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
                           disabled={!canWrite}
                           loading={opening === s.name}
                           title={needsOperator}
-                          aria-label={`Install ${s.name}`}
                           onClick={() => openInstall(s.name)}
                         >
                           Install
