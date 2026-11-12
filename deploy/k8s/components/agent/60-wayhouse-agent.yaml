@@ -54,7 +54,9 @@ spec:
             - { name: tun, mountPath: /dev/net/tun }
       volumes:
         - name: data
-          emptyDir: {}
+          # On the node, so a recreated pod keeps its enrollment (and its tunnel key) and
+          # --skip-if-enrolled spends no use. Remove the directory to enroll the node again.
+          hostPath: { path: /var/lib/wayhouse-agent, type: DirectoryOrCreate }
         - name: tmp
           emptyDir: {}
         - name: tun

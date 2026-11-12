@@ -104,8 +104,6 @@ pub fn write(
     files: &std::collections::BTreeMap<String, String>,
 ) -> Result<(), FileError> {
     private_dir(dir)?;
-    let meta_json = serde_json::to_vec_pretty(meta).expect("meta serializes");
-    write_private(&dir.join(META_FILE), &meta_json)?;
     for (name, content) in files {
         debug_assert!(!name.contains('/') && name != "..");
         write_private(&dir.join(name), content.as_bytes())?;
@@ -120,7 +118,10 @@ pub fn write(
             }
         }
     }
-    Ok(())
+    // Last: `enrollment.json` is what marks the directory enrolled (`check_fresh`,
+    // `--skip-if-enrolled`), so a write that dies half way leaves a directory that enrolls again.
+    let meta_json = serde_json::to_vec_pretty(meta).expect("meta serializes");
+    write_private(&dir.join(META_FILE), &meta_json)
 }
 
 pub fn read_meta(dir: &Path) -> Result<Meta, FileError> {
@@ -275,6 +276,26 @@ mod tests {
         }
         assert_eq!(*read_psk(&dir.join(PSK_FILE)).unwrap(), *psk);
         assert_eq!(read_meta(&dir).unwrap(), meta);
+    }
+
+    #[test]
+    fn a_write_that_fails_half_way_leaves_the_directory_unenrolled() {
+        let t = tempfile::tempdir().unwrap();
+        // A directory where a file must go makes the write of that file fail.
+        std::fs::create_dir(t.path().join(TOKEN_FILE)).unwrap();
+        let meta = Meta {
+            controller_url: "https://c".into(),
+            name: "n".into(),
+            role: Role::Agent,
+            parent_url: None,
+            node_id: None,
+            tunnel_network: None,
+            advertise: None,
+        };
+        let granted = [(TOKEN_FILE.to_owned(), "t".to_owned())].into();
+        assert!(write(t.path(), &meta, &granted).is_err());
+        assert!(!t.path().join(META_FILE).exists());
+        assert!(check_fresh(t.path()).is_ok());
     }
 
     #[test]

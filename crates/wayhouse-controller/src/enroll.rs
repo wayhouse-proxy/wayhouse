@@ -545,6 +545,15 @@ async fn redeem(
         {
             n
         }
+        (Some(_), Some(n)) if n.len() > crate::registry::NAME_MAX => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "name too long: at most {} characters",
+                    crate::registry::NAME_MAX
+                ),
+            )
+        }
         (Some(p), _) => {
             return err(
                 StatusCode::BAD_REQUEST,
@@ -583,6 +592,13 @@ async fn redeem(
         Ok(_) => return internal("unexpected answer to a redeem"),
         Err(r) => return r,
     }
+    // An agent that enrolls under a name that already has a token takes that identity over.
+    let replaced = role == Role::Agent
+        && st
+            .ui
+            .store
+            .list(Kind::OriginToken)
+            .is_ok_and(|l| l.iter().any(|(_, v)| v["origin"] == name.as_str()));
     let mut files = match grant_files(&st, role, &name).await {
         Ok(f) => f,
         Err(r) => return r,
@@ -595,7 +611,7 @@ async fn redeem(
     }
     st.limiter.refund(&ip);
     st.limiter.refund(&id_key);
-    tracing::warn!(enrollment = code.id(), role = role.as_str(), name = %name, "enrollment code redeemed");
+    tracing::warn!(enrollment = code.id(), role = role.as_str(), name = %name, replaced, "enrollment code redeemed");
     no_store(
         Json(RedeemResponse {
             name,
@@ -1242,6 +1258,24 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "out of uses"
         );
+    }
+
+    #[tokio::test]
+    async fn a_name_over_the_limit_says_so_and_a_re_enroll_replaces_the_token() {
+        let t = setup(Some(KEY));
+        let (_, m) = mint_as(
+            &t,
+            json!({"role": "agent", "name": "pods", "name_prefix": "k8s-", "uses": 4}),
+        )
+        .await;
+        let code = m["code"].as_str().unwrap();
+        let long = format!("k8s-{}", "x".repeat(70));
+        let (st, v) = redeem_named(&t, code, "agent", long.into()).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("too long"), "{v}");
+        let (_, first) = redeem_named(&t, code, "agent", "k8s-a".into()).await;
+        let (_, again) = redeem_named(&t, code, "agent", "k8s-a".into()).await;
+        assert_ne!(first["files"]["agent-token"], again["files"]["agent-token"]);
     }
 
     #[tokio::test]

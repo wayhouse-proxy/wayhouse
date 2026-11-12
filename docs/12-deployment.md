@@ -485,9 +485,13 @@ Failure and retry:
 
 One multi-use code can enroll a whole DaemonSet. Mint it with `name_prefix` (an agent or proxy
 code, the prefix must end in `-`) and `uses` (up to 1000, at least the node count, plus one for each
-pod that is recreated); each pod then redeems it under its own name, which must start with the
-prefix, and gets its own token (an agent also its own tunnel key). A code without `name_prefix`
-refuses a name, and a prefix code refuses a missing one or one outside the prefix, before a use is spent.
+proxy pod that is recreated); each pod then redeems it under its own name, which must start with the
+prefix and is at most 64 characters (longer is refused as "name too long"). An agent gets its own
+token and tunnel key; proxies share the proxy and ingest tokens and the keyring, so the name only
+tells them apart in the registry. A code without `name_prefix` refuses a name, and a prefix code
+refuses a missing one or one outside the prefix, before a use is spent. Refused redeems still count
+against the limit of 5 attempts a minute per code (10 per address), so a wrong name in a
+DaemonSet that restarts in a loop locks the code out for a minute at a time.
 
 ```sh
 curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
@@ -503,12 +507,18 @@ code in an init container as `k8s-<node name>` (mint that one with `"name_prefix
 `proxy`, which also needs the step-up secret and lasts at most 24 hours) and reads its tokens from
 an emptyDir instead of the shared `wayhouse-tokens` Secret; `components/agent` adds a `wayhouse-agent`
 DaemonSet that enrolls as `agent-<node name>` (edit `--backends` in it). The init container runs
-`enroll --skip-if-enrolled`, so a pod whose sandbox restarts keeps its files and spends no use.
+`enroll --skip-if-enrolled`, so a pod that starts again where its files still are spends no use.
+The agent keeps its files on the node (a `hostPath`), so a recreated agent pod and its tunnel key
+survive. The proxy runs as a non-root user and its files live in an emptyDir, which is gone with
+the pod: **a recreated proxy pod redeems the code again**, so it needs a code that is still valid.
 
 - The code is not in any manifest: you create the `wayhouse-enroll-code` Secret, and `deploy/lint.sh`
   fails a render that defines it, passes `--code=`, or mounts the shared tokens on the enrolled proxy.
-- A code stops working at its expiry whatever uses are left (`ttl_secs`): mint with the shortest
-  lifetime that covers the rollout, and delete the Secret afterwards. A node added later needs a new code.
+- A code stops working at its expiry whatever uses are left (`ttl_secs`). Keep the Secret in place
+  while proxy pods can be recreated, and when you roll, add or replace nodes, mint a fresh code
+  and update the Secret first (a proxy code lasts at most 24 hours, so this is a routine, not a
+  one-off). A recreated proxy pod with an expired code stays in `Init` until you do. Each redeem
+  also uses one of the code's uses, so mint with room to spare.
 - Anyone who holds the code can enroll under any name with the prefix, including the name of an
   existing node, which replaces that node's token (and an agent's tunnel key). Keep the prefix
   specific and the Secret readable by the DaemonSets only.

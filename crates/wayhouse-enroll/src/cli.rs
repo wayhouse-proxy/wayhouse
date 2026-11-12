@@ -161,7 +161,13 @@ pub async fn run(role: Role, bin: &'static str, argv: Vec<OsString>) -> Result<(
     match NodeCli::parse_from(argv).cmd {
         Cmd::Enroll(e) => {
             let dir = e.data_dir.clone().unwrap_or_else(|| default_dir(role));
-            if e.skip_if_enrolled && crate::files::check_fresh(&dir).is_err() {
+            // Only "already enrolled" skips; any other problem with the directory is an error.
+            let enrolled = matches!(
+                crate::files::check_fresh(&dir),
+                Err(crate::files::FileError::Io { ref source, .. })
+                    if source.kind() == std::io::ErrorKind::AlreadyExists
+            );
+            if e.skip_if_enrolled && enrolled {
                 eprintln!("{} is already enrolled; nothing to do", dir.display());
                 return Ok(());
             }
