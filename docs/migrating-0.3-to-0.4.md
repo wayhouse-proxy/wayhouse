@@ -225,6 +225,8 @@ disappears from the fleet view until it reports an `https://` URL or the aggrega
 The Kubernetes aggregator sets it (node admin URLs are http); the HA overlay uses `https://` peers and
 needs no flag. An HA cluster across hosts should use `https://` peer addresses.
 
+**An existing Kubernetes HA cluster does not carry over.** Raft stores the member addresses at bootstrap and `--ha-peers` is read only then, so a cluster bootstrapped with `http://` peers keeps them while the replicas now serve only https, and it will not re-form (a rolling update also loses quorum while pods mix both). Recreate the cluster (delete the StatefulSet and its PVCs) or re-add each member with `--ha-join` and its `https://` address.
+
 ## What works on one instance
 
 Every 0.4.0 feature works on a single controller and a single proxy: feature flags and node tags,
