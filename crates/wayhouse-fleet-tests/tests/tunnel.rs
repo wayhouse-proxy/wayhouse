@@ -615,7 +615,11 @@ async fn an_edge_changes_its_address_without_a_restart() -> Result<()> {
 #[ignore = "needs a user+net namespace: run via `make tunnel-e2e`"]
 async fn an_enrolled_origin_tunnels_with_a_preshared_key() -> Result<()> {
     ensure_built();
-    let mut t = TunnelLab::with(LabOptions { psk: true, ..LabOptions::default() }).await?;
+    let mut t = TunnelLab::with(LabOptions {
+        psk: true,
+        ..LabOptions::default()
+    })
+    .await?;
     t.start_origin(true).await?;
     let edge = t.start_edge("edge-1", None).await?;
     t.wait_roundtrip(edge).await?;
@@ -632,7 +636,11 @@ async fn an_enrolled_origin_tunnels_with_a_preshared_key() -> Result<()> {
 #[ignore = "needs a user+net namespace: run via `make tunnel-e2e`"]
 async fn a_mismatched_preshared_key_never_connects() -> Result<()> {
     ensure_built();
-    let mut t = TunnelLab::with(LabOptions { psk: true, ..LabOptions::default() }).await?;
+    let mut t = TunnelLab::with(LabOptions {
+        psk: true,
+        ..LabOptions::default()
+    })
+    .await?;
     t.start_origin_with_wrong_psk(true).await?;
     let edge = t.start_edge("edge-1", None).await?;
     // Longer than the slowest backend's handshake (userspace ~25 s) would need.

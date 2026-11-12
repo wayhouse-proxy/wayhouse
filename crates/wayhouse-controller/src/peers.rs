@@ -181,10 +181,15 @@ mod tests {
         reg.psk_secret = Some(wayhouse_enroll::psk_secret_name("home-origin"));
         assert!(reg.validate().is_ok());
         reg.psk_secret = Some(wayhouse_enroll::psk_secret_name("someone-else"));
-        assert!(reg.validate().is_err(), "an origin may not name another origin's key");
+        assert!(
+            reg.validate().is_err(),
+            "an origin may not name another origin's key"
+        );
         reg.psk_secret = Some("gossip-psk".into());
         assert!(reg.validate().is_err(), "nor any other cluster secret");
-        assert!(!serde_json::to_string(&valid()).unwrap().contains("psk_secret"));
+        assert!(!serde_json::to_string(&valid())
+            .unwrap()
+            .contains("psk_secret"));
     }
 
     #[test]

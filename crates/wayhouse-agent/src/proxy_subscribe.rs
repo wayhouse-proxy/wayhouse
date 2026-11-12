@@ -527,7 +527,6 @@ mod tests {
         assert_eq!(peer.endpoint, Some("[2001:db8::9]:51820".parse().unwrap()));
     }
 
-
     #[test]
     fn every_proxy_peer_gets_the_origins_psk() {
         use crate::live_interface::testing::{live, Log};
@@ -536,7 +535,12 @@ mod tests {
         let live = live(&[], &[], &log).with_psk(Some(psk.clone()));
         let r = reg(Some("10.60.0.3"));
         let mut applied = HashMap::new();
-        apply(live.api().as_ref(), &live, &mut applied, &Event::Registered(r.clone()));
+        apply(
+            live.api().as_ref(),
+            &live,
+            &mut applied,
+            &Event::Registered(r.clone()),
+        );
         let key = Key::try_from(r.pubkey.as_str()).unwrap();
         let host = live.api().read_interface_data().unwrap();
         assert_eq!(host.peers[&key].preshared_key, Some(psk));
@@ -549,9 +553,17 @@ mod tests {
         let live = live(&[], &[], &log);
         let r = reg(Some("10.60.0.3"));
         let mut applied = HashMap::new();
-        apply(live.api().as_ref(), &live, &mut applied, &Event::Registered(r.clone()));
+        apply(
+            live.api().as_ref(),
+            &live,
+            &mut applied,
+            &Event::Registered(r.clone()),
+        );
         let key = Key::try_from(r.pubkey.as_str()).unwrap();
-        assert_eq!(live.api().read_interface_data().unwrap().peers[&key].preshared_key, None);
+        assert_eq!(
+            live.api().read_interface_data().unwrap().peers[&key].preshared_key,
+            None
+        );
     }
 
     #[test]

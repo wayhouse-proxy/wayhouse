@@ -23,7 +23,8 @@ pub fn resolve(
     env: impl Fn(&str) -> Option<String>,
     prompt: impl FnOnce() -> Option<String>,
 ) -> Result<Code, InputError> {
-    let from_file = |p: &Path| std::fs::read_to_string(p).map_err(|e| InputError::File(p.to_owned(), e));
+    let from_file =
+        |p: &Path| std::fs::read_to_string(p).map_err(|e| InputError::File(p.to_owned(), e));
     let text = if let Some(c) = code {
         c.to_owned()
     } else if let Some(p) = code_file {
@@ -74,12 +75,37 @@ mod tests {
         };
         let id = |c: Code| c.id().to_owned();
         let pre = |s: &str| Code::parse(s).unwrap().id().to_owned();
-        assert_eq!(id(resolve(Some(&a), Some(&f), env, || None).unwrap()), pre(&a));
+        assert_eq!(
+            id(resolve(Some(&a), Some(&f), env, || None).unwrap()),
+            pre(&a)
+        );
         assert_eq!(id(resolve(None, Some(&f), env, || None).unwrap()), pre(&b));
-        assert_eq!(id(resolve(None, None, env, || None).unwrap()), pre(&b), "the file env wins over the plain env");
-        assert_eq!(id(resolve(None, None, |k| (k == "WAYHOUSE_ENROLL_CODE").then(|| c.clone()), || None).unwrap()), pre(&c));
-        assert_eq!(id(resolve(None, None, |_| None, || Some(a.clone())).unwrap()), pre(&a));
-        assert!(matches!(resolve(None, None, |_| None, || None), Err(InputError::Missing)));
-        assert!(matches!(resolve(Some("nope"), None, |_| None, || None), Err(InputError::Code(_))));
+        assert_eq!(
+            id(resolve(None, None, env, || None).unwrap()),
+            pre(&b),
+            "the file env wins over the plain env"
+        );
+        assert_eq!(
+            id(resolve(
+                None,
+                None,
+                |k| (k == "WAYHOUSE_ENROLL_CODE").then(|| c.clone()),
+                || None
+            )
+            .unwrap()),
+            pre(&c)
+        );
+        assert_eq!(
+            id(resolve(None, None, |_| None, || Some(a.clone())).unwrap()),
+            pre(&a)
+        );
+        assert!(matches!(
+            resolve(None, None, |_| None, || None),
+            Err(InputError::Missing)
+        ));
+        assert!(matches!(
+            resolve(Some("nope"), None, |_| None, || None),
+            Err(InputError::Code(_))
+        ));
     }
 }

@@ -202,7 +202,7 @@ async fn main() -> anyhow::Result<()> {
         "controller-token",
         args.controller_token_file.as_deref(),
     )
-.map_err(anyhow::Error::msg)?;
+    .map_err(anyhow::Error::msg)?;
     // Last resort, after --controller-token-file, the credentials directory and the environment.
     if args.controller_token.is_none() {
         if let Some(p) = &enrolled.token_file {
@@ -245,7 +245,9 @@ async fn main() -> anyhow::Result<()> {
     }
     let reg = register::Registration {
         name: name.clone(),
-        psk_secret: psk.is_some().then(|| wayhouse_enroll::psk_secret_name(&name)),
+        psk_secret: psk
+            .is_some()
+            .then(|| wayhouse_enroll::psk_secret_name(&name)),
         pubkey: pubkey.clone(),
         endpoint: args.endpoint.clone(),
         backends: args.backends.clone(),
@@ -380,7 +382,10 @@ fn enrolled_defaults(dir: &std::path::Path) -> anyhow::Result<Enrolled> {
     use wayhouse_enroll::files::{read_meta, PSK_FILE, TOKEN_FILE};
     let existing = |name: &str| Some(dir.join(name)).filter(|p| p.is_file());
     if !dir.join(wayhouse_enroll::files::META_FILE).is_file() {
-        return Ok(Enrolled { psk_file: existing(PSK_FILE), ..Enrolled::default() });
+        return Ok(Enrolled {
+            psk_file: existing(PSK_FILE),
+            ..Enrolled::default()
+        });
     }
     let meta = read_meta(dir)?;
     Ok(Enrolled {

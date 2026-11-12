@@ -48,14 +48,13 @@ const WINDOW: Duration = Duration::from_secs(60);
 const MAX_KEYS: usize = 10_000;
 
 #[derive(Default)]
-struct Limiter(Mutex<(HashMap<String, (Instant, u32)>, ())>);
+struct Limiter(Mutex<HashMap<String, (Instant, u32)>>);
 
 impl Limiter {
     /// Takes one attempt on `key`; false when its window is full. At the key cap new keys are
     /// refused once expired windows are pruned (fail closed).
     fn take(&self, key: &str, max: u32) -> bool {
-        let mut g = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let (map, ()) = &mut *g;
+        let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let t = Instant::now();
         if map.len() >= MAX_KEYS && !map.contains_key(key) {
             map.retain(|_, (start, _)| t.duration_since(*start) < WINDOW);
@@ -76,7 +75,7 @@ impl Limiter {
 
     fn refund(&self, key: &str) {
         let mut g = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(e) = g.0.get_mut(key) {
+        if let Some(e) = g.get_mut(key) {
             e.1 = e.1.saturating_sub(1);
         }
     }
@@ -88,7 +87,10 @@ fn ip_key(ip: IpAddr) -> String {
         IpAddr::V4(v) => format!("ip:{v}"),
         IpAddr::V6(v) => {
             let o = v.octets();
-            format!("ip:{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}", o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7])
+            format!(
+                "ip:{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                o[0], o[1], o[2], o[3], o[4], o[5], o[6], o[7]
+            )
         }
     }
 }
@@ -107,12 +109,19 @@ pub fn router(ui: UiState, agent_token: Option<Arc<str>>) -> Router {
         wayhouse_http::server::BearerAuth::new(ui.auth_token.as_deref()),
         wayhouse_http::server::require_bearer,
     );
-    let st = EnrollState { ui, agent_token, limiter: Arc::default() };
+    let st = EnrollState {
+        ui,
+        agent_token,
+        limiter: Arc::default(),
+    };
     let admin = Router::new()
         .route("/enrollments", post(mint).get(list))
         .route("/enrollments/{id}", delete(revoke))
         .route_layer(auth);
-    let public = Router::new().route("/enroll", post(redeem).layer(DefaultBodyLimit::max(MAX_ENROLL_BODY)));
+    let public = Router::new().route(
+        "/enroll",
+        post(redeem).layer(DefaultBodyLimit::max(MAX_ENROLL_BODY)),
+    );
     admin.merge(public).with_state(st)
 }
 
@@ -133,7 +142,8 @@ async fn apply(ui: &UiState, op: UiOp) -> Result<Applied, Response> {
 }
 
 fn no_store(mut r: Response) -> Response {
-    r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    r.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     r
 }
 
@@ -149,11 +159,17 @@ struct MintBody {
 /// else, ever: the store keeps a hash.
 async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) -> Response {
     let Ok(b) = serde_json::from_slice::<MintBody>(&body) else {
-        return err(StatusCode::BAD_REQUEST, "the body must be {\"origin\": \"...\", \"ttl_secs\"?, \"uses\"?}");
+        return err(
+            StatusCode::BAD_REQUEST,
+            "the body must be {\"origin\": \"...\", \"ttl_secs\"?, \"uses\"?}",
+        );
     };
     let ttl = b.ttl_secs.unwrap_or(DEFAULT_TTL);
     if !(1..=MAX_TTL).contains(&ttl) {
-        return err(StatusCode::BAD_REQUEST, format!("ttl_secs must be 1 to {MAX_TTL}"));
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("ttl_secs must be 1 to {MAX_TTL}"),
+        );
     }
     let uses = b.uses.unwrap_or(1);
     let code = Code::generate();
@@ -165,12 +181,19 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
     if let Some(a) = &who {
         record["created_by"] = a.as_str().into();
     }
-    let op = UiOp::Put { kind: Kind::Enrollment, name: code.id().to_owned(), value: record };
+    let op = UiOp::Put {
+        kind: Kind::Enrollment,
+        name: code.id().to_owned(),
+        value: record,
+    };
     match apply(&st.ui, op).await {
         Ok(Applied::Done) => {}
         Ok(Applied::Invalid(why)) => return err(StatusCode::UNPROCESSABLE_ENTITY, why),
         Ok(Applied::Full(max)) => {
-            return err(StatusCode::CONFLICT, format!("already {max} codes; revoke one first"))
+            return err(
+                StatusCode::CONFLICT,
+                format!("already {max} codes; revoke one first"),
+            )
         }
         Ok(_) => return internal("unexpected answer to a mint"),
         Err(r) => return r,
@@ -214,8 +237,15 @@ async fn list(State(st): State<EnrollState>) -> Response {
 }
 
 /// `DELETE /enrollments/{id}`: revokes a code, spent or not.
-async fn revoke(State(st): State<EnrollState>, Path(id): Path<String>, headers: HeaderMap) -> Response {
-    let op = UiOp::Delete { kind: Kind::Enrollment, name: id.clone() };
+async fn revoke(
+    State(st): State<EnrollState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let op = UiOp::Delete {
+        kind: Kind::Enrollment,
+        name: id.clone(),
+    };
     match apply(&st.ui, op).await {
         Ok(Applied::Done) => {
             tracing::warn!(enrollment = %id, actor = actor(&headers).as_deref().unwrap_or("-"), "enrollment code revoked");
@@ -232,8 +262,12 @@ fn refused() -> Response {
 }
 
 fn too_many() -> Response {
-    let mut r = err(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute");
-    r.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("60"));
+    let mut r = err(
+        StatusCode::TOO_MANY_REQUESTS,
+        "too many attempts; wait a minute",
+    );
+    r.headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("60"));
     r
 }
 
@@ -250,7 +284,10 @@ async fn redeem(
         return too_many();
     }
     let Ok(req) = serde_json::from_slice::<RedeemRequest>(&body) else {
-        return err(StatusCode::BAD_REQUEST, "the body must be {\"code\": \"...\", \"role\": \"agent\"}");
+        return err(
+            StatusCode::BAD_REQUEST,
+            "the body must be {\"code\": \"...\", \"role\": \"agent\"}",
+        );
     };
     let Ok(code) = Code::parse(&req.code) else {
         return refused();
@@ -261,16 +298,25 @@ async fn redeem(
         return too_many();
     }
     let origin = match st.ui.store.get(Kind::Enrollment, code.id()) {
-        Ok(Some(rec)) if rec["role"] == "agent" => rec["origin"].as_str().unwrap_or_default().to_owned(),
+        Ok(Some(rec)) if rec["role"] == "agent" => {
+            rec["origin"].as_str().unwrap_or_default().to_owned()
+        }
         Ok(_) => return refused(),
         Err(e) => return internal(e),
     };
     let ring = st.ui.keyring.current();
     if ring.active_id().is_none() {
         // Before the use is spent: an operator can fix this and retry with the same code.
-        return err(StatusCode::SERVICE_UNAVAILABLE, "this controller has no secret key (--secret-key-file), so it cannot seal a tunnel key");
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this controller has no secret key (--secret-key-file), so it cannot seal a tunnel key",
+        );
     }
-    let op = UiOp::Redeem { id: code.id().to_owned(), hash: code.hash(), now: now() };
+    let op = UiOp::Redeem {
+        id: code.id().to_owned(),
+        hash: code.hash(),
+        now: now(),
+    };
     match apply(&st.ui, op).await {
         Ok(Applied::Done) => {}
         Ok(Applied::Refused) => return refused(),
@@ -302,21 +348,32 @@ async fn store_psk(ui: &UiState, origin: &str, psk: &Zeroizing<String>) -> Resul
         .keyring
         .current()
         .seal_cluster(&name, psk.as_bytes())
-        .map_err(|e| internal(e))?;
+        .map_err(internal)?;
     if let Some(ha) = &ui.ha {
         // As for any cluster secret: sealed under a key every node must already hold.
         crate::plugins::peer::check_active_key(ha, &sealed.key_id)
             .await
-            .map_err(|why| err(StatusCode::CONFLICT, format!("every node needs the active key first: {why}")))?;
+            .map_err(|why| {
+                err(
+                    StatusCode::CONFLICT,
+                    format!("every node needs the active key first: {why}"),
+                )
+            })?;
     }
     let record = json!({
         "key_id": sealed.key_id, "nonce": sealed.nonce, "ciphertext": sealed.ciphertext, "set_at": now(),
         "actor": "enrollment",
     });
-    let op = UiOp::Put { kind: Kind::ClusterSecret, name, value: record };
+    let op = UiOp::Put {
+        kind: Kind::ClusterSecret,
+        name,
+        value: record,
+    };
     match apply(ui, op).await {
         Ok(Applied::Done) => Ok(()),
-        Ok(other) => Err(internal(format!("storing the tunnel key answered {other:?}"))),
+        Ok(other) => Err(internal(format!(
+            "storing the tunnel key answered {other:?}"
+        ))),
         Err(r) => Err(r),
     }
 }
@@ -358,43 +415,104 @@ mod tests {
             ha: None,
             keyring: keyring.clone(),
         };
-        T { app: router(ui, Some(Arc::from(AGENT))), store, keyring, _d: dir }
+        T {
+            app: router(ui, Some(Arc::from(AGENT))),
+            store,
+            keyring,
+            _d: dir,
+        }
     }
 
-    async fn call(app: &Router, method: &str, uri: &str, body: Value, token: Option<&str>, ip: &str) -> (StatusCode, Value) {
+    async fn call(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: Value,
+        token: Option<&str>,
+        ip: &str,
+    ) -> (StatusCode, Value) {
         let mut req = Request::builder().method(method).uri(uri);
         if let Some(t) = token {
             req = req.header("authorization", format!("Bearer {t}"));
         }
         let mut req = req.body(Body::from(body.to_string())).unwrap();
-        req.extensions_mut().insert(ConnectInfo(wayhouse_http::tls::PeerAddr(format!("{ip}:4000").parse().unwrap())));
+        req.extensions_mut()
+            .insert(ConnectInfo(wayhouse_http::tls::PeerAddr(
+                format!("{ip}:4000").parse().unwrap(),
+            )));
         let resp = app.clone().oneshot(req).await.unwrap();
         let status = resp.status();
-        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
     }
 
     async fn mint(t: &T, origin: &str) -> String {
-        let (st, v) = call(&t.app, "POST", "/enrollments", json!({"origin": origin}), Some(ADMIN), "10.0.0.1").await;
+        let (st, v) = call(
+            &t.app,
+            "POST",
+            "/enrollments",
+            json!({"origin": origin}),
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
         assert_eq!(st, StatusCode::OK, "{v}");
         v["code"].as_str().unwrap().to_owned()
     }
 
     async fn redeem(t: &T, code: &str, ip: &str) -> (StatusCode, Value) {
-        call(&t.app, "POST", "/enroll", json!({"code": code, "role": "agent"}), None, ip).await
+        call(
+            &t.app,
+            "POST",
+            "/enroll",
+            json!({"code": code, "role": "agent"}),
+            None,
+            ip,
+        )
+        .await
     }
 
     #[tokio::test]
     async fn the_admin_routes_need_the_admin_token_and_enroll_needs_none() {
         let t = setup(Some(KEY));
-        for (m, u) in [("POST", "/enrollments"), ("GET", "/enrollments"), ("DELETE", "/enrollments/abcd1234")] {
+        for (m, u) in [
+            ("POST", "/enrollments"),
+            ("GET", "/enrollments"),
+            ("DELETE", "/enrollments/abcd1234"),
+        ] {
             let (st, _) = call(&t.app, m, u, json!({"origin": "home"}), None, "10.0.0.1").await;
             assert_eq!(st, StatusCode::UNAUTHORIZED, "{m} {u}");
-            let (st, _) = call(&t.app, m, u, json!({"origin": "home"}), Some(AGENT), "10.0.0.1").await;
-            assert_eq!(st, StatusCode::UNAUTHORIZED, "agent token must not mint: {m} {u}");
+            let (st, _) = call(
+                &t.app,
+                m,
+                u,
+                json!({"origin": "home"}),
+                Some(AGENT),
+                "10.0.0.1",
+            )
+            .await;
+            assert_eq!(
+                st,
+                StatusCode::UNAUTHORIZED,
+                "agent token must not mint: {m} {u}"
+            );
         }
-        let (st, _) = redeem(&t, "abcd1234.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "10.0.0.2").await;
-        assert_eq!(st, StatusCode::UNAUTHORIZED, "reaches the handler, not the bearer layer");
+        let (st, _) = redeem(
+            &t,
+            "abcd1234.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "10.0.0.2",
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::UNAUTHORIZED,
+            "reaches the handler, not the bearer layer"
+        );
     }
 
     #[tokio::test]
@@ -403,14 +521,18 @@ mod tests {
         let code = mint(&t, "home-nas").await;
         let (st, v) = redeem(&t, &code, "10.0.0.2").await;
         assert_eq!(st, StatusCode::OK, "{v}");
-        assert_eq!((v["name"].as_str(), v["agent_token"].as_str()), (Some("home-nas"), Some(AGENT)));
+        assert_eq!(
+            (v["name"].as_str(), v["agent_token"].as_str()),
+            (Some("home-nas"), Some(AGENT))
+        );
         let psk = v["tunnel_psk"].as_str().unwrap();
         // The proxy opens the same value from the sealed secret.
         let name = wayhouse_enroll::psk_secret_name("home-nas");
         let rec = t.store.get(Kind::ClusterSecret, &name).unwrap().unwrap();
         let sealed: wayhouse_secrets::Sealed = serde_json::from_value(json!({
             "key_id": rec["key_id"], "nonce": rec["nonce"], "ciphertext": rec["ciphertext"]
-        })).unwrap();
+        }))
+        .unwrap();
         let opened = t.keyring.current().open_cluster(&name, &sealed).unwrap();
         assert_eq!(opened.expose(), psk.as_bytes());
         let (st, _) = redeem(&t, &code, "10.0.0.2").await;
@@ -423,21 +545,47 @@ mod tests {
         let code = mint(&t, "a").await;
         let revoked = mint(&t, "b").await;
         let id = revoked.split('.').next().unwrap();
-        let (st, _) = call(&t.app, "DELETE", &format!("/enrollments/{id}"), Value::Null, Some(ADMIN), "10.0.0.1").await;
+        let (st, _) = call(
+            &t.app,
+            "DELETE",
+            &format!("/enrollments/{id}"),
+            Value::Null,
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
         assert_eq!(st, StatusCode::NO_CONTENT);
         let expired_id = code.split('.').next().unwrap();
         let mut rec = t.store.get(Kind::Enrollment, expired_id).unwrap().unwrap();
         rec["expires_at"] = 1.into();
-        t.store.apply_local(&UiOp::Put { kind: Kind::Enrollment, name: expired_id.into(), value: rec }).unwrap();
+        t.store
+            .apply_local(&UiOp::Put {
+                kind: Kind::Enrollment,
+                name: expired_id.into(),
+                value: rec,
+            })
+            .unwrap();
         let wrong_secret = format!("{}.{}", &revoked[..8], "B".repeat(43));
         let unknown = format!("ffffffff.{}", "A".repeat(43));
         let mut answers = Vec::new();
-        for c in [&code, &revoked, &wrong_secret, &unknown, &"garbage".to_string()] {
+        for c in [
+            &code,
+            &revoked,
+            &wrong_secret,
+            &unknown,
+            &"garbage".to_string(),
+        ] {
             let (st, v) = redeem(&t, c, "10.0.0.3").await;
             answers.push((st, v["error"].as_str().unwrap_or("").to_owned()));
         }
-        assert!(answers.iter().all(|a| a.0 == StatusCode::UNAUTHORIZED), "{answers:?}");
-        assert!(answers.windows(2).all(|w| w[0] == w[1]), "the answers differ: {answers:?}");
+        assert!(
+            answers.iter().all(|a| a.0 == StatusCode::UNAUTHORIZED),
+            "{answers:?}"
+        );
+        assert!(
+            answers.windows(2).all(|w| w[0] == w[1]),
+            "the answers differ: {answers:?}"
+        );
     }
 
     #[tokio::test]
@@ -454,7 +602,10 @@ mod tests {
         assert!(limited);
         // Another address is unaffected.
         let other = format!("eeeeeeee.{}", "A".repeat(43));
-        assert_eq!(redeem(&t, &other, "10.8.8.8").await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            redeem(&t, &other, "10.8.8.8").await.0,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[tokio::test]
@@ -465,7 +616,9 @@ mod tests {
         let guess = format!("{id}.{}", "B".repeat(43));
         let mut limited = false;
         for i in 0..40 {
-            if redeem(&t, &guess, &format!("10.7.{}.1", i % 250)).await.0 == StatusCode::TOO_MANY_REQUESTS {
+            if redeem(&t, &guess, &format!("10.7.{}.1", i % 250)).await.0
+                == StatusCode::TOO_MANY_REQUESTS
+            {
                 limited = true;
                 break;
             }
@@ -481,7 +634,16 @@ mod tests {
             .map(|i| {
                 let (app, code) = (t.app.clone(), code.clone());
                 tokio::spawn(async move {
-                    call(&app, "POST", "/enroll", json!({"code": code, "role": "agent"}), None, &format!("10.6.0.{i}")).await.0
+                    call(
+                        &app,
+                        "POST",
+                        "/enroll",
+                        json!({"code": code, "role": "agent"}),
+                        None,
+                        &format!("10.6.0.{i}"),
+                    )
+                    .await
+                    .0
                 })
             })
             .collect();
@@ -489,7 +651,11 @@ mod tests {
         for task in tasks {
             results.push(task.await.unwrap());
         }
-        assert_eq!(results.iter().filter(|s| **s == StatusCode::OK).count(), 1, "{results:?}");
+        assert_eq!(
+            results.iter().filter(|s| **s == StatusCode::OK).count(),
+            1,
+            "{results:?}"
+        );
     }
 
     #[tokio::test]
@@ -499,7 +665,10 @@ mod tests {
         let (st, _) = redeem(&t, &code, "10.0.0.2").await;
         assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
         let id = code.split('.').next().unwrap();
-        assert_eq!(t.store.get(Kind::Enrollment, id).unwrap().unwrap()["uses_left"], 1);
+        assert_eq!(
+            t.store.get(Kind::Enrollment, id).unwrap().unwrap()["uses_left"],
+            1
+        );
     }
 
     #[tokio::test]
@@ -507,7 +676,15 @@ mod tests {
         let t = setup(Some(KEY));
         let code = mint(&t, "home").await;
         let secret = code.split_once('.').unwrap().1;
-        let (_, list) = call(&t.app, "GET", "/enrollments", Value::Null, Some(ADMIN), "10.0.0.1").await;
+        let (_, list) = call(
+            &t.app,
+            "GET",
+            "/enrollments",
+            Value::Null,
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
         let stored = serde_json::to_string(&t.store.list(Kind::Enrollment).unwrap()).unwrap();
         for text in [list.to_string(), stored] {
             assert!(!text.contains(secret));
@@ -515,6 +692,11 @@ mod tests {
         assert_eq!(list["items"][0]["status"], "pending");
         assert!(list["items"][0].get("hash").is_none());
         let big = json!({"code": "x".repeat(5000), "role": "agent"});
-        assert_eq!(call(&t.app, "POST", "/enroll", big, None, "10.0.0.4").await.0, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            call(&t.app, "POST", "/enroll", big, None, "10.0.0.4")
+                .await
+                .0,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
     }
 }

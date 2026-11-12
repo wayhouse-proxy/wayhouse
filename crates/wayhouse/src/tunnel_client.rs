@@ -369,7 +369,13 @@ async fn psk_for(
     let fetched = crate::secrets::fetch_sealed(base_url, token, name)
         .await
         .map_err(|e| e.to_string())?;
-    open_psk(reg, keyring.map(|k| k.current()).as_deref(), fetched)
+    open_psk(
+        reg,
+        keyring
+            .map(wayhouse_secrets::KeyringHandle::current)
+            .as_deref(),
+        fetched,
+    )
 }
 
 fn open_psk(
@@ -670,10 +676,15 @@ mod tests {
         assert!(applied.is_empty(), "a failed configure is not applied");
         assert_eq!(plan(&applied, &ev), Action::Reconcile(&reg));
 
-        assert!(!apply_event(&wg, &mut applied, &mut HashSet::new(), &ev, Ok(None)));
+        assert!(!apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &ev,
+            Ok(None)
+        ));
         assert_eq!(applied.get("home"), Some(&reg));
     }
-
 
     fn origin(name: &str, psk_secret: Option<String>) -> PeerRegistration {
         PeerRegistration {
@@ -691,7 +702,8 @@ mod tests {
     fn sealed_psk(origin: &str, psk: &str) -> crate::secrets::Fetched {
         let ring = wayhouse_secrets::Keyring::parse(RING).unwrap();
         crate::secrets::Fetched::Sealed(
-            ring.seal_cluster(&wayhouse_enroll::psk_secret_name(origin), psk.as_bytes()).unwrap(),
+            ring.seal_cluster(&wayhouse_enroll::psk_secret_name(origin), psk.as_bytes())
+                .unwrap(),
         )
     }
 
@@ -700,9 +712,17 @@ mod tests {
         let psk = &*wayhouse_enroll::generate_psk();
         let reg = origin("home", Some(wayhouse_enroll::psk_secret_name("home")));
         let ring = wayhouse_secrets::Keyring::parse(RING).unwrap();
-        let key = open_psk(&reg, Some(&ring), sealed_psk("home", psk)).unwrap().unwrap();
-        assert_eq!(key.to_string(), Key::try_from(psk.as_str()).unwrap().to_string());
-        assert_eq!(open_psk(&origin("home", None), None, crate::secrets::Fetched::Absent), Ok(None));
+        let key = open_psk(&reg, Some(&ring), sealed_psk("home", psk))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            key.to_string(),
+            Key::try_from(psk.as_str()).unwrap().to_string()
+        );
+        assert_eq!(
+            open_psk(&origin("home", None), None, crate::secrets::Fetched::Absent),
+            Ok(None)
+        );
     }
 
     #[test]
@@ -710,14 +730,36 @@ mod tests {
         let psk = &*wayhouse_enroll::generate_psk();
         let own = Some(wayhouse_enroll::psk_secret_name("home"));
         let ring = wayhouse_secrets::Keyring::parse(RING).unwrap();
-        let other = wayhouse_secrets::Keyring::parse("AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=").unwrap();
+        let other =
+            wayhouse_secrets::Keyring::parse("AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=")
+                .unwrap();
         // No key file, key not stored, wrong key, another origin's secret, a non-key value.
         assert!(open_psk(&origin("home", own.clone()), None, sealed_psk("home", psk)).is_err());
-        assert!(open_psk(&origin("home", own.clone()), Some(&ring), crate::secrets::Fetched::Absent).is_err());
-        assert!(open_psk(&origin("home", own.clone()), Some(&other), sealed_psk("home", psk)).is_err());
+        assert!(open_psk(
+            &origin("home", own.clone()),
+            Some(&ring),
+            crate::secrets::Fetched::Absent
+        )
+        .is_err());
+        assert!(open_psk(
+            &origin("home", own.clone()),
+            Some(&other),
+            sealed_psk("home", psk)
+        )
+        .is_err());
         let theirs = Some(wayhouse_enroll::psk_secret_name("other"));
-        assert!(open_psk(&origin("home", theirs), Some(&ring), sealed_psk("other", psk)).is_err());
-        assert!(open_psk(&origin("home", own), Some(&ring), sealed_psk("home", "not a key")).is_err());
+        assert!(open_psk(
+            &origin("home", theirs),
+            Some(&ring),
+            sealed_psk("other", psk)
+        )
+        .is_err());
+        assert!(open_psk(
+            &origin("home", own),
+            Some(&ring),
+            sealed_psk("home", "not a key")
+        )
+        .is_err());
     }
 
     #[test]
@@ -729,11 +771,23 @@ mod tests {
             fail_remove: false,
             fail_configure: std::sync::Mutex::new(0),
         };
-        let ev = Event::Registered(origin("home", Some(wayhouse_enroll::psk_secret_name("home"))));
+        let ev = Event::Registered(origin(
+            "home",
+            Some(wayhouse_enroll::psk_secret_name("home")),
+        ));
         let mut applied = HashMap::new();
-        assert!(apply_event(&wg, &mut applied, &mut HashSet::new(), &ev, Err("no key".into())));
+        assert!(apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &ev,
+            Err("no key".into())
+        ));
         assert!(applied.is_empty());
-        assert!(wg.log.lock().unwrap().is_empty(), "nothing reached the device");
+        assert!(
+            wg.log.lock().unwrap().is_empty(),
+            "nothing reached the device"
+        );
     }
 
     /// A malformed update leaves the device alone, so the installed peer keeps
@@ -760,7 +814,9 @@ mod tests {
             &wg,
             &mut applied,
             &mut HashSet::new(),
-            &Event::Registered(reg.clone()), Ok(None));
+            &Event::Registered(reg.clone()),
+            Ok(None),
+        );
         let mut broken = reg.clone();
         broken.tunnel_address = Some("not-an-address".into());
 
@@ -768,13 +824,17 @@ mod tests {
             &wg,
             &mut applied,
             &mut HashSet::new(),
-            &Event::Registered(broken), Ok(None));
+            &Event::Registered(broken),
+            Ok(None),
+        );
         assert_eq!(applied.get("home"), Some(&reg));
         apply_event(
             &wg,
             &mut applied,
             &mut HashSet::new(),
-            &Event::Removed("home".into()), Ok(None));
+            &Event::Removed("home".into()),
+            Ok(None),
+        );
         assert!(applied.is_empty());
     }
 

@@ -26,13 +26,19 @@ pub struct Meta {
 #[derive(Debug, thiserror::Error)]
 pub enum FileError {
     #[error("{}: {source}", path.display())]
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("{} is not a base64 32-byte key", path.display())]
     BadPsk { path: PathBuf },
 }
 
 fn io(path: &Path) -> impl FnOnce(std::io::Error) -> FileError + '_ {
-    move |source| FileError::Io { path: path.to_owned(), source }
+    move |source| FileError::Io {
+        path: path.to_owned(),
+        source,
+    }
 }
 
 /// Creates `dir` (mode 0700) if missing; an existing directory is tightened to 0700.
@@ -59,7 +65,12 @@ fn write_private(path: &Path, data: &[u8]) -> Result<(), FileError> {
     f.write_all(data).map_err(io(path))
 }
 
-pub fn write(dir: &Path, meta: &Meta, agent_token: Option<&str>, psk: &str) -> Result<(), FileError> {
+pub fn write(
+    dir: &Path,
+    meta: &Meta,
+    agent_token: Option<&str>,
+    psk: &str,
+) -> Result<(), FileError> {
     private_dir(dir)?;
     let meta_json = serde_json::to_vec_pretty(meta).expect("meta serializes");
     write_private(&dir.join(META_FILE), &meta_json)?;
@@ -86,7 +97,9 @@ pub fn read_psk(path: &Path) -> Result<Zeroizing<String>, FileError> {
         .decode(key)
         .is_ok_and(|b| b.len() == 32);
     if !ok {
-        return Err(FileError::BadPsk { path: path.to_owned() });
+        return Err(FileError::BadPsk {
+            path: path.to_owned(),
+        });
     }
     Ok(Zeroizing::new(key.to_owned()))
 }
@@ -106,7 +119,11 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let dir = t.path().join("node");
         let psk = crate::generate_psk();
-        let meta = Meta { controller_url: "https://c".into(), name: "home".into(), role: Role::Agent };
+        let meta = Meta {
+            controller_url: "https://c".into(),
+            name: "home".into(),
+            role: Role::Agent,
+        };
         write(&dir, &meta, Some("tok-tok-tok-tok-tok"), &psk).unwrap();
         assert_eq!(mode(&dir), 0o700);
         for f in [META_FILE, TOKEN_FILE, PSK_FILE] {
@@ -120,9 +137,16 @@ mod tests {
     fn a_loose_existing_directory_is_tightened_and_a_bad_psk_refused() {
         let t = tempfile::tempdir().unwrap();
         std::fs::set_permissions(t.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let meta = Meta { controller_url: "https://c".into(), name: "n".into(), role: Role::Agent };
+        let meta = Meta {
+            controller_url: "https://c".into(),
+            name: "n".into(),
+            role: Role::Agent,
+        };
         write(t.path(), &meta, Some("tok-tok-tok-tok-tok"), "not-a-key").unwrap();
         assert_eq!(mode(t.path()), 0o700);
-        assert!(matches!(read_psk(&t.path().join(PSK_FILE)), Err(FileError::BadPsk { .. })));
+        assert!(matches!(
+            read_psk(&t.path().join(PSK_FILE)),
+            Err(FileError::BadPsk { .. })
+        ));
     }
 }

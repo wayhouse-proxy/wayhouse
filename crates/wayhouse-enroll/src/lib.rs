@@ -67,7 +67,11 @@ pub async fn enroll_agent(
     dir: &std::path::Path,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let r = client::redeem(controller_url, pin, code, Role::Agent).await?;
-    let meta = files::Meta { controller_url: controller_url.to_owned(), name: r.name.clone(), role: r.role };
+    let meta = files::Meta {
+        controller_url: controller_url.to_owned(),
+        name: r.name.clone(),
+        role: r.role,
+    };
     files::write(dir, &meta, r.agent_token.as_deref(), &r.tunnel_psk)?;
     Ok(r.name)
 }

@@ -47,7 +47,10 @@ async fn the_code_goes_only_to_a_controller_matching_the_pin() -> Result<()> {
         .map(String::from),
     )?;
     let ca = reqwest::Certificate::from_pem(&std::fs::read(TEST_CA)?)?;
-    let admin = wayhouse_http::builder().add_root_certificate(ca).timeout(Duration::from_secs(10)).build()?;
+    let admin = wayhouse_http::builder()
+        .add_root_certificate(ca)
+        .timeout(Duration::from_secs(10))
+        .build()?;
     let base = format!("https://localhost:{port}");
     wait_until(
         || {
@@ -77,19 +80,44 @@ async fn the_code_goes_only_to_a_controller_matching_the_pin() -> Result<()> {
     // A wrong fingerprint aborts the handshake: the code is never sent, never spent.
     let code = mint("home").await?;
     let wrong = Pin::Fingerprint([0u8; 32]);
-    ensure!(redeem(&base, Some(&wrong), &code, Role::Agent).await.is_err());
-    let list: serde_json::Value = admin.get(format!("{base}/enrollments")).send().await?.json().await?;
-    ensure!(list["items"][0]["status"] == "pending", "a failed pin check spent the code: {list}");
+    ensure!(redeem(&base, Some(&wrong), &code, Role::Agent)
+        .await
+        .is_err());
+    let list: serde_json::Value = admin
+        .get(format!("{base}/enrollments"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    ensure!(
+        list["items"][0]["status"] == "pending",
+        "a failed pin check spent the code: {list}"
+    );
 
     // The right fingerprint redeems it, once.
     let pin = Pin::Fingerprint(leaf_fingerprint()?);
-    let got = redeem(&base, Some(&pin), &code, Role::Agent).await.ok().ok_or_else(|| anyhow::anyhow!("pinned redeem failed"))?;
+    let got = redeem(&base, Some(&pin), &code, Role::Agent)
+        .await
+        .ok()
+        .ok_or_else(|| anyhow::anyhow!("pinned redeem failed"))?;
     ensure!(got.name == "home" && !got.tunnel_psk.is_empty());
-    ensure!(redeem(&base, Some(&pin), &code, Role::Agent).await.is_err(), "a spent code redeemed twice");
+    ensure!(
+        redeem(&base, Some(&pin), &code, Role::Agent).await.is_err(),
+        "a spent code redeemed twice"
+    );
 
     // A CA file works instead of a fingerprint.
     let second = mint("away").await?;
-    let by_ca = redeem(&base, Some(&Pin::CaFile(TEST_CA.into())), &second, Role::Agent).await;
-    ensure!(by_ca.is_ok_and(|r| r.name == "away"), "redeem with --controller-ca failed");
+    let by_ca = redeem(
+        &base,
+        Some(&Pin::CaFile(TEST_CA.into())),
+        &second,
+        Role::Agent,
+    )
+    .await;
+    ensure!(
+        by_ca.is_ok_and(|r| r.name == "away"),
+        "redeem with --controller-ca failed"
+    );
     Ok(())
 }

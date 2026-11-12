@@ -29,7 +29,9 @@ impl Code {
         rand::rngs::OsRng.fill_bytes(&mut *secret);
         Self {
             id: hex(&id),
-            secret: Zeroizing::new(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(*secret)),
+            secret: Zeroizing::new(
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(*secret),
+            ),
         }
     }
 
@@ -55,7 +57,7 @@ impl Code {
 
     /// The text an admin hands to the node. Call only to show it once.
     pub fn expose(&self) -> Zeroizing<String> {
-        Zeroizing::new(format!("{}.{}", self.id, &*self.secret))
+        Zeroizing::new(format!("{}.{}", self.id, *self.secret))
     }
 
     /// What the controller stores: hex SHA-256 of the secret half.
@@ -91,7 +93,13 @@ mod tests {
 
     #[test]
     fn malformed_codes_are_refused() {
-        for bad in ["", "abc", "zzzzzzzz.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "abcd1234.short", "abcd1234.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/"] {
+        for bad in [
+            "",
+            "abc",
+            "zzzzzzzz.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "abcd1234.short",
+            "abcd1234.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/",
+        ] {
             assert!(Code::parse(bad).is_err(), "{bad}");
         }
     }

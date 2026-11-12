@@ -17,8 +17,8 @@ use std::io;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use defguard_wireguard_rs::net::IpAddrMask;
 use defguard_wireguard_rs::key::Key;
+use defguard_wireguard_rs::net::IpAddrMask;
 use defguard_wireguard_rs::peer::Peer;
 use defguard_wireguard_rs::WireguardInterfaceApi;
 
@@ -546,13 +546,13 @@ mod tests {
         p
     }
 
-
     #[test]
     fn renewed_peers_get_the_psk_back_even_when_the_device_does_not_report_it() {
         use defguard_wireguard_rs::key::Key;
         let psk = Key::new([9; 32]);
         let log = Log::default();
-        let live = live_with_peers(&[], &[], &[peer(7, "fd00::2/128")], &log).with_psk(Some(psk.clone()));
+        let live =
+            live_with_peers(&[], &[], &[peer(7, "fd00::2/128")], &log).with_psk(Some(psk.clone()));
         live.renew_peers().unwrap();
         let host = live.api().read_interface_data().unwrap();
         assert_eq!(host.peers[&Key::new([7; 32])].preshared_key, Some(psk));

@@ -40,9 +40,13 @@ async fn call(app: &axum::Router, uri: &str, body: Value, token: Option<&str>) -
     }
     let mut req = req.body(Body::from(body.to_string())).unwrap();
     req.extensions_mut()
-        .insert(ConnectInfo(wayhouse_http::tls::PeerAddr("10.0.0.2:4000".parse().unwrap())));
+        .insert(ConnectInfo(wayhouse_http::tls::PeerAddr(
+            "10.0.0.2:4000".parse().unwrap(),
+        )));
     let resp = app.clone().oneshot(req).await.unwrap();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
@@ -63,13 +67,33 @@ async fn no_secret_reaches_the_log_even_at_trace() {
         store,
         auth_token: Some(Arc::from(ADMIN)),
         ha: None,
-        keyring: wayhouse_secrets::KeyringHandle::new(wayhouse_secrets::Keyring::parse(KEY).unwrap()),
+        keyring: wayhouse_secrets::KeyringHandle::new(
+            wayhouse_secrets::Keyring::parse(KEY).unwrap(),
+        ),
     };
     let app = wayhouse_controller::enroll::router(ui, Some(Arc::from(AGENT)));
-    let minted = call(&app, "/enrollments", json!({"origin": "quiet"}), Some(ADMIN)).await;
+    let minted = call(
+        &app,
+        "/enrollments",
+        json!({"origin": "quiet"}),
+        Some(ADMIN),
+    )
+    .await;
     let code = minted["code"].as_str().unwrap().to_owned();
-    let redeemed = call(&app, "/enroll", json!({"code": code, "role": "agent"}), None).await;
-    call(&app, "/enroll", json!({"code": code, "role": "agent"}), None).await;
+    let redeemed = call(
+        &app,
+        "/enroll",
+        json!({"code": code, "role": "agent"}),
+        None,
+    )
+    .await;
+    call(
+        &app,
+        "/enroll",
+        json!({"code": code, "role": "agent"}),
+        None,
+    )
+    .await;
     let out = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
     for secret in [
         code.split_once('.').unwrap().1,

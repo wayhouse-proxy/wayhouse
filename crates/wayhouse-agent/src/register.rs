@@ -288,7 +288,22 @@ mod tests {
             endpoint: None,
             backends: vec![":25565".into()],
             address: None,
+            psk_secret: None,
         }
+    }
+
+    #[test]
+    fn the_psk_secret_name_is_sent_when_the_agent_holds_a_key_and_never_the_key() {
+        let mut r = reg();
+        assert!(!serde_json::to_string(&body(&r))
+            .unwrap()
+            .contains("psk_secret"));
+        r.psk_secret = Some("tunnel-psk-0123456789abcdef".into());
+        let json = serde_json::to_string(&body(&r)).unwrap();
+        assert!(
+            json.contains(r#""psk_secret":"tunnel-psk-0123456789abcdef""#),
+            "{json}"
+        );
     }
 
     #[test]

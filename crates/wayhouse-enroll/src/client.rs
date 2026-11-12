@@ -5,10 +5,16 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerifier, ServerCertVerified};
-use tokio_rustls::rustls::crypto::{ring, verify_tls12_signature, verify_tls13_signature, CryptoProvider};
+use tokio_rustls::rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
+use tokio_rustls::rustls::crypto::{
+    ring, verify_tls12_signature, verify_tls13_signature, CryptoProvider,
+};
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use tokio_rustls::rustls::{ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme};
+use tokio_rustls::rustls::{
+    ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme,
+};
 
 use crate::{Code, RedeemRequest, RedeemResponse, Role};
 
@@ -24,7 +30,9 @@ pub enum Pin {
 pub enum EnrollError {
     #[error("the controller URL must be https:// (http:// is only accepted for a loopback host)")]
     PlainHttp,
-    #[error("an https:// controller needs its certificate fingerprint (--pin) or CA (--controller-ca)")]
+    #[error(
+        "an https:// controller needs its certificate fingerprint (--pin) or CA (--controller-ca)"
+    )]
     NoPin,
     #[error("not a valid controller URL")]
     BadUrl,
@@ -52,14 +60,17 @@ pub fn parse_fingerprint(s: &str) -> Result<[u8; 32], EnrollError> {
     }
     let mut out = [0u8; 32];
     for (i, b) in out.iter_mut().enumerate() {
-        *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).map_err(|_| EnrollError::BadFingerprint)?;
+        *b = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
+            .map_err(|_| EnrollError::BadFingerprint)?;
     }
     Ok(out)
 }
 
 fn is_loopback(host: &str) -> bool {
     let h = host.trim_start_matches('[').trim_end_matches(']');
-    h.eq_ignore_ascii_case("localhost") || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    h.eq_ignore_ascii_case("localhost")
+        || h.parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 /// The URL's host when it may carry a code: `https`, or `http` to loopback.
@@ -96,20 +107,34 @@ impl ServerCertVerifier for PinVerifier {
         if got == self.pin {
             Ok(ServerCertVerified::assertion())
         } else {
-            Err(TlsError::General("the controller's certificate does not match the pinned fingerprint".into()))
+            Err(TlsError::General(
+                "the controller's certificate does not match the pinned fingerprint".into(),
+            ))
         }
     }
 
-    fn verify_tls12_signature(&self, m: &[u8], c: &CertificateDer<'_>, d: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, TlsError> {
+    fn verify_tls12_signature(
+        &self,
+        m: &[u8],
+        c: &CertificateDer<'_>,
+        d: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TlsError> {
         verify_tls12_signature(m, c, d, &self.provider.signature_verification_algorithms)
     }
 
-    fn verify_tls13_signature(&self, m: &[u8], c: &CertificateDer<'_>, d: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, TlsError> {
+    fn verify_tls13_signature(
+        &self,
+        m: &[u8],
+        c: &CertificateDer<'_>,
+        d: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TlsError> {
         verify_tls13_signature(m, c, d, &self.provider.signature_verification_algorithms)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -129,11 +154,13 @@ fn http_client(pin: Option<&Pin>, https: bool) -> Result<reqwest::Client, Enroll
             reqwest::Client::builder().use_preconfigured_tls(cfg)
         }
         Some(Pin::CaFile(path)) => {
-            let certs = wayhouse_http::load_ca_file(path).map_err(|e| EnrollError::Ca(e.to_string()))?;
+            let certs =
+                wayhouse_http::load_ca_file(path).map_err(|e| EnrollError::Ca(e.to_string()))?;
             // Only this CA: a pinned controller must not also be reachable via a public root.
-            certs
-                .into_iter()
-                .fold(reqwest::Client::builder().tls_built_in_root_certs(false), reqwest::ClientBuilder::add_root_certificate)
+            certs.into_iter().fold(
+                reqwest::Client::builder().tls_built_in_root_certs(false),
+                reqwest::ClientBuilder::add_root_certificate,
+            )
         }
     };
     b.timeout(std::time::Duration::from_secs(20))
@@ -144,10 +171,18 @@ fn http_client(pin: Option<&Pin>, https: bool) -> Result<reqwest::Client, Enroll
 
 /// Redeems `code` as `role`. Nothing is sent unless the URL and pin are acceptable; a failed
 /// pin check aborts the handshake before the request body (the code) leaves this process.
-pub async fn redeem(controller_url: &str, pin: Option<&Pin>, code: &Code, role: Role) -> Result<RedeemResponse, EnrollError> {
+pub async fn redeem(
+    controller_url: &str,
+    pin: Option<&Pin>,
+    code: &Code,
+    role: Role,
+) -> Result<RedeemResponse, EnrollError> {
     check_url(controller_url)?;
     let client = http_client(pin, controller_url.starts_with("https://"))?;
-    let body = RedeemRequest { code: code.expose().to_string(), role };
+    let body = RedeemRequest {
+        code: code.expose().to_string(),
+        role,
+    };
     let resp = client
         .post(format!("{}/enroll", controller_url.trim_end_matches('/')))
         .json(&body)
@@ -167,10 +202,20 @@ mod tests {
 
     #[test]
     fn plain_http_is_refused_except_to_loopback() {
-        for ok in ["https://c.example", "http://127.0.0.1:9901", "http://localhost", "http://[::1]:1"] {
+        for ok in [
+            "https://c.example",
+            "http://127.0.0.1:9901",
+            "http://localhost",
+            "http://[::1]:1",
+        ] {
             assert!(check_url(ok).is_ok(), "{ok}");
         }
-        for bad in ["http://c.example", "http://10.0.0.5:9901", "ftp://x", "nonsense"] {
+        for bad in [
+            "http://c.example",
+            "http://10.0.0.5:9901",
+            "ftp://x",
+            "nonsense",
+        ] {
             assert!(check_url(bad).is_err(), "{bad}");
         }
     }
@@ -178,9 +223,15 @@ mod tests {
     #[tokio::test]
     async fn an_https_controller_without_a_pin_is_refused_before_any_connection() {
         let code = Code::generate();
-        let e = redeem("https://c.example", None, &code, Role::Agent).await.err().unwrap();
+        let e = redeem("https://c.example", None, &code, Role::Agent)
+            .await
+            .err()
+            .unwrap();
         assert!(matches!(e, EnrollError::NoPin), "{e}");
-        let e = redeem("http://c.example", None, &code, Role::Agent).await.err().unwrap();
+        let e = redeem("http://c.example", None, &code, Role::Agent)
+            .await
+            .err()
+            .unwrap();
         assert!(matches!(e, EnrollError::PlainHttp), "{e}");
     }
 
@@ -189,7 +240,10 @@ mod tests {
         let hex = "ab".repeat(32);
         let colons = vec!["AB"; 32].join(":");
         assert_eq!(parse_fingerprint(&hex).unwrap(), [0xab; 32]);
-        assert_eq!(parse_fingerprint(&format!("sha256:{colons}")).unwrap(), [0xab; 32]);
+        assert_eq!(
+            parse_fingerprint(&format!("sha256:{colons}")).unwrap(),
+            [0xab; 32]
+        );
         assert!(parse_fingerprint("abcd").is_err());
     }
 }

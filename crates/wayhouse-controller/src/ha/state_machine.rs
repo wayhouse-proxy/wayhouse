@@ -2634,6 +2634,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_enrollment_code_redeems_once_on_every_replica_and_survives_a_snapshot() {
+        use crate::ui_data::{Applied, Kind, UiOp};
+        let h = "1".repeat(64);
+        let record = serde_json::json!({"role": "agent", "origin": "home", "hash": h,
+            "created_at": 1, "expires_at": 1000, "uses": 1, "uses_left": 1});
+        let put = WriteRequest::Ui(UiOp::Put {
+            kind: Kind::Enrollment,
+            name: "abcd1234".into(),
+            value: record,
+        });
+        let redeem = WriteRequest::Ui(UiOp::Redeem {
+            id: "abcd1234".into(),
+            hash: h.clone(),
+            now: 5,
+        });
+        let (mut a, _a) = test_sm();
+        let (mut b, _b) = test_sm();
+        for (i, req) in [put, redeem.clone(), redeem].into_iter().enumerate() {
+            let on_a = apply_one(&mut a, i as u64 + 1, req.clone()).await;
+            assert_eq!(on_a, apply_one(&mut b, i as u64 + 1, req).await);
+            let want = if i == 2 {
+                Applied::Refused
+            } else {
+                Applied::Done
+            };
+            assert_eq!(on_a, WriteResponse::UiResult(want), "entry {}", i + 1);
+        }
+        let snapshot = a
+            .get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
+        let (mut c, _c) = test_sm();
+        c.install_snapshot(&snapshot.meta, snapshot.snapshot)
+            .await
+            .unwrap();
+        assert_eq!(
+            c.ui().get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"],
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn a_cluster_secret_applies_on_every_replica_and_travels_in_a_snapshot_as_ciphertext() {
         use crate::ui_data::{Applied, Kind, UiOp};
         let ring = wayhouse_secrets::Keyring::parse("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")

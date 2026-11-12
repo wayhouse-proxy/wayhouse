@@ -424,7 +424,16 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
             only_keys(
                 obj,
                 "",
-                &["role", "origin", "hash", "created_at", "expires_at", "uses", "uses_left", "created_by"],
+                &[
+                    "role",
+                    "origin",
+                    "hash",
+                    "created_at",
+                    "expires_at",
+                    "uses",
+                    "uses_left",
+                    "created_by",
+                ],
             )?;
             if obj.get("role").and_then(Value::as_str) != Some("agent") {
                 return Err("role must be \"agent\"".into());
@@ -444,7 +453,11 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
             if !uses.is_some_and(|u| (1..=1000).contains(&u)) {
                 return Err("uses must be 1 to 1000".into());
             }
-            if !obj.get("uses_left").and_then(Value::as_u64).is_some_and(|l| Some(l) <= uses) {
+            if !obj
+                .get("uses_left")
+                .and_then(Value::as_u64)
+                .is_some_and(|l| Some(l) <= uses)
+            {
                 return Err("uses_left must be a whole number up to uses".into());
             }
             if let Some(a) = obj.get("created_by") {
@@ -896,14 +909,17 @@ mod tests {
         }
     }
 
-
     fn code_record(hash: &str, uses: u64, expires_at: u64) -> Value {
         json!({"role": "agent", "origin": "home", "hash": hash, "created_at": 100,
                "expires_at": expires_at, "uses": uses, "uses_left": uses, "created_by": "ops"})
     }
 
     fn redeem(id: &str, hash: &str, now: u64) -> UiOp {
-        UiOp::Redeem { id: id.into(), hash: hash.into(), now }
+        UiOp::Redeem {
+            id: id.into(),
+            hash: hash.into(),
+            now,
+        }
     }
 
     const H1: &str = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -912,27 +928,46 @@ mod tests {
     #[test]
     fn a_code_redeems_once_and_every_later_try_is_refused() {
         let (s, _d) = store();
-        s.apply_local(&put(Kind::Enrollment, "abcd1234", code_record(H1, 1, 1000))).unwrap();
-        assert_eq!(s.apply_local(&redeem("abcd1234", H1, 200)).unwrap(), Applied::Done);
-        assert_eq!(s.apply_local(&redeem("abcd1234", H1, 201)).unwrap(), Applied::Refused);
-        assert_eq!(s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"], 0);
+        s.apply_local(&put(Kind::Enrollment, "abcd1234", code_record(H1, 1, 1000)))
+            .unwrap();
+        assert_eq!(
+            s.apply_local(&redeem("abcd1234", H1, 200)).unwrap(),
+            Applied::Done
+        );
+        assert_eq!(
+            s.apply_local(&redeem("abcd1234", H1, 201)).unwrap(),
+            Applied::Refused
+        );
+        assert_eq!(
+            s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"],
+            0
+        );
     }
 
     #[test]
     fn a_wrong_secret_an_unknown_id_and_an_expired_code_are_all_refused_alike() {
         let (s, _d) = store();
-        s.apply_local(&put(Kind::Enrollment, "abcd1234", code_record(H1, 2, 1000))).unwrap();
-        for op in [redeem("abcd1234", H2, 200), redeem("ffffffff", H1, 200), redeem("abcd1234", H1, 1000)] {
+        s.apply_local(&put(Kind::Enrollment, "abcd1234", code_record(H1, 2, 1000)))
+            .unwrap();
+        for op in [
+            redeem("abcd1234", H2, 200),
+            redeem("ffffffff", H1, 200),
+            redeem("abcd1234", H1, 1000),
+        ] {
             assert_eq!(s.apply_local(&op).unwrap(), Applied::Refused, "{op:?}");
         }
         // The failed tries burnt nothing.
-        assert_eq!(s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"], 2);
+        assert_eq!(
+            s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"],
+            2
+        );
     }
 
     #[test]
     fn a_multi_use_code_serves_exactly_its_uses() {
         let (s, _d) = store();
-        s.apply_local(&put(Kind::Enrollment, "abcd1234", code_record(H1, 3, 1000))).unwrap();
+        s.apply_local(&put(Kind::Enrollment, "abcd1234", code_record(H1, 3, 1000)))
+            .unwrap();
         let done = (0..5)
             .filter(|i| s.apply_local(&redeem("abcd1234", H1, 200 + i)).unwrap() == Applied::Done)
             .count();
@@ -942,10 +977,15 @@ mod tests {
     #[test]
     fn concurrent_redeems_of_a_single_use_code_give_exactly_one_success() {
         let (s, _d) = store();
-        s.apply_local(&put(Kind::Enrollment, "abcd1234", code_record(H1, 1, 1000))).unwrap();
+        s.apply_local(&put(Kind::Enrollment, "abcd1234", code_record(H1, 1, 1000)))
+            .unwrap();
         let wins: usize = std::thread::scope(|sc| {
             let hs: Vec<_> = (0..16)
-                .map(|_| sc.spawn(|| s.apply_local(&redeem("abcd1234", H1, 200)).unwrap() == Applied::Done))
+                .map(|_| {
+                    sc.spawn(|| {
+                        s.apply_local(&redeem("abcd1234", H1, 200)).unwrap() == Applied::Done
+                    })
+                })
                 .collect();
             hs.into_iter().map(|h| usize::from(h.join().unwrap())).sum()
         });
@@ -955,10 +995,23 @@ mod tests {
     #[test]
     fn a_replicated_redeem_replays_without_a_second_use() {
         let (s, _d) = store();
-        s.apply_at(1, &put(Kind::Enrollment, "abcd1234", code_record(H1, 2, 1000))).unwrap();
-        assert_eq!(s.apply_at(2, &redeem("abcd1234", H1, 200)).unwrap(), Applied::Done);
-        assert_eq!(s.apply_at(2, &redeem("abcd1234", H1, 200)).unwrap(), Applied::Replayed);
-        assert_eq!(s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"], 1);
+        s.apply_at(
+            1,
+            &put(Kind::Enrollment, "abcd1234", code_record(H1, 2, 1000)),
+        )
+        .unwrap();
+        assert_eq!(
+            s.apply_at(2, &redeem("abcd1234", H1, 200)).unwrap(),
+            Applied::Done
+        );
+        assert_eq!(
+            s.apply_at(2, &redeem("abcd1234", H1, 200)).unwrap(),
+            Applied::Replayed
+        );
+        assert_eq!(
+            s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"],
+            1
+        );
     }
 
     #[test]

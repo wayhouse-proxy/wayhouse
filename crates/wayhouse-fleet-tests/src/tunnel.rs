@@ -366,7 +366,8 @@ impl TunnelLab {
     /// Replaces the enrolled agent's tunnel key with a different valid one before it starts.
     pub async fn start_origin_with_wrong_psk(&mut self, with_echo: bool) -> Result<()> {
         anyhow::ensure!(self.opts.psk, "needs LabOptions.psk");
-        self.enroll_origin(Some(&wayhouse_enroll::generate_psk())).await?;
+        self.enroll_origin(Some(&wayhouse_enroll::generate_psk()))
+            .await?;
         self.opts.psk = false; // already enrolled
         let r = self.start_origin(with_echo).await;
         self.opts.psk = true;
@@ -517,7 +518,12 @@ impl TunnelLab {
         if self.opts.psk {
             args.extend([
                 "--secret-key-file".to_string(),
-                self.dir.path().join("secret.key").to_str().unwrap().to_string(),
+                self.dir
+                    .path()
+                    .join("secret.key")
+                    .to_str()
+                    .unwrap()
+                    .to_string(),
             ]);
         }
         let wayhouse = Proc::spawn_in(Some(&ns), "wayhouse", &args)?;
