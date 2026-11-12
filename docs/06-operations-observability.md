@@ -666,8 +666,9 @@ rate-limited per client address (a burst of 10, then one attempt per 3 s) and
 slowed per username: every attempt at a name delays the next one for that name
 by 100 ms, doubling to a 5 s cap, and a successful login clears it. Too-early
 attempts get `429` + `Retry-After`. Guessing at one account is held to one try
-per 5 s whichever addresses it comes from, while the owner waits at most 5 s
-(someone hammering your username can still make you wait that long). The delay
+per 5 s whichever addresses it comes from. The owner's wait is at most 5 s
+once the guessing stops, but someone who keeps retrying your username right
+at each `Retry-After` can keep you out for as long as they persist. The delay
 is kept in memory on each controller replica (a restart or another replica
 starts fresh), and names share a fixed set of 1024 slots, so it neither leaks
 which accounts exist nor grows with attacker-chosen names.
