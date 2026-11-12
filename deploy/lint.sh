@@ -168,6 +168,8 @@ errs << "solo-acme: must keep every solo flag and add --acme with a staging defa
   errs << "solo: #{svc} needs --settings-dir=/settings and the solo-settings volume" unless solo[svc]["command"].include?("--settings-dir=/settings") && solo[svc]["volumes"].any? { |v| v["target"] == "/settings" && v["source"] == "solo-settings" }
   errs << "solo: #{svc} must keep every base flag" unless (base[svc]["command"].reject(&plain_url) - solo[svc]["command"]).empty?
 end
+# `init` writes private keys under tls/ next to the compose files: git must never see them.
+errs << "tls/ is not git-ignored: wayhouse-controller init writes ca.key and the TLS keys to deploy/compose/tls/" unless system("git", "check-ignore", "-q", "deploy/compose/tls/ca.key")
 # systemd units: tokens arrive as credentials (LoadCredential=), never as a flag value.
 Dir["deploy/systemd/*.service"].each do |f|
   t = File.read(f)

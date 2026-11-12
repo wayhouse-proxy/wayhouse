@@ -143,7 +143,7 @@ UI, a clean restart, no token in any log).
 the CA certificate and the two leaves, not the CA key) for the `wayhouse` namespace (`--namespace`).
 It refuses to print to a terminal (use `--output FILE`). The Kubernetes manifests do not mount the
 TLS Secret yet, so they still set `--allow-insecure-controller` for the UI and the node proxy.
-Every `init` run also prints the controller certificate's SHA-256 fingerprint, which is public:
+`ca.key` in `tls/` can sign a certificate for any name; once you have the certificates you need, move it offline (it is never mounted into a container, and `tls/` is git-ignored). Every `init` run also prints the controller certificate's SHA-256 fingerprint, which is public:
 `wayhouse-agent enroll --pin` takes it, or pass the CA with `--controller-ca`.
 
 ## Process flags from a settings file (`--settings-dir`)

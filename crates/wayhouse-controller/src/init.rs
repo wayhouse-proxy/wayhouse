@@ -16,7 +16,7 @@
 //! Rules, the same as `deploy/solo/init.sh` had: nothing that exists is overwritten (the whole
 //! plan is checked first, so a refusal changes nothing), files are created `0600` from the first
 //! byte, and **no secret value reaches the terminal**: the summary names files and prints the
-//! public CA fingerprint, nothing else. `k8s-secret` is the one target whose output is the
+//! public controller-certificate fingerprint, nothing else. `k8s-secret` is the one target whose output is the
 //! secrets, so it refuses to print to a terminal.
 
 use std::collections::BTreeSet;
@@ -277,12 +277,20 @@ fn names(own: &[String], extra: &[String]) -> Vec<String> {
 }
 
 fn k8s_service_names(service: &str, namespace: &str) -> Vec<String> {
-    vec![
+    let mut names = vec![
         service.to_owned(),
         format!("{service}.{namespace}"),
         format!("{service}.{namespace}.svc"),
         format!("{service}.{namespace}.svc.cluster.local"),
-    ]
+    ];
+    // The StatefulSet pods of the HA overlay (`<pod>.<service>-peers`): one wildcard label each.
+    for suffix in ["", ".{ns}", ".{ns}.svc", ".{ns}.svc.cluster.local"] {
+        names.push(format!(
+            "*.{service}-peers{}",
+            suffix.replace("{ns}", namespace)
+        ));
+    }
+    names
 }
 
 // --- files --------------------------------------------------------------------------------------

@@ -3,6 +3,9 @@
 *.pdb
 .env
 
+# `wayhouse-controller init --target compose` writes the CA key and the TLS keys here
+tls/
+
 # wayhouse-controller's default --data-dir when run from the repo root during
 # manual/local smoke testing.
 /wayhouse-controller-data
