@@ -18,6 +18,7 @@ spec:
           args:
             - --config=/etc/wayhouse/wayhouse.yaml
             - --aggregator=http://wayhouse-aggregator.wayhouse.svc:9902
+            - --allow-insecure-controller   # the token crosses the cluster network in plain http
             - --aggregator-token-file=/run/secrets/wayhouse/aggregator-token
             # Default instance name is the admin listen addr (0.0.0.0:9900 on every
             # node) — all nodes would overwrite one aggregator entry.

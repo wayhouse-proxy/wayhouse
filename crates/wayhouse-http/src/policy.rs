@@ -56,19 +56,52 @@ pub fn check_exposure(
     ))
 }
 
-/// Warn when `token` would travel over plain `http://` to a non-loopback host:
-/// an on-path attacker could read it (and then impersonate this process to the
-/// peer). Only a warning: a trusted overlay network is a legitimate deployment.
-/// `flag` names the URL option, for the message.
-pub fn warn_plaintext_bearer(flag: &str, url: &str, has_token: bool) {
-    if has_token && sends_bearer_in_clear(url) {
-        let url = redact_userinfo(url);
+static ALLOW_INSECURE_CONTROLLER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Records the operator's `--allow-insecure-controller` for call sites deep in a binary that
+/// have no `Args` (a later fetch builds its URL itself). Set once, at start, by `main`.
+pub fn set_allow_insecure_controller(allow: bool) {
+    ALLOW_INSECURE_CONTROLLER.store(allow, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Refuses to start a client that would send `token` over plain `http://` to a non-loopback
+/// host: anyone on the path could read it and then act as this process. `flag` names the URL
+/// option. `--allow-insecure-controller` turns the refusal into a warning, for a network that
+/// is private by construction (a container network, a trusted overlay).
+pub fn check_bearer_transport(
+    flag: &str,
+    url: &str,
+    has_token: bool,
+    allow_insecure: bool,
+) -> Result<(), String> {
+    if !has_token || !sends_bearer_in_clear(url) {
+        return Ok(());
+    }
+    let url = redact_userinfo(url);
+    if allow_insecure {
         tracing::warn!(
             flag,
             url = %url,
-            "bearer token is sent over plain http to a non-loopback host; use https:// unless this network is trusted"
+            "bearer token is sent over plain http to a non-loopback host (--allow-insecure-controller)"
         );
+        return Ok(());
     }
+    Err(format!(
+        "{flag} is {url}: its bearer token would travel over plain http. Use an https:// URL, \
+         or pass --allow-insecure-controller if this network is private"
+    ))
+}
+
+/// [`check_bearer_transport`] for a call site with no `Args`: uses the flag recorded by
+/// [`set_allow_insecure_controller`].
+pub fn check_bearer_transport_global(what: &str, url: &str, has_token: bool) -> Result<(), String> {
+    check_bearer_transport(
+        what,
+        url,
+        has_token,
+        ALLOW_INSECURE_CONTROLLER.load(std::sync::atomic::Ordering::Relaxed),
+    )
 }
 
 /// Warns when `url` is plain http to a non-loopback host, token or not, for a source whose
@@ -180,6 +213,27 @@ mod tests {
             "unix:///run/wayhouse.sock",
         ] {
             assert!(!super::sends_bearer_in_clear(fine), "{fine}");
+        }
+    }
+
+    #[test]
+    fn a_token_over_plain_http_beyond_loopback_is_refused_unless_opted_out() {
+        let e = check_bearer_transport("--controller", "http://c.example:9901", true, false)
+            .unwrap_err();
+        assert!(
+            e.contains("--controller") && e.contains("--allow-insecure-controller"),
+            "{e}"
+        );
+        for ok in [
+            ("http://c.example", false, false),
+            ("https://c.example", true, false),
+            ("http://127.0.0.1:1", true, false),
+            ("http://c.example", true, true),
+        ] {
+            assert!(
+                check_bearer_transport("--x", ok.0, ok.1, ok.2).is_ok(),
+                "{ok:?}"
+            );
         }
     }
 

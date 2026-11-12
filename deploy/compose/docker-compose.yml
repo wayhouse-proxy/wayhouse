@@ -54,6 +54,7 @@ services:
       - --listen=0.0.0.0:9903
       - --ui-password-file=/run/secrets/ui-password
       - --controller-url=http://controller:9901
+      - --allow-insecure-controller   # tokens cross the private compose network in plain http
       - --controller-token-file=/run/secrets/controller-token
       - --aggregator-url=http://aggregator:9902
       - --aggregator-token-file=/run/secrets/aggregator-token

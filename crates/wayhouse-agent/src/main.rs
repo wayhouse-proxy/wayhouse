@@ -92,6 +92,11 @@ struct Args {
     #[arg(long)]
     controller_url: Option<String>,
 
+    /// Send bearer tokens over plain `http://` to a non-loopback host. Without it the start is
+    /// refused. Only for a network that is private by construction.
+    #[arg(long)]
+    allow_insecure_controller: bool,
+
     /// Bearer token for the controller, if `--auth-token` is set there.
     #[arg(long, value_name = "PATH")]
     controller_token_file: Option<std::path::PathBuf>,
@@ -216,6 +221,13 @@ async fn main() -> anyhow::Result<()> {
             EnvFilter::try_from_env("WAYHOUSE_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+    wayhouse_http::policy::check_bearer_transport(
+        "--controller-url",
+        &controller_url,
+        args.controller_token.is_some(),
+        args.allow_insecure_controller,
+    )
+    .map_err(anyhow::Error::msg)?;
     if let Some(path) = &args.ca_file {
         let certs = wayhouse_http::init_ca_file(path)?;
         tracing::info!(certs, path = %path.display(), "trusting extra CAs from --ca-file");

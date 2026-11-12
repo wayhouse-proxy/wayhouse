@@ -154,10 +154,12 @@ pub async fn fetch_sealed(
         name: name.to_owned(),
         why,
     };
-    // The bearer token is a credential: never send it over plain http beyond loopback.
-    if token.is_some() {
-        wayhouse_enroll::client::check_url(base_url).map_err(|e| unreadable(e.to_string()))?;
-    }
+    wayhouse_http::policy::check_bearer_transport_global(
+        "the controller URL",
+        base_url,
+        token.is_some(),
+    )
+    .map_err(unreadable)?;
     let mut req = wayhouse_http::client().get(format!("{base_url}/secrets/{name}/sealed"));
     if let Some(token) = token {
         req = req.bearer_auth(token);

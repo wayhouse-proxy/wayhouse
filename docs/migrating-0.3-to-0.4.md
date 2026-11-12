@@ -194,6 +194,21 @@ read from a settings file, like the other credentials. To migrate, write each va
 Docker secrets (`/run/secrets/<name>`), Kubernetes secret volumes and `LoadCredential=` all produce
 such files. `wayhouse-web-sync` already read its tokens from the environment and is unchanged.
 
+## A token over plain http to a remote host is refused (breaking)
+
+`wayhouse`, `wayhouse-agent`, `wayhouse-aggregator` and `wayhouse-ui` used to warn and carry on
+when a bearer token was configured for a plain `http://` URL on a non-loopback host
+(`--controller`, `--aggregator`, `--plugin-overlay-url`, `--tunnel-controller-url`,
+`--controller-url`, `--aggregator-url`, `--parent-url`). They now refuse to start: anyone on the
+path could read the token and act as that process. Use an `https://` URL, or, on a network that is
+private by construction, pass `--allow-insecure-controller` (a warning is logged at start). It can
+also be set in a settings file, like the other non-secret flags. A URL to loopback, and a URL with
+no token, are unaffected. The shipped Compose and Kubernetes files set the flag for the UI and the
+Kubernetes node proxy, whose traffic stays on the container or cluster network; `wayhouse-controller
+init` will generate a certificate that clients pin, so the bundles can move to https (slice 2).
+Calls from the controller to other controllers (HA, parent, plugin peers) and the aggregator's
+reach to instance admin URLs are not covered yet.
+
 ## What works on one instance
 
 Every 0.4.0 feature works on a single controller and a single proxy: feature flags and node tags,

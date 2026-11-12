@@ -114,6 +114,11 @@ struct Args {
     #[arg(long)]
     controller_url: Option<String>,
 
+    /// Send bearer tokens over plain `http://` to a non-loopback host. Without it the start is
+    /// refused. Only for a network that is private by construction.
+    #[arg(long)]
+    allow_insecure_controller: bool,
+
     /// Bearer token this UI presents to `--controller-url`, if it requires
     /// one (its own `--auth-token`).
     #[arg(long, value_name = "PATH")]
@@ -203,6 +208,28 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     layered.start();
+    for (flag, url, token) in [
+        (
+            "--controller-url",
+            &args.controller_url,
+            &args.controller_token,
+        ),
+        (
+            "--aggregator-url",
+            &args.aggregator_url,
+            &args.aggregator_token,
+        ),
+    ] {
+        if let Some(url) = url {
+            wayhouse_http::policy::check_bearer_transport(
+                flag,
+                url,
+                token.is_some(),
+                args.allow_insecure_controller,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+        }
+    }
     let prometheus = wayhouse_http::metrics::install("wayhouse-ui", env!("CARGO_PKG_VERSION"))?;
     wayhouse_http::policy::check_exposure(
         "wayhouse-ui",

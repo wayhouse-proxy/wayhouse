@@ -189,6 +189,11 @@ impl TunnelLab {
         let secret_key = dir.path().join("secret.key");
         let key_arg = secret_key.to_str().unwrap().to_string();
         std::fs::write(&secret_key, format!("{LAB_SECRET_KEY}\n"))?;
+        // The key loaders refuse a group- or world-readable file.
+        std::fs::set_permissions(
+            &secret_key,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        )?;
         let extra: Vec<&str> = if opts.psk {
             vec!["--secret-key-file", &key_arg, "--allow-insecure-secrets"]
         } else {
