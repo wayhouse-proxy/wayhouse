@@ -26,6 +26,7 @@ workspace = true
 
 [dependencies]
 reqwest.workspace = true
+rustls.workspace = true
 thiserror.workspace = true
 # `http2`: TlsListener offers ALPN h2, so axum must be able to serve it (not
 # only when another crate in the build happens to switch it on).

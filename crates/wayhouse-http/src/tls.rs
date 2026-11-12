@@ -142,7 +142,7 @@ fn load_with_digest(files: &TlsFiles) -> Result<(CertifiedKey, u64), TlsError> {
         name: files.key_name,
         path: files.key.clone(),
     })?;
-    let signer = rustls::crypto::ring::sign::any_supported_type(&key).map_err(|source| {
+    let signer = rustls::crypto::aws_lc_rs::sign::any_supported_type(&key).map_err(|source| {
         TlsError::BadKey {
             name: files.key_name,
             path: files.key.clone(),
@@ -605,7 +605,7 @@ impl TlsListener {
         limits: HandshakeLimits,
     ) -> io::Result<Self> {
         let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
+            rustls::crypto::aws_lc_rs::default_provider(),
         ))
         .with_safe_default_protocol_versions()
         .map_err(io::Error::other)?

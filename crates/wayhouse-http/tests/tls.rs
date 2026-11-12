@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::rustls::pki_types::pem::PemObject;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use tokio_rustls::rustls::{crypto::ring, ServerConfig};
+use tokio_rustls::rustls::{crypto::aws_lc_rs, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 use wayhouse_http::{builder_with, client, error_chain, init_ca_file, load_ca_file, CaError};
 
@@ -41,7 +41,7 @@ async fn tls_server() -> SocketAddr {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     let key = PrivateKeyDer::from_pem_file(fixture("leaf.key")).unwrap();
-    let config = ServerConfig::builder_with_provider(Arc::new(ring::default_provider()))
+    let config = ServerConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
         .with_safe_default_protocol_versions()
         .unwrap()
         .with_no_client_auth()

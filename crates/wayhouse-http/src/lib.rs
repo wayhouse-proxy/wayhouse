@@ -92,9 +92,17 @@ pub fn load_ca_file(path: &Path) -> Result<Vec<Certificate>, CaError> {
     Ok(certs)
 }
 
+/// Make aws-lc-rs the process-wide rustls provider, so reqwest offers the post-quantum
+/// hybrid key exchange (X25519MLKEM768) instead of falling back to its own `ring`.
+/// Idempotent; a provider installed earlier stays.
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
 /// A builder trusting the built-in roots plus `extra`, sending the
 /// [`protocol::HEADER`] on every request so a peer can refuse an incompatible major.
 pub fn builder_with(extra: &[Certificate]) -> ClientBuilder {
+    install_crypto_provider();
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::HeaderName::from_static(protocol::HEADER),
