@@ -33,7 +33,7 @@ pub struct RedeemRequest {
 pub struct RedeemResponse {
     pub name: String,
     pub role: Role,
-    pub agent_token: String,
+    pub agent_token: Option<String>,
     /// The origin's tunnel preshared key, base64 of 32 bytes.
     pub tunnel_psk: String,
 }

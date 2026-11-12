@@ -26,11 +26,11 @@ pub struct UiState {
     pub keyring: wayhouse_secrets::KeyringHandle,
 }
 
-fn err(status: StatusCode, msg: impl std::fmt::Display) -> Response {
+pub(crate) fn err(status: StatusCode, msg: impl std::fmt::Display) -> Response {
     (status, Json(json!({ "error": msg.to_string() }))).into_response()
 }
 
-fn internal(e: impl std::fmt::Display) -> Response {
+pub(crate) fn internal(e: impl std::fmt::Display) -> Response {
     tracing::error!(error = %e, "ui store failure");
     err(StatusCode::INTERNAL_SERVER_ERROR, "ui store failure")
 }
@@ -191,7 +191,7 @@ fn list(st: &UiState, kind: Kind) -> Response {
     }
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
@@ -507,7 +507,7 @@ async fn delete_secret(st: &UiState, name: String, path: &str, headers: &HeaderM
     .await
 }
 
-fn actor(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn actor(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-actor")
         .and_then(|v| v.to_str().ok())

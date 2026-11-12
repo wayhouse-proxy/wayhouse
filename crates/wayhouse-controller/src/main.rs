@@ -979,14 +979,18 @@ async fn main() -> anyhow::Result<()> {
         ),
     };
     tokio::spawn(publish_features(ui_store.clone()));
-    app = app.merge(wayhouse_controller::ui_data::api::router(
-        wayhouse_controller::ui_data::api::UiState {
-            store: ui_store,
-            auth_token: admin_token.clone(),
-            ha: ui_ha,
-            keyring: plugin_keys.clone(),
-        },
-    ));
+    let ui_state = wayhouse_controller::ui_data::api::UiState {
+        store: ui_store,
+        auth_token: admin_token.clone(),
+        ha: ui_ha,
+        keyring: plugin_keys.clone(),
+    };
+    app = app
+        .merge(wayhouse_controller::enroll::router(
+            ui_state.clone(),
+            args.agent_token.as_deref().map(std::sync::Arc::from),
+        ))
+        .merge(wayhouse_controller::ui_data::api::router(ui_state));
     if let Some((handle, _, _, _, _)) = ha_handle {
         app = app
             .merge(ha::members::router(handle.clone(), admin_token))
