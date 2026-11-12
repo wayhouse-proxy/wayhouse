@@ -1,0 +1,53 @@
+# Per-node enrollment for the wayhouse proxy DaemonSet (docs/12 "Kubernetes"): an init container
+# redeems one multi-use code from the `wayhouse-enroll-code` Secret, names itself k8s-<node name>,
+# and the proxy reads the tokens it got from an emptyDir instead of the shared `wayhouse-tokens`.
+# The code is never in a manifest: create the Secret yourself (deploy/README.md).
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: { kind: DaemonSet, name: wayhouse }
+    # `test` ops fail the build if the base DaemonSet moves its volumes.
+    patch: |-
+      - { op: test, path: /spec/template/spec/volumes/2/name, value: tokens }
+      - { op: remove, path: /spec/template/spec/volumes/2 }
+      - { op: test, path: /spec/template/spec/containers/0/volumeMounts/1/name, value: tokens }
+      - { op: remove, path: /spec/template/spec/containers/0/volumeMounts/1 }
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value: { name: enrolled, emptyDir: {} }
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: enroll-code
+          secret:
+            secretName: wayhouse-enroll-code   # key `code`; you create it, it holds the multi-use code
+            defaultMode: 0440
+            items: [{ key: code, path: code }]
+      # Same path the base used for the ingest token, so the proxy's flags do not change.
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: { name: enrolled, mountPath: /run/secrets/wayhouse, readOnly: true }
+      - op: add
+        path: /spec/template/spec/initContainers
+        value:
+          - name: enroll
+            image: wayhouse-deploy/wayhouse:local
+            args:
+              - enroll
+              - --controller-url=https://wayhouse-controller.wayhouse.svc:9901
+              - --controller-ca=/run/tls/ca.crt
+              - --code-file=/run/enroll-code/code
+              - --data-dir=/run/enrolled
+              - --name=k8s-$(NODE_NAME)       # the code is minted with name_prefix "k8s-"
+              - --skip-if-enrolled            # the pod's sandbox restarted: keep the files, spend no use
+            env:
+              - name: NODE_NAME
+                valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: { drop: [ALL] }
+            volumeMounts:
+              - { name: enrolled, mountPath: /run/enrolled }
+              - { name: enroll-code, mountPath: /run/enroll-code, readOnly: true }
+              - { name: tls, mountPath: /run/tls, readOnly: true }

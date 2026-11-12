@@ -176,12 +176,14 @@ pub async fn redeem(
     pin: Option<&Pin>,
     code: &Code,
     role: Role,
+    name: Option<&str>,
 ) -> Result<RedeemResponse, EnrollError> {
     check_url(controller_url)?;
     let client = http_client(pin, controller_url.starts_with("https://"))?;
     let body = RedeemRequest {
         code: code.expose().to_string(),
         role,
+        name: name.map(str::to_owned),
     };
     let resp = client
         .post(format!("{}/enroll", controller_url.trim_end_matches('/')))
@@ -194,6 +196,7 @@ pub async fn redeem(
             let r: RedeemResponse = resp.json().await.map_err(|_| EnrollError::BadAnswer)?;
             // The answer must be for the role asked and carry only that role's files.
             let ok = r.role == role
+                && name.is_none_or(|n| n == r.name)
                 && r.files
                     .keys()
                     .all(|k| role.grant_files().contains(&k.as_str()));
@@ -235,12 +238,12 @@ mod tests {
     #[tokio::test]
     async fn an_https_controller_without_a_pin_is_refused_before_any_connection() {
         let code = Code::generate();
-        let e = redeem("https://c.example", None, &code, Role::Agent)
+        let e = redeem("https://c.example", None, &code, Role::Agent, None)
             .await
             .err()
             .unwrap();
         assert!(matches!(e, EnrollError::NoPin), "{e}");
-        let e = redeem("http://c.example", None, &code, Role::Agent)
+        let e = redeem("http://c.example", None, &code, Role::Agent, None)
             .await
             .err()
             .unwrap();
