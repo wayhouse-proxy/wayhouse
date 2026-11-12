@@ -122,7 +122,7 @@ pub trait Registration:
 }
 
 /// Longest registration name.
-const NAME_MAX: usize = 64;
+pub(crate) const NAME_MAX: usize = 64;
 
 /// Names a registration may carry: 1-64 of `[A-Za-z0-9._-]`, and not
 /// `subscribe`, which the `{base}/subscribe` route shadows (#310, #311). Keeps

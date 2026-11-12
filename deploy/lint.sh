@@ -25,7 +25,7 @@ solo_acme=$(docker compose -f $C/docker-compose.yml -f $C/compose.solo.yml -f $C
 smoke_plan=$(make -n deploy-smoke)
 # Every overlay must build; the Ruby below checks the rendered DaemonSets, not the source files.
 if command -v kubectl >/dev/null 2>&1; then kz="kubectl kustomize"; else kz="kustomize build"; fi
-for o in single ha web-gateway; do
+for o in single ha web-gateway enrolled; do
   $kz deploy/k8s/overlays/$o > "${TMPDIR:-/tmp}/wayhouse-k8s-$o.yaml"
 done
 export K8S_RENDERED="${TMPDIR:-/tmp}/wayhouse-k8s"
@@ -45,7 +45,7 @@ errs << "seed passes --opt=value args to curl: #{bad.inspect}" unless bad.empty?
 
 # wayhouse must report a unique instance name (default = admin listen addr).
 errs << "compose wayhouse lacks --aggregator-instance" unless base["wayhouse"]["command"].any? { |a| a.start_with?("--aggregator-instance=") }
-k8s = %w[single ha web-gateway].to_h { |o| [o, YAML.load_stream(File.read("#{ENV["K8S_RENDERED"]}-#{o}.yaml"))] }
+k8s = %w[single ha web-gateway enrolled].to_h { |o| [o, YAML.load_stream(File.read("#{ENV["K8S_RENDERED"]}-#{o}.yaml"))] }
 k8s.each do |o, docs|
   ds = docs.find { |d| d["kind"] == "DaemonSet" && d.dig("metadata", "name") == "wayhouse" }
   c = ds["spec"]["template"]["spec"]["containers"][0]
@@ -92,6 +92,36 @@ end
 errs << "k8s ha: replicas must trust the CA for the Raft peers (--ca-file) and name https peers" unless sts && sts["spec"]["template"]["spec"]["containers"][0]["args"].include?("--ca-file=/run/tls/ca.crt")
 # No key may sit in a manifest: the Secret is made by init, never rendered here.
 k8s.each { |o, docs| docs.each { |d| errs << "k8s #{o}: a manifest must not define the wayhouse-tls Secret" if d["kind"] == "Secret" && d.dig("metadata", "name") == "wayhouse-tls" } }
+
+# Per-node enrollment (components/enroll and components/agent): an init container redeems a multi-use
+# code that lives in the wayhouse-enroll-code Secret (never in a manifest), names the pod after its
+# node, and the main container reads what it wrote. The shared tokens leave the proxy DaemonSet.
+k8s["enrolled"].each do |d|
+  errs << "k8s enrolled: a manifest must not define the wayhouse-enroll-code Secret (it holds the code)" if d["kind"] == "Secret"
+  pod = d.dig("spec", "template", "spec") or next
+  who = "k8s enrolled: #{d.dig("metadata", "name")}"
+  ini = (pod["initContainers"] || []).find { |c| c["name"] == "enroll" }
+  if %w[wayhouse wayhouse-agent].include?(d.dig("metadata", "name"))
+    errs << "#{who} lacks the enroll init container" unless ini
+    next unless ini
+    args = ini["args"]
+    prefix = d.dig("metadata", "name") == "wayhouse" ? "k8s" : "agent"
+    errs << "#{who}: enroll must read the code from a file (--code-file), never carry it" unless args.include?("--code-file=/run/enroll-code/code") && args.none? { |a| a =~ /\A--code(=|\z)/ }
+    errs << "#{who}: enroll must name the pod after its node (--name=#{prefix}-$(NODE_NAME))" unless args.include?("--name=#{prefix}-$(NODE_NAME)")
+    errs << "#{who}: enroll must use --skip-if-enrolled (a restarted pod must not spend another use)" unless args.include?("--skip-if-enrolled")
+    errs << "#{who}: enroll must pin the controller with the CA and use https" unless args.include?("--controller-ca=/run/tls/ca.crt") && args.any? { |a| a =~ /\A--controller-url=https:/ }
+    errs << "#{who}: NODE_NAME must come from spec.nodeName" unless (ini["env"] || []).any? { |e| e["name"] == "NODE_NAME" && e.dig("valueFrom", "fieldRef", "fieldPath") == "spec.nodeName" }
+    errs << "#{who}: the code Secret must be wayhouse-enroll-code" unless (pod["volumes"] || []).any? { |v| v.dig("secret", "secretName") == "wayhouse-enroll-code" }
+    errs << "#{who}: enroll needs readOnlyRootFilesystem and no privilege escalation" unless ini.dig("securityContext", "readOnlyRootFilesystem") == true && ini.dig("securityContext", "allowPrivilegeEscalation") == false
+  end
+  if d.dig("metadata", "name") == "wayhouse"
+    errs << "#{who}: must not mount the shared wayhouse-tokens Secret" if (pod["volumes"] || []).any? { |v| v.dig("secret", "secretName") == "wayhouse-tokens" }
+    errs << "#{who}: the proxy must read aggregator-token from the enrolled volume" unless pod["containers"][0]["volumeMounts"].any? { |m| m["name"] == "enrolled" && m["mountPath"] == "/run/secrets/wayhouse" }
+  end
+end
+errs << "k8s enrolled: no wayhouse-agent DaemonSet" unless k8s["enrolled"].any? { |d| d["kind"] == "DaemonSet" && d.dig("metadata", "name") == "wayhouse-agent" }
+# The other overlays keep the shared tokens and have no agent.
+%w[single ha web-gateway].each { |o| errs << "k8s #{o}: must not carry the enroll init container or the agent" if k8s[o].any? { |d| d.dig("spec", "template", "spec", "initContainers") || d.dig("metadata", "name") == "wayhouse-agent" } }
 
 # NET_ADMIN is only in the bounding set for a non-root user: tunnel services run as root.
 %w[wayhouse agent].each { |s| errs << "tunnel #{s} must run as root (user: \"0\")" unless tunnel[s]["user"] == "0" }

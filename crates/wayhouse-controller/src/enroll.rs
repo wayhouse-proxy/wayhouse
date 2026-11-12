@@ -206,6 +206,9 @@ struct MintBody {
     uses: Option<u64>,
     /// Aggregator only: the parent this tier pushes to.
     parent_url: Option<String>,
+    /// Agent and proxy only: the code then redeems under any name that starts with this prefix
+    /// (and ends the redeem's `name`), one identity per pod. It must end in `-`.
+    name_prefix: Option<String>,
     /// Roles that need it only; never logged, never stored.
     step_up: Option<String>,
 }
@@ -258,13 +261,13 @@ fn parent_url_ok(u: &str) -> bool {
         })
 }
 
-/// `POST /enrollments`: `{role?, name, ttl_secs?, uses?, parent_url?, step_up?}`. The code is
+/// `POST /enrollments`: `{role?, name, ttl_secs?, uses?, parent_url?, name_prefix?, step_up?}`. The code is
 /// in this answer and nowhere else, ever: the store keeps a hash.
 async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) -> Response {
     let Ok(b) = serde_json::from_slice::<MintBody>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
-            "the body must be {\"role\"?: \"agent|proxy|aggregator|ui|controller\", \"name\": \"...\", \"ttl_secs\"?, \"uses\"?, \"parent_url\"?, \"step_up\"?}",
+            "the body must be {\"role\"?: \"agent|proxy|aggregator|ui|controller\", \"name\": \"...\", \"ttl_secs\"?, \"uses\"?, \"parent_url\"?, \"name_prefix\"?, \"step_up\"?}",
         );
     };
     let who = actor(&headers);
@@ -289,6 +292,18 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
             StatusCode::BAD_REQUEST,
             "a ui or controller code is single use",
         );
+    }
+    if let Some(p) = &b.name_prefix {
+        let ok = matches!(b.role, Role::Agent | Role::Proxy)
+            && p.len() > 1
+            && p.ends_with('-')
+            && crate::registry::validate_name(p).is_ok();
+        if !ok {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "name_prefix is for an agent or proxy code and must be a name ending in '-'",
+            );
+        }
     }
     if b.parent_url
         .as_deref()
@@ -321,6 +336,9 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
     }
     if let Some(u) = &b.parent_url {
         record["parent_url"] = u.as_str().into();
+    }
+    if let Some(p) = &b.name_prefix {
+        record["name_prefix"] = p.as_str().into();
     }
     // A controller code carries the node id the replica will have. The id is picked above every
     // member and every other code; the store refuses a duplicate atomically, so a clash with a
@@ -471,7 +489,7 @@ fn too_many() -> Response {
     r
 }
 
-/// `POST /enroll`: `{code, role}`. Unauthenticated by design, so it is the most guarded route:
+/// `POST /enroll`: `{code, role, name?}`. Unauthenticated by design, so it is the most guarded route:
 /// 1 KiB body, a per-address and a per-code-id attempt limit, one answer for every kind of
 /// refusal, nothing secret in a log line.
 async fn redeem(
@@ -486,7 +504,7 @@ async fn redeem(
     let Ok(req) = serde_json::from_slice::<RedeemRequest>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
-            "the body must be {\"code\": \"...\", \"role\": \"agent|proxy|aggregator|ui|controller\"}",
+            "the body must be {\"code\": \"...\", \"role\": \"agent|proxy|aggregator|ui|controller\", \"name\"?: \"...\"}",
         );
     };
     let Ok(code) = Code::parse(&req.code) else {
@@ -496,7 +514,7 @@ async fn redeem(
     if !st.limiter.take(&id_key, PER_ID) {
         return too_many();
     }
-    let (name, parent_url, node_id) = match st.ui.store.get(Kind::Enrollment, code.id()) {
+    let (name, parent_url, node_id, prefix) = match st.ui.store.get(Kind::Enrollment, code.id()) {
         // The hash is checked here too, so a configuration answer (503) is only ever given to
         // the holder of the code.
         Ok(Some(rec))
@@ -509,13 +527,46 @@ async fn redeem(
                 rec["origin"].as_str().unwrap_or_default().to_owned(),
                 rec["parent_url"].as_str().map(str::to_owned),
                 rec["node_id"].as_u64(),
+                rec["name_prefix"].as_str().map(str::to_owned),
             )
         }
         Ok(_) => return refused(),
         Err(e) => return internal(e),
     };
     let role = req.role;
-    drop(req);
+    // A prefix code is for many pods: each names itself, inside the prefix. Checked before the
+    // use is spent, and only for the holder of a valid code.
+    let name = match (prefix, req.name) {
+        (None, None) => name,
+        (Some(p), Some(n))
+            if n.len() > p.len()
+                && n.starts_with(&p)
+                && crate::registry::validate_name(&n).is_ok() =>
+        {
+            n
+        }
+        (Some(_), Some(n)) if n.len() > crate::registry::NAME_MAX => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "name too long: at most {} characters",
+                    crate::registry::NAME_MAX
+                ),
+            )
+        }
+        (Some(p), _) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                format!("this code needs a name that starts with {p:?}"),
+            )
+        }
+        (None, Some(_)) => {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "this code has a fixed name; do not pass one",
+            )
+        }
+    };
     if let Some(why) = not_ready(&st, role) {
         // Before the use is spent: an operator can fix this and retry with the same code.
         return err(StatusCode::SERVICE_UNAVAILABLE, why);
@@ -541,6 +592,13 @@ async fn redeem(
         Ok(_) => return internal("unexpected answer to a redeem"),
         Err(r) => return r,
     }
+    // An agent that enrolls under a name that already has a token takes that identity over.
+    let replaced = role == Role::Agent
+        && st
+            .ui
+            .store
+            .list(Kind::OriginToken)
+            .is_ok_and(|l| l.iter().any(|(_, v)| v["origin"] == name.as_str()));
     let mut files = match grant_files(&st, role, &name).await {
         Ok(f) => f,
         Err(r) => return r,
@@ -553,7 +611,7 @@ async fn redeem(
     }
     st.limiter.refund(&ip);
     st.limiter.refund(&id_key);
-    tracing::warn!(enrollment = code.id(), role = role.as_str(), name = %name, "enrollment code redeemed");
+    tracing::warn!(enrollment = code.id(), role = role.as_str(), name = %name, replaced, "enrollment code redeemed");
     no_store(
         Json(RedeemResponse {
             name,
@@ -1147,6 +1205,136 @@ mod tests {
             "10.0.0.1",
         )
         .await
+    }
+
+    async fn redeem_named(t: &T, code: &str, role: &str, name: Value) -> (StatusCode, Value) {
+        call(
+            &t.app,
+            "POST",
+            "/enroll",
+            json!({"code": code, "role": role, "name": name}),
+            None,
+            "10.0.0.2",
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_prefix_code_gives_each_pod_its_own_name_and_token_within_the_prefix() {
+        let t = setup(Some(KEY));
+        let (st, m) = mint_as(
+            &t,
+            json!({"role": "agent", "name": "pods", "name_prefix": "k8s-", "uses": 3}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{m}");
+        let code = m["code"].as_str().unwrap();
+        let mut tokens = Vec::new();
+        for n in ["k8s-node-a", "k8s-node-b"] {
+            let (st, v) = redeem_named(&t, code, "agent", n.into()).await;
+            assert_eq!(st, StatusCode::OK, "{v}");
+            assert_eq!(v["name"], n);
+            tokens.push(v["files"]["agent-token"].as_str().unwrap().to_owned());
+        }
+        assert_ne!(tokens[0], tokens[1], "one token per pod");
+        // Outside the prefix, the prefix alone, a bad name and no name are refused without
+        // spending a use.
+        for bad in [
+            json!("other-node"),
+            json!("k8s-"),
+            json!("k8s-bad name"),
+            Value::Null,
+        ] {
+            let (st, _) = redeem_named(&t, code, "agent", bad).await;
+            assert_eq!(st, StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(
+            redeem_named(&t, code, "agent", "k8s-node-c".into()).await.0,
+            StatusCode::OK,
+            "the refused names left the last use"
+        );
+        assert_eq!(
+            redeem_named(&t, code, "agent", "k8s-node-d".into()).await.0,
+            StatusCode::UNAUTHORIZED,
+            "out of uses"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_name_over_the_limit_says_so_and_a_re_enroll_replaces_the_token() {
+        let t = setup(Some(KEY));
+        let (_, m) = mint_as(
+            &t,
+            json!({"role": "agent", "name": "pods", "name_prefix": "k8s-", "uses": 4}),
+        )
+        .await;
+        let code = m["code"].as_str().unwrap();
+        let long = format!("k8s-{}", "x".repeat(70));
+        let (st, v) = redeem_named(&t, code, "agent", long.into()).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("too long"), "{v}");
+        let (_, first) = redeem_named(&t, code, "agent", "k8s-a".into()).await;
+        let (_, again) = redeem_named(&t, code, "agent", "k8s-a".into()).await;
+        assert_ne!(first["files"]["agent-token"], again["files"]["agent-token"]);
+    }
+
+    #[tokio::test]
+    async fn a_name_is_only_for_a_prefix_code_and_a_prefix_only_for_agents_and_proxies() {
+        let t = setup(Some(KEY));
+        let code = mint(&t, "plain").await;
+        let (st, _) = redeem_named(&t, &code, "agent", "plain".into()).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "a plain code has a fixed name");
+        for body in [
+            json!({"role": "aggregator", "name": "a", "name_prefix": "k8s-"}),
+            json!({"role": "ui", "name": "a", "name_prefix": "k8s-"}),
+            json!({"role": "controller", "name": "a", "name_prefix": "k8s-", "step_up": STEP_UP}),
+            json!({"role": "agent", "name": "a", "name_prefix": "k8s"}),
+            json!({"role": "agent", "name": "a", "name_prefix": "bad prefix-"}),
+            json!({"role": "agent", "name": "a", "name_prefix": ""}),
+        ] {
+            assert_eq!(
+                mint_as(&t, body.clone()).await.0,
+                StatusCode::BAD_REQUEST,
+                "{body}"
+            );
+        }
+        let (st, m) = mint_as(
+            &t,
+            json!({"role": "proxy", "name": "p", "name_prefix": "edge-", "uses": 50, "step_up": STEP_UP}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{m}");
+        let (st, v) =
+            redeem_named(&t, m["code"].as_str().unwrap(), "proxy", "edge-n1".into()).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["name"], "edge-n1");
+    }
+
+    #[tokio::test]
+    async fn a_multi_use_prefix_code_stops_working_after_its_ttl() {
+        let t = setup(Some(KEY));
+        let (_, m) = mint_as(
+            &t,
+            json!({"role": "agent", "name": "pods", "name_prefix": "k8s-", "uses": 5}),
+        )
+        .await;
+        let code = m["code"].as_str().unwrap();
+        let id = code.split('.').next().unwrap();
+        assert_eq!(
+            redeem_named(&t, code, "agent", "k8s-a".into()).await.0,
+            StatusCode::OK
+        );
+        let mut rec = t.store.get(Kind::Enrollment, id).unwrap().unwrap();
+        rec["expires_at"] = 1.into();
+        t.store
+            .apply_local(&UiOp::Put {
+                kind: Kind::Enrollment,
+                name: id.into(),
+                value: rec,
+            })
+            .unwrap();
+        let (st, _) = redeem_named(&t, code, "agent", "k8s-b".into()).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED, "uses left but expired");
     }
 
     async fn redeem_as(t: &T, code: &str, role: &str) -> (StatusCode, Value) {

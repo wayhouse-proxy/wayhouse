@@ -38,6 +38,14 @@ pub struct EnrollArgs {
     /// `--ha-peers` takes it (`https://host:port`). The cluster dials it to add this node.
     #[arg(long, value_name = "URL")]
     pub advertise: Option<String>,
+    /// This node's name, for a code minted with a name prefix (one code for many pods, such as a
+    /// DaemonSet's init container). The controller refuses a name outside the prefix.
+    #[arg(long)]
+    pub name: Option<String>,
+    /// `enroll` only: exit 0 without redeeming when `--data-dir` is already enrolled, so an init
+    /// container that runs again (the pod's sandbox restarted) does not spend another use.
+    #[arg(long)]
+    pub skip_if_enrolled: bool,
 }
 
 #[derive(Args, Debug)]
@@ -134,6 +142,7 @@ async fn enroll_into(role: Role, e: &EnrollArgs, dir: &std::path::Path) -> Resul
         role,
         dir,
         e.advertise.as_deref(),
+        e.name.as_deref(),
     )
     .await
 }
@@ -152,6 +161,16 @@ pub async fn run(role: Role, bin: &'static str, argv: Vec<OsString>) -> Result<(
     match NodeCli::parse_from(argv).cmd {
         Cmd::Enroll(e) => {
             let dir = e.data_dir.clone().unwrap_or_else(|| default_dir(role));
+            // Only "already enrolled" skips; any other problem with the directory is an error.
+            let enrolled = matches!(
+                crate::files::check_fresh(&dir),
+                Err(crate::files::FileError::Io { ref source, .. })
+                    if source.kind() == std::io::ErrorKind::AlreadyExists
+            );
+            if e.skip_if_enrolled && enrolled {
+                eprintln!("{} is already enrolled; nothing to do", dir.display());
+                return Ok(());
+            }
             crate::files::check_fresh(&dir)?;
             let name = enroll_into(role, &e, &dir).await?;
             eprintln!(
@@ -184,4 +203,28 @@ pub async fn run(role: Role, bin: &'static str, argv: Vec<OsString>) -> Result<(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn skip_if_enrolled_leaves_an_enrolled_directory_alone_without_asking_the_controller() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(t.path().join(crate::files::META_FILE), "{}").unwrap();
+        let argv = |skip: bool| -> Vec<OsString> {
+            let mut a: Vec<OsString> = ["x", "enroll", "--controller-url=http://127.0.0.1:1"]
+                .map(Into::into)
+                .into();
+            a.push(format!("--data-dir={}", t.path().display()).into());
+            a.push("--code=aaaaaaaa.bbbb".into());
+            if skip {
+                a.push("--skip-if-enrolled".into());
+            }
+            a
+        };
+        assert!(run(Role::Agent, "x", argv(true)).await.is_ok());
+        assert!(run(Role::Agent, "x", argv(false)).await.is_err());
+    }
 }

@@ -75,6 +75,9 @@ impl Role {
 pub struct RedeemRequest {
     pub code: String,
     pub role: Role,
+    /// The node's own name, for a code minted with a name prefix (one code, many pods).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// What a redeemed code returns: the node's name and its secret files by name. Every value is
@@ -146,8 +149,9 @@ pub async fn enroll(
     role: Role,
     dir: &std::path::Path,
     advertise: Option<&str>,
+    name: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let r = client::redeem(controller_url, pin, code, role).await?;
+    let r = client::redeem(controller_url, pin, code, role, name).await?;
     let mut granted = r.files;
     if role == Role::Aggregator {
         // The aggregator's own admin token never leaves it, so it is made here, not sent.

@@ -118,7 +118,7 @@ async fn init_makes_a_controller_that_serves_https_and_can_be_pinned() -> Result
 
     // The fingerprint `init` printed is the one a pinned redeem needs.
     let pin = Pin::Fingerprint(parse_fingerprint(fingerprint)?);
-    let got = redeem(&base, Some(&pin), &code, Role::Agent)
+    let got = redeem(&base, Some(&pin), &code, Role::Agent, None)
         .await
         .map_err(|e| anyhow::anyhow!("pinned redeem failed: {e}"))?;
     ensure!(got.name == "home");

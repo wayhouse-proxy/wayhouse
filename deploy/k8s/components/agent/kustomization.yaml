@@ -1,0 +1,8 @@
+# An origin agent on every node that runs a game server (docs/11, docs/12 "Kubernetes"): a
+# hostNetwork DaemonSet whose init container enrolls it as agent-<node name> with a multi-use
+# code from the `wayhouse-enroll-code` Secret. Edit --backends in the DaemonSet to the node-local
+# game ports. Needs the `enroll` Secret and a controller started with --tunnel-network.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - 60-wayhouse-agent.yaml

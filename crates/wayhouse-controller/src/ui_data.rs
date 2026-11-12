@@ -458,6 +458,7 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                     "uses_left",
                     "created_by",
                     "parent_url",
+                    "name_prefix",
                     "node_id",
                     "join_hash",
                     "join_until",
@@ -501,6 +502,13 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
             }
             if let Some(u) = obj.get("parent_url") {
                 string_max(u, "parent_url", 512)?;
+            }
+            if let Some(p) = obj.get("name_prefix") {
+                let p = string_max(p, "name_prefix", 64)?;
+                crate::registry::validate_name(p)?;
+                if !matches!(role, Some("agent" | "proxy")) {
+                    return Err("name_prefix is for an agent or proxy code".into());
+                }
             }
             let origin = string_max(obj.get("origin").unwrap_or(&Value::Null), "origin", 64)?;
             crate::registry::validate_name(origin)?;

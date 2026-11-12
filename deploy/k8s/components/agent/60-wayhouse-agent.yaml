@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: wayhouse-agent, namespace: wayhouse }
+spec:
+  selector: { matchLabels: { app: wayhouse-agent } }
+  template:
+    metadata: { labels: { app: wayhouse-agent } }
+    spec:
+      hostNetwork: true                      # the origin's tunnel endpoint is the node
+      dnsPolicy: ClusterFirstWithHostNet     # else the controller Service below won't resolve
+      initContainers:
+        - name: enroll
+          image: wayhouse-deploy/wayhouse-agent:local
+          args:
+            - enroll
+            - --controller-url=https://wayhouse-controller.wayhouse.svc:9901
+            - --controller-ca=/run/tls/ca.crt
+            - --code-file=/run/enroll-code/code
+            - --data-dir=/data
+            - --name=agent-$(NODE_NAME)      # mint the code with name_prefix "agent-"
+            - --skip-if-enrolled             # the pod's sandbox restarted: keep the files, spend no use
+          env:
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+          # Root like the agent below, so the files it writes (0600) are the agent's to read.
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL], add: [DAC_OVERRIDE] }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: enroll-code, mountPath: /run/enroll-code, readOnly: true }
+            - { name: tls, mountPath: /run/tls, readOnly: true }
+      containers:
+        - name: agent
+          image: wayhouse-deploy/wayhouse-agent:local
+          args:
+            - --data-dir=/data                # controller URL, name, agent token and tunnel key come from here
+            - --ca-file=/run/tls/ca.crt
+            - --backends=:25565               # edit: this node's game server port(s)
+            # With a proxy on the same node: its tunnel owns UDP 51820, so give the agent another.
+            # - --listen-port=51821
+          # NET_ADMIN is only in the bounding set for a non-root user, so the tunnel needs root.
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL], add: [NET_ADMIN, DAC_OVERRIDE] }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tls, mountPath: /run/tls, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+            - { name: tun, mountPath: /dev/net/tun }
+      volumes:
+        - name: data
+          # On the node, so a recreated pod keeps its enrollment (and its tunnel key) and
+          # --skip-if-enrolled spends no use. Remove the directory to enroll the node again.
+          hostPath: { path: /var/lib/wayhouse-agent, type: DirectoryOrCreate }
+        - name: tmp
+          emptyDir: {}
+        - name: tun
+          hostPath: { path: /dev/net/tun, type: CharDevice }
+        - name: tls
+          secret:
+            secretName: wayhouse-tls
+            defaultMode: 0440
+            items: [{ key: ca.crt, path: ca.crt }]
+        - name: enroll-code
+          secret:
+            secretName: wayhouse-enroll-code   # key `code`; you create it, it holds the multi-use code
+            defaultMode: 0440
+            items: [{ key: code, path: code }]

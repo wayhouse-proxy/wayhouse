@@ -1,0 +1,9 @@
+# `single` with per-node enrollment: proxies and origin agents redeem a multi-use code from the
+# `wayhouse-enroll-code` Secret instead of mounting shared tokens (deploy/README.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../single
+components:
+  - ../../components/enroll
+  - ../../components/agent

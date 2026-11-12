@@ -80,7 +80,7 @@ async fn the_code_goes_only_to_a_controller_matching_the_pin() -> Result<()> {
     // A wrong fingerprint aborts the handshake: the code is never sent, never spent.
     let code = mint("home").await?;
     let wrong = Pin::Fingerprint([0u8; 32]);
-    ensure!(redeem(&base, Some(&wrong), &code, Role::Agent)
+    ensure!(redeem(&base, Some(&wrong), &code, Role::Agent, None)
         .await
         .is_err());
     let list: serde_json::Value = admin
@@ -96,13 +96,15 @@ async fn the_code_goes_only_to_a_controller_matching_the_pin() -> Result<()> {
 
     // The right fingerprint redeems it, once.
     let pin = Pin::Fingerprint(leaf_fingerprint()?);
-    let got = redeem(&base, Some(&pin), &code, Role::Agent)
+    let got = redeem(&base, Some(&pin), &code, Role::Agent, None)
         .await
         .ok()
         .ok_or_else(|| anyhow::anyhow!("pinned redeem failed"))?;
     ensure!(got.name == "home" && got.files.contains_key("tunnel-psk"));
     ensure!(
-        redeem(&base, Some(&pin), &code, Role::Agent).await.is_err(),
+        redeem(&base, Some(&pin), &code, Role::Agent, None)
+            .await
+            .is_err(),
         "a spent code redeemed twice"
     );
 
@@ -113,6 +115,7 @@ async fn the_code_goes_only_to_a_controller_matching_the_pin() -> Result<()> {
         Some(&Pin::CaFile(TEST_CA.into())),
         &second,
         Role::Agent,
+        None,
     )
     .await;
     ensure!(
