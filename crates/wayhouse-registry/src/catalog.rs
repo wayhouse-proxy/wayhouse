@@ -21,6 +21,8 @@ pub enum CatalogProblem {
     BadDate(String),
     #[error("detail_url must be an https:// URL with a host and no user info, got {0:?}")]
     BadDetailUrl(String),
+    #[error("homepage must be an https:// URL with a host and no user info, got {0:?}")]
+    BadHomepage(String),
     #[error("list either `versions` or a `detail_url`, not both and not neither")]
     VersionsOrDetail,
     #[error("`latest`, `abi` and `signed` must describe the newest listed version")]
@@ -94,6 +96,7 @@ pub struct Catalog<'a> {
     pub categories: &'a [String],
     pub tags: &'a [String],
     pub updated: &'a str,
+    pub homepage: Option<&'a str>,
     pub detail_url: Option<&'a str>,
     pub latest: &'a semver::Version,
     pub abi: &'a str,
@@ -104,6 +107,10 @@ pub struct Catalog<'a> {
 
 impl Catalog<'_> {
     pub fn check(&self) -> Result<(), CatalogProblem> {
+        // The UI renders it as a link, so a `javascript:` or `http:` value must not get through.
+        if let Some(h) = self.homepage {
+            check_https_url(h).map_err(|_| CatalogProblem::BadHomepage(h.to_owned()))?;
+        }
         check_labels(self.categories, self.tags)?;
         if !valid_date(self.updated) {
             return Err(CatalogProblem::BadDate(self.updated.to_owned()));

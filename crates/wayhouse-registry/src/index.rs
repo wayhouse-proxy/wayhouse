@@ -263,6 +263,7 @@ impl SnifferEntry {
             categories: &self.categories,
             tags: &self.tags,
             updated: &self.updated,
+            homepage: self.homepage.as_deref(),
             detail_url: self.detail_url.as_deref(),
             latest: &self.latest,
             abi: &self.abi,
@@ -729,6 +730,24 @@ mod tests {
         let mut v = example();
         v["sniffers"][0]["signed"] = false.into();
         assert_eq!(catalog_problem(&v), CatalogProblem::LatestMismatch);
+    }
+
+    #[test]
+    fn a_homepage_must_be_an_https_url() {
+        for bad in [
+            "javascript:alert(1)",
+            "http://example.com",
+            "https://u:p@example.com/",
+            "example.com",
+        ] {
+            let mut v = example();
+            v["sniffers"][0]["homepage"] = bad.into();
+            assert_eq!(
+                catalog_problem(&v),
+                CatalogProblem::BadHomepage(bad.into()),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

@@ -245,6 +245,7 @@ impl PluginEntry {
             categories: &self.categories,
             tags: &self.tags,
             updated: &self.updated,
+            homepage: self.homepage.as_deref(),
             detail_url: self.detail_url.as_deref(),
             latest: &self.latest,
             abi: &self.abi,
