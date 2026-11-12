@@ -4732,6 +4732,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wayhouse-enroll",
  "wayhouse-http",
 ]
 

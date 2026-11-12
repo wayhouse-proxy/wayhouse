@@ -325,6 +325,7 @@ mod tests {
                     endpoint: None,
                     backends: vec![],
                     tunnel_address: None,
+                    psk_secret: None,
                 })
                 .unwrap(),
             )
@@ -345,6 +346,7 @@ mod tests {
                     endpoint: None,
                     backends: vec!["10.60.0.2:1".into()],
                     tunnel_address: None,
+                    psk_secret: None,
                 })
                 .unwrap(),
             )

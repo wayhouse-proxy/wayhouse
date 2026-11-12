@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use defguard_wireguard_rs::net::IpAddrMask;
+use defguard_wireguard_rs::key::Key;
 use defguard_wireguard_rs::peer::Peer;
 use defguard_wireguard_rs::WireguardInterfaceApi;
 
@@ -49,6 +50,9 @@ pub struct LiveInterface {
     /// works from a snapshot, so a subscription event must not land in the
     /// middle of one and then be overtaken by it.
     peer_edit: Mutex<()>,
+    /// This origin's tunnel preshared key, applied to every proxy peer. A peer re-created from
+    /// what the device reports must get it back: the kernel does not reveal a peer's key.
+    psk: Option<Key>,
 }
 
 impl LiveInterface {
@@ -68,7 +72,17 @@ impl LiveInterface {
             delete_link,
             lost: Mutex::new(Vec::new()),
             peer_edit: Mutex::new(()),
+            psk: None,
         }
+    }
+
+    pub fn with_psk(mut self, psk: Option<Key>) -> Self {
+        self.psk = psk;
+        self
+    }
+
+    pub fn psk(&self) -> Option<&Key> {
+        self.psk.as_ref()
     }
 
     /// Runs `f`, an edit of the device's peers, so that it never interleaves
@@ -143,6 +157,11 @@ impl LiveInterface {
         let host = self.wg.read_interface_data()?;
         let mut targets = Vec::new();
         for peer in host.peers.values() {
+            let mut peer = peer.clone();
+            if peer.preshared_key.is_none() {
+                peer.preshared_key.clone_from(&self.psk);
+            }
+            let peer = &peer;
             if let Err(e) = self.wg.remove_peer(&peer.public_key) {
                 tracing::debug!(error = %e, "removing a peer to renew its session");
             }
@@ -525,6 +544,28 @@ mod tests {
             defguard_wireguard_rs::peer::Peer::new(defguard_wireguard_rs::key::Key::new([n; 32]));
         p.allowed_ips.push(mask(ip));
         p
+    }
+
+
+    #[test]
+    fn renewed_peers_get_the_psk_back_even_when_the_device_does_not_report_it() {
+        use defguard_wireguard_rs::key::Key;
+        let psk = Key::new([9; 32]);
+        let log = Log::default();
+        let live = live_with_peers(&[], &[], &[peer(7, "fd00::2/128")], &log).with_psk(Some(psk.clone()));
+        live.renew_peers().unwrap();
+        let host = live.api().read_interface_data().unwrap();
+        assert_eq!(host.peers[&Key::new([7; 32])].preshared_key, Some(psk));
+    }
+
+    #[test]
+    fn without_a_psk_renewal_leaves_peers_unkeyed() {
+        use defguard_wireguard_rs::key::Key;
+        let log = Log::default();
+        let live = live_with_peers(&[], &[], &[peer(7, "fd00::2/128")], &log);
+        live.renew_peers().unwrap();
+        let host = live.api().read_interface_data().unwrap();
+        assert_eq!(host.peers[&Key::new([7; 32])].preshared_key, None);
     }
 
     #[test]

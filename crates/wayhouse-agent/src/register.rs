@@ -27,6 +27,8 @@ struct PeerRegistration<'a> {
     backends: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
     tunnel_address: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    psk_secret: Option<&'a str>,
 }
 
 /// What the controller answers to a successful `POST /peers`.
@@ -48,6 +50,9 @@ pub struct Registration {
     pub backends: Vec<String>,
     /// A pinned tunnel address (bare IP); `None` asks the controller to allocate.
     pub address: Option<String>,
+    /// The sealed secret holding this origin's tunnel PSK, when it has one; proxies read it
+    /// from there. The name only, never the key.
+    pub psk_secret: Option<String>,
 }
 
 fn body(reg: &Registration) -> PeerRegistration<'_> {
@@ -57,6 +62,7 @@ fn body(reg: &Registration) -> PeerRegistration<'_> {
         endpoint: reg.endpoint.as_deref(),
         backends: &reg.backends,
         tunnel_address: reg.address.as_deref(),
+        psk_secret: reg.psk_secret.as_deref(),
     }
 }
 

@@ -363,6 +363,7 @@ mod tests {
             endpoint: None,
             backends: vec![format!("{address}:25565")],
             tunnel_address: Some(address.into()),
+            psk_secret: None,
         }
     }
 

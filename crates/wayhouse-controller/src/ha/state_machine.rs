@@ -1643,6 +1643,7 @@ mod tests {
                 .map(std::string::ToString::to_string)
                 .collect(),
             tunnel_address: address.map(Into::into),
+            psk_secret: None,
         }
     }
 

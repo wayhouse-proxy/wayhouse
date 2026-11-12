@@ -34,11 +34,42 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use defguard_wireguard_rs::key::Key;
 use defguard_wireguard_rs::net::IpAddrMask;
 use defguard_wireguard_rs::peer::Peer;
 use tracing_subscriber::EnvFilter;
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Redeem a one-time enrollment code and save this origin's identity files into
+    /// `--data-dir`; afterwards `wayhouse-agent --data-dir D ...` needs no URL, name, token or
+    /// tunnel key flags.
+    Enroll(EnrollArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct EnrollArgs {
+    /// Directory to write `enrollment.json`, `agent-token` and `tunnel-psk` into (mode 0700).
+    #[arg(long, default_value = "wayhouse-agent-data")]
+    data_dir: PathBuf,
+    /// Base URL of the controller. Must be `https://` (plain `http://` only to loopback).
+    #[arg(long)]
+    controller_url: String,
+    /// The controller's TLS leaf certificate as `sha256:<hex>` (what the minting UI shows).
+    #[arg(long, value_name = "SHA256", conflicts_with = "controller_ca")]
+    pin: Option<String>,
+    /// PEM file of the CA that signed the controller's certificate, trusted instead of the
+    /// built-in roots.
+    #[arg(long, value_name = "PATH")]
+    controller_ca: Option<PathBuf>,
+    /// The code itself. Visible in `ps`; prefer `--code-file` or the prompt.
+    #[arg(long)]
+    code: Option<String>,
+    /// File holding the code (or set `WAYHOUSE_ENROLL_CODE_FILE` / `WAYHOUSE_ENROLL_CODE`).
+    #[arg(long, value_name = "PATH")]
+    code_file: Option<PathBuf>,
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -47,6 +78,9 @@ use tracing_subscriber::EnvFilter;
     about = "Origin-side WireGuard agent for wayhouse's backend transport (phase 14, docs/11)"
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Directory holding this agent's persisted WireGuard private key
     /// (created if missing). The key is this origin's stable identity —
     /// never regenerated once it exists.
@@ -56,7 +90,7 @@ struct Args {
     /// Base URL of the `wayhouse-controller` backend-peers registry, e.g.
     /// `http://127.0.0.1:9901`.
     #[arg(long)]
-    controller_url: String,
+    controller_url: Option<String>,
 
     /// Bearer token for the controller, if `--auth-token` is set there.
     #[arg(long, value_name = "PATH")]
@@ -71,7 +105,13 @@ struct Args {
     /// pubkey`-pinned `tunnel` source (phase 14 slice 5) will look this
     /// origin up by.
     #[arg(long)]
-    name: String,
+    name: Option<String>,
+
+    /// File holding this origin's tunnel preshared key (base64, 32 bytes). Defaults to
+    /// `<data-dir>/tunnel-psk` when that exists (written by `enroll`). Set on the controller
+    /// side by enrollment; both ends must hold the same key.
+    #[arg(long, value_name = "PATH")]
+    tunnel_psk_file: Option<PathBuf>,
 
     /// Local WireGuard interface name.
     #[arg(long, default_value = "wayhouse-agent0")]
@@ -137,11 +177,39 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut args = Args::parse();
+    if let Some(Command::Enroll(e)) = args.command.take() {
+        return enroll(e).await;
+    }
+    let enrolled = enrolled_defaults(&args.data_dir)?;
+    args.controller_url = args.controller_url.or(enrolled.controller_url);
+    args.name = args.name.or(enrolled.name);
+    args.tunnel_psk_file = args.tunnel_psk_file.or(enrolled.psk_file);
+    let (Some(controller_url), Some(name)) = (args.controller_url.clone(), args.name.clone())
+    else {
+        anyhow::bail!(
+            "--controller-url and --name are required (or run `wayhouse-agent enroll` first)"
+        );
+    };
+    let psk = args
+        .tunnel_psk_file
+        .as_deref()
+        .map(wayhouse_enroll::files::read_psk)
+        .transpose()?
+        .map(|k| Key::try_from(k.as_str()))
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("the tunnel key is not a WireGuard key: {e}"))?;
     args.controller_token = wayhouse_http::secret_arg::resolve(
         "controller-token",
         args.controller_token_file.as_deref(),
     )
-    .map_err(anyhow::Error::msg)?;
+.map_err(anyhow::Error::msg)?;
+    // Last resort, after --controller-token-file, the credentials directory and the environment.
+    if args.controller_token.is_none() {
+        if let Some(p) = &enrolled.token_file {
+            args.controller_token = wayhouse_http::secret_arg::resolve("controller-token", Some(p))
+                .map_err(anyhow::Error::msg)?;
+        }
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -176,7 +244,8 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("--address {c:?} must be an ip/prefix: {e}"))?;
     }
     let reg = register::Registration {
-        name: args.name.clone(),
+        name: name.clone(),
+        psk_secret: psk.is_some().then(|| wayhouse_enroll::psk_secret_name(&name)),
         pubkey: pubkey.clone(),
         endpoint: args.endpoint.clone(),
         backends: args.backends.clone(),
@@ -186,7 +255,7 @@ async fn main() -> anyhow::Result<()> {
     let addr_path = args.data_dir.join("tunnel-address");
     let outcome = register::register_with_retry(
         &client,
-        &args.controller_url,
+        &controller_url,
         args.controller_token.as_deref(),
         &reg,
         Duration::from_secs(30),
@@ -237,6 +306,7 @@ async fn main() -> anyhow::Result<()> {
         // proxy's route.
         peer.allowed_ips = vec![IpAddrMask::host(peer_ip)];
         peer.persistent_keepalive_interval = Some(25);
+        peer.preshared_key.clone_from(&psk);
         tracing::info!(pubkey = %peer_pubkey, endpoint = %endpoint, "peering with the edge proxy");
         peers.push(peer);
     }
@@ -252,12 +322,15 @@ async fn main() -> anyhow::Result<()> {
         )
         .context("bringing up the local WireGuard interface")?,
     );
-    let live = Arc::new(live_interface::LiveInterface::new(
-        wg,
-        address,
-        netlink_addr::deleter(args.iface.clone()),
-        netlink_addr::link_deleter(args.iface.clone()),
-    ));
+    let live = Arc::new(
+        live_interface::LiveInterface::new(
+            wg,
+            address,
+            netlink_addr::deleter(args.iface.clone()),
+            netlink_addr::link_deleter(args.iface.clone()),
+        )
+        .with_psk(psk),
+    );
     tracing::info!(iface = %args.iface, port = args.listen_port, "wireguard interface up");
     if let Some(ip) = args.peer_address.as_deref().and_then(|a| a.parse().ok()) {
         interface::kick_handshake(ip);
@@ -265,7 +338,7 @@ async fn main() -> anyhow::Result<()> {
 
     tokio::spawn(register::run(
         client,
-        args.controller_url.clone(),
+        controller_url.clone(),
         args.controller_token.clone(),
         reg,
         Duration::from_secs(args.register_interval_sec),
@@ -278,7 +351,7 @@ async fn main() -> anyhow::Result<()> {
     // Phase 14 slice 7: learn about every edge proxy, not just a manually
     // pinned one — see `proxy_subscribe`'s module doc.
     let subscribe_task = tokio::spawn(proxy_subscribe::run(
-        args.controller_url.clone(),
+        controller_url.clone(),
         args.controller_token.clone(),
         live.clone(),
     ));
@@ -291,5 +364,54 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = live.remove() {
         tracing::warn!(error = %e, "failed to remove the wireguard interface cleanly");
     }
+    Ok(())
+}
+
+/// What an earlier `enroll` left in the data dir; each field is `None` when it is missing.
+#[derive(Default)]
+struct Enrolled {
+    controller_url: Option<String>,
+    name: Option<String>,
+    token_file: Option<PathBuf>,
+    psk_file: Option<PathBuf>,
+}
+
+fn enrolled_defaults(dir: &std::path::Path) -> anyhow::Result<Enrolled> {
+    use wayhouse_enroll::files::{read_meta, PSK_FILE, TOKEN_FILE};
+    let existing = |name: &str| Some(dir.join(name)).filter(|p| p.is_file());
+    if !dir.join(wayhouse_enroll::files::META_FILE).is_file() {
+        return Ok(Enrolled { psk_file: existing(PSK_FILE), ..Enrolled::default() });
+    }
+    let meta = read_meta(dir)?;
+    Ok(Enrolled {
+        controller_url: Some(meta.controller_url),
+        name: Some(meta.name),
+        token_file: existing(TOKEN_FILE),
+        psk_file: existing(PSK_FILE),
+    })
+}
+
+async fn enroll(e: EnrollArgs) -> anyhow::Result<()> {
+    use wayhouse_enroll::client::{parse_fingerprint, Pin};
+    let pin = match (&e.pin, &e.controller_ca) {
+        (Some(fp), None) => Pin::Fingerprint(parse_fingerprint(fp)?),
+        (None, Some(ca)) => Pin::CaFile(ca.clone()),
+        _ => anyhow::bail!(
+            "pass the controller's certificate fingerprint with --pin, or its CA with --controller-ca"
+        ),
+    };
+    let code = wayhouse_enroll::input::resolve(
+        e.code.as_deref(),
+        e.code_file.as_deref(),
+        |k| std::env::var(k).ok(),
+        wayhouse_enroll::input::tty_prompt,
+    )?;
+    let name = wayhouse_enroll::enroll_agent(&e.controller_url, &pin, &code, &e.data_dir)
+        .await
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
+    eprintln!(
+        "enrolled as {name:?}; identity written to {} (nothing else to configure but --backends)",
+        e.data_dir.display()
+    );
     Ok(())
 }

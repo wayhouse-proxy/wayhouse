@@ -59,11 +59,13 @@ fn write_private(path: &Path, data: &[u8]) -> Result<(), FileError> {
     f.write_all(data).map_err(io(path))
 }
 
-pub fn write(dir: &Path, meta: &Meta, agent_token: &str, psk: &str) -> Result<(), FileError> {
+pub fn write(dir: &Path, meta: &Meta, agent_token: Option<&str>, psk: &str) -> Result<(), FileError> {
     private_dir(dir)?;
     let meta_json = serde_json::to_vec_pretty(meta).expect("meta serializes");
     write_private(&dir.join(META_FILE), &meta_json)?;
-    write_private(&dir.join(TOKEN_FILE), agent_token.as_bytes())?;
+    if let Some(t) = agent_token {
+        write_private(&dir.join(TOKEN_FILE), t.as_bytes())?;
+    }
     write_private(&dir.join(PSK_FILE), psk.as_bytes())
 }
 
@@ -105,7 +107,7 @@ mod tests {
         let dir = t.path().join("node");
         let psk = crate::generate_psk();
         let meta = Meta { controller_url: "https://c".into(), name: "home".into(), role: Role::Agent };
-        write(&dir, &meta, "tok-tok-tok-tok-tok", &psk).unwrap();
+        write(&dir, &meta, Some("tok-tok-tok-tok-tok"), &psk).unwrap();
         assert_eq!(mode(&dir), 0o700);
         for f in [META_FILE, TOKEN_FILE, PSK_FILE] {
             assert_eq!(mode(&dir.join(f)), 0o600, "{f}");
@@ -119,7 +121,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         std::fs::set_permissions(t.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let meta = Meta { controller_url: "https://c".into(), name: "n".into(), role: Role::Agent };
-        write(t.path(), &meta, "tok-tok-tok-tok-tok", "not-a-key").unwrap();
+        write(t.path(), &meta, Some("tok-tok-tok-tok-tok"), "not-a-key").unwrap();
         assert_eq!(mode(t.path()), 0o700);
         assert!(matches!(read_psk(&t.path().join(PSK_FILE)), Err(FileError::BadPsk { .. })));
     }

@@ -8,6 +8,7 @@
 pub mod client;
 pub mod code;
 pub mod files;
+pub mod input;
 
 use serde::{Deserialize, Serialize};
 
@@ -55,4 +56,18 @@ pub fn generate_psk() -> zeroize::Zeroizing<String> {
     let mut k = zeroize::Zeroizing::new([0u8; 32]);
     rand::rngs::OsRng.fill_bytes(&mut *k);
     zeroize::Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(*k))
+}
+
+/// Redeems `code` at `controller_url` (pin-checked) and writes the node's files into `dir`.
+/// Returns the enrolled name. Nothing secret is returned or logged.
+pub async fn enroll_agent(
+    controller_url: &str,
+    pin: &client::Pin,
+    code: &Code,
+    dir: &std::path::Path,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let r = client::redeem(controller_url, pin, code, Role::Agent).await?;
+    let meta = files::Meta { controller_url: controller_url.to_owned(), name: r.name.clone(), role: r.role };
+    files::write(dir, &meta, r.agent_token.as_deref(), &r.tunnel_psk)?;
+    Ok(r.name)
 }

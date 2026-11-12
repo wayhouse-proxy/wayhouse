@@ -989,6 +989,7 @@ mod tests {
             endpoint: None,
             backends: vec![],
             tunnel_address: Some("10.60.0.1".into()),
+            psk_secret: None,
         }
     }
 
