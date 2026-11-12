@@ -442,6 +442,13 @@ export function releaseTunnelAddress(
   return requestJson(`/api/tunnel/${base}/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
+/** Starts rotating an origin's tunnel key: the controller's `POST /peers/{name}/psk/rotate`. */
+export function rotateOriginPsk(name: string): Promise<{ name: string; active: string; pending: string }> {
+  return requestJson(`/api/tunnel/origins/${encodeURIComponent(name)}/psk/rotate`, {
+    method: "POST",
+  });
+}
+
 // --- enrollment codes (proxied to wayhouse-controller; admin-only) ---
 
 export interface MintRequest {

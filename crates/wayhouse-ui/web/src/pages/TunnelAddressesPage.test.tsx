@@ -7,6 +7,7 @@ import { ApiError } from "../api";
 const api = vi.hoisted(() => ({
   getTunnelAddresses: vi.fn(),
   releaseTunnelAddress: vi.fn(),
+  rotateOriginPsk: vi.fn(),
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
 
@@ -17,6 +18,7 @@ const render = (ui: React.ReactElement) => rtlRender(<MemoryRouter>{ui}</MemoryR
 
 beforeEach(() => {
   vi.spyOn(Date, "now").mockReturnValue(NOW * 1000);
+  api.rotateOriginPsk.mockReset().mockResolvedValue({ name: "fra-origin", active: "a", pending: "b" });
   api.releaseTunnelAddress.mockReset().mockResolvedValue({ revision: 5, released: "10.200.0.3" });
   api.getTunnelAddresses.mockReset().mockResolvedValue({
     network: "10.200.0.0/24",
@@ -102,6 +104,26 @@ describe("TunnelAddressesPage", () => {
     await userEvent.click(screen.getByRole("button", { name: "Release address" }));
     expect(api.releaseTunnelAddress).toHaveBeenCalledWith("origin", "fra-origin");
     expect(await screen.findByText(/release fra-origin failed: no such origin/)).toBeInTheDocument();
+  });
+
+  it("rotates an origin's key after a confirmation, and offers no rotation for a proxy", async () => {
+    render(<TunnelAddressesPage />);
+    const row = (await screen.findByText("fra-origin")).closest("tr")!;
+    await userEvent.click(within(row).getByRole("button", { name: "Rotate key fra-origin" }));
+    expect(api.rotateOriginPsk).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Rotate key" }));
+    expect(api.rotateOriginPsk).toHaveBeenCalledWith("fra-origin");
+    expect(await screen.findByText(/key rotation started for fra-origin/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Rotate key edge-1" })).toBeNull();
+  });
+
+  it("shows a refused rotation", async () => {
+    api.rotateOriginPsk.mockRejectedValue(new ApiError(409, "a rotation is already pending"));
+    render(<TunnelAddressesPage />);
+    const row = (await screen.findByText("fra-origin")).closest("tr")!;
+    await userEvent.click(within(row).getByRole("button", { name: "Rotate key fra-origin" }));
+    await userEvent.click(screen.getByRole("button", { name: "Rotate key" }));
+    expect(await screen.findByText(/rotate fra-origin failed: a rotation is already pending/)).toBeInTheDocument();
   });
 
   it("says when the controller has no tunnel network", async () => {

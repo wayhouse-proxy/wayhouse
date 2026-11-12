@@ -92,6 +92,10 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/tunnel/origins/{name}", delete(release_origin))
         .route("/api/tunnel/proxies/{name}", delete(release_proxy))
         .route(
+            "/api/tunnel/origins/{name}/psk/rotate",
+            post(rotate_origin_psk),
+        )
+        .route(
             "/api/plugins/modules",
             post(upload_plugin_module).layer(DefaultBodyLimit::max(
                 wayhouse_http::MAX_SNIFFER_MODULE_BYTES,
@@ -826,6 +830,31 @@ async fn release_origin(
     release(&state, "peers", &name, actor).await
 }
 
+/// `POST /peers/{name}/psk/rotate` — starts a rotation of an origin's tunnel key.
+async fn rotate_origin_psk(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(name): Path<String>,
+) -> Response {
+    let Some(segment) = crate::proxy_util::path_segment(&name) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "invalid registration name".into(),
+            }),
+        )
+            .into_response();
+    };
+    proxy(
+        &state,
+        Method::POST,
+        format!("/peers/{segment}/psk/rotate"),
+        None,
+        actor,
+    )
+    .await
+}
+
 /// `DELETE /proxy-peers/{name}` — releases a proxy's tunnel address.
 async fn release_proxy(
     State(state): State<AppState>,
@@ -1250,6 +1279,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn rotate_proxies_to_the_origin_rotation_route_and_keeps_odd_names_in_one_segment() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock = Router::new().fallback(|method: Method, uri: axum::http::Uri| async move {
+            assert_eq!(method, Method::POST);
+            assert!(
+                matches!(
+                    uri.path(),
+                    "/peers/game-1/psk/rotate" | "/peers/a%2Fb/psk/rotate"
+                ),
+                "escaped to {uri}"
+            );
+            (
+                StatusCode::ACCEPTED,
+                r#"{"name":"game-1","active":"a","pending":"b"}"#,
+            )
+        });
+        tokio::spawn(async move {
+            axum::serve(listener, mock).await.unwrap();
+        });
+        let app = app_with_controller(format!("http://{addr}"), Some("ctl-token".into()));
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/tunnel/origins/game-1/psk/rotate")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/tunnel/origins/../psk/rotate")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(resp.status(), StatusCode::ACCEPTED);
+        let resp = app
+            .oneshot(
+                Request::post("/api/tunnel/origins/a%2Fb/psk/rotate")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
     }
 
     #[tokio::test]

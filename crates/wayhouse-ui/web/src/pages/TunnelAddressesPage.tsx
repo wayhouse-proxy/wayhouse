@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ApiError, getTunnelAddresses, releaseTunnelAddress } from "../api";
+import { ApiError, getTunnelAddresses, releaseTunnelAddress, rotateOriginPsk } from "../api";
 import type { TunnelAddresses } from "../types";
 import { Badge } from "../components/ui/Badge";
 import { PageHeader, AlertBar } from "../components/shell/Page";
@@ -65,6 +65,24 @@ export function TunnelAddressesPage() {
       setBusy(false);
     }
     await refresh();
+  }
+
+  async function handleRotate(name: string) {
+    const ok = await confirm({
+      title: `Rotate the tunnel key of ${name}?`,
+      description: `Seals a new pre-shared key for ${name}. The agent fetches it, switches its peers and registers again; the proxies then follow. Traffic through the tunnel can stall for a few seconds.`,
+      confirmLabel: "Rotate key",
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await rotateOriginPsk(name);
+      setNotice(`key rotation started for ${name}; it finishes when the agent picks it up`);
+    } catch (err) {
+      setNotice(`rotate ${name} failed: ${err instanceof ApiError ? err.message : err}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -161,6 +179,18 @@ export function TunnelAddressesPage() {
                           >
                             Re-enroll
                           </Link>
+                        )}
+                        {e.role === "origin" && (
+                          <Button
+                            variant="secondary"
+                            className="mr-2"
+                            disabled={busy || !canWrite}
+                            title={canWrite ? "Rotate this origin's tunnel key" : "Rotating a key needs the admin role"}
+                            aria-label={`Rotate key ${e.name}`}
+                            onClick={() => handleRotate(e.name)}
+                          >
+                            Rotate key
+                          </Button>
                         )}
                         <Button
                           variant="danger"
