@@ -429,45 +429,97 @@ async fn add(State(state): State<MembersState>, headers: HeaderMap, body: String
         Ok(r) => r,
         Err(r) => return r,
     };
-    if let Err(r) = check_addr(&req.addr) {
-        return r;
+    match add_member(&state.ha, req.id, &req.addr, actor(&headers), false).await {
+        Ok(_) => list(State(state)).await,
+        Err(r) => r,
     }
-    let ha = &state.ha;
+}
+
+/// Adds node `id` at `addr` as a learner, waits for it to catch up and promotes it. Runs on the
+/// leader only. The node must answer `/raft/whoami` as `id`, with an empty log (or already be a
+/// learner here). `Ok(true)` when it was added, `Ok(false)` when it already was a voter and
+/// `already_ok` says that is fine (a joining node asking again after its first answer was lost).
+async fn add_member(
+    ha: &Arc<HaHandle>,
+    id: NodeId,
+    addr: &str,
+    who: &str,
+    already_ok: bool,
+) -> Result<bool, Response> {
+    check_addr(addr)?;
     let (members, _) = members(ha);
-    if members.voters.contains_key(&req.id) {
-        return error(
+    if members.voters.contains_key(&id) {
+        if already_ok {
+            return Ok(false);
+        }
+        return Err(error(
             StatusCode::CONFLICT,
-            format!("node {} is already a voter", req.id),
-        );
+            format!("node {id} is already a voter"),
+        ));
     }
-    let already_learner = members.learners.contains_key(&req.id);
-    if let Err(e) = verify_identity(
+    let already_learner = members.learners.contains_key(&id);
+    verify_identity(
         &ha.forward,
-        &req.addr,
-        req.id,
+        addr,
+        id,
         ha.ha_token.as_deref(),
         !already_learner,
     )
     .await
-    {
-        return e.into_response();
-    }
-    tracing::info!(actor = actor(&headers), id = req.id, addr = %req.addr, "adding an HA member");
+    .map_err(MemberError::into_response)?;
+    tracing::info!(actor = who, id, addr = %addr, "adding an HA member");
     // Blocking: returns once the learner has caught up, by log or snapshot.
-    if let Err(e) = ha
-        .raft
-        .add_learner(req.id, BasicNode::new(req.addr.clone()), true)
+    ha.raft
+        .add_learner(id, BasicNode::new(addr.to_owned()), true)
         .await
-    {
-        return raft_error(e);
+        .map_err(raft_error)?;
+    ha.raft
+        .change_membership(ChangeMembers::AddVoterIds(BTreeSet::from([id])), false)
+        .await
+        .map_err(raft_error)?;
+    Ok(true)
+}
+
+/// The membership side of `POST /enroll/ha-join`: a node that redeemed a controller code asks to
+/// be added. The enrollment module checks the proof; this runs the same add an admin's
+/// `POST /admin/ha/members` would, on the leader (a follower relays the request there).
+#[derive(Clone)]
+pub struct Joiner(MembersState);
+
+impl Joiner {
+    pub fn new(ha: Arc<HaHandle>) -> Self {
+        Self(MembersState {
+            ha,
+            auth_token: None,
+            add_client: super::client::forward_client(MEMBER_ADD_TIMEOUT),
+        })
     }
-    match ha
-        .raft
-        .change_membership(ChangeMembers::AddVoterIds(BTreeSet::from([req.id])), false)
-        .await
-    {
-        Ok(_) => list(State(state)).await,
-        Err(e) => raft_error(e),
+
+    /// `Ok(())` on the leader; otherwise the leader's relayed answer (or why there is none).
+    pub async fn on_leader(
+        &self,
+        path: &str,
+        headers: &HeaderMap,
+        body: String,
+    ) -> Result<(), Response> {
+        on_leader(&self.0, Method::POST, path.to_owned(), headers, body).await
+    }
+
+    /// Whether node `id` is a voter already.
+    pub fn is_voter(&self, id: NodeId) -> bool {
+        members(&self.0.ha).0.voters.contains_key(&id)
+    }
+
+    /// Adds node `id` at `addr`; `Ok(false)` when it already is a voter. `who` names the
+    /// enrollment in the log.
+    pub async fn add(&self, id: NodeId, addr: &str, who: &str) -> Result<bool, Response> {
+        add_member(&self.0.ha, id, addr, who, true).await
+    }
+
+    /// The ids of every member, voters and learners (the next node id starts above them).
+    pub fn member_ids(&self) -> Vec<NodeId> {
+        let (m, _) = members(&self.0.ha);
+        m.voters.keys().chain(m.learners.keys()).copied().collect()
     }
 }
 

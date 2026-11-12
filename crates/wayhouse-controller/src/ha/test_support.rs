@@ -50,6 +50,33 @@ pub(crate) async fn single_node_full(
     crate::acme::AcmeStore,
     tempfile::TempDir,
 ) {
+    let (handle, cluster, plugins, acme, _ui, dir) = single_node_all(node_id, addr, None).await;
+    (handle, cluster, plugins, acme, dir)
+}
+
+/// [`single_node`] with a Raft token, also handing out the state machine's UI data store.
+pub(crate) async fn single_node_ui(
+    node_id: u64,
+    addr: &str,
+    ha_token: &str,
+) -> (Arc<HaHandle>, crate::ui_data::UiStore, tempfile::TempDir) {
+    let (handle, _cluster, _plugins, _acme, ui, dir) =
+        single_node_all(node_id, addr, Some(ha_token)).await;
+    (handle, ui, dir)
+}
+
+async fn single_node_all(
+    node_id: u64,
+    addr: &str,
+    ha_token: Option<&str>,
+) -> (
+    Arc<HaHandle>,
+    Arc<ClusterState>,
+    crate::plugins::PluginStore,
+    crate::acme::AcmeStore,
+    crate::ui_data::UiStore,
+    tempfile::TempDir,
+) {
     let dir = tempfile::tempdir().unwrap();
     let store = |sub: &str| Arc::new(Store::open(&dir.path().join(sub)).unwrap());
     let config = Arc::new(AppState::new(
@@ -82,6 +109,7 @@ pub(crate) async fn single_node_full(
     let cluster = sm.cluster().clone();
     let plugins = sm.plugins().clone();
     let acme = sm.acme().clone();
+    let ui = sm.ui().clone();
     let raft: Raft = openraft::Raft::new(
         node_id,
         Arc::new(raft_config(SNAPSHOT_AFTER).validate().unwrap()),
@@ -101,11 +129,11 @@ pub(crate) async fn single_node_full(
     let handle = Arc::new(HaHandle {
         raft,
         node_id,
-        ha_token: None,
+        ha_token: ha_token.map(Arc::from),
         forward: client::forward_client(client::FORWARD_TIMEOUT),
         pre_ha: crate::ha::import::LocalPreHa::default(),
         secret_keys: crate::plugins::secrets::KeyringHandle::default(),
         plugins_enabled: true,
     });
-    (handle, cluster, plugins, acme, dir)
+    (handle, cluster, plugins, acme, ui, dir)
 }

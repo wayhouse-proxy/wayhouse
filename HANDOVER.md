@@ -29,13 +29,14 @@ bindings, the plugin registry (`kind = plugin`, minisign key built in) and `--pl
 cluster secret store (`{ secret: name }` for the admin token and gossip PSK; `--secret-key-file`, and
 `--secrets-file` for a file-config proxy), and the solo bundle (`deploy/compose/compose.solo.yml`,
 `deploy/systemd/`). The operator checklist is [`docs/migrating-0.3-to-0.4.md`](docs/migrating-0.3-to-0.4.md).
-Traps: upgrade every controller replica before the first write of any new kind (the UI data level is 4, the
-plugin level 5); the `CodeQL` check flags names that look like secrets in log lines, so keep names out of
+Traps: upgrade every controller replica before the first write of any new kind (the UI data level is 7, the
+plugin level 6); the `CodeQL` check flags names that look like secrets in log lines, so keep names out of
 messages; the container disk can fill (`target/debug/incremental` is safe to delete). Left for 0.4.1: one
 tracker issue lists the review nits (reload does not re-check secret references, key rotation for cluster
 secrets, a token-file option so tokens stay out of `ps`, and the UI nits). Not yet: the supervisor binary
 (decision: compose and systemd only), proxy-local plugin overlay file and config validate endpoints (S2b, S2c).
 **First controller (enrollment slice 2):** `wayhouse-controller init --target systemd|compose|k8s-secret` makes the tokens, the UI password and a private CA with the controller's and aggregator's certificates; the solo bundles are https from the first start and set no `--allow-insecure-*` flag (the demo compose and the k8s manifests still do; k8s moves in slice 5a). The plain-http token guard now also covers `--parent-url`, HA peers and the aggregator's `admin_url`s. There is no certificate renewal command yet (leaves last 5 years, the CA 10).
+**Controller replica by code (enrollment slice 4):** `POST /enrollments` with `role: controller` mints a single-use code that carries the next free node id; `wayhouse-controller enroll|install --systemd --advertise URL` redeems it (every token, the keyring, the Raft token, a join proof) and the node started with `--ha-join --ha-advertise --ha-join-via` asks `POST /enroll/ha-join` until the cluster has added it (`ha/join.rs`, `enroll.rs`, `ha/members.rs` `Joiner`). The replica's own TLS certificate is not delivered; see `docs/12-deployment.md` "Adding a controller replica by code".
 
 **Releases:** the workspace is at 0.3.0. Releases are published to GHCR (six public images,
 amd64 + arm64) by `release.yml` on a `vX.Y.Z` tag. Tags stay manual (release-please runs with

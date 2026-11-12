@@ -157,6 +157,26 @@ struct Args {
     #[arg(long)]
     ha_join: bool,
 
+    /// With `--ha-join`: the address the other replicas reach this node on, as `--ha-peers`
+    /// takes one (`https://host:port`). The cluster dials it to add this node. Set by
+    /// `wayhouse-controller enroll` / `install --systemd`; goes with `--ha-join-via` and the
+    /// join proof.
+    #[arg(long, value_name = "ADDR")]
+    ha_advertise: Option<String>,
+
+    /// With `--ha-join`: the URL of a running replica that is asked to add this node.
+    #[arg(long, value_name = "URL")]
+    ha_join_via: Option<String>,
+
+    /// File holding the join proof that came with the controller enrollment code.
+    #[arg(long, value_name = "PATH")]
+    ha_join_proof_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--ha-join-proof-file`, `$CREDENTIALS_DIRECTORY/ha-join-proof` or
+    /// `$WAYHOUSE_HA_JOIN_PROOF`; never a command-line value.
+    #[arg(skip)]
+    ha_join_proof: Option<String>,
+
     /// Peer-only shared secret gating `/raft/*` — a separate secret from
     /// `--auth-token` (client-facing), matching every other peer-to-peer
     /// credential in this fleet.
@@ -310,6 +330,17 @@ async fn main() -> anyhow::Result<()> {
     if std::env::args_os().nth(1).is_some_and(|a| a == "init") {
         return wayhouse_controller::init::main(std::env::args_os().skip(2));
     }
+    // `enroll` / `install --systemd`: join an existing HA group as a replica by one-time code.
+    let argv: Vec<_> = std::env::args_os().collect();
+    if wayhouse_enroll::cli::is_node_cmd(&argv) {
+        return wayhouse_enroll::cli::run(
+            wayhouse_enroll::Role::Controller,
+            "wayhouse-controller",
+            argv,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"));
+    }
     let layered = wayhouse_settings::layer(
         "controller",
         &<Args as clap::CommandFactory>::command(),
@@ -336,6 +367,9 @@ async fn main() -> anyhow::Result<()> {
             .map_err(anyhow::Error::msg)?;
     args.ha_token = wayhouse_http::secret_arg::resolve("ha-token", args.ha_token_file.as_deref())
         .map_err(anyhow::Error::msg)?;
+    args.ha_join_proof =
+        wayhouse_http::secret_arg::resolve("ha-join-proof", args.ha_join_proof_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
     args.auth_token =
         wayhouse_http::secret_arg::resolve("auth-token", args.auth_token_file.as_deref())
             .map_err(anyhow::Error::msg)?;
@@ -355,6 +389,14 @@ async fn main() -> anyhow::Result<()> {
     }
     ha::check_flags(!args.ha_peers.is_empty(), args.ha_join, args.ha_node_id)
         .map_err(|e| anyhow::anyhow!(e))?;
+    let join_announce = ha::join::check_flags(
+        args.ha_join,
+        args.ha_advertise.as_deref(),
+        args.ha_join_via.as_deref(),
+        args.ha_join_proof.is_some(),
+        args.allow_insecure_controller,
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
     ha::check_ha_token(
         !args.ha_peers.is_empty() || args.ha_join,
         args.ha_token.as_deref(),
@@ -704,6 +746,18 @@ async fn main() -> anyhow::Result<()> {
                 node_id,
                 "intra-tier HA enabled; waiting to be added to a cluster"
             );
+            if let (Some((advertise, via)), Some(proof)) =
+                (join_announce.clone(), args.ha_join_proof.clone())
+            {
+                ha::join::spawn(
+                    handle.clone(),
+                    ha::join::JoinConfig {
+                        via,
+                        advertise,
+                        proof: zeroize::Zeroizing::new(proof),
+                    },
+                );
+            }
         } else {
             tracing::info!(node_id, peers = ?peers.keys().collect::<Vec<_>>(), "intra-tier HA enabled");
         }
@@ -1065,6 +1119,7 @@ async fn main() -> anyhow::Result<()> {
                 proxy_token: args.proxy_token.as_deref().map(std::sync::Arc::from),
                 ingest_token: args.ingest_token.as_deref().map(std::sync::Arc::from),
                 step_up: args.enroll_step_up.as_deref().map(std::sync::Arc::from),
+                tunnel_network: args.tunnel_network.as_deref().map(std::sync::Arc::from),
             },
         ))
         .merge(wayhouse_controller::ui_data::api::router(ui_state));

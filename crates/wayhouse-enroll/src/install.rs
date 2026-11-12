@@ -142,6 +142,37 @@ pub fn render_unit(
             .map(|u| unit_arg(u).map(|u| format!("--parent-url={u}")))
             .collect::<Result<_, _>>()?,
         Role::Ui => vec![format!("--controller-url={url}")],
+        Role::Controller => {
+            // A replica must be reachable by the others: the operator gives its `--listen` (and
+            // the certificate flags) after `--`, so a unit is never written that listens on
+            // loopback only.
+            if !extra
+                .iter()
+                .any(|a| a == "--listen" || a.starts_with("--listen="))
+            {
+                return Err("a controller replica needs --listen ADDR after `--` (the address the other replicas reach it on)".into());
+            }
+            let id = meta
+                .node_id
+                .ok_or("the enrollment holds no node id; re-enroll with a new code")?;
+            let adv = meta
+                .advertise
+                .as_deref()
+                .ok_or("the enrollment holds no --advertise address")?;
+            let mut flags = vec![
+                "--data-dir=/var/lib/wayhouse-controller".into(),
+                "--ha-join".into(),
+                format!("--ha-node-id={id}"),
+                format!("--ha-advertise={}", unit_arg(adv)?),
+                format!("--ha-join-via={url}"),
+                "--secret-key-file=%d/secret.keys".into(),
+            ];
+            // A replica with another network than the cluster's refuses tunnel writes.
+            if let Some(n) = &meta.tunnel_network {
+                flags.push(format!("--tunnel-network={}", unit_arg(n)?));
+            }
+            flags
+        }
     };
     for a in extra {
         flags.push(unit_arg(a)?);
@@ -154,6 +185,9 @@ pub fn render_unit(
     );
     if spec.role != Role::Agent {
         u.push_str("DynamicUser=yes\n");
+        if spec.role == Role::Controller {
+            u.push_str("StateDirectory=wayhouse-controller\nStateDirectoryMode=0700\n");
+        }
         for f in files {
             let _ = writeln!(u, "LoadCredential={f}:{}/{f}", cred_path(dir)?);
         }
@@ -176,7 +210,7 @@ pub fn render_unit(
         // Creates the WireGuard interface: needs the tun device and NET_ADMIN.
         Role::Agent => u.push_str("AmbientCapabilities=CAP_NET_ADMIN\nCapabilityBoundingSet=CAP_NET_ADMIN\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\n"),
         Role::Proxy => u.push_str("PrivateDevices=yes\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK\n"),
-        Role::Aggregator | Role::Ui => u.push_str("PrivateDevices=yes\nCapabilityBoundingSet=\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\n"),
+        Role::Aggregator | Role::Ui | Role::Controller => u.push_str("PrivateDevices=yes\nCapabilityBoundingSet=\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\n"),
     }
     u.push_str("\n[Install]\nWantedBy=multi-user.target\n");
     Ok(u)
@@ -197,7 +231,8 @@ pub fn install_systemd(
         .role
         .grant_files()
         .iter()
-        .chain(&["auth-token"])
+        // The aggregator makes its own admin token; the controller's arrives in its grant.
+        .chain(&["auth-token"][..usize::from(spec.role == Role::Aggregator)])
         .filter(|f| dir.join(f).is_file() && spec.role != Role::Agent)
         .map(|f| (*f).to_owned())
         .collect();
@@ -237,6 +272,16 @@ pub fn run_hint(role: Role, bin: &str, dir: &Path, url: &str) -> String {
         Role::Aggregator | Role::Ui => {
             format!("run: CREDENTIALS_DIRECTORY={d} {bin} --controller-url {url} ...")
         }
+        Role::Controller => match files::read_meta(dir) {
+            Ok(Meta {
+                node_id: Some(id),
+                advertise: Some(adv),
+                ..
+            }) => format!(
+                "run: CREDENTIALS_DIRECTORY={d} {bin} --data-dir DIR --listen ADDR --ha-join --ha-node-id {id} --ha-advertise {adv} --ha-join-via {url} --secret-key-file {d}/secret.keys (plus --tls-cert/--tls-key and --ca-file)"
+            ),
+            _ => format!("run: CREDENTIALS_DIRECTORY={d} {bin} --ha-join ..."),
+        },
     }
 }
 
@@ -261,6 +306,9 @@ mod tests {
             name: "edge-1".into(),
             role,
             parent_url: parent.map(str::to_owned),
+            node_id: None,
+            tunnel_network: None,
+            advertise: None,
         }
     }
 
@@ -435,5 +483,88 @@ mod tests {
             .unwrap()
             .contains("LoadCredential=controller-token:"));
         assert!(install_systemd(&s, &data, "", &[], false).is_err());
+    }
+
+    #[test]
+    fn the_controller_replica_unit_joins_the_group_and_keeps_every_secret_in_a_credential() {
+        let mut m = meta(Role::Controller, None);
+        m.node_id = Some(4);
+        m.advertise = Some("https://ctl-4.example:9901".into());
+        m.tunnel_network = Some("10.60.0.0/24".into());
+        let files: Vec<String> = [
+            "ha-token",
+            "secret.keys",
+            "auth-token",
+            "proxy-token",
+            "agent-token",
+            "ingest-token",
+            "enroll-step-up",
+            "ha-join-proof",
+        ]
+        .map(String::from)
+        .to_vec();
+        let u = render_unit(
+            &spec(Role::Controller, "wayhouse-controller", &[]),
+            Path::new("/etc/wayhouse/controller"),
+            &m,
+            &files,
+            &["--listen".into(), "0.0.0.0:9901".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            u,
+            "[Unit]\nDescription=wayhouse controller node edge-1\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nDynamicUser=yes\nStateDirectory=wayhouse-controller\nStateDirectoryMode=0700\nLoadCredential=ha-token:/etc/wayhouse/controller/ha-token\nLoadCredential=secret.keys:/etc/wayhouse/controller/secret.keys\nLoadCredential=auth-token:/etc/wayhouse/controller/auth-token\nLoadCredential=proxy-token:/etc/wayhouse/controller/proxy-token\nLoadCredential=agent-token:/etc/wayhouse/controller/agent-token\nLoadCredential=ingest-token:/etc/wayhouse/controller/ingest-token\nLoadCredential=enroll-step-up:/etc/wayhouse/controller/enroll-step-up\nLoadCredential=ha-join-proof:/etc/wayhouse/controller/ha-join-proof\nExecStart=/usr/local/bin/x \\\n  --data-dir=/var/lib/wayhouse-controller \\\n  --ha-join \\\n  --ha-node-id=4 \\\n  --ha-advertise=https://ctl-4.example:9901 \\\n  --ha-join-via=https://ctl.example:9901 \\\n  --secret-key-file=%d/secret.keys \\\n  --tunnel-network=10.60.0.0/24 \\\n  --listen \\\n  0.0.0.0:9901\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nProtectKernelTunables=yes\nProtectControlGroups=yes\nPrivateDevices=yes\nCapabilityBoundingSet=\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\n\n[Install]\nWantedBy=multi-user.target\n"
+        );
+        // Not one secret value is in the unit, only names.
+        assert!(!u.contains("Bearer") && !u.contains("--ha-token"));
+    }
+
+    #[test]
+    fn a_controller_unit_needs_a_listen_address_a_node_id_and_an_advertise_address() {
+        let s = spec(Role::Controller, "wayhouse-controller", &[]);
+        let listen = ["--listen=0.0.0.0:9901".to_owned()];
+        let mut m = meta(Role::Controller, None);
+        let go = |m: &Meta, extra: &[String]| render_unit(&s, Path::new("/d"), m, &[], extra);
+        assert!(go(&m, &listen).is_err(), "no node id");
+        m.node_id = Some(2);
+        assert!(go(&m, &listen).is_err(), "no advertise address");
+        m.advertise = Some("https://c2:9901".into());
+        assert!(
+            go(&m, &[]).is_err(),
+            "a replica that listens on loopback only is useless"
+        );
+        assert!(go(&m, &listen).unwrap().contains("--ha-node-id=2"));
+        m.advertise = Some("https://c2:9901 --evil".into());
+        assert!(go(&m, &listen).is_err(), "no way out of the unit line");
+    }
+
+    #[test]
+    fn the_controller_role_has_a_grant_list_and_needs_the_step_up() {
+        assert!(Role::Controller.needs_step_up());
+        assert!(Role::Controller.grant_files().contains(&"ha-join-proof"));
+        assert!(Role::Controller.grant_files().contains(&"ha-token"));
+        // The unit for a controller never loads auth-token twice.
+        let t = tempfile::tempdir().unwrap();
+        let s = Install::new(
+            Role::Controller,
+            "wayhouse-controller",
+            Some("/b".into()),
+            t.path(),
+            &[],
+        )
+        .unwrap();
+        let data = t.path().join("data");
+        let mut m = meta(Role::Controller, None);
+        m.node_id = Some(2);
+        m.advertise = Some("https://c2:9901".into());
+        let granted = [("auth-token".to_owned(), "tok".to_owned())].into();
+        files::write(&data, &m, &granted).unwrap();
+        install_systemd(&s, &data, "", &["--listen=0.0.0.0:9901".into()], false).unwrap();
+        let unit = std::fs::read_to_string(s.unit_path()).unwrap();
+        assert_eq!(
+            unit.matches("LoadCredential=auth-token:").count(),
+            1,
+            "{unit}"
+        );
     }
 }

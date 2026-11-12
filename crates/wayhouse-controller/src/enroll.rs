@@ -10,6 +10,13 @@
 //! | proxy | the proxy token, the ingest token (if set) and the cluster keyring |
 //! | aggregator | the ingest token (if set); its own admin token is made on the node |
 //! | ui | the admin token as `controller-token` |
+//! | controller | every token this controller runs with, the cluster keyring, the Raft token and a join proof |
+//!
+//! A controller code is the odd one out: redeeming it only hands over the files, the new node
+//! then starts with `--ha-join` and asks to be added (`POST /enroll/ha-join`, shown the join
+//! proof that came with the files), and the cluster runs the member add itself, so no admin
+//! token is needed on the new host. The node id is chosen when the code is minted and is unique
+//! across codes (the replicated store refuses a second code with the same id).
 //!
 //! The tunnel key is sealed under the cluster keyring as `tunnel-psk-<hash of origin>` so
 //! proxies fetch it through `GET /secrets/{name}/sealed` with their own scoped token; the agent
@@ -43,6 +50,7 @@ use serde_json::{json, Value};
 use wayhouse_enroll::{Code, RedeemRequest, RedeemResponse, Role};
 use zeroize::Zeroizing;
 
+use crate::ha::members::Joiner;
 use crate::ha::{WriteRequest, WriteResponse};
 use crate::ui_data::api::{actor, err, internal, now, UiState};
 use crate::ui_data::{Applied, Kind, UiOp};
@@ -54,6 +62,10 @@ const MAX_TTL: u64 = 7 * 24 * 3600;
 const MAX_STEP_UP_TTL: u64 = 24 * 3600;
 /// `/enroll` takes a code and a role; anything bigger is not one.
 const MAX_ENROLL_BODY: usize = 1024;
+/// A joining replica retries while the leader works out why it cannot add it, so its limits are
+/// looser than the redeem route's (every try costs a request, not a guess at a secret).
+const JOIN_PER_IP: u32 = 30;
+const JOIN_PER_ID: u32 = 20;
 
 /// Attempts allowed per window. Every `/enroll` try counts against the caller's address; one
 /// that names a real-looking id also counts against that id, so guesses at one code cannot be
@@ -119,6 +131,8 @@ pub struct Grants {
     pub proxy_token: Option<Arc<str>>,
     pub ingest_token: Option<Arc<str>>,
     pub step_up: Option<Arc<str>>,
+    /// This controller's `--tunnel-network`, given to a replica (it must match the cluster's).
+    pub tunnel_network: Option<Arc<str>>,
 }
 
 #[derive(Clone)]
@@ -126,6 +140,8 @@ struct EnrollState {
     ui: UiState,
     grants: Grants,
     limiter: Arc<Limiter>,
+    /// Present under HA: what adds a joining controller replica to the Raft group.
+    joiner: Option<Joiner>,
 }
 
 pub fn router(ui: UiState, grants: Grants) -> Router {
@@ -134,6 +150,7 @@ pub fn router(ui: UiState, grants: Grants) -> Router {
         wayhouse_http::server::require_bearer,
     );
     let st = EnrollState {
+        joiner: ui.ha.clone().map(Joiner::new),
         ui,
         grants,
         limiter: Arc::default(),
@@ -142,10 +159,15 @@ pub fn router(ui: UiState, grants: Grants) -> Router {
         .route("/enrollments", post(mint).get(list))
         .route("/enrollments/{id}", delete(revoke))
         .route_layer(auth);
-    let public = Router::new().route(
-        "/enroll",
-        post(redeem).layer(DefaultBodyLimit::max(MAX_ENROLL_BODY)),
-    );
+    let public = Router::new()
+        .route(
+            "/enroll",
+            post(redeem).layer(DefaultBodyLimit::max(MAX_ENROLL_BODY)),
+        )
+        .route(
+            "/enroll/ha-join",
+            post(ha_join).layer(DefaultBodyLimit::max(MAX_ENROLL_BODY)),
+        );
     admin.merge(public).with_state(st)
 }
 
@@ -209,6 +231,15 @@ fn not_ready(st: &EnrollState, role: Role) -> Option<&'static str> {
             Some("this controller has no --ingest-token to hand to an aggregator")
         }
         Role::Ui if st.ui.auth_token.is_none() => Some("this controller has no --auth-token"),
+        Role::Controller if st.ui.ha.is_none() => Some(
+            "this controller does not run HA (--ha-peers or --ha-join), so it has no cluster to add a replica to",
+        ),
+        Role::Controller if st.ui.auth_token.is_none() => Some(
+            "this controller has no --auth-token, which every replica has to share",
+        ),
+        Role::Controller if ring.is_empty() => {
+            Some("this controller has no secret key (--secret-key-file) to hand to a replica")
+        }
         _ if role.needs_step_up() && g.step_up.is_none() => {
             Some("this role needs --enroll-step-up-file on the controller")
         }
@@ -233,7 +264,7 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
     let Ok(b) = serde_json::from_slice::<MintBody>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
-            "the body must be {\"role\"?: \"agent|proxy|aggregator|ui\", \"name\": \"...\", \"ttl_secs\"?, \"uses\"?, \"parent_url\"?, \"step_up\"?}",
+            "the body must be {\"role\"?: \"agent|proxy|aggregator|ui|controller\", \"name\": \"...\", \"ttl_secs\"?, \"uses\"?, \"parent_url\"?, \"step_up\"?}",
         );
     };
     let who = actor(&headers);
@@ -253,8 +284,11 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
             format!("ttl_secs for this role is at most {MAX_STEP_UP_TTL}"),
         );
     }
-    if b.role == Role::Ui && b.uses.is_some_and(|u| u != 1) {
-        return err(StatusCode::BAD_REQUEST, "a ui code is single use");
+    if matches!(b.role, Role::Ui | Role::Controller) && b.uses.is_some_and(|u| u != 1) {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "a ui or controller code is single use",
+        );
     }
     if b.parent_url
         .as_deref()
@@ -288,31 +322,68 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
     if let Some(u) = &b.parent_url {
         record["parent_url"] = u.as_str().into();
     }
-    let op = UiOp::Put {
-        kind: Kind::Enrollment,
-        name: code.id().to_owned(),
-        value: record,
-    };
-    match apply(&st.ui, op).await {
-        Ok(Applied::Done) => {}
-        Ok(Applied::Invalid(why)) => return err(StatusCode::UNPROCESSABLE_ENTITY, why),
-        Ok(Applied::Full(max)) => {
-            return err(
-                StatusCode::CONFLICT,
-                format!("already {max} codes; revoke one first"),
-            )
+    // A controller code carries the node id the replica will have. The id is picked above every
+    // member and every other code; the store refuses a duplicate atomically, so a clash with a
+    // code minted at the same moment elsewhere moves on to the next id.
+    let first_id = (b.role == Role::Controller).then(|| next_node_id(&st));
+    let mut node_id = first_id;
+    let mut attempts = 0;
+    loop {
+        if let Some(id) = node_id {
+            record["node_id"] = id.into();
         }
-        Ok(_) => return internal("unexpected answer to a mint"),
-        Err(r) => return r,
+        let op = UiOp::Put {
+            kind: Kind::Enrollment,
+            name: code.id().to_owned(),
+            value: record.clone(),
+        };
+        match apply(&st.ui, op).await {
+            Ok(Applied::Done) => break,
+            Ok(Applied::Taken) if attempts < 8 => {
+                attempts += 1;
+                node_id = node_id.map(|i| i + 1);
+            }
+            Ok(Applied::Taken) => {
+                return err(StatusCode::CONFLICT, "could not find a free node id; retry")
+            }
+            Ok(Applied::Invalid(why)) => return err(StatusCode::UNPROCESSABLE_ENTITY, why),
+            Ok(Applied::Full(max)) => {
+                return err(
+                    StatusCode::CONFLICT,
+                    format!("already {max} codes; revoke one first"),
+                )
+            }
+            Ok(_) => return internal("unexpected answer to a mint"),
+            Err(r) => return r,
+        }
     }
     tracing::warn!(enrollment = code.id(), role = b.role.as_str(), name = %b.name, actor = who.as_deref().unwrap_or("-"), step_up = b.role.needs_step_up(), "enrollment code minted");
-    no_store(
-        Json(json!({
-            "id": code.id(), "code": &*code.expose(), "role": b.role.as_str(), "name": b.name,
-            "expires_at": created + ttl, "uses": uses,
-        }))
-        .into_response(),
-    )
+    let mut out = json!({
+        "id": code.id(), "code": &*code.expose(), "role": b.role.as_str(), "name": b.name,
+        "expires_at": created + ttl, "uses": uses,
+    });
+    if let Some(id) = node_id {
+        out["node_id"] = id.into();
+    }
+    no_store(Json(out).into_response())
+}
+
+/// One above every node in the Raft membership and every controller code (spent or not, so an
+/// id is never handed to two nodes).
+fn next_node_id(st: &EnrollState) -> u64 {
+    let members = st
+        .joiner
+        .as_ref()
+        .map(Joiner::member_ids)
+        .unwrap_or_default();
+    let codes = st
+        .ui
+        .store
+        .list(Kind::Enrollment)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(_, rec)| rec["node_id"].as_u64());
+    members.into_iter().chain(codes).max().unwrap_or(0) + 1
 }
 
 /// Checks the step-up secret in constant time. A wrong guess counts against one shared bucket
@@ -341,7 +412,12 @@ async fn list(State(st): State<EnrollState>) -> Response {
     let items: Vec<Value> = items
         .into_iter()
         .map(|(id, mut v)| {
-            let status = if v["uses_left"] == 0 {
+            let status = if v["joined"] == true {
+                "joined"
+            } else if v["uses_left"] == 0 && v["role"] == "controller" {
+                // Redeemed; the node has not been added to the Raft group yet.
+                "joining"
+            } else if v["uses_left"] == 0 {
                 "used"
             } else if v["expires_at"].as_u64().is_some_and(|e| t >= e) {
                 "expired"
@@ -350,6 +426,7 @@ async fn list(State(st): State<EnrollState>) -> Response {
             };
             if let Some(o) = v.as_object_mut() {
                 o.remove("hash");
+                o.remove("join_hash");
                 o.insert("id".into(), id.into());
                 o.insert("status".into(), status.into());
             }
@@ -409,7 +486,7 @@ async fn redeem(
     let Ok(req) = serde_json::from_slice::<RedeemRequest>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
-            "the body must be {\"code\": \"...\", \"role\": \"agent|proxy|aggregator|ui\"}",
+            "the body must be {\"code\": \"...\", \"role\": \"agent|proxy|aggregator|ui|controller\"}",
         );
     };
     let Ok(code) = Code::parse(&req.code) else {
@@ -419,7 +496,7 @@ async fn redeem(
     if !st.limiter.take(&id_key, PER_ID) {
         return too_many();
     }
-    let (name, parent_url) = match st.ui.store.get(Kind::Enrollment, code.id()) {
+    let (name, parent_url, node_id) = match st.ui.store.get(Kind::Enrollment, code.id()) {
         // The hash is checked here too, so a configuration answer (503) is only ever given to
         // the holder of the code.
         Ok(Some(rec))
@@ -431,6 +508,7 @@ async fn redeem(
             (
                 rec["origin"].as_str().unwrap_or_default().to_owned(),
                 rec["parent_url"].as_str().map(str::to_owned),
+                rec["node_id"].as_u64(),
             )
         }
         Ok(_) => return refused(),
@@ -442,10 +520,20 @@ async fn redeem(
         // Before the use is spent: an operator can fix this and retry with the same code.
         return err(StatusCode::SERVICE_UNAVAILABLE, why);
     }
+    // A controller replica also gets a proof it can show later to be added to the Raft group;
+    // only its hash is recorded, in the same step that spends the code.
+    let join = (role == Role::Controller).then(|| {
+        let secret = wayhouse_enroll::generate_token();
+        let hash = Code::parse(&format!("{}.{secret}", code.id()))
+            .expect("a generated token has the secret shape")
+            .hash();
+        (Zeroizing::new(format!("{}.{secret}", code.id())), hash)
+    });
     let op = UiOp::Redeem {
         id: code.id().to_owned(),
         hash: code.hash(),
         now: now(),
+        join_hash: join.as_ref().map(|(_, h)| h.clone()),
     };
     match apply(&st.ui, op).await {
         Ok(Applied::Done) => {}
@@ -453,10 +541,16 @@ async fn redeem(
         Ok(_) => return internal("unexpected answer to a redeem"),
         Err(r) => return r,
     }
-    let files = match grant_files(&st, role, &name).await {
+    let mut files = match grant_files(&st, role, &name).await {
         Ok(f) => f,
         Err(r) => return r,
     };
+    if let Some((proof, _)) = &join {
+        files.insert(
+            wayhouse_enroll::files::JOIN_PROOF_FILE.into(),
+            proof.to_string(),
+        );
+    }
     st.limiter.refund(&ip);
     st.limiter.refund(&id_key);
     tracing::warn!(enrollment = code.id(), role = role.as_str(), name = %name, "enrollment code redeemed");
@@ -466,9 +560,111 @@ async fn redeem(
             role,
             files,
             parent_url,
+            node_id,
+            tunnel_network: (role == Role::Controller)
+                .then(|| st.grants.tunnel_network.as_deref().map(str::to_owned))
+                .flatten(),
         })
         .into_response(),
     )
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JoinBody {
+    /// The join proof that came with the controller grant (`<id>.<secret>`).
+    proof: String,
+    /// How the other replicas reach the joining node, as `--ha-peers` takes it.
+    addr: String,
+}
+
+/// `POST /enroll/ha-join`: `{proof, addr}`. A node that redeemed a controller code asks the
+/// cluster to add it. Unauthenticated like `/enroll`, and guarded the same way: 1 KiB body, a
+/// per-address and a per-code limit, one answer (401) for every wrong, spent or late proof.
+/// Past the proof check the answers name the reason (unreachable address, a node that answers as
+/// another id, a log that is not empty) so the operator can fix the address and let the node
+/// ask again; the proof stays good for [`crate::ui_data::JOIN_WINDOW_SECS`] after the redeem.
+///
+/// A follower relays the request to the leader, which re-checks the proof, runs the add and
+/// marks the code joined. A repeat of a join that already succeeded answers 200 again.
+async fn ha_join(
+    State(st): State<EnrollState>,
+    ConnectInfo(peer): ConnectInfo<wayhouse_http::tls::PeerAddr>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let ip = format!("join-{}", ip_key(peer.0.ip()));
+    if !st.limiter.take(&ip, JOIN_PER_IP) {
+        return too_many();
+    }
+    let Ok(req) = serde_json::from_slice::<JoinBody>(&body) else {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "the body must be {\"proof\": \"...\", \"addr\": \"...\"}",
+        );
+    };
+    let Some(joiner) = &st.joiner else {
+        return refused();
+    };
+    let Ok(proof) = Code::parse(&req.proof) else {
+        return refused();
+    };
+    let id_key = format!("join:{}", proof.id());
+    if !st.limiter.take(&id_key, JOIN_PER_ID) {
+        return too_many();
+    }
+    let rec = match st.ui.store.get(Kind::Enrollment, proof.id()) {
+        Ok(Some(rec))
+            if rec["role"] == "controller"
+                && rec["joined"] != true
+                && rec["join_until"].as_u64().is_some_and(|u| now() < u)
+                && rec["join_hash"]
+                    .as_str()
+                    .is_some_and(|h| wayhouse_http::token_eq(h, &proof.hash())) =>
+        {
+            rec
+        }
+        Ok(_) => return refused(),
+        Err(e) => return internal(e),
+    };
+    let Some(node_id) = rec["node_id"].as_u64() else {
+        return refused();
+    };
+    if let Err(relayed) = joiner
+        .on_leader(
+            "/enroll/ha-join",
+            &headers,
+            String::from_utf8_lossy(&body).into_owned(),
+        )
+        .await
+    {
+        return relayed;
+    }
+    let who = format!("enrollment {}", proof.id());
+    let added = match joiner.add(node_id, &req.addr, &who).await {
+        Ok(added) => added,
+        Err(why) => return why,
+    };
+    let mut done = rec;
+    done["joined"] = true.into();
+    if let Some(o) = done.as_object_mut() {
+        o.remove("join_hash");
+        o.remove("join_until");
+    }
+    let op = UiOp::Put {
+        kind: Kind::Enrollment,
+        name: proof.id().to_owned(),
+        value: done,
+    };
+    match apply(&st.ui, op).await {
+        Ok(Applied::Done) => {}
+        Ok(other) => return internal(format!("marking the code joined answered {other:?}")),
+        Err(r) => return r,
+    }
+    st.limiter.refund(&ip);
+    st.limiter.refund(&id_key);
+    tracing::warn!(enrollment = proof.id(), node_id, addr = %req.addr, added, "controller replica joined the HA group by enrollment");
+    no_store(Json(json!({ "node_id": node_id, "joined": true })).into_response())
 }
 
 /// What `role` receives. The agent's tunnel key is made here, after the use is spent (see the
@@ -500,6 +696,18 @@ async fn grant_files(
         }
         Role::Aggregator => put("ingest-token", g.ingest_token.as_deref()),
         Role::Ui => put("controller-token", st.ui.auth_token.as_deref()),
+        Role::Controller => {
+            put(
+                "ha-token",
+                st.ui.ha.as_ref().and_then(|h| h.ha_token.as_deref()),
+            );
+            put("secret.keys", Some(&st.ui.keyring.current().export()));
+            put("auth-token", st.ui.auth_token.as_deref());
+            put("proxy-token", g.proxy_token.as_deref());
+            put("agent-token", g.agent_token.as_deref());
+            put("ingest-token", g.ingest_token.as_deref());
+            put("enroll-step-up", g.step_up.as_deref());
+        }
     }
     Ok(f)
 }
@@ -564,6 +772,7 @@ mod tests {
         app: Router,
         store: UiStore,
         keyring: wayhouse_secrets::KeyringHandle,
+        ha: Option<Arc<crate::ha::HaHandle>>,
         _d: tempfile::TempDir,
     }
 
@@ -590,10 +799,12 @@ mod tests {
                     proxy_token: Some(Arc::from(PROXY)),
                     ingest_token: Some(Arc::from(INGEST)),
                     step_up: Some(Arc::from(STEP_UP)),
+                    tunnel_network: Some(Arc::from("10.60.0.0/24")),
                 },
             ),
             store,
             keyring,
+            ha: None,
             _d: dir,
         }
     }
@@ -1152,5 +1363,352 @@ mod tests {
             redeem_as(&t, &wrong, "aggregator").await.0,
             StatusCode::UNAUTHORIZED
         );
+    }
+
+    // ---- controller replicas (HA join) ----
+
+    /// A one-voter HA group (node 1, the leader) behind the enrollment routes.
+    async fn setup_ha() -> T {
+        let (ha, store, dir) =
+            crate::ha::test_support::single_node_ui(1, "127.0.0.1:1", "ha-token-ha-token-ha").await;
+        let keyring =
+            wayhouse_secrets::KeyringHandle::new(wayhouse_secrets::Keyring::parse(KEY).unwrap());
+        let ui = UiState {
+            store: store.clone(),
+            auth_token: Some(Arc::from(ADMIN)),
+            ha: Some(ha.clone()),
+            keyring: keyring.clone(),
+        };
+        T {
+            app: router(
+                ui,
+                Grants {
+                    agent_token: Some(Arc::from(AGENT)),
+                    proxy_token: Some(Arc::from(PROXY)),
+                    ingest_token: Some(Arc::from(INGEST)),
+                    step_up: Some(Arc::from(STEP_UP)),
+                    tunnel_network: Some(Arc::from("10.60.0.0/24")),
+                },
+            ),
+            store,
+            keyring,
+            ha: Some(ha),
+            _d: dir,
+        }
+    }
+
+    /// Rewrites a record through the Raft log (the store's own cursor must not be touched).
+    async fn put_through_raft(t: &T, id: &str, rec: Value) {
+        let op = UiOp::Put {
+            kind: Kind::Enrollment,
+            name: id.into(),
+            value: rec,
+        };
+        let ha = t.ha.as_ref().unwrap();
+        let r = crate::plugins::peer::propose_ciphertext(ha, WriteRequest::Ui(op))
+            .await
+            .unwrap();
+        assert!(matches!(r, WriteResponse::UiResult(Applied::Done)), "{r:?}");
+    }
+
+    async fn mint_controller(t: &T, name: &str) -> (StatusCode, Value) {
+        mint_as(
+            t,
+            json!({"role": "controller", "name": name, "step_up": STEP_UP}),
+        )
+        .await
+    }
+
+    async fn join(t: &T, proof: &str, addr: &str, ip: &str) -> (StatusCode, Value) {
+        call(
+            &t.app,
+            "POST",
+            "/enroll/ha-join",
+            json!({"proof": proof, "addr": addr}),
+            None,
+            ip,
+        )
+        .await
+    }
+
+    /// A stub that answers `/raft/whoami` as node `id`.
+    async fn stub_node(id: u64) -> String {
+        let app = Router::new().route(
+            "/raft/whoami",
+            axum::routing::get(move || async move {
+                Json(crate::ha::routes::Whoami {
+                    node_id: id,
+                    log_empty: true,
+                    pre_ha: crate::ha::import::PreHaSummary::default(),
+                    plugin_support: 0,
+                    secret_key_ids: Vec::new(),
+                    acme_support: 0,
+                    confirm_support: 0,
+                    ui_support: 0,
+                })
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        addr
+    }
+
+    #[tokio::test]
+    async fn a_controller_code_needs_ha_the_step_up_secret_and_is_single_use() {
+        // Standalone: there is no cluster to join.
+        let t = setup(Some(KEY));
+        assert_eq!(mint_controller(&t, "c2").await.0, StatusCode::CONFLICT);
+        let t = setup_ha().await;
+        let (st, _) = mint_as(&t, json!({"role": "controller", "name": "c2"})).await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        let (st, _) = mint_as(
+            &t,
+            json!({"role": "controller", "name": "c2", "step_up": STEP_UP, "uses": 2}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+        assert!(t.store.list(Kind::Enrollment).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn node_ids_start_above_the_members_and_never_repeat_even_when_minted_at_once() {
+        let t = setup_ha().await;
+        let (st, m) = mint_controller(&t, "c2").await;
+        assert_eq!(st, StatusCode::OK, "{m}");
+        assert_eq!(m["node_id"], 2, "node 1 is a member");
+        let tasks: Vec<_> = (0..6)
+            .map(|i| {
+                let app = t.app.clone();
+                tokio::spawn(async move {
+                    call(
+                        &app,
+                        "POST",
+                        "/enrollments",
+                        json!({"role": "controller", "name": format!("c{i}"), "step_up": STEP_UP}),
+                        Some(ADMIN),
+                        "10.0.0.1",
+                    )
+                    .await
+                })
+            })
+            .collect();
+        let mut ids = vec![2u64];
+        for task in tasks {
+            let (st, v) = task.await.unwrap();
+            assert_eq!(st, StatusCode::OK, "{v}");
+            ids.push(v["node_id"].as_u64().unwrap());
+        }
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "{ids:?}");
+        assert!(ids.iter().all(|i| *i >= 2));
+    }
+
+    #[tokio::test]
+    async fn the_store_refuses_a_second_controller_code_with_the_same_node_id() {
+        let t = setup_ha().await;
+        let (_, m) = mint_controller(&t, "c2").await;
+        let id = m["id"].as_str().unwrap();
+        let mut dup = t.store.get(Kind::Enrollment, id).unwrap().unwrap();
+        dup["origin"] = "other".into();
+        let applied = t
+            .store
+            .apply_local(&UiOp::Put {
+                kind: Kind::Enrollment,
+                name: "ffffffff".into(),
+                value: dup,
+            })
+            .unwrap();
+        assert_eq!(applied, Applied::Taken);
+    }
+
+    #[tokio::test]
+    async fn a_controller_code_redeems_into_every_token_the_keyring_the_node_id_and_a_join_proof() {
+        let t = setup_ha().await;
+        let (_, m) = mint_controller(&t, "c2").await;
+        let (st, v) = redeem_as(&t, m["code"].as_str().unwrap(), "controller").await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["node_id"], 2);
+        assert_eq!(v["tunnel_network"], "10.60.0.0/24");
+        assert_eq!(
+            files(&v),
+            [
+                "agent-token",
+                "auth-token",
+                "enroll-step-up",
+                "ha-join-proof",
+                "ha-token",
+                "ingest-token",
+                "proxy-token",
+                "secret.keys"
+            ]
+        );
+        assert_eq!(v["files"]["auth-token"], ADMIN);
+        assert_eq!(v["files"]["ha-token"], "ha-token-ha-token-ha");
+        // Only a hash of the proof is recorded.
+        let proof = v["files"]["ha-join-proof"].as_str().unwrap();
+        let secret = proof.split_once('.').unwrap().1;
+        let stored = serde_json::to_string(&t.store.list(Kind::Enrollment).unwrap()).unwrap();
+        assert!(stored.contains("join_hash") && !stored.contains(secret));
+        let (_, list) = call(
+            &t.app,
+            "GET",
+            "/enrollments",
+            Value::Null,
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(list["items"][0]["status"], "joining");
+        assert!(!list.to_string().contains("join_hash"));
+        // The same code does not redeem twice, and the controller role is not redeemable as another.
+        assert_eq!(
+            redeem_as(&t, m["code"].as_str().unwrap(), "controller")
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    async fn redeemed(t: &T) -> (String, String) {
+        let (_, m) = mint_controller(t, "c2").await;
+        let (_, v) = redeem_as(t, m["code"].as_str().unwrap(), "controller").await;
+        (
+            v["files"]["ha-join-proof"].as_str().unwrap().to_owned(),
+            m["id"].as_str().unwrap().to_owned(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_join_with_a_wrong_unknown_or_unredeemed_proof_is_refused_alike() {
+        let t = setup_ha().await;
+        let (proof, id) = redeemed(&t).await;
+        // Answers as another node, so a valid proof stops at the identity check.
+        let addr = stub_node(9).await;
+        let (_, unredeemed) = mint_controller(&t, "c3").await;
+        let wrong = format!("{id}.{}", "B".repeat(43));
+        let unknown = format!("ffffffff.{}", "A".repeat(43));
+        let mut answers = Vec::new();
+        for p in [
+            wrong.as_str(),
+            unknown.as_str(),
+            "garbage",
+            // The code itself is not a proof.
+            unredeemed["code"].as_str().unwrap(),
+        ] {
+            let (st, v) = join(&t, p, &addr, "10.0.0.5").await;
+            answers.push((st, v["error"].as_str().unwrap_or("").to_owned()));
+        }
+        assert!(
+            answers.iter().all(|a| a.0 == StatusCode::UNAUTHORIZED),
+            "{answers:?}"
+        );
+        assert!(answers.windows(2).all(|w| w[0] == w[1]), "{answers:?}");
+        // The right proof is not burnt by those tries.
+        assert_ne!(
+            join(&t, &proof, &addr, "10.0.0.5").await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn a_join_to_the_wrong_address_names_the_reason_and_can_be_tried_again() {
+        let t = setup_ha().await;
+        let (proof, _) = redeemed(&t).await;
+        // Nothing listens there.
+        let (st, v) = join(&t, &proof, "http://127.0.0.1:1", "10.0.0.5").await;
+        assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE, "{v}");
+        assert!(
+            v["error"].as_str().unwrap().contains("did not answer"),
+            "{v}"
+        );
+        // Something else answers as another node.
+        let other = stub_node(9).await;
+        let (st, v) = join(&t, &proof, &other, "10.0.0.5").await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("node 9"), "{v}");
+        // A plain-http address to another host is refused before the Raft token is sent there.
+        let (st, _) = join(&t, &proof, "http://203.0.113.9:9901", "10.0.0.5").await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+        // None of this spent the proof.
+        let (_, list) = call(
+            &t.app,
+            "GET",
+            "/enrollments",
+            Value::Null,
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(list["items"][0]["status"], "joining");
+    }
+
+    #[tokio::test]
+    async fn a_join_after_the_window_is_refused() {
+        let t = setup_ha().await;
+        let (proof, id) = redeemed(&t).await;
+        let mut rec = t.store.get(Kind::Enrollment, &id).unwrap().unwrap();
+        rec["join_until"] = 1.into();
+        put_through_raft(&t, &id, rec).await;
+        let addr = stub_node(2).await;
+        assert_eq!(
+            join(&t, &proof, &addr, "10.0.0.5").await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_that_is_a_voter_already_joins_again_without_effect_and_is_marked_joined() {
+        let t = setup_ha().await;
+        let (_, m) = mint_controller(&t, "c2").await;
+        // Pretend the cluster handed this code node id 1, which is the running voter.
+        let id = m["id"].as_str().unwrap().to_owned();
+        let mut rec = t.store.get(Kind::Enrollment, &id).unwrap().unwrap();
+        rec["node_id"] = 1.into();
+        put_through_raft(&t, &id, rec).await;
+        let (_, v) = redeem_as(&t, m["code"].as_str().unwrap(), "controller").await;
+        let proof = v["files"]["ha-join-proof"].as_str().unwrap();
+        let addr = stub_node(1).await;
+        let (st, v) = join(&t, proof, &addr, "10.0.0.5").await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let (_, list) = call(
+            &t.app,
+            "GET",
+            "/enrollments",
+            Value::Null,
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(list["items"][0]["status"], "joined");
+        // The proof is dead once the node is in.
+        assert_eq!(
+            join(&t, proof, &addr, "10.0.0.5").await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn guesses_at_one_join_proof_are_limited_across_addresses() {
+        let t = setup_ha().await;
+        let (_, id) = redeemed(&t).await;
+        let guess = format!("{id}.{}", "B".repeat(43));
+        let mut limited = false;
+        for i in 0..80 {
+            let (st, _) = join(
+                &t,
+                &guess,
+                "http://127.0.0.1:1",
+                &format!("10.7.{}.1", i % 250),
+            )
+            .await;
+            if st == StatusCode::TOO_MANY_REQUESTS {
+                limited = true;
+                break;
+            }
+        }
+        assert!(limited);
     }
 }

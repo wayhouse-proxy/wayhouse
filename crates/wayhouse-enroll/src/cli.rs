@@ -34,6 +34,10 @@ pub struct EnrollArgs {
     /// File holding the code (or set `WAYHOUSE_ENROLL_CODE_FILE` / `WAYHOUSE_ENROLL_CODE`).
     #[arg(long, value_name = "PATH")]
     pub code_file: Option<PathBuf>,
+    /// Controller replica only: the address the other replicas reach this one on, as
+    /// `--ha-peers` takes it (`https://host:port`). The cluster dials it to add this node.
+    #[arg(long, value_name = "URL")]
+    pub advertise: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -90,14 +94,48 @@ fn pin(e: &EnrollArgs) -> Result<Option<Pin>, BoxErr> {
     })
 }
 
+/// `--advertise` is for a controller replica and nothing else; it ends up in a unit line, so it
+/// must be a plain URL or `host:port`.
+fn check_advertise(role: Role, e: &EnrollArgs) -> Result<(), BoxErr> {
+    match (role, e.advertise.as_deref()) {
+        (Role::Controller, None) => Err(
+            "a controller replica needs --advertise URL (how the other replicas reach it)".into(),
+        ),
+        (Role::Controller, Some(a))
+            if a.is_empty()
+                || a.len() > 256
+                || a.chars().any(|c| {
+                    c.is_whitespace()
+                        || c.is_control()
+                        || matches!(c, '"' | '\\' | '\'' | '%' | '$')
+                }) =>
+        {
+            Err("--advertise must be a URL such as https://ctl-2.example:9901".into())
+        }
+        (r, Some(_)) if r != Role::Controller => {
+            Err("--advertise is only for a controller replica".into())
+        }
+        _ => Ok(()),
+    }
+}
+
 async fn enroll_into(role: Role, e: &EnrollArgs, dir: &std::path::Path) -> Result<String, BoxErr> {
+    check_advertise(role, e)?;
     let code = crate::input::resolve(
         e.code.as_deref(),
         e.code_file.as_deref(),
         |k| std::env::var(k).ok(),
         crate::input::tty_prompt,
     )?;
-    crate::enroll(&e.controller_url, pin(e)?.as_ref(), &code, role, dir).await
+    crate::enroll(
+        &e.controller_url,
+        pin(e)?.as_ref(),
+        &code,
+        role,
+        dir,
+        e.advertise.as_deref(),
+    )
+    .await
 }
 
 fn default_dir(role: Role) -> PathBuf {
@@ -127,6 +165,15 @@ pub async fn run(role: Role, bin: &'static str, argv: Vec<OsString>) -> Result<(
             let dir = i.enroll.data_dir.clone().unwrap_or_else(|| spec.data_dir());
             // Check before spending the code: a unit that already exists is never replaced.
             spec.check_free(&dir)?;
+            // Everything the unit needs is checked before the one-time code is spent.
+            if role == Role::Controller
+                && !i
+                    .extra
+                    .iter()
+                    .any(|a| a == "--listen" || a.starts_with("--listen="))
+            {
+                return Err("a controller replica needs --listen ADDR after `--`".into());
+            }
             let name = enroll_into(role, &i.enroll, &dir).await?;
             install_systemd(&spec, &dir, &i.enroll.controller_url, &i.extra, !i.no_start)?;
             eprintln!(

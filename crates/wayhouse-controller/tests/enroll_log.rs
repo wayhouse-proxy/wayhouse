@@ -81,6 +81,7 @@ async fn no_secret_reaches_the_log_even_at_trace() {
             proxy_token: Some(Arc::from(PROXY)),
             ingest_token: Some(Arc::from(INGEST)),
             step_up: Some(Arc::from(STEP_UP)),
+            tunnel_network: None,
         },
     );
     let mut secrets: Vec<String> = vec![AGENT.into(), ADMIN.into(), PROXY.into(), INGEST.into()];

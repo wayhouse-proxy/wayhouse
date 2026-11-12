@@ -15,6 +15,8 @@ pub const META_FILE: &str = "enrollment.json";
 pub const TOKEN_FILE: &str = "agent-token";
 pub const PSK_FILE: &str = "tunnel-psk";
 pub const KEYRING_FILE: &str = "secret.keys";
+/// A controller replica's proof that the cluster may add it (`<id>.<secret>`; single purpose).
+pub const JOIN_PROOF_FILE: &str = "ha-join-proof";
 
 /// `enrollment.json`: where this node enrolled and as whom. Holds no secret.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,6 +27,15 @@ pub struct Meta {
     /// An aggregator tier's parent URL, when the admin set one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_url: Option<String>,
+    /// A controller replica's Raft node id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<u64>,
+    /// A controller replica's `--tunnel-network` (the cluster's; they must match).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tunnel_network: Option<String>,
+    /// How the other replicas reach a controller replica (`--ha-advertise`); not a secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advertise: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -146,6 +157,9 @@ mod tests {
             name: "home".into(),
             role: Role::Agent,
             parent_url: None,
+            node_id: None,
+            tunnel_network: None,
+            advertise: None,
         };
         let granted = [
             (TOKEN_FILE.to_owned(), "tok-tok-tok-tok-tok".to_owned()),
@@ -178,6 +192,9 @@ mod tests {
             name: "n".into(),
             role: Role::Agent,
             parent_url: None,
+            node_id: None,
+            tunnel_network: None,
+            advertise: None,
         };
         let granted = [(PSK_FILE.to_owned(), "not-a-key".to_owned())].into();
         write(t.path(), &meta, &granted).unwrap();

@@ -61,8 +61,15 @@ pub enum UiOp {
         id: String,
         hash: String,
         now: u64,
+        /// A controller replica's join proof, hashed (see `enroll`): recorded on the code in
+        /// the same atomic step that spends it. Absent for every other role.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        join_hash: Option<String>,
     },
 }
+
+/// How long after its redeem a controller replica may still ask to be added to the Raft group.
+pub const JOIN_WINDOW_SECS: u64 = 3600;
 
 /// What applying one op did; everything but `Done` and `Replayed` changed nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +86,8 @@ pub enum Applied {
     /// A redeem that matched no live code. Unknown id, wrong secret, expired and spent all look
     /// the same, so the answer reveals nothing about which codes exist.
     Refused,
+    /// A controller code asked for a node id another code already holds.
+    Taken,
 }
 
 /// Everything replicated, for an HA snapshot.
@@ -434,13 +443,46 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                     "uses_left",
                     "created_by",
                     "parent_url",
+                    "node_id",
+                    "join_hash",
+                    "join_until",
+                    "joined",
                 ],
             )?;
+            let role = obj.get("role").and_then(Value::as_str);
             if !matches!(
-                obj.get("role").and_then(Value::as_str),
-                Some("agent" | "proxy" | "aggregator" | "ui")
+                role,
+                Some("agent" | "proxy" | "aggregator" | "ui" | "controller")
             ) {
-                return Err("role must be agent, proxy, aggregator or ui".into());
+                return Err("role must be agent, proxy, aggregator, ui or controller".into());
+            }
+            let is_controller = role == Some("controller");
+            if is_controller != obj.contains_key("node_id") {
+                return Err("node_id is set on a controller code and only there".into());
+            }
+            if !is_controller
+                && ["join_hash", "join_until", "joined"]
+                    .iter()
+                    .any(|k| obj.contains_key(*k))
+            {
+                return Err("join fields belong to a controller code".into());
+            }
+            if let Some(id) = obj.get("node_id") {
+                if !id.as_u64().is_some_and(|i| (1..=1_000_000).contains(&i)) {
+                    return Err("node_id must be 1 to 1000000".into());
+                }
+            }
+            if let Some(h) = obj.get("join_hash") {
+                let h = string_max(h, "join_hash", 64)?;
+                if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err("join_hash must be 64 hex digits".into());
+                }
+            }
+            if obj.get("join_until").is_some_and(|u| !u.is_u64()) {
+                return Err("join_until must be a unix time".into());
+            }
+            if obj.get("joined").is_some_and(|j| !j.is_boolean()) {
+                return Err("joined must be true or false".into());
             }
             if let Some(u) = obj.get("parent_url") {
                 string_max(u, "parent_url", 512)?;
@@ -459,6 +501,9 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
             let uses = obj.get("uses").and_then(Value::as_u64);
             if !uses.is_some_and(|u| (1..=1000).contains(&u)) {
                 return Err("uses must be 1 to 1000".into());
+            }
+            if is_controller && uses != Some(1) {
+                return Err("a controller code is single use".into());
             }
             if !obj
                 .get("uses_left")
@@ -577,6 +622,18 @@ impl UiStore {
                     return Ok(Err(Applied::Invalid(why)));
                 }
                 let k = key(*kind, name);
+                // A node id belongs to one controller code: checked here, in the atomic step, so
+                // two admins minting at once on different replicas cannot both get it.
+                if *kind == Kind::Enrollment && value["role"] == "controller" {
+                    for (other, rec) in self.list(Kind::Enrollment)? {
+                        if other != *name
+                            && rec["role"] == "controller"
+                            && rec["node_id"] == value["node_id"]
+                        {
+                            return Ok(Err(Applied::Taken));
+                        }
+                    }
+                }
                 if let Some(max) = kind.max_records() {
                     if self.records.get(&k)?.is_none() && self.count(*kind) >= max {
                         return Ok(Err(Applied::Full(max)));
@@ -621,7 +678,12 @@ impl UiStore {
                 }
                 Ok(Ok(vec![Write::Insert(k, serde_json::to_vec(value)?)]))
             }
-            UiOp::Redeem { id, hash, now } => {
+            UiOp::Redeem {
+                id,
+                hash,
+                now,
+                join_hash,
+            } => {
                 let Some(raw) = self.records.get(key(Kind::Enrollment, id))? else {
                     return Ok(Err(Applied::Refused));
                 };
@@ -635,6 +697,10 @@ impl UiStore {
                     return Ok(Err(Applied::Refused));
                 }
                 rec["uses_left"] = (rec["uses_left"].as_u64().unwrap_or(1) - 1).into();
+                if let (Some(jh), "controller") = (join_hash, rec["role"].as_str().unwrap_or("")) {
+                    rec["join_hash"] = jh.as_str().into();
+                    rec["join_until"] = (*now + JOIN_WINDOW_SECS).into();
+                }
                 Ok(Ok(vec![Write::Insert(
                     key(Kind::Enrollment, id),
                     serde_json::to_vec(&rec)?,
@@ -926,6 +992,7 @@ mod tests {
             id: id.into(),
             hash: hash.into(),
             now,
+            join_hash: None,
         }
     }
 
