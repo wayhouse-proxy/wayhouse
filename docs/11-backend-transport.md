@@ -213,13 +213,13 @@ to an unkeyed peer. An origin that never enrolled has no key and works as before
 (`tunnel-psk-<hash>-<n+1>`; generation 0 is the one enrollment made) and answers `202` with
 `{"active": n, "pending": n+1}`. The proxies change nothing yet. The origin's agent asks
 `GET /peers/{name}/psk` every `--register-interval-sec` (its own token only; the admin token may
-too), and when the answer names a newer generation it writes the key to its file, updates every
-proxy peer on its interface in place, records the generation in `<key file>.gen` and registers
+too), and when the answer names a newer generation it writes the key to its file, removes and re-adds every
+proxy peer on its interface with the new key (the userspace backend cannot modify a peer), records the generation in `<key file>.gen` and registers
 again naming the new generation's secret. That registration is the acknowledgement: the registry
 record now names generation n+1, every proxy sees the change, fetches the new sealed secret and
-re-peers the origin. Established sessions keep running; the two ends differ for the few seconds
-between the agent's switch and the registration reaching the proxies, and a handshake that falls
-in that window retries. Until the agent acknowledges, the old generation stays active and
+re-peers the origin. The switch drops the live session, so traffic can stall for a few seconds
+until the proxies apply the new key. The UI's tunnel addresses page has a **Rotate key** button
+for each origin (admin role). Until the agent acknowledges, the old generation stays active and
 `POST .../rotate` answers `409`; an agent that stays offline simply leaves the rotation pending.
 The next rotation removes the generations older than the active one. An agent whose key file is
 read-only (a mounted Secret) or that holds a manually set key does not rotate: it keeps its key
