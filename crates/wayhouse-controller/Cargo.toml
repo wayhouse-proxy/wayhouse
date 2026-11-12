@@ -29,6 +29,7 @@ wayhouse-settings = { path = "../wayhouse-settings" }
 wayhouse-http = { workspace = true, features = ["server"] }
 wayhouse-config = { path = "../wayhouse-config" }
 wayhouse-plugin-host = { path = "../wayhouse-plugin-host" }
+wayhouse-enroll = { path = "../wayhouse-enroll" }
 wayhouse-secrets = { path = "../wayhouse-secrets" }
 wayhouse-acme = { path = "../wayhouse-acme", default-features = false }
 

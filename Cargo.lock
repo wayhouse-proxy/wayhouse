@@ -4832,6 +4832,7 @@ dependencies = [
  "wat",
  "wayhouse-acme",
  "wayhouse-config",
+ "wayhouse-enroll",
  "wayhouse-http",
  "wayhouse-plugin-host",
  "wayhouse-secrets",

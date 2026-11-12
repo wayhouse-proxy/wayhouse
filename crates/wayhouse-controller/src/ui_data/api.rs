@@ -610,6 +610,7 @@ fn answer(applied: &Applied, ok: impl FnOnce() -> Response) -> Response {
             StatusCode::CONFLICT,
             "the record changed while the request was applied; try again",
         ),
+        Applied::Refused => err(StatusCode::UNAUTHORIZED, "invalid or expired code"),
         Applied::Replayed => internal("a write was answered as a replay"),
     }
 }

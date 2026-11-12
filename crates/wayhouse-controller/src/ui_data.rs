@@ -32,6 +32,8 @@ pub enum Kind {
     /// A cluster secret (K1): ciphertext only, named by the secret. The controller seals the
     /// value before it proposes the entry, so no log entry or snapshot holds plaintext.
     ClusterSecret,
+    /// A one-time enrollment code, named by its public id; holds only a hash of the secret.
+    Enrollment,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,6 +54,14 @@ pub enum UiOp {
         from_nonce: String,
         value: Value,
     },
+    /// Spends one use of an enrollment code. Atomic in the state machine, so a single-use code
+    /// redeems exactly once however many nodes race. `now` is the proposer's clock: every
+    /// replica must reach the same answer.
+    Redeem {
+        id: String,
+        hash: String,
+        now: u64,
+    },
 }
 
 /// What applying one op did; everything but `Done` and `Replayed` changed nothing.
@@ -66,6 +76,9 @@ pub enum Applied {
     Full(usize),
     /// A rewrap lost a race: the secret was replaced since it was read.
     Stale,
+    /// A redeem that matched no live code. Unknown id, wrong secret, expired and spent all look
+    /// the same, so the answer reveals nothing about which codes exist.
+    Refused,
 }
 
 /// Everything replicated, for an HA snapshot.
@@ -154,7 +167,7 @@ const MAX_WIDGETS: usize = 100;
 impl Kind {
     /// Every kind, for the HA snapshot: a kind missing here is lost to a replica that catches up
     /// from a snapshot (the test below fails to compile when a variant is added).
-    pub const ALL: [Kind; 8] = [
+    pub const ALL: [Kind; 9] = [
         Kind::Dashboard,
         Kind::Theme,
         Kind::SavedFilter,
@@ -163,6 +176,7 @@ impl Kind {
         Kind::FeatureOverride,
         Kind::NodeTags,
         Kind::ClusterSecret,
+        Kind::Enrollment,
     ];
 
     fn tag(self) -> &'static str {
@@ -175,6 +189,7 @@ impl Kind {
             Kind::FeatureOverride => "feature_overrides",
             Kind::NodeTags => "node_tags",
             Kind::ClusterSecret => "cluster_secrets",
+            Kind::Enrollment => "enrollments",
         }
     }
 
@@ -186,6 +201,7 @@ impl Kind {
             Kind::SavedFilter => 4 << 10,
             Kind::Defaults | Kind::FeatureOverride => 1 << 10,
             Kind::ClusterSecret => 8 << 10,
+            Kind::Enrollment => 1 << 10,
         }
     }
 
@@ -199,6 +215,7 @@ impl Kind {
             // Sized for a fleet of about 500 nodes with room to spare.
             Kind::NodeTags => Some(1000),
             Kind::ClusterSecret => Some(64),
+            Kind::Enrollment => Some(200),
             Kind::FormLayout | Kind::Defaults => None,
         }
     }
@@ -403,6 +420,38 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
             }
             Ok(())
         }
+        Kind::Enrollment => {
+            only_keys(
+                obj,
+                "",
+                &["role", "origin", "hash", "created_at", "expires_at", "uses", "uses_left", "created_by"],
+            )?;
+            if obj.get("role").and_then(Value::as_str) != Some("agent") {
+                return Err("role must be \"agent\"".into());
+            }
+            let origin = string_max(obj.get("origin").unwrap_or(&Value::Null), "origin", 64)?;
+            crate::registry::validate_name(origin)?;
+            let hash = string_max(obj.get("hash").unwrap_or(&Value::Null), "hash", 64)?;
+            if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("hash must be 64 hex digits".into());
+            }
+            for k in ["created_at", "expires_at"] {
+                if !obj.get(k).is_some_and(Value::is_u64) {
+                    return Err(format!("{k} must be a unix time"));
+                }
+            }
+            let uses = obj.get("uses").and_then(Value::as_u64);
+            if !uses.is_some_and(|u| (1..=1000).contains(&u)) {
+                return Err("uses must be 1 to 1000".into());
+            }
+            if !obj.get("uses_left").and_then(Value::as_u64).is_some_and(|l| Some(l) <= uses) {
+                return Err("uses_left must be a whole number up to uses".into());
+            }
+            if let Some(a) = obj.get("created_by") {
+                string_max(a, "created_by", 128)?;
+            }
+            Ok(())
+        }
         Kind::NodeTags => {
             only_keys(obj, "", &["name", "tags"])?;
             let tags: std::collections::BTreeMap<String, String> =
@@ -551,6 +600,25 @@ impl UiStore {
                     return Ok(Err(Applied::Stale));
                 }
                 Ok(Ok(vec![Write::Insert(k, serde_json::to_vec(value)?)]))
+            }
+            UiOp::Redeem { id, hash, now } => {
+                let Some(raw) = self.records.get(key(Kind::Enrollment, id))? else {
+                    return Ok(Err(Applied::Refused));
+                };
+                let mut rec: Value = serde_json::from_slice(&raw)?;
+                let live = rec["expires_at"].as_u64().is_some_and(|e| *now < e)
+                    && rec["uses_left"].as_u64().is_some_and(|l| l > 0)
+                    && rec["hash"]
+                        .as_str()
+                        .is_some_and(|h| wayhouse_http::token_eq(hash, h));
+                if !live {
+                    return Ok(Err(Applied::Refused));
+                }
+                rec["uses_left"] = (rec["uses_left"].as_u64().unwrap_or(1) - 1).into();
+                Ok(Ok(vec![Write::Insert(
+                    key(Kind::Enrollment, id),
+                    serde_json::to_vec(&rec)?,
+                )]))
             }
             UiOp::Delete { kind, name } => {
                 let k = key(*kind, name);
@@ -738,6 +806,7 @@ mod tests {
             Kind::FeatureOverride,
             Kind::NodeTags,
             Kind::ClusterSecret,
+            Kind::Enrollment,
         ];
         let (store, _d) = store();
         for kind in literal {
@@ -749,7 +818,8 @@ mod tests {
                 | Kind::Defaults
                 | Kind::FeatureOverride
                 | Kind::NodeTags
-                | Kind::ClusterSecret => json!({}),
+                | Kind::ClusterSecret
+                | Kind::Enrollment => json!({}),
             };
             // Validation may refuse a bare `{}`; write the record directly.
             store
@@ -783,8 +853,8 @@ mod tests {
             ui_support,
         };
         assert!(check_support_answers(&[(2, Ok(who(UI_SUPPORT)))]).is_ok());
-        // Level 4 predates the cluster secret rewrap entry and cannot decode it.
-        assert!(check_support_answers(&[(2, Ok(who(4)))]).is_err());
+        // Level 5 predates enrollment codes and cannot decode the redeem entry.
+        assert!(check_support_answers(&[(2, Ok(who(5)))]).is_err());
         assert!(
             check_support_answers(&[(2, Ok(who(3)))]).is_err(),
             "level 3 cannot decode cluster secrets"
@@ -824,6 +894,81 @@ mod tests {
             Applied::Invalid(why) => why,
             other => panic!("expected Invalid, got {other:?}"),
         }
+    }
+
+
+    fn code_record(hash: &str, uses: u64, expires_at: u64) -> Value {
+        json!({"role": "agent", "origin": "home", "hash": hash, "created_at": 100,
+               "expires_at": expires_at, "uses": uses, "uses_left": uses, "created_by": "ops"})
+    }
+
+    fn redeem(id: &str, hash: &str, now: u64) -> UiOp {
+        UiOp::Redeem { id: id.into(), hash: hash.into(), now }
+    }
+
+    const H1: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const H2: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+
+    #[test]
+    fn a_code_redeems_once_and_every_later_try_is_refused() {
+        let (s, _d) = store();
+        s.apply_local(&put(Kind::Enrollment, "abcd1234", code_record(H1, 1, 1000))).unwrap();
+        assert_eq!(s.apply_local(&redeem("abcd1234", H1, 200)).unwrap(), Applied::Done);
+        assert_eq!(s.apply_local(&redeem("abcd1234", H1, 201)).unwrap(), Applied::Refused);
+        assert_eq!(s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"], 0);
+    }
+
+    #[test]
+    fn a_wrong_secret_an_unknown_id_and_an_expired_code_are_all_refused_alike() {
+        let (s, _d) = store();
+        s.apply_local(&put(Kind::Enrollment, "abcd1234", code_record(H1, 2, 1000))).unwrap();
+        for op in [redeem("abcd1234", H2, 200), redeem("ffffffff", H1, 200), redeem("abcd1234", H1, 1000)] {
+            assert_eq!(s.apply_local(&op).unwrap(), Applied::Refused, "{op:?}");
+        }
+        // The failed tries burnt nothing.
+        assert_eq!(s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"], 2);
+    }
+
+    #[test]
+    fn a_multi_use_code_serves_exactly_its_uses() {
+        let (s, _d) = store();
+        s.apply_local(&put(Kind::Enrollment, "abcd1234", code_record(H1, 3, 1000))).unwrap();
+        let done = (0..5)
+            .filter(|i| s.apply_local(&redeem("abcd1234", H1, 200 + i)).unwrap() == Applied::Done)
+            .count();
+        assert_eq!(done, 3);
+    }
+
+    #[test]
+    fn concurrent_redeems_of_a_single_use_code_give_exactly_one_success() {
+        let (s, _d) = store();
+        s.apply_local(&put(Kind::Enrollment, "abcd1234", code_record(H1, 1, 1000))).unwrap();
+        let wins: usize = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..16)
+                .map(|_| sc.spawn(|| s.apply_local(&redeem("abcd1234", H1, 200)).unwrap() == Applied::Done))
+                .collect();
+            hs.into_iter().map(|h| usize::from(h.join().unwrap())).sum()
+        });
+        assert_eq!(wins, 1);
+    }
+
+    #[test]
+    fn a_replicated_redeem_replays_without_a_second_use() {
+        let (s, _d) = store();
+        s.apply_at(1, &put(Kind::Enrollment, "abcd1234", code_record(H1, 2, 1000))).unwrap();
+        assert_eq!(s.apply_at(2, &redeem("abcd1234", H1, 200)).unwrap(), Applied::Done);
+        assert_eq!(s.apply_at(2, &redeem("abcd1234", H1, 200)).unwrap(), Applied::Replayed);
+        assert_eq!(s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"], 1);
+    }
+
+    #[test]
+    fn an_enrollment_record_has_a_fixed_shape_and_never_holds_a_plaintext_code() {
+        let mut bad = code_record(H1, 1, 1000);
+        bad["code"] = "abcd1234.secret".into();
+        assert!(validate(Kind::Enrollment, "abcd1234", &bad).is_err());
+        assert!(validate(Kind::Enrollment, "abcd1234", &code_record("short", 1, 1000)).is_err());
+        assert!(validate(Kind::Enrollment, "abcd1234", &code_record(H1, 0, 1000)).is_err());
+        assert!(validate(Kind::Enrollment, "abcd1234", &code_record(H1, 1, 1000)).is_ok());
     }
 
     #[test]
