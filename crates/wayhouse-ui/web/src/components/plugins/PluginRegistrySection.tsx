@@ -29,6 +29,7 @@ function PluginDetails({ registryId, name }: { registryId: string; name: string 
   useEffect(() => {
     if (!open || plugin) return;
     let live = true;
+    setError(null);
     getRegistryPlugin(registryId, name)
       .then((d) => live && setPlugin(d.plugin))
       .catch((err) => live && setError(errorText(err)));
@@ -166,7 +167,7 @@ export function PluginRegistrySection({ onFetched }: { onFetched: (result: Plugi
                     <span className="ml-auto" />
                     <Button
                       variant="primary"
-                      disabled={!p.abi_compatible || busy !== null}
+                      disabled={busy !== null}
                       loading={busy === p.name}
                       aria-label={`Fetch ${p.name}`}
                       onClick={() => fetchIt(p.name, undefined, false)}
@@ -182,7 +183,7 @@ export function PluginRegistrySection({ onFetched }: { onFetched: (result: Plugi
                   )}
                   {!p.abi_compatible && (
                     <p className="mt-1 text-sm text-bad">
-                      The newest version is built for plugin ABI {p.abi}, this controller speaks {listing.host_abi}; open Details to see whether an older one fits.
+                      The newest version is built for plugin ABI {p.abi}, this controller speaks {listing.host_abi}. Fetch takes the newest version that fits, if there is one; Details lists them.
                     </p>
                   )}
                   <PluginDetails registryId={listing.registry.id} name={p.name} />

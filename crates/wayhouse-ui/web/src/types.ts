@@ -134,6 +134,7 @@ export interface RegistryCatalogEntry {
   name: string;
   description: string;
   license: string;
+  /** The registry validates it as https at parse time, but a UI that renders it as a link must still allow https only. */
   homepage?: string;
   categories: string[];
   tags: string[];

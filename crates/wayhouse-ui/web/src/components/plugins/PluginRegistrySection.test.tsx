@@ -94,7 +94,8 @@ describe("PluginRegistrySection", () => {
     expect(screen.queryByText(/^signed$/)).toBeNull();
     const old = screen.getByText("old-thing").closest("li")!;
     expect(within(old).getByText(/plugin ABI 0\.1/)).toBeInTheDocument();
-    expect(within(old).getByRole("button", { name: "Fetch old-thing" })).toHaveAttribute("aria-disabled", "true");
+    // The server picks the newest version that fits, so an older one stays fetchable.
+    expect(within(old).getByRole("button", { name: "Fetch old-thing" })).not.toHaveAttribute("aria-disabled", "true");
   });
 
   it("fetches the newest compatible version and hands the uploaded module on", async () => {
