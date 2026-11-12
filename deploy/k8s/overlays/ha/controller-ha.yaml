@@ -32,17 +32,24 @@ spec:
             - --proxy-token-file=/run/secrets/wayhouse/proxy-token
             - --agent-token-file=/run/secrets/wayhouse/agent-token
             - --ha-node-id=$(POD_INDEX)
-            - --ha-peers=0=wayhouse-controller-0.wayhouse-controller-peers:9901,1=wayhouse-controller-1.wayhouse-controller-peers:9901,2=wayhouse-controller-2.wayhouse-controller-peers:9901
+            - --ha-peers=0=https://wayhouse-controller-0.wayhouse-controller-peers:9901,1=https://wayhouse-controller-1.wayhouse-controller-peers:9901,2=https://wayhouse-controller-2.wayhouse-controller-peers:9901
             - --ha-token-file=/run/secrets/wayhouse/ha-token
-            - --allow-insecure-controller   # the peers are plain http on the cluster network; the Raft token travels there
+            - --tls-cert=/run/tls/controller.crt   # one leaf for every replica: its names include *.wayhouse-controller-peers
+            - --tls-key=/run/tls/controller.key
+            - --ca-file=/run/tls/ca.crt   # the Raft token only travels over https between replicas
           env:
             - name: POD_INDEX
               valueFrom: { fieldRef: { fieldPath: "metadata.labels['apps.kubernetes.io/pod-index']" } }
           ports: [{ containerPort: 9901 }]
-          readinessProbe: { httpGet: { path: /healthz, port: 9901 } }
-          livenessProbe: { httpGet: { path: /healthz, port: 9901 }, initialDelaySeconds: 10 }
-          volumeMounts: [{ name: data, mountPath: /data }, { name: tokens, mountPath: /run/secrets/wayhouse, readOnly: true }]
+          readinessProbe: { httpGet: { path: /healthz, port: 9901, scheme: HTTPS } }
+          livenessProbe: { httpGet: { path: /healthz, port: 9901, scheme: HTTPS }, initialDelaySeconds: 10 }
+          volumeMounts: [{ name: data, mountPath: /data }, { name: tokens, mountPath: /run/secrets/wayhouse, readOnly: true }, { name: tls, mountPath: /run/tls, readOnly: true }]
       volumes:
+        - name: tls
+          secret:
+            secretName: wayhouse-tls   # `wayhouse-controller init --target k8s-secret` makes it (deploy/README.md)
+            defaultMode: 0440
+            items: [{ key: ca.crt, path: ca.crt }, { key: controller.crt, path: controller.crt }, { key: controller.key, path: controller.key }]
         - name: tokens
           secret:
             secretName: wayhouse-tokens
