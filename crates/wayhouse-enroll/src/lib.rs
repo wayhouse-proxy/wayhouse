@@ -84,6 +84,29 @@ pub fn psk_secret_name(origin: &str) -> String {
     format!("tunnel-psk-{hex}")
 }
 
+/// The sealed secret that holds generation `gen` of an origin's tunnel PSK. Generation 0 is
+/// the one enrollment makes ([`psk_secret_name`]); a rotation makes `<base>-<gen>`. A new name
+/// per generation lets the registration flip from one key to the next in a single write.
+pub fn psk_secret_name_gen(origin: &str, gen: u64) -> String {
+    match gen {
+        0 => psk_secret_name(origin),
+        n => format!("{}-{n}", psk_secret_name(origin)),
+    }
+}
+
+/// The generation `secret` holds for `origin`, or `None` when it is not one of that origin's
+/// own tunnel key secrets (another origin's, a plain cluster secret, a malformed suffix).
+pub fn psk_secret_gen(origin: &str, secret: &str) -> Option<u64> {
+    let base = psk_secret_name(origin);
+    if secret == base {
+        return Some(0);
+    }
+    let n = secret.strip_prefix(&base)?.strip_prefix('-')?;
+    // Canonical decimal only, so one generation has one name.
+    let canonical = !n.starts_with('0') && n.len() <= 18 && n.bytes().all(|b| b.is_ascii_digit());
+    canonical.then(|| n.parse().ok()).flatten()
+}
+
 /// A fresh tunnel PSK, base64 (the form `wg` and `defguard` take).
 pub fn generate_psk() -> zeroize::Zeroizing<String> {
     use base64::Engine;
@@ -125,4 +148,44 @@ pub fn generate_token() -> String {
     let mut k = zeroize::Zeroizing::new([0u8; 32]);
     rand::rngs::OsRng.fill_bytes(&mut *k);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(*k)
+}
+
+#[cfg(test)]
+mod gen_tests {
+    use super::*;
+
+    #[test]
+    fn a_generation_has_exactly_one_name_and_only_its_origin_owns_it() {
+        assert_eq!(psk_secret_name_gen("home", 0), psk_secret_name("home"));
+        let g3 = psk_secret_name_gen("home", 3);
+        assert_eq!(g3, format!("{}-3", psk_secret_name("home")));
+        assert!(valid(&g3), "must stay a legal cluster secret name");
+        assert_eq!(psk_secret_gen("home", &psk_secret_name("home")), Some(0));
+        assert_eq!(psk_secret_gen("home", &g3), Some(3));
+        assert_eq!(
+            psk_secret_gen("other", &g3),
+            None,
+            "another origin's secret"
+        );
+        for bad in [
+            "-0",
+            "-03",
+            "-",
+            "-x",
+            "-1-2",
+            "-+1",
+            "-99999999999999999999",
+        ] {
+            let name = format!("{}{bad}", psk_secret_name("home"));
+            assert_eq!(psk_secret_gen("home", &name), None, "suffix {bad}");
+        }
+        assert_eq!(psk_secret_gen("home", "gossip-psk"), None);
+    }
+
+    fn valid(name: &str) -> bool {
+        name.len() <= 63
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    }
 }

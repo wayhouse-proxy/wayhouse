@@ -29,9 +29,12 @@ Without the flag nothing changes.
 `wayhouse-agent enroll` with a one-time code gives an origin a controller-made tunnel preshared
 key ([how](12-deployment.md#enrolling-an-origin-agent-with-a-one-time-code)). Nothing changes
 for an origin that does not enroll. Upgrade every controller replica first (the stored-data level
-is now 6 and a mixed HA cluster refuses to mint or redeem), then every proxy, then enroll origins:
+is now 7 and a mixed HA cluster refuses to mint or redeem), then every proxy, then enroll origins:
 a 0.3.0 proxy ignores the key and cannot complete the handshake with an enrolled origin.
-Proxies, aggregators and UI processes enroll the same way (`wayhouse enroll`, `install --systemd`;
+With `--auth-token`, an enrolled origin gets a token of its own (not the shared agent token), and
+its key can be rotated without re-enrolling (`POST /peers/{name}/psk/rotate`, [how](11-backend-transport.md#rotating-the-key)).
+An origin enrolled earlier keeps working on the shared token and cannot rotate until it
+re-enrolls. Proxies, aggregators and UI processes enroll the same way (`wayhouse enroll`, `install --systemd`;
 [roles and the step-up secret](12-deployment.md#enrolling-a-proxy-an-aggregator-or-a-ui)). Breaking
 for the mint call: `POST /enrollments` takes `name` (the old `origin` still works) and a `role`.
 

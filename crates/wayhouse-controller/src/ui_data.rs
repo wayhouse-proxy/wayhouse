@@ -34,6 +34,9 @@ pub enum Kind {
     ClusterSecret,
     /// A one-time enrollment code, named by its public id; holds only a hash of the secret.
     Enrollment,
+    /// The token one enrolled origin presents, named by the SHA-256 of the token (hex) so a
+    /// request finds its record in one read; holds only the origin's name.
+    OriginToken,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -167,7 +170,7 @@ const MAX_WIDGETS: usize = 100;
 impl Kind {
     /// Every kind, for the HA snapshot: a kind missing here is lost to a replica that catches up
     /// from a snapshot (the test below fails to compile when a variant is added).
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::Dashboard,
         Kind::Theme,
         Kind::SavedFilter,
@@ -177,6 +180,7 @@ impl Kind {
         Kind::NodeTags,
         Kind::ClusterSecret,
         Kind::Enrollment,
+        Kind::OriginToken,
     ];
 
     fn tag(self) -> &'static str {
@@ -190,6 +194,7 @@ impl Kind {
             Kind::NodeTags => "node_tags",
             Kind::ClusterSecret => "cluster_secrets",
             Kind::Enrollment => "enrollments",
+            Kind::OriginToken => "origin_tokens",
         }
     }
 
@@ -201,7 +206,7 @@ impl Kind {
             Kind::SavedFilter => 4 << 10,
             Kind::Defaults | Kind::FeatureOverride => 1 << 10,
             Kind::ClusterSecret => 8 << 10,
-            Kind::Enrollment => 1 << 10,
+            Kind::Enrollment | Kind::OriginToken => 1 << 10,
         }
     }
 
@@ -214,8 +219,10 @@ impl Kind {
             Kind::FeatureOverride => Some(64),
             // Sized for a fleet of about 500 nodes with room to spare.
             Kind::NodeTags => Some(1000),
-            Kind::ClusterSecret => Some(64),
+            // Room for a fleet of origins: each holds one tunnel key (two during a rotation).
+            Kind::ClusterSecret => Some(2048),
             Kind::Enrollment => Some(200),
+            Kind::OriginToken => Some(2048),
             Kind::FormLayout | Kind::Defaults => None,
         }
     }
@@ -238,6 +245,9 @@ fn check_name(kind: Kind, name: &str) -> Result<(), String> {
             "a secret name is 1 to 63 of a-z, 0-9 and '-', not starting or ending with '-'".into(),
         );
     }
+    if kind == Kind::OriginToken && !is_token_hash(name) {
+        return Err("an origin token is named by 64 lowercase hex digits".into());
+    }
     if kind == Kind::FeatureOverride
         && !name
             .bytes()
@@ -252,6 +262,11 @@ fn check_name(kind: Kind, name: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// The name of an [`Kind::OriginToken`] record: SHA-256 of the token, lowercase hex.
+pub fn is_token_hash(name: &str) -> bool {
+    name.len() == 64 && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn object<'a>(v: &'a Value, path: &str) -> Result<&'a serde_json::Map<String, Value>, String> {
@@ -469,6 +484,15 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
             }
             if let Some(a) = obj.get("created_by") {
                 string_max(a, "created_by", 128)?;
+            }
+            Ok(())
+        }
+        Kind::OriginToken => {
+            only_keys(obj, "", &["origin", "created_at"])?;
+            let origin = string_max(obj.get("origin").unwrap_or(&Value::Null), "origin", 64)?;
+            crate::registry::validate_name(origin)?;
+            if !obj.get("created_at").is_some_and(Value::is_u64) {
+                return Err("created_at must be a unix time".into());
             }
             Ok(())
         }
@@ -827,6 +851,7 @@ mod tests {
             Kind::NodeTags,
             Kind::ClusterSecret,
             Kind::Enrollment,
+            Kind::OriginToken,
         ];
         let (store, _d) = store();
         for kind in literal {
@@ -839,7 +864,8 @@ mod tests {
                 | Kind::FeatureOverride
                 | Kind::NodeTags
                 | Kind::ClusterSecret
-                | Kind::Enrollment => json!({}),
+                | Kind::Enrollment
+                | Kind::OriginToken => json!({}),
             };
             // Validation may refuse a bare `{}`; write the record directly.
             store

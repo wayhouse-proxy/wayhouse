@@ -207,6 +207,35 @@ derives from the origin's own name, fetches the sealed value through `GET /secre
 opens it with its own key file and refuses to configure the peer without it rather than fall back
 to an unkeyed peer. An origin that never enrolled has no key and works as before.
 
+### Rotating the key
+
+`POST /peers/{name}/psk/rotate` (admin token) seals generation n+1 beside the active n
+(`tunnel-psk-<hash>-<n+1>`; generation 0 is the one enrollment made) and answers `202` with
+`{"active": n, "pending": n+1}`. The proxies change nothing yet. The origin's agent asks
+`GET /peers/{name}/psk` every `--register-interval-sec` (its own token only; the admin token may
+too), and when the answer names a newer generation it writes the key to its file, updates every
+proxy peer on its interface in place, records the generation in `<key file>.gen` and registers
+again naming the new generation's secret. That registration is the acknowledgement: the registry
+record now names generation n+1, every proxy sees the change, fetches the new sealed secret and
+re-peers the origin. Established sessions keep running; the two ends differ for the few seconds
+between the agent's switch and the registration reaching the proxies, and a handshake that falls
+in that window retries. Until the agent acknowledges, the old generation stays active and
+`POST .../rotate` answers `409`; an agent that stays offline simply leaves the rotation pending.
+The next rotation removes the generations older than the active one. An agent whose key file is
+read-only (a mounted Secret) or that holds a manually set key does not rotate: it keeps its key
+and logs why. A re-enroll starts over at generation 0 and removes every other generation.
+
+### Per-origin tokens
+
+With `--auth-token` set, redeeming an agent code issues the origin a token of its own instead of
+the shared `--agent-token` (same `agent-token` file, so nothing changes on the host). Only its
+SHA-256 is stored, replicated with the other UI data. It unlocks `POST /peers` for its own name
+only, `GET /proxy-peers/subscribe` and `GET /peers/{name}/psk` for its own name; a re-enroll
+replaces it and the old one stops working at once. The shared agent token still registers
+origins that did not enroll, but no longer one that holds a token of its own, so a compromised
+agent can neither re-register another enrolled origin's tunnel record nor read its key (#581 for
+agents; proxies still share one token).
+
 ## Address authority (built 2026-10-02)
 
 `wayhouse-controller` allocates tunnel-internal addresses, so no operator chooses (or

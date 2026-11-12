@@ -9,6 +9,7 @@
 //! *before* the WireGuard interface can be brought up.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,7 +29,7 @@ struct PeerRegistration<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     tunnel_address: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    psk_secret: Option<&'a str>,
+    psk_secret: Option<String>,
 }
 
 /// What the controller answers to a successful `POST /peers`.
@@ -50,9 +51,11 @@ pub struct Registration {
     pub backends: Vec<String>,
     /// A pinned tunnel address (bare IP); `None` asks the controller to allocate.
     pub address: Option<String>,
-    /// The sealed secret holding this origin's tunnel PSK, when it has one; proxies read it
-    /// from there. The name only, never the key.
-    pub psk_secret: Option<String>,
+    /// The generation of the tunnel PSK this origin holds, when it has one. Registering names
+    /// that generation's sealed secret (the name only, never the key), which is how a rotation
+    /// is acknowledged: proxies read the key the registration names. Shared with the rotation
+    /// task, which advances it.
+    pub psk_gen: Option<Arc<AtomicU64>>,
 }
 
 fn body(reg: &Registration) -> PeerRegistration<'_> {
@@ -62,7 +65,10 @@ fn body(reg: &Registration) -> PeerRegistration<'_> {
         endpoint: reg.endpoint.as_deref(),
         backends: &reg.backends,
         tunnel_address: reg.address.as_deref(),
-        psk_secret: reg.psk_secret.as_deref(),
+        psk_secret: reg
+            .psk_gen
+            .as_ref()
+            .map(|g| wayhouse_enroll::psk_secret_name_gen(&reg.name, g.load(Ordering::SeqCst))),
     }
 }
 
@@ -288,7 +294,7 @@ mod tests {
             endpoint: None,
             backends: vec![":25565".into()],
             address: None,
-            psk_secret: None,
+            psk_gen: None,
         }
     }
 
@@ -298,10 +304,24 @@ mod tests {
         assert!(!serde_json::to_string(&body(&r))
             .unwrap()
             .contains("psk_secret"));
-        r.psk_secret = Some("tunnel-psk-0123456789abcdef".into());
+        let gen = Arc::new(AtomicU64::new(0));
+        r.psk_gen = Some(gen.clone());
         let json = serde_json::to_string(&body(&r)).unwrap();
+        let first = wayhouse_enroll::psk_secret_name("home");
         assert!(
-            json.contains(r#""psk_secret":"tunnel-psk-0123456789abcdef""#),
+            json.contains(&format!(r#""psk_secret":"{first}""#)),
+            "{json}"
+        );
+        assert!(
+            !json.contains("psk_gen"),
+            "no new field on the wire: {json}"
+        );
+        // Advancing the shared generation changes the next registration, which is the ack.
+        gen.store(2, Ordering::SeqCst);
+        let json = serde_json::to_string(&body(&r)).unwrap();
+        let second = wayhouse_enroll::psk_secret_name_gen("home", 2);
+        assert!(
+            json.contains(&format!(r#""psk_secret":"{second}""#)),
             "{json}"
         );
     }

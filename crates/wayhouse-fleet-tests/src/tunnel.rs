@@ -601,6 +601,44 @@ impl TunnelLab {
         self.edges[edge].ns.run(argv)
     }
 
+    /// Starts a rotation of the enrolled origin's tunnel key and returns the generation now
+    /// waiting for the agent. Waits (up to the backend's deadline) until the origin has picked
+    /// it up and the registration names it, which is when the proxies switch.
+    pub async fn rotate_origin_psk(&self) -> Result<u64> {
+        let resp = wayhouse_http::client()
+            .post(self.registry_url(&format!("/peers/{ORIGIN_NAME}/psk/rotate")))
+            .send()
+            .await?
+            .error_for_status()?;
+        let pending = resp.json::<serde_json::Value>().await?["pending"]
+            .as_u64()
+            .context("no pending generation")?;
+        let want = wayhouse_enroll::psk_secret_name_gen(ORIGIN_NAME, pending);
+        let url = self.registry_url(&format!("/peers/{ORIGIN_NAME}"));
+        wait_until(
+            || {
+                let (url, want) = (url.clone(), want.clone());
+                async move {
+                    let reg: serde_json::Value = crate::http_get(url).await?.json().await?;
+                    Ok(reg["psk_secret"].as_str() == Some(want.as_str()))
+                }
+            },
+            self.backend.deadline(),
+            "the origin acknowledging the rotated key",
+        )
+        .await?;
+        Ok(pending)
+    }
+
+    /// The key file and generation the enrolled agent holds.
+    pub fn origin_key_files(&self) -> Result<(String, u64)> {
+        let file = self.dir.path().join("agent").join("tunnel-psk");
+        Ok((
+            std::fs::read_to_string(&file)?.trim().to_owned(),
+            wayhouse_enroll::files::read_psk_gen(&file),
+        ))
+    }
+
     /// A proxy's stored registration, as `GET /proxy-peers/{name}` returns it.
     pub async fn proxy_registration(&self, name: &str) -> Result<serde_json::Value> {
         Ok(
