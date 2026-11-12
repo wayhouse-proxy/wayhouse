@@ -22,6 +22,9 @@ tokio = { workspace = true, features = ["process", "io-std"] }
 reqwest = { workspace = true }
 # Component clients send the protocol header (#185); the tests talk to gated routes.
 wayhouse-http = { workspace = true }
+wayhouse-enroll = { path = "../wayhouse-enroll" }
+sha2 = { workspace = true }
+base64 = "0.22"
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tempfile = { workspace = true }

@@ -4889,13 +4889,16 @@ name = "wayhouse-fleet-tests"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "nix 0.29.0",
  "reqwest",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tokio-rustls",
  "wat",
+ "wayhouse-enroll",
  "wayhouse-http",
 ]
 

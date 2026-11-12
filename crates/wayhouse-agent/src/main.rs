@@ -394,11 +394,10 @@ fn enrolled_defaults(dir: &std::path::Path) -> anyhow::Result<Enrolled> {
 async fn enroll(e: EnrollArgs) -> anyhow::Result<()> {
     use wayhouse_enroll::client::{parse_fingerprint, Pin};
     let pin = match (&e.pin, &e.controller_ca) {
-        (Some(fp), None) => Pin::Fingerprint(parse_fingerprint(fp)?),
-        (None, Some(ca)) => Pin::CaFile(ca.clone()),
-        _ => anyhow::bail!(
-            "pass the controller's certificate fingerprint with --pin, or its CA with --controller-ca"
-        ),
+        (Some(fp), None) => Some(Pin::Fingerprint(parse_fingerprint(fp)?)),
+        (None, Some(ca)) => Some(Pin::CaFile(ca.clone())),
+        // Only a loopback http:// URL may go without; the client refuses anything else.
+        _ => None,
     };
     let code = wayhouse_enroll::input::resolve(
         e.code.as_deref(),
@@ -406,7 +405,7 @@ async fn enroll(e: EnrollArgs) -> anyhow::Result<()> {
         |k| std::env::var(k).ok(),
         wayhouse_enroll::input::tty_prompt,
     )?;
-    let name = wayhouse_enroll::enroll_agent(&e.controller_url, &pin, &code, &e.data_dir)
+    let name = wayhouse_enroll::enroll_agent(&e.controller_url, pin.as_ref(), &code, &e.data_dir)
         .await
         .map_err(|err| anyhow::anyhow!("{err}"))?;
     eprintln!(

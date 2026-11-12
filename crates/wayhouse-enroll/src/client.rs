@@ -24,6 +24,8 @@ pub enum Pin {
 pub enum EnrollError {
     #[error("the controller URL must be https:// (http:// is only accepted for a loopback host)")]
     PlainHttp,
+    #[error("an https:// controller needs its certificate fingerprint (--pin) or CA (--controller-ca)")]
+    NoPin,
     #[error("not a valid controller URL")]
     BadUrl,
     #[error("not a SHA-256 fingerprint: expected 64 hex digits, optionally colon-separated")]
@@ -111,9 +113,12 @@ impl ServerCertVerifier for PinVerifier {
     }
 }
 
-fn http_client(pin: &Pin) -> Result<reqwest::Client, EnrollError> {
+fn http_client(pin: Option<&Pin>, https: bool) -> Result<reqwest::Client, EnrollError> {
     let b = match pin {
-        Pin::Fingerprint(fp) => {
+        // Loopback http needs no pin; anything else was already refused by `check_url`.
+        None if !https => reqwest::Client::builder(),
+        None => return Err(EnrollError::NoPin),
+        Some(Pin::Fingerprint(fp)) => {
             let provider = Arc::new(ring::default_provider());
             let cfg = ClientConfig::builder_with_provider(provider.clone())
                 .with_safe_default_protocol_versions()
@@ -123,7 +128,7 @@ fn http_client(pin: &Pin) -> Result<reqwest::Client, EnrollError> {
                 .with_no_client_auth();
             reqwest::Client::builder().use_preconfigured_tls(cfg)
         }
-        Pin::CaFile(path) => {
+        Some(Pin::CaFile(path)) => {
             let certs = wayhouse_http::load_ca_file(path).map_err(|e| EnrollError::Ca(e.to_string()))?;
             // Only this CA: a pinned controller must not also be reachable via a public root.
             certs
@@ -139,9 +144,9 @@ fn http_client(pin: &Pin) -> Result<reqwest::Client, EnrollError> {
 
 /// Redeems `code` as `role`. Nothing is sent unless the URL and pin are acceptable; a failed
 /// pin check aborts the handshake before the request body (the code) leaves this process.
-pub async fn redeem(controller_url: &str, pin: &Pin, code: &Code, role: Role) -> Result<RedeemResponse, EnrollError> {
+pub async fn redeem(controller_url: &str, pin: Option<&Pin>, code: &Code, role: Role) -> Result<RedeemResponse, EnrollError> {
     check_url(controller_url)?;
-    let client = http_client(pin)?;
+    let client = http_client(pin, controller_url.starts_with("https://"))?;
     let body = RedeemRequest { code: code.expose().to_string(), role };
     let resp = client
         .post(format!("{}/enroll", controller_url.trim_end_matches('/')))
@@ -168,6 +173,15 @@ mod tests {
         for bad in ["http://c.example", "http://10.0.0.5:9901", "ftp://x", "nonsense"] {
             assert!(check_url(bad).is_err(), "{bad}");
         }
+    }
+
+    #[tokio::test]
+    async fn an_https_controller_without_a_pin_is_refused_before_any_connection() {
+        let code = Code::generate();
+        let e = redeem("https://c.example", None, &code, Role::Agent).await.err().unwrap();
+        assert!(matches!(e, EnrollError::NoPin), "{e}");
+        let e = redeem("http://c.example", None, &code, Role::Agent).await.err().unwrap();
+        assert!(matches!(e, EnrollError::PlainHttp), "{e}");
     }
 
     #[test]

@@ -62,7 +62,7 @@ pub fn generate_psk() -> zeroize::Zeroizing<String> {
 /// Returns the enrolled name. Nothing secret is returned or logged.
 pub async fn enroll_agent(
     controller_url: &str,
-    pin: &client::Pin,
+    pin: Option<&client::Pin>,
     code: &Code,
     dir: &std::path::Path,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
