@@ -100,8 +100,10 @@ async fn no_secret_reaches_the_log_even_at_trace() {
         let redeemed = call(&app, "/enroll", body.clone(), None).await;
         call(&app, "/enroll", body, None).await;
         secrets.push(code.split_once('.').unwrap().1.to_owned());
-        if let Some(psk) = redeemed["files"]["tunnel-psk"].as_str() {
-            secrets.push(psk.to_owned());
+        for file in ["tunnel-psk", "agent-token", "controller-token"] {
+            if let Some(v) = redeemed["files"][file].as_str() {
+                secrets.push(v.to_owned());
+            }
         }
     }
     // A refused step-up is audited without the guess.

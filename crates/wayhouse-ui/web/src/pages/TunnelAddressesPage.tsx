@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { ApiError, getTunnelAddresses, releaseTunnelAddress } from "../api";
 import type { TunnelAddresses } from "../types";
 import { Badge } from "../components/ui/Badge";
@@ -150,7 +151,17 @@ export function TunnelAddressesPage() {
                       <TD>
                         {e.stale ? <Badge tone="warn">stale</Badge> : <Badge tone="good">active</Badge>}
                       </TD>
-                      <TD className="text-right">
+                      <TD className="text-right whitespace-nowrap">
+                        {e.role === "origin" && canWrite && (
+                          <Link
+                            to={`/nodes/add?role=agent&name=${encodeURIComponent(e.name)}`}
+                            aria-label={`Re-enroll ${e.name}`}
+                            title="Mint a new code for this origin: its key and tunnel key are replaced"
+                            className="mr-2 text-sm text-ink underline"
+                          >
+                            Re-enroll
+                          </Link>
+                        )}
                         <Button
                           variant="danger"
                           disabled={busy || !canWrite}

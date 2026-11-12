@@ -89,10 +89,10 @@ pub const CONFIRM_SUPPORT: u32 = 2;
 /// be shut out of that while the fleet upgrades.
 pub const CONFIRM_DECODE_SUPPORT: u32 = 1;
 
-/// The UI data replication level this build speaks (`7` adds controller codes (node id, join proof), `6` adds enrollment codes and `Redeem`, `5` adds the cluster secret rewrap, `4` adds cluster secrets, `3` adds operator node tags, `2` adds
+/// The UI data replication level this build speaks (`8` adds controller codes (node id, join proof), `7` adds per-origin tokens (`Kind::OriginToken`), `6` adds enrollment codes and `Redeem`, `5` adds the cluster secret rewrap, `4` adds cluster secrets, `3` adds operator node tags, `2` adds
 /// feature-flag overrides; `1`: dashboards, themes, saved filters, the
 /// form layout override and the deployment defaults).
-pub const UI_SUPPORT: u32 = 7;
+pub const UI_SUPPORT: u32 = 8;
 
 /// The ACME replication level this build speaks (`1`: sites, account, certificates; `2` adds
 /// gateways, `3` adds `challenge_zone` on sites, `4` adds HTTP-01 sites and challenge answers,

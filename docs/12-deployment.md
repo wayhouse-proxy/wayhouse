@@ -322,14 +322,17 @@ The controller separates three credentials, so a compromised edge box cannot adm
   `GET /intent/subscribe`, `GET /peers/subscribe`, `GET /peers/{name}` (a tunnel backend's address), `GET /features/overrides` (live feature
   overrides) and `POST /proxy-peers`.
 - `--agent-token` is what `wayhouse-agent` presents (`--controller-token`). It unlocks only
-  `POST /peers` and `GET /proxy-peers/subscribe`.
+  `POST /peers` and `GET /proxy-peers/subscribe`. An origin that enrolled holds a token of its
+  own instead (see "Enrolling an origin agent"), which also unlocks `GET /peers/{name}/psk` for
+  that name only.
 
 Setting `--auth-token` requires both of the others, and all three must differ; the controller
 refuses to start otherwise. The admin token still works on every route (the UI, operators and a
 slave controller's `--parent-token` use it). Under HA every replica takes the same three flags.
 `wayhouse-certsync` reads `/acme/bundles` (private keys) and so holds the admin token.
 Known limit: all proxies share one proxy token, so one compromised proxy can re-register another
-proxy's tunnel record with `POST /proxy-peers`; agents likewise with `POST /peers` (#581).
+proxy's tunnel record with `POST /proxy-peers`. Agents that enrolled have their own tokens (below);
+an agent on the shared token can still re-register any origin that did not enroll (#581).
 
 ## Enrolling an origin agent with a one-time code
 
@@ -361,10 +364,14 @@ with a key an eavesdropper who records it today cannot recover later.
   `GET /enrollments` lists codes and their state, never the code.
 - `POST /enroll` is the one unauthenticated write route: 1 KiB body, attempts limited per
   address and per code id, and every refusal looks the same.
-- Re-enrolling an origin mints a new key and replaces the old one: the agent must be restarted
-  with the new `tunnel-psk` (and proxies pick it up when the origin re-registers).
-- Not yet: rotating a key without re-enrolling, per-origin tokens (the shared agent token is
-  still what the agent presents, #581), and the controller replica role.
+- With `--auth-token` on the controller, `agent-token` is a token for this origin alone, not the
+  shared `--agent-token`: it registers only this name and reads only this origin's key. Re-enrolling
+  a name replaces its token (the old one stops working), starts the key over at generation 0 and
+  removes every other generation; the agent must be restarted with the new files.
+- Rotate the key without re-enrolling: `curl -X POST "$CONTROLLER/peers/home-nas/psk/rotate" -H
+  "Authorization: Bearer $(cat admin-token)"` (`202`, then the agent picks it up within one
+  `--register-interval-sec`; `409` while a rotation is waiting). Details in
+  [docs/11](11-backend-transport.md#rotating-the-key). The UI button follows.
 - Upgrade every proxy to 0.4.0 before enrolling an origin: an older proxy ignores the key and
   its handshake with the origin then fails.
 
@@ -470,9 +477,28 @@ Failure and retry:
   leader sends the Raft token to the address in the request, so keep `ha-join-proof` as private as
   the other files.
 - Roll out every replica to the build with this feature before minting a controller code
-  (the UI data level is 7; an older replica refuses the write).
+  (the UI data level is 8; an older replica refuses the write).
 - Not delivered: the replica's own TLS certificate and `--ca-file`. Give them after `--`.
   `--tunnel-network` comes from the first controller's flag.
+
+### Adding a node from the UI
+
+**Add node** (System group, admin role) mints a code and writes the command for you. Pick the role,
+a name, and a target: systemd, `docker run`, Docker Compose or Kubernetes (an agent on Kubernetes
+waits for the per-pod init container). Fill in the controller URL and the certificate fingerprint
+`wayhouse-controller init` printed. The page then shows the steps once, each with a Copy button.
+
+- The code lives in the page's memory only: never in browser storage or a URL, never logged by the
+  UI, and gone when you press Done or leave the page. The UI's `/api/enrollments` routes are
+  admin-only and answer `Cache-Control: no-store`.
+- A `proxy` or `ui` code needs the controller's step-up secret, typed for every mint. The UI sends it
+  with that one request and clears the field, so it is neither stored nor logged.
+- "Keep the code out of the command" produces commands without the code; you paste it when the
+  node asks, so it stays out of shell history and process lists.
+- The list under the form shows every code (pending, used or expired) and revokes any of them.
+  On **Tunnel addresses**, an origin row has **Re-enroll**, which opens the form pre-filled.
+- Not yet: rotating a tunnel key from the UI (needs the rotation API) and the controller replica
+  role (waits for the HA join code).
 
 ## TLS for the fleet services
 

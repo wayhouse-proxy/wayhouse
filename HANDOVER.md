@@ -29,7 +29,7 @@ bindings, the plugin registry (`kind = plugin`, minisign key built in) and `--pl
 cluster secret store (`{ secret: name }` for the admin token and gossip PSK; `--secret-key-file`, and
 `--secrets-file` for a file-config proxy), and the solo bundle (`deploy/compose/compose.solo.yml`,
 `deploy/systemd/`). The operator checklist is [`docs/migrating-0.3-to-0.4.md`](docs/migrating-0.3-to-0.4.md).
-Traps: upgrade every controller replica before the first write of any new kind (the UI data level is 7, the
+Traps: upgrade every controller replica before the first write of any new kind (the UI data level is 8, the
 plugin level 6); the `CodeQL` check flags names that look like secrets in log lines, so keep names out of
 messages; the container disk can fill (`target/debug/incremental` is safe to delete). Left for 0.4.1: one
 tracker issue lists the review nits (reload does not re-check secret references, key rotation for cluster

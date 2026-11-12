@@ -24,6 +24,7 @@ import { PluginInstallPage } from "./pages/PluginInstallPage";
 import { PluginDetailPage } from "./pages/PluginDetailPage";
 import { ConfigHistoryPage } from "./pages/ConfigHistoryPage";
 import { TunnelAddressesPage } from "./pages/TunnelAddressesPage";
+import { AddNodePage } from "./pages/AddNodePage";
 import { CertificatesPage } from "./pages/CertificatesPage";
 import { SecretsPage } from "./pages/SecretsPage";
 import { ProcessFlagsPage } from "./pages/ProcessFlagsPage";
@@ -81,6 +82,7 @@ export function App() {
         <Route path="/plugins/:id" element={<PluginDetailPage />} />
         <Route path="/config-history" element={<ConfigHistoryPage />} />
         <Route path="/tunnel" element={<TunnelAddressesPage />} />
+        <Route path="/nodes/add" element={<AddNodePage />} />
         <Route path="/certificates" element={<CertificatesPage />} />
         <Route path="/settings/secrets" element={<SecretsPage />} />
         <Route path="/settings/process" element={<ProcessFlagsPage />} />

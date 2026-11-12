@@ -174,7 +174,7 @@ pub fn router(ui: UiState, grants: Grants) -> Router {
 /// Applies `op`: locally on a standalone controller, through Raft under HA. Only entries that
 /// carry no plaintext secret go through here.
 #[allow(clippy::result_large_err)] // axum `Response` is this module's error type
-async fn apply(ui: &UiState, op: UiOp) -> Result<Applied, Response> {
+pub(crate) async fn apply(ui: &UiState, op: UiOp) -> Result<Applied, Response> {
     let Some(ha) = &ui.ha else {
         return ui.store.apply_local(&op).map_err(internal);
     };
@@ -188,7 +188,7 @@ async fn apply(ui: &UiState, op: UiOp) -> Result<Applied, Response> {
     }
 }
 
-fn no_store(mut r: Response) -> Response {
+pub(crate) fn no_store(mut r: Response) -> Response {
     r.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     r
@@ -689,8 +689,21 @@ async fn grant_files(
         Role::Agent => {
             let psk = wayhouse_enroll::generate_psk();
             store_psk(&st.ui, name, &psk).await?;
+            // A re-enroll starts over at generation 0: no key of an earlier life may linger.
+            crate::origin::forget_generations_except(&st.ui, name, 0).await?;
             put("tunnel-psk", Some(&psk));
-            put("agent-token", g.agent_token.as_deref());
+            // With auth on, the origin gets a token of its own (and the old one stops working);
+            // the shared agent token is not handed out any more.
+            let own = match st.ui.auth_token {
+                Some(_) => Some(crate::origin::issue_token(&st.ui, name).await?),
+                None => None,
+            };
+            put(
+                "agent-token",
+                own.as_deref()
+                    .map(String::as_str)
+                    .or(g.agent_token.as_deref()),
+            );
         }
         Role::Proxy => {
             put("controller-token", g.proxy_token.as_deref());
@@ -718,7 +731,16 @@ async fn grant_files(
 /// Seals `psk` as the origin's tunnel secret and replicates the ciphertext.
 #[allow(clippy::result_large_err)]
 async fn store_psk(ui: &UiState, origin: &str, psk: &Zeroizing<String>) -> Result<(), Response> {
-    let name = wayhouse_enroll::psk_secret_name(origin);
+    store_psk_as(ui, wayhouse_enroll::psk_secret_name(origin), psk).await
+}
+
+/// Seals `psk` as the cluster secret `name` (one generation of an origin's tunnel key).
+#[allow(clippy::result_large_err)]
+pub(crate) async fn store_psk_as(
+    ui: &UiState,
+    name: String,
+    psk: &Zeroizing<String>,
+) -> Result<(), Response> {
     let sealed = ui
         .keyring
         .current()
@@ -780,6 +802,10 @@ mod tests {
     }
 
     fn setup(key: Option<&str>) -> T {
+        setup_with(key, Some(ADMIN))
+    }
+
+    fn setup_with(key: Option<&str>, admin: Option<&str>) -> T {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = UiStore::open(&db).unwrap();
@@ -790,7 +816,7 @@ mod tests {
         );
         let ui = UiState {
             store: store.clone(),
-            auth_token: Some(Arc::from(ADMIN)),
+            auth_token: admin.map(Arc::from),
             ha: None,
             keyring: keyring.clone(),
         };
@@ -910,10 +936,12 @@ mod tests {
         let code = mint(&t, "home-nas").await;
         let (st, v) = redeem(&t, &code, "10.0.0.2").await;
         assert_eq!(st, StatusCode::OK, "{v}");
-        assert_eq!(
-            (v["name"].as_str(), v["files"]["agent-token"].as_str()),
-            (Some("home-nas"), Some(AGENT))
-        );
+        // The origin gets a token of its own, never the shared one.
+        let own = v["files"]["agent-token"].as_str().unwrap();
+        assert_ne!(own, AGENT);
+        let find = crate::origin::lookup(t.store.clone());
+        assert_eq!(find(own).as_deref(), Some("home-nas"));
+        assert_eq!(v["name"].as_str(), Some("home-nas"));
         let psk = v["files"]["tunnel-psk"].as_str().unwrap();
         // The proxy opens the same value from the sealed secret.
         let name = wayhouse_enroll::psk_secret_name("home-nas");
@@ -926,6 +954,23 @@ mod tests {
         assert_eq!(opened.expose(), psk.as_bytes());
         let (st, _) = redeem(&t, &code, "10.0.0.2").await;
         assert_eq!(st, StatusCode::UNAUTHORIZED, "single use");
+        // Enrolling the same name again replaces the token: the old one stops working.
+        let again = mint(&t, "home-nas").await;
+        let (_, w) = redeem(&t, &again, "10.0.0.3").await;
+        let newer = w["files"]["agent-token"].as_str().unwrap();
+        assert_ne!(newer, own);
+        assert_eq!(find(own), None);
+        assert_eq!(find(newer).as_deref(), Some("home-nas"));
+    }
+
+    #[tokio::test]
+    async fn a_controller_without_auth_hands_out_no_token_and_keeps_enrolling_agents() {
+        let t = setup_with(Some(KEY), None);
+        let code = mint(&t, "home-nas").await;
+        let (st, v) = redeem(&t, &code, "10.0.0.2").await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert!(v["files"]["agent-token"].is_null() || v["files"]["agent-token"] == AGENT);
+        assert!(v["files"]["tunnel-psk"].is_string());
     }
 
     #[tokio::test]

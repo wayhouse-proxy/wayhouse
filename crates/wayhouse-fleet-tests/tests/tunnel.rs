@@ -629,6 +629,38 @@ async fn an_enrolled_origin_tunnels_with_a_preshared_key() -> Result<()> {
     Ok(())
 }
 
+/// Rotation: the controller seals a new generation, the agent picks it up and acknowledges it
+/// by registering, the proxy re-reads the key the registration now names, and the tunnel
+/// carries traffic on the new key. Two rotations in a row also prove the next one is not
+/// blocked by the last and that the earlier generation is cleaned up.
+#[tokio::test]
+#[ignore = "needs a user+net namespace: run via `make tunnel-e2e`"]
+async fn a_rotated_preshared_key_reaches_both_ends_and_the_tunnel_keeps_working() -> Result<()> {
+    ensure_built();
+    let mut t = TunnelLab::with(LabOptions {
+        psk: true,
+        ..LabOptions::default()
+    })
+    .await?;
+    t.start_origin(true).await?;
+    let edge = t.start_edge("edge-1", None).await?;
+    t.wait_roundtrip(edge).await?;
+    let (first, gen) = t.origin_key_files()?;
+    assert_eq!(gen, 0);
+    for expect in [1, 2] {
+        assert_eq!(t.rotate_origin_psk().await?, expect);
+        let (key, gen) = t.origin_key_files()?;
+        assert_eq!(gen, expect, "the agent records the generation it holds");
+        assert_ne!(key, first, "the agent holds the new key");
+        // A new handshake under the new keys: traffic crosses only if both ends switched.
+        t.wait_roundtrip(edge).await?;
+        let big = vec![0x2au8; 64 * 1024];
+        assert_eq!(tcp_roundtrip(t.public_addr(edge), &big).await?, big);
+    }
+    t.pass();
+    Ok(())
+}
+
 /// The same lab, but the agent holds a different (valid) key than the controller sealed for
 /// the proxy: the handshake never completes, so no byte crosses. This is what proves the PSK
 /// really is mixed into the handshake and not just stored.

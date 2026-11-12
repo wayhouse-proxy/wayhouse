@@ -55,6 +55,7 @@ export const NAV: NavGroup[] = [
     label: "System",
     items: [
       { to: "/config-history", label: "Config history" },
+      { to: "/nodes/add", label: "Add node", minRole: "admin" },
       { to: "/tunnel", label: "Tunnel addresses" },
     ],
   },

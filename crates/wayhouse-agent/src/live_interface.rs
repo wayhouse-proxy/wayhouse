@@ -52,7 +52,8 @@ pub struct LiveInterface {
     peer_edit: Mutex<()>,
     /// This origin's tunnel preshared key, applied to every proxy peer. A peer re-created from
     /// what the device reports must get it back: the kernel does not reveal a peer's key.
-    psk: Option<Key>,
+    /// Replaced in place by [`LiveInterface::rekey`] when the controller rotates it.
+    psk: Mutex<Option<Key>>,
 }
 
 impl LiveInterface {
@@ -72,17 +73,57 @@ impl LiveInterface {
             delete_link,
             lost: Mutex::new(Vec::new()),
             peer_edit: Mutex::new(()),
-            psk: None,
+            psk: Mutex::new(None),
         }
     }
 
-    pub fn with_psk(mut self, psk: Option<Key>) -> Self {
-        self.psk = psk;
+    pub fn with_psk(self, psk: Option<Key>) -> Self {
+        *self.psk() = psk;
         self
     }
 
-    pub fn psk(&self) -> Option<&Key> {
-        self.psk.as_ref()
+    fn psk(&self) -> std::sync::MutexGuard<'_, Option<Key>> {
+        self.psk
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The key every proxy peer gets now.
+    pub fn current_psk(&self) -> Option<Key> {
+        self.psk().clone()
+    }
+
+    /// Switches to a rotated key: every peer on the device is removed and added again with the
+    /// new key (the userspace backend cannot modify a peer), and peers the device
+    /// lost get it when they come back. `Err` when a peer could not be updated; the key is
+    /// recorded regardless, so later peers get it, and the caller retries the update.
+    pub fn rekey(&self, key: &Key) -> anyhow::Result<()> {
+        self.edit_peers(|| {
+            *self.psk() = Some(key.clone());
+            for p in self.lost().iter_mut() {
+                p.preshared_key = Some(key.clone());
+            }
+            let host = self.wg.read_interface_data().context("reading the peers")?;
+            for peer in host.peers.values() {
+                let mut peer = peer.clone();
+                peer.preshared_key = Some(key.clone());
+                // The userspace backend cannot modify a peer (it panics), so the peer is
+                // removed and added again with its endpoint; the next handshake uses the new key.
+                if let Err(e) = self.wg.remove_peer(&peer.public_key) {
+                    tracing::debug!(error = %e, "removing a peer to give it the rotated tunnel key");
+                }
+                if let Err(e) = self.wg.configure_peer(&peer) {
+                    tracing::warn!(error = %e, peer = %peer.public_key, "could not give a peer the rotated tunnel key; will retry");
+                    let mut lost = self.lost();
+                    lost.retain(|p| p.public_key != peer.public_key);
+                    lost.push(peer);
+                }
+            }
+            self.repair_peers_locked();
+            let failed = self.lost().len();
+            anyhow::ensure!(failed == 0, "{failed} peer(s) did not take the rotated key");
+            Ok(())
+        })
     }
 
     /// Runs `f`, an edit of the device's peers, so that it never interleaves
@@ -159,7 +200,7 @@ impl LiveInterface {
         for peer in host.peers.values() {
             let mut peer = peer.clone();
             if peer.preshared_key.is_none() {
-                peer.preshared_key.clone_from(&self.psk);
+                peer.preshared_key = self.current_psk();
             }
             let peer = &peer;
             if let Err(e) = self.wg.remove_peer(&peer.public_key) {
@@ -556,6 +597,55 @@ mod tests {
         live.renew_peers().unwrap();
         let host = live.api().read_interface_data().unwrap();
         assert_eq!(host.peers[&Key::new([7; 32])].preshared_key, Some(psk));
+    }
+
+    #[test]
+    fn a_rotated_key_reaches_every_peer_in_place_and_every_later_one() {
+        use defguard_wireguard_rs::key::Key;
+        let log = Log::default();
+        let live = live_with_peers(
+            &[],
+            &[],
+            &[peer(7, "fd00::2/128"), peer(8, "fd00::3/128")],
+            &log,
+        )
+        .with_psk(Some(Key::new([1; 32])));
+        live.rekey(&Key::new([2; 32])).unwrap();
+        let host = live.api().read_interface_data().unwrap();
+        for n in [7, 8] {
+            assert_eq!(
+                host.peers[&Key::new([n; 32])].preshared_key,
+                Some(Key::new([2; 32]))
+            );
+        }
+        assert_eq!(live.current_psk(), Some(Key::new([2; 32])));
+        let log = log.lock().unwrap();
+        assert!(
+            log.iter().any(|l| l.starts_with("remove peer")),
+            "removed and added again, the userspace backend cannot modify a peer: {log:?}"
+        );
+    }
+
+    #[test]
+    fn a_peer_that_refuses_the_rotated_key_is_reported_and_the_retry_finishes_it() {
+        use defguard_wireguard_rs::key::Key;
+        let log = Log::default();
+        let stubborn = Key::new([7; 32]);
+        let live = live_with_flaky_peers(
+            &[peer(7, "fd00::2/128"), peer(8, "fd00::3/128")],
+            &[(&stubborn, 2)],
+            &log,
+        )
+        .with_psk(Some(Key::new([1; 32])));
+        assert!(live.rekey(&Key::new([2; 32])).is_err());
+        assert_eq!(
+            live.current_psk(),
+            Some(Key::new([2; 32])),
+            "later peers get the new key"
+        );
+        live.rekey(&Key::new([2; 32])).unwrap();
+        let host = live.api().read_interface_data().unwrap();
+        assert_eq!(host.peers[&stubborn].preshared_key, Some(Key::new([2; 32])));
     }
 
     #[test]

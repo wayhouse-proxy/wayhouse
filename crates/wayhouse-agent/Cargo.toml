@@ -23,6 +23,8 @@ defguard_wireguard_rs = { workspace = true }
 netlink-packet-core = { workspace = true }
 netlink-packet-route = { workspace = true }
 netlink-sys = { workspace = true }
+zeroize = "1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+axum = { workspace = true }
