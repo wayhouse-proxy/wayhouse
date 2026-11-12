@@ -109,6 +109,9 @@ const registrySniffers = (id: string) => ({
   ].slice(0, id === "official" ? 4 : 2),
 });
 
+// --- enrollment codes ---
+const enrollments: any[] = [];
+
 // --- tunnel addresses ---
 const tunnel = Array.from({ length: 10 }, (_, i) => ({
   role: (i < 6 ? "origin" : "proxy") as "origin" | "proxy",
@@ -272,6 +275,18 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
   // tunnel
   if (path === "/api/tunnel/addresses") return ok({ network: "10.77.0.0/20", allocated: tunnel.length, capacity: 4094, entries: tunnel });
   if ((r = m(/^\/api\/tunnel\/(origins|proxies)\/(.+)$/))) { const i = tunnel.findIndex((t) => t.name === decodeURIComponent(r![2])); const rel = tunnel[i]?.address ?? null; if (i >= 0) tunnel.splice(i, 1); return ok({ revision: 1, released: rel }); }
+
+  // enrollment codes: demo codes are made up and redeem nowhere
+  if (path === "/api/enrollments" && method === "GET") return ok({ items: enrollments });
+  if (path === "/api/enrollments" && method === "POST") {
+    const b = await json();
+    if ((b.role === "proxy" || b.role === "ui") && !b.step_up) return err(403, "this role needs the step-up secret; enter it again");
+    const now = Math.floor(Date.now() / 1000);
+    const id = Math.random().toString(36).slice(2, 10);
+    enrollments.push({ id, role: b.role, origin: b.name, created_at: now, expires_at: now + b.ttl_secs, uses: b.uses, uses_left: b.uses, status: "pending", created_by: "demo" });
+    return ok({ id, code: `${id}.demo-code-does-not-work`, role: b.role, name: b.name, expires_at: now + b.ttl_secs, uses: b.uses });
+  }
+  if ((r = m(/^\/api\/enrollments\/(.+)$/)) && method === "DELETE") { const i = enrollments.findIndex((e) => e.id === r![1]); if (i < 0) return err(404, "no such code"); enrollments.splice(i, 1); return ok(""); }
 
   // acme
   const sites = acmeSitesState();

@@ -12,12 +12,13 @@ import { expect, test } from "@playwright/test";
 const DEMO = pathToFileURL(resolve(process.cwd(), "dist-demo/wayhouse-demo.html")).href;
 const PAGES = [
   "/dashboard", "/overview", "/fleet", "/listeners", "/pools", "/features", "/plugins", "/plugins/new",
-  "/settings", "/settings/appearance", "/settings/secrets", "/settings/process", "/sniffers", "/certificates", "/config-history", "/tunnel",
+  "/settings", "/settings/appearance", "/settings/secrets", "/settings/process", "/sniffers", "/certificates", "/config-history", "/tunnel", "/nodes/add",
   "/config/listeners", "/config/pools",
 ];
 
 for (const scheme of ["light", "dark"] as const) {
   test(`no serious accessibility violations in the ${scheme} theme`, async ({ page }) => {
+    test.setTimeout(90_000); // one navigation and axe pass per page: the list grows, so the default 30 s is not enough
     await page.emulateMedia({ colorScheme: scheme });
     const found: string[] = [];
     const titles = new Set<string>();
