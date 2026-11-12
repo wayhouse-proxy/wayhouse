@@ -26,6 +26,7 @@ mod keypair;
 mod live_interface;
 mod netlink_addr;
 mod proxy_subscribe;
+mod psk_rotate;
 mod register;
 
 use std::net::SocketAddr;
@@ -226,9 +227,14 @@ async fn main() -> anyhow::Result<()> {
     }
     let reg = register::Registration {
         name: name.clone(),
-        psk_secret: psk
-            .is_some()
-            .then(|| wayhouse_enroll::psk_secret_name(&name)),
+        // The generation this key file holds (0 until a rotation moves it).
+        psk_gen: psk.is_some().then(|| {
+            Arc::new(std::sync::atomic::AtomicU64::new(
+                args.tunnel_psk_file
+                    .as_deref()
+                    .map_or(0, wayhouse_enroll::files::read_psk_gen),
+            ))
+        }),
         pubkey: pubkey.clone(),
         endpoint: args.endpoint.clone(),
         backends: args.backends.clone(),
@@ -319,6 +325,7 @@ async fn main() -> anyhow::Result<()> {
         interface::kick_handshake(ip);
     }
 
+    let reg_for_rotation = reg.clone();
     tokio::spawn(register::run(
         client,
         controller_url.clone(),
@@ -331,6 +338,25 @@ async fn main() -> anyhow::Result<()> {
             path: addr_path,
         },
     ));
+    // A rotated tunnel key: only an agent that holds one polls for the next.
+    let rotate_task = args
+        .tunnel_psk_file
+        .clone()
+        .filter(|_| reg_for_rotation.psk_gen.is_some())
+        .map(|psk_file| {
+            tokio::spawn(
+                psk_rotate::Rotation {
+                    client: register::http_client(),
+                    controller_url: controller_url.clone(),
+                    token: args.controller_token.clone(),
+                    reg: reg_for_rotation,
+                    psk_file,
+                    live: live.clone(),
+                    interval: Duration::from_secs(args.register_interval_sec),
+                }
+                .run(),
+            )
+        });
     // Phase 14 slice 7: learn about every edge proxy, not just a manually
     // pinned one — see `proxy_subscribe`'s module doc.
     let subscribe_task = tokio::spawn(proxy_subscribe::run(
@@ -344,6 +370,9 @@ async fn main() -> anyhow::Result<()> {
         .context("waiting for a shutdown signal")?;
     tracing::info!("shutting down, removing the wireguard interface");
     subscribe_task.abort();
+    if let Some(t) = rotate_task {
+        t.abort();
+    }
     if let Err(e) = live.remove() {
         tracing::warn!(error = %e, "failed to remove the wireguard interface cleanly");
     }

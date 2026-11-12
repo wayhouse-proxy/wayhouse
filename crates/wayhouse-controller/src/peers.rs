@@ -63,8 +63,8 @@ pub struct PeerRegistration {
     /// be allocated one, or give one to claim it); always set once stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel_address: Option<String>,
-    /// The sealed cluster secret holding this origin's tunnel preshared key (only ever the name
-    /// [`wayhouse_enroll::psk_secret_name`] derives from `name`). Proxies fetch and open it;
+    /// The sealed cluster secret holding this origin's tunnel preshared key: one of the names
+    /// [`wayhouse_enroll::psk_secret_name_gen`] derives from `name`, the generation in use. Proxies fetch and open it;
     /// the key itself is never in a registration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub psk_secret: Option<String>,
@@ -116,9 +116,9 @@ impl PeerRegistration {
         if self
             .psk_secret
             .as_ref()
-            .is_some_and(|s| *s != wayhouse_enroll::psk_secret_name(&self.name))
+            .is_some_and(|s| wayhouse_enroll::psk_secret_gen(&self.name, s).is_none())
         {
-            return Err("psk_secret must be the secret enrollment made for this origin".into());
+            return Err("psk_secret must be a tunnel key secret made for this origin".into());
         }
         Ok(())
     }
@@ -180,6 +180,10 @@ mod tests {
         let mut reg = valid();
         reg.psk_secret = Some(wayhouse_enroll::psk_secret_name("home-origin"));
         assert!(reg.validate().is_ok());
+        reg.psk_secret = Some(wayhouse_enroll::psk_secret_name_gen("home-origin", 4));
+        assert!(reg.validate().is_ok(), "a later generation of its own key");
+        reg.psk_secret = Some(wayhouse_enroll::psk_secret_name_gen("someone-else", 4));
+        assert!(reg.validate().is_err());
         reg.psk_secret = Some(wayhouse_enroll::psk_secret_name("someone-else"));
         assert!(
             reg.validate().is_err(),

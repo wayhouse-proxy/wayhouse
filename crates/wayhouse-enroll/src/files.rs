@@ -98,6 +98,16 @@ pub fn write(
     for (name, content) in files {
         debug_assert!(!name.contains('/') && name != "..");
         write_private(&dir.join(name), content.as_bytes())?;
+        if name == PSK_FILE {
+            // A fresh key is generation 0; a generation left by an earlier life would make the
+            // agent register a secret the controller no longer has.
+            match std::fs::remove_file(psk_gen_path(&dir.join(name))) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(io(&psk_gen_path(&dir.join(name)))(e))
+                }
+                _ => {}
+            }
+        }
     }
     Ok(())
 }
@@ -126,6 +136,58 @@ pub fn read_psk(path: &Path) -> Result<Zeroizing<String>, FileError> {
     Ok(Zeroizing::new(key.to_owned()))
 }
 
+/// Where the generation of the key in `psk` is kept (`<psk file>.gen`), so a restart tells the
+/// controller which key the agent holds.
+pub fn psk_gen_path(psk: &Path) -> PathBuf {
+    let mut p = psk.as_os_str().to_owned();
+    p.push(".gen");
+    p.into()
+}
+
+/// The generation recorded beside `psk`; 0 (the key enrollment made) when there is none.
+pub fn read_psk_gen(psk: &Path) -> u64 {
+    std::fs::read_to_string(psk_gen_path(psk))
+        .ok()
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Replaces the key file with `key` (checked) in one rename, 0600, so a crash leaves the old
+/// key or the new one and never half of either.
+pub fn replace_psk(psk: &Path, key: &str) -> Result<(), FileError> {
+    let ok = base64::engine::general_purpose::STANDARD
+        .decode(key.trim())
+        .is_ok_and(|b| b.len() == 32);
+    if !ok {
+        return Err(FileError::BadPsk {
+            path: psk.to_owned(),
+        });
+    }
+    replace_private(psk, key.trim().as_bytes())
+}
+
+/// Records the generation of the key now in `psk`. Written after the key itself.
+pub fn write_psk_gen(psk: &Path, gen: u64) -> Result<(), FileError> {
+    replace_private(&psk_gen_path(psk), gen.to_string().as_bytes())
+}
+
+fn replace_private(path: &Path, data: &[u8]) -> Result<(), FileError> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".new");
+    let tmp = PathBuf::from(tmp);
+    let written = write_private(&tmp, data)
+        .and_then(|()| {
+            std::fs::File::open(&tmp)
+                .and_then(|f| f.sync_all())
+                .map_err(io(&tmp))
+        })
+        .and_then(|()| std::fs::rename(&tmp, path).map_err(io(path)));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -134,6 +196,43 @@ mod tests {
 
     fn mode(p: &Path) -> u32 {
         std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn a_rotated_key_replaces_the_old_one_privately_and_its_generation_is_kept_beside_it() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join(PSK_FILE);
+        let (old, new) = (crate::generate_psk(), crate::generate_psk());
+        replace_psk(&path, &old).unwrap();
+        assert_eq!(read_psk_gen(&path), 0, "no record means the enrolled key");
+        replace_psk(&path, &new).unwrap();
+        write_psk_gen(&path, 3).unwrap();
+        assert_eq!(*read_psk(&path).unwrap(), *new);
+        // Enrolling again writes generation 0 over whatever was there.
+        let meta = Meta {
+            controller_url: "https://c".into(),
+            name: "home".into(),
+            role: Role::Agent,
+            parent_url: None,
+        };
+        let files = [(PSK_FILE.to_owned(), new.to_string())]
+            .into_iter()
+            .collect();
+        write(t.path(), &meta, &files).unwrap();
+        assert_eq!(read_psk_gen(&path), 0);
+        write_psk_gen(&path, 3).unwrap();
+        assert_eq!(read_psk_gen(&path), 3);
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&psk_gen_path(&path)), 0o600);
+        // A key that is not 32 base64 bytes never reaches the file, and nothing is left over.
+        assert!(replace_psk(&path, "short").is_err());
+        assert_eq!(*read_psk(&path).unwrap(), *new);
+        let left: Vec<_> = std::fs::read_dir(t.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(left.len(), 3, "{left:?}");
     }
 
     #[test]
