@@ -298,6 +298,20 @@ describe("AddNodePage codes list", () => {
     expect(within(screen.getByText("node-d4").closest("tr")!).getByText("joined")).toBeInTheDocument();
   });
 
+  it("refreshes the list on its own while a replica is joining", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      api.listEnrollments.mockResolvedValue({ items: [row("c3", { role: "controller", status: "joining", uses_left: 0 })] });
+      render();
+      await screen.findByText("joining");
+      api.listEnrollments.mockResolvedValue({ items: [row("c3", { role: "controller", status: "joined", uses_left: 0 })] });
+      await vi.advanceTimersByTimeAsync(5100);
+      expect(await screen.findByText("joined")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("lists pending, used and expired codes and never a code", async () => {
     api.listEnrollments.mockResolvedValue({
       items: [

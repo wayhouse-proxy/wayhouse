@@ -83,7 +83,8 @@ export const validName = (s: string) => /^[A-Za-z0-9._-]{1,64}$/.test(s) && s !=
 export const validPin = (s: string) => /^sha256:[0-9a-fA-F]{64}$/.test(s);
 export const validTag = (s: string) => /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(s);
 /** Like the enroll CLI's check, plus what a replica needs: https and an explicit port. */
-export const validAdvertise = (s: string) => validUrl(s, { httpsOnly: true }) && /^https:\/\/[^/]+:\d{1,5}\/?$/.test(s) && !s.includes("%");
+// shortcut: mirrors the CLI check (no whitespace, control, quote, backslash, % or $; 256 bytes max) by hand.
+export const validAdvertise = (s: string) => s.length <= 256 && !/[\x00-\x1f\x7f]/.test(s) && validUrl(s, { httpsOnly: true }) && /^https:\/\/[^/]+:\d{1,5}\/?$/.test(s) && !s.includes("%");
 export const validNamespace = (s: string) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(s);
 
 export function validUrl(s: string, opts: { httpsOnly?: boolean } = {}): boolean {
@@ -194,7 +195,7 @@ function systemd(s: Spec): Step[] {
     text: lines.join(" \\\n  "),
     note:
       (s.role === "controller"
-        ? `Put this replica's certificate and key at /etc/wayhouse/${s.name}.pem and .key and the cluster CA at /etc/wayhouse/ca.pem first, or change the paths. `
+        ? `Put this replica's certificate and key at /etc/wayhouse/${s.name}.pem and .key and the cluster CA at /etc/wayhouse/ca.pem first, or change the paths. The service runs as a dynamic user, so the key must be readable by it (a root-only 0600 key is not). `
         : "") +
       (s.code
         ? "The code is not on the node binary's command line, but it is in this command, so it is in your shell history and briefly in the process list. Tick \"Keep the code out of the command\" to avoid that."

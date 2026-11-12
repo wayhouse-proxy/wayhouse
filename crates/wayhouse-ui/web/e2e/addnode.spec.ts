@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
 const CODE = "k7f2a9.0123456789abcdefghijklmnopqrstuv";
@@ -73,3 +74,36 @@ test("the Add node entry is in the System group for an admin and absent for a vi
   await expect(page.getByRole("navigation").getByRole("link", { name: "Tunnel addresses" })).toBeVisible();
   await expect(page.getByRole("navigation").getByRole("link", { name: "Add node" })).toHaveCount(0);
 });
+
+// The controller replica form and its minted result, which the demo-based sweep does not reach.
+for (const scheme of ["light", "dark"] as const) {
+  test(`controller replica: form and result have no serious accessibility violations (${scheme})`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: scheme });
+    await page.route("**/ui/session", (r) => r.fulfill({ json: { authenticated: true, username: "ana", role: "admin" } }));
+    await page.route("**/ws/**", (r) => r.abort());
+    await page.route("**/api/enrollments", (r) =>
+      r.request().method() === "POST"
+        ? r.fulfill({ json: { id: "k7f2a9", code: CODE, role: "controller", name: "ctl-4", expires_at: Math.floor(Date.now() / 1000) + 900, uses: 1, node_id: 4 } })
+        : r.fulfill({ json: { items: [{ id: "k7f2a9", role: "controller", origin: "ctl-4", created_at: 1_800_000_000, expires_at: 1_800_000_900, uses: 1, uses_left: 0, status: "joining", created_by: "ana" }] } }),
+    );
+    const serious = async () =>
+      (await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze()).violations
+        .filter((v) => v.impact === "serious" || v.impact === "critical")
+        .map((v) => `${v.id}: ${v.nodes[0]?.target.join(" ")}`);
+
+    await page.goto("/nodes/add");
+    await page.getByLabel("Role").selectOption("controller");
+    await page.getByLabel("Name", { exact: false }).first().fill("ctl-4");
+    await page.getByLabel("Controller URL").fill("https://ctl.example:9901");
+    await page.getByLabel("Certificate fingerprint").fill(PIN);
+    await page.getByLabel("Advertise address").fill("https://ctl-4.example:9901");
+    await page.getByLabel("Step-up secret").fill("correct step-up secret");
+    expect(await serious()).toEqual([]);
+
+    await page.getByRole("button", { name: "Create code" }).click();
+    await expect(page.getByLabel("Step 1 text")).toContainText("--advertise=https://ctl-4.example:9901");
+    await expect(page.getByText(/Raft node id 4/)).toBeVisible();
+    await expect(page.getByRole("row", { name: /ctl-4/ })).toContainText("joining");
+    expect(await serious()).toEqual([]);
+  });
+}

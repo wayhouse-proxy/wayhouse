@@ -123,6 +123,14 @@ export function AddNodePage() {
     if (canWrite) void refresh();
   }, [canWrite, refresh]);
 
+  // A replica that has enrolled turns "joined" a few seconds later without anyone touching the page.
+  const joining = codes?.some((c) => c.status === "joining") ?? false;
+  useEffect(() => {
+    if (!joining) return;
+    const t = setInterval(() => void refresh(), 5000);
+    return () => clearInterval(t);
+  }, [joining, refresh]);
+
   const stepUpRole = needsStepUp(role);
   const blocked = unsupported(role, target);
   const maxTtl = stepUpRole ? 86_400 : 604_800;

@@ -61,7 +61,7 @@ describe("controller replica", () => {
 
   it("checks the advertise address like the enroll CLI does", () => {
     expect(validAdvertise("https://ctl-4.example:9901")).toBe(true);
-    for (const bad of ["", "http://ctl-4.example:9901", "https://ctl-4.example", "ctl-4:9901", "https://a b:1", "https://x:1/$y"])
+    for (const bad of ["", "http://ctl-4.example:9901", "https://ctl-4.example", "ctl-4:9901", "https://a b:1", "https://x:1/$y", "https://x:1/\u0001", `https://${"a".repeat(260)}:1`])
       expect(validAdvertise(bad)).toBe(false);
   });
 });
