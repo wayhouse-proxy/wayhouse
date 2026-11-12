@@ -20,6 +20,8 @@ use super::{HaHandle, NodeId};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(330);
 const FIRST_DELAY: Duration = Duration::from_secs(1);
 const MAX_DELAY: Duration = Duration::from_secs(60);
+/// How long after start a refusal is treated as "not replicated yet" rather than final.
+const REFUSAL_GRACE: Duration = Duration::from_secs(120);
 
 pub struct JoinConfig {
     pub via: String,
@@ -111,8 +113,10 @@ pub async fn announce_until(
     node_id: NodeId,
     done: impl Fn() -> bool,
     first_delay: Duration,
+    refusal_grace: Duration,
 ) {
     let client = super::client::forward_client(REQUEST_TIMEOUT);
+    let started = std::time::Instant::now();
     let mut delay = first_delay;
     loop {
         tokio::time::sleep(delay).await;
@@ -123,6 +127,19 @@ pub async fn announce_until(
         match try_once(&client, cfg).await {
             Outcome::Joined => {
                 tracing::info!(node_id, "the cluster added this node");
+                return;
+            }
+            // A replica that has not applied the redeem yet answers like a spent proof; give the
+            // cluster a couple of minutes before taking a 401 as final.
+            Outcome::Refused if started.elapsed() < refusal_grace => {
+                tracing::warn!(
+                    node_id,
+                    "the cluster does not know this node's join proof yet; retrying"
+                );
+            }
+            Outcome::Refused if done() => {
+                // The add went through and only its answer was lost.
+                tracing::info!(node_id, "this node is a member of the HA group");
                 return;
             }
             Outcome::Refused => {
@@ -158,6 +175,7 @@ pub fn spawn(ha: Arc<HaHandle>, cfg: JoinConfig) {
                     .any(|v| v == id)
             },
             FIRST_DELAY,
+            REFUSAL_GRACE,
         )
         .await;
     });
@@ -221,21 +239,72 @@ mod tests {
     #[tokio::test]
     async fn the_node_keeps_asking_through_failures_and_stops_at_the_first_success() {
         let (via, calls) = stub(vec![503, 422, 200]).await;
-        announce_until(&cfg(via), 4, || false, Duration::from_millis(1)).await;
+        announce_until(
+            &cfg(via),
+            4,
+            || false,
+            Duration::from_millis(1),
+            Duration::ZERO,
+        )
+        .await;
         assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
     async fn a_refused_proof_ends_the_asking() {
         let (via, calls) = stub(vec![401, 200]).await;
-        announce_until(&cfg(via), 4, || false, Duration::from_millis(1)).await;
+        announce_until(
+            &cfg(via),
+            4,
+            || false,
+            Duration::from_millis(1),
+            Duration::ZERO,
+        )
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_refusal_right_after_start_is_retried_as_not_replicated_yet() {
+        let (via, calls) = stub(vec![401, 200]).await;
+        announce_until(
+            &cfg(via),
+            4,
+            || false,
+            Duration::from_millis(1),
+            Duration::from_secs(60),
+        )
+        .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_refusal_from_a_node_that_is_a_voter_is_not_an_error() {
+        // Asked once (not yet a member), refused, then seen as a voter: stops without a third ask.
+        let (via, calls) = stub(vec![401]).await;
+        let asked = std::sync::atomic::AtomicU32::new(0);
+        announce_until(
+            &cfg(via),
+            4,
+            || asked.fetch_add(1, Ordering::SeqCst) >= 1,
+            Duration::from_millis(1),
+            Duration::ZERO,
+        )
+        .await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
     async fn a_node_that_is_already_a_member_asks_nothing() {
         let (via, calls) = stub(vec![200]).await;
-        announce_until(&cfg(via), 4, || true, Duration::from_millis(1)).await;
+        announce_until(
+            &cfg(via),
+            4,
+            || true,
+            Duration::from_millis(1),
+            Duration::ZERO,
+        )
+        .await;
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 

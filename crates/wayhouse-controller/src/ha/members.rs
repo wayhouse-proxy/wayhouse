@@ -448,9 +448,17 @@ async fn add_member(
 ) -> Result<bool, Response> {
     check_addr(addr)?;
     let (members, _) = members(ha);
-    if members.voters.contains_key(&id) {
-        if already_ok {
+    if let Some(current) = members.voters.get(&id) {
+        // A repeat is only a repeat when it names the address the node already has; another
+        // address means the id belongs to a different node.
+        if already_ok && current.trim_end_matches('/') == addr.trim_end_matches('/') {
             return Ok(false);
+        }
+        if already_ok {
+            return Err(error(
+                StatusCode::CONFLICT,
+                format!("node {id} is already a voter at another address"),
+            ));
         }
         return Err(error(
             StatusCode::CONFLICT,

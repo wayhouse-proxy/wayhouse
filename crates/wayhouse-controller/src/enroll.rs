@@ -586,7 +586,10 @@ struct JoinBody {
 /// ask again; the proof stays good for [`crate::ui_data::JOIN_WINDOW_SECS`] after the redeem.
 ///
 /// A follower relays the request to the leader, which re-checks the proof, runs the add and
-/// marks the code joined. A repeat of a join that already succeeded answers 200 again.
+/// marks the code joined. Once the code is joined the proof is dead (401); a repeat that arrives
+/// before the mark (the first answer was lost) answers 200 again. Accepted risk: a proof holder can
+/// make the leader send `/raft/whoami` with the Raft bearer to any https host (or loopback over
+/// http) and read the reason back, a port probe by someone who already holds the cluster's secrets.
 async fn ha_join(
     State(st): State<EnrollState>,
     ConnectInfo(peer): ConnectInfo<wayhouse_http::tls::PeerAddr>,
@@ -1670,7 +1673,11 @@ mod tests {
         put_through_raft(&t, &id, rec).await;
         let (_, v) = redeem_as(&t, m["code"].as_str().unwrap(), "controller").await;
         let proof = v["files"]["ha-join-proof"].as_str().unwrap();
-        let addr = stub_node(1).await;
+        // Another address for that id is another node.
+        let other = stub_node(1).await;
+        let (st, v) = join(&t, proof, &other, "10.0.0.5").await;
+        assert_eq!(st, StatusCode::CONFLICT, "{v}");
+        let addr = "127.0.0.1:1".to_owned();
         let (st, v) = join(&t, proof, &addr, "10.0.0.5").await;
         assert_eq!(st, StatusCode::OK, "{v}");
         let (_, list) = call(
