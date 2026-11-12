@@ -232,3 +232,36 @@ fn a_category_off_the_list_fails_and_writes_nothing() {
     assert!(String::from_utf8_lossy(&r.stderr).contains("unknown category"));
     assert!(!out.exists());
 }
+
+#[test]
+fn a_schema_1_index_is_upgraded_and_keeps_its_published_versions() {
+    let t = tempfile::tempdir().unwrap();
+    let out = t.path().join("index.json");
+    let d1 = sniffer_dir(t.path(), "a2s", "0.1.0", "x", false);
+    assert!(run(&gen_args(&out, None, &[&d1])).status.success());
+    // Rewrite what was just generated as a schema 1 file: no catalog fields.
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+    v["schema"] = 1.into();
+    let e = v["sniffers"][0].as_object_mut().unwrap();
+    for k in ["categories", "tags", "latest", "abi", "signed", "updated"] {
+        e.remove(k);
+    }
+    std::fs::write(&out, v.to_string()).unwrap();
+    let before = v["sniffers"][0]["versions"].clone();
+    // Same bytes under the same version: still immutable, nothing added.
+    let r = run(&gen_args(&out, None, &[&d1]));
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    assert!(String::from_utf8_lossy(&r.stderr).contains("upgrading"));
+    let index = wayhouse_registry::parse_index(&std::fs::read(&out).unwrap()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&index.sniffers[0].versions).unwrap(),
+        before
+    );
+    // A rebuilt module under the old version is still refused.
+    let rebuilt = t.path().join("rebuilt");
+    let d2 = sniffer_dir(&rebuilt, "a2s", "0.1.0", "other", false);
+    std::fs::write(&out, v.to_string()).unwrap();
+    let r = run(&gen_args(&out, None, &[&d2]));
+    assert!(!r.status.success());
+    assert!(String::from_utf8_lossy(&r.stderr).contains("immutable"));
+}
