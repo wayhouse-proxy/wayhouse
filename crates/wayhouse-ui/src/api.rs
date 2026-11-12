@@ -314,8 +314,8 @@ async fn login(
     let ip = peer.map_or(IpAddr::from([0, 0, 0, 0]), |p| (p.0).0 .0.ip());
     // Throttle before any password work. In legacy/open mode there is no
     // username, so only the per-address bucket applies.
-    // Every name, real or not, is charged to one of a fixed set of hashed
-    // username buckets: the throttle answers identically for both, so it is no
+    // Every name, real or not, is delayed in one of a fixed set of hashed
+    // username slots: the throttle answers identically for both, so it is no
     // account-existence oracle, and the limiter's memory stays bounded.
     let username = state.users.as_ref().and(req.username.as_deref());
     // Usernames key the limiter's map, so bound their size (no real
@@ -355,9 +355,9 @@ async fn login(
         .flatten();
         return match verified {
             Some((role, username)) => {
-                // A correct password hands the attempt's username token back,
-                // so a legitimate user is not locked out by their own logins.
-                state.login_limiter.refund_username(&username);
+                // A correct password clears the username's delay, so a
+                // legitimate user is not slowed by their own logins.
+                state.login_limiter.forgive_username(&username);
                 issue_session(
                     &state,
                     Session {
@@ -1020,17 +1020,25 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
-    fn tight_login_limits(per_ip: u32, per_username: u32) -> LoginLimits {
-        use crate::login_limit::Bucket;
+    /// `delay_users`: a username is refused for an hour after each attempt
+    /// (otherwise never delayed), so one attempt shows the limit.
+    fn tight_login_limits(per_ip: u32, delay_users: bool) -> LoginLimits {
+        use crate::login_limit::{Backoff, Bucket};
         let slow = std::time::Duration::from_secs(3600);
+        let user_delay = if delay_users {
+            slow
+        } else {
+            std::time::Duration::ZERO
+        };
         LoginLimits {
             per_ip: Bucket {
                 burst: per_ip,
                 refill: slow,
             },
-            per_username: Bucket {
-                burst: per_username,
-                refill: slow,
+            per_username: Backoff {
+                base: user_delay,
+                cap: user_delay,
+                forget: slow,
             },
             max_keys: 100,
         }
@@ -1039,7 +1047,7 @@ mod tests {
     #[tokio::test]
     async fn login_attempts_beyond_the_per_ip_burst_get_429_with_retry_after() {
         let app = router(
-            AppState::new(Some("secret".into())).with_login_limits(tight_login_limits(2, 100)),
+            AppState::new(Some("secret".into())).with_login_limits(tight_login_limits(2, false)),
         );
         for _ in 0..2 {
             let resp = post_login(&app, r#"{"password":"wrong"}"#).await;
@@ -1052,8 +1060,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_attempts_beyond_the_per_username_burst_get_429() {
-        let app = router(users_state().with_login_limits(tight_login_limits(100, 1)));
+    async fn a_second_login_attempt_for_a_username_gets_429_until_its_delay_passes() {
+        let app = router(users_state().with_login_limits(tight_login_limits(100, true)));
         let resp = post_login(&app, r#"{"username":"alice","password":"nope"}"#).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let resp = post_login(&app, &login_body("alice")).await;
@@ -1065,13 +1073,13 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_names_are_throttled_exactly_like_real_accounts() {
-        // A per-username burst of 1: the second attempt is refused whether or
+        // A username delay: the second attempt is refused whether or
         // not the name is an account, so the throttle is no existence oracle.
         for (name, body) in [
             ("alice", r#"{"username":"alice","password":"x"}"#),
             ("nobody", r#"{"username":"nobody","password":"x"}"#),
         ] {
-            let app = router(users_state().with_login_limits(tight_login_limits(100, 1)));
+            let app = router(users_state().with_login_limits(tight_login_limits(100, true)));
             let first = post_login(&app, body).await.status();
             let second = post_login(&app, body).await.status();
             assert_eq!(first, StatusCode::UNAUTHORIZED, "{name}");
@@ -1080,13 +1088,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_successful_login_refunds_the_username_bucket() {
-        let app = router(users_state().with_login_limits(tight_login_limits(100, 1)));
+    async fn a_successful_login_clears_the_username_delay() {
+        let app = router(users_state().with_login_limits(tight_login_limits(100, true)));
         for _ in 0..3 {
             let resp = post_login(&app, &login_body("alice")).await;
             assert_eq!(resp.status(), StatusCode::OK);
         }
-        // A failure still spends the token.
+        // A failure starts the delay again.
         let resp = post_login(&app, r#"{"username":"alice","password":"nope"}"#).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let resp = post_login(&app, &login_body("alice")).await;
@@ -1096,7 +1104,7 @@ mod tests {
     #[tokio::test]
     async fn over_a_real_socket_the_limit_keys_on_the_peer_address() {
         let app = router(
-            AppState::new(Some("secret".into())).with_login_limits(tight_login_limits(1, 100)),
+            AppState::new(Some("secret".into())).with_login_limits(tight_login_limits(1, false)),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1120,7 +1128,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_oversized_username_is_rejected_without_touching_the_limiter() {
-        let app = router(users_state().with_login_limits(tight_login_limits(1, 1)));
+        let app = router(users_state().with_login_limits(tight_login_limits(1, true)));
         let body = format!(r#"{{"username":"{}","password":"x"}}"#, "a".repeat(5000));
         let body: &'static str = Box::leak(body.into_boxed_str());
         // Twice: a 401 both times (not 429) shows no limiter token was spent.
