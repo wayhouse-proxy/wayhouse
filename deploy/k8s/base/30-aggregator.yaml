@@ -15,6 +15,11 @@ spec:
           image: wayhouse-deploy/wayhouse-aggregator:local
           # --instance-token is what intent fan-out presents to each wayhouse admin API.
           # --ingest-token is what each wayhouse pushes with; it cannot call /fleet/*.
+          # The aggregator serves https (wayhouse-tls). It is the one place that still needs
+          # --allow-insecure-controller: it presents the instance token to each node's admin API,
+          # which the DaemonSet exposes as http://<node IP>:9900 (no certificate covers a node IP).
+          # Give `settings.admin.tls` a certificate for the node and report an https:// admin URL
+          # to drop it.
           # A pushed admin_url must name the pusher's own address (the node IP
           # here); if nodes reach the Service from another address, add
           # --instance-url-allow=<node CIDR>.
@@ -23,12 +28,19 @@ spec:
             - --auth-token-file=/run/secrets/wayhouse/auth-token
             - --ingest-token-file=/run/secrets/wayhouse/ingest-token
             - --instance-token-file=/run/secrets/wayhouse/instance-token
-            - --allow-insecure-controller   # each node reports http://<node IP>:9900 and gets the instance token in plain http
+            - --tls-cert=/run/tls/aggregator.crt
+            - --tls-key=/run/tls/aggregator.key
+            - --allow-insecure-controller   # only for the http://<node IP>:9900 admin URLs above
           ports: [{ containerPort: 9902 }]
-          readinessProbe: { httpGet: { path: /healthz, port: 9902 } }
-          livenessProbe: { httpGet: { path: /healthz, port: 9902 }, initialDelaySeconds: 10 }
-          volumeMounts: [{ name: tokens, mountPath: /run/secrets/wayhouse, readOnly: true }]
+          readinessProbe: { httpGet: { path: /healthz, port: 9902, scheme: HTTPS } }
+          livenessProbe: { httpGet: { path: /healthz, port: 9902, scheme: HTTPS }, initialDelaySeconds: 10 }
+          volumeMounts: [{ name: tokens, mountPath: /run/secrets/wayhouse, readOnly: true }, { name: tls, mountPath: /run/tls, readOnly: true }]
       volumes:
+        - name: tls
+          secret:
+            secretName: wayhouse-tls
+            defaultMode: 0440
+            items: [{ key: aggregator.crt, path: aggregator.crt }, { key: aggregator.key, path: aggregator.key }]
         - name: tokens
           secret:
             secretName: wayhouse-tokens

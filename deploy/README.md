@@ -105,15 +105,18 @@ Retag/push the images to your registry and edit `image:` first, then:
 
 ```sh
 kubectl apply -f deploy/k8s/base/00-namespace.yaml
-# copy base/10-secrets.example.yaml, change every value, apply it
+# once: random tokens, the sealed-secret keyring and a private CA with the certificates the manifests mount
+wayhouse-controller init --target k8s-secret --output secrets.yaml && kubectl apply -f secrets.yaml
+# (or copy base/10-secrets.example.yaml, change every value, and create the wayhouse-tls Secret yourself)
 kubectl apply -k deploy/k8s/overlays/single
 ```
 
 Overlays (`deploy/k8s/overlays/`): `single` is the default (one standalone controller, one aggregator);
 `web-gateway` adds the Caddy tier (`docs/web-proxy.md`; label nodes `wayhouse/web-gateway=true`);
 `ha` swaps the controller for a 3-node Raft StatefulSet (ids = pod ordinals, Kubernetes 1.28+) and
-needs an extra `ha-token` key (16+ characters) in the `wayhouse-tokens` Secret. Preview with `kubectl kustomize <overlay>`.
-Only validated by `kustomize build` + `kubeconform` in CI, not applied to a real cluster yet.
+needs an extra `ha-token` key (16+ characters) in the `wayhouse-tokens` Secret (`init` makes it). Preview with `kubectl kustomize <overlay>`.
+Services talk https (the `wayhouse-tls` Secret from `init`; only the aggregator keeps `--allow-insecure-controller`, for the
+`http://<node IP>:9900` admin URLs). Only validated by `kustomize build` + `kubeconform` + `deploy/lint.sh` in CI, not applied to a real cluster yet.
 
 `wayhouse` runs as a `hostNetwork` DaemonSet. `45-wayhouse-rbac.yaml` grants its service account
 `list`/`watch` on EndpointSlices in the `games` namespace (create it, or edit the
@@ -125,8 +128,8 @@ Ingress/LoadBalancer (with TLS) in front of it.
 - Reference only; the published `ghcr.io` images are public and need no login. `imagePullSecrets` are only needed for a mirror that requires auth.
 - Tokens are visible in `docker inspect` / the Pod spec env — fine for a demo;
   use real secret management in production.
-- These examples run every service on **plain HTTP**: bearer tokens and
-  registrations cross the network in the clear. Every service can serve TLS
+- The demo compose runs every service on **plain HTTP** on a private network (the solo overlay and the
+  Kubernetes manifests are https). Every service can serve TLS
   itself (`--tls-cert`/`--tls-key`; `settings.admin.tls` for `wayhouse`'s admin API) — see
   [TLS for the fleet services](../docs/12-deployment.md#tls-for-the-fleet-services).
 - The `single` overlay runs one standalone controller; use the `ha` overlay for Raft (docs/10).

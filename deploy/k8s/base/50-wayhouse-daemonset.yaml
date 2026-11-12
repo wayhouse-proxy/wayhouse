@@ -17,8 +17,8 @@ spec:
           image: wayhouse-deploy/wayhouse:local
           args:
             - --config=/etc/wayhouse/wayhouse.yaml
-            - --aggregator=http://wayhouse-aggregator.wayhouse.svc:9902
-            - --allow-insecure-controller   # the token crosses the cluster network in plain http
+            - --aggregator=https://wayhouse-aggregator.wayhouse.svc:9902
+            - --ca-file=/run/tls/ca.crt   # the CA `init` made; the aggregator certificate names this Service
             - --aggregator-token-file=/run/secrets/wayhouse/aggregator-token
             # Default instance name is the admin listen addr (0.0.0.0:9900 on every
             # node) — all nodes would overwrite one aggregator entry.
@@ -38,6 +38,7 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /etc/wayhouse, readOnly: true }
             - { name: tokens, mountPath: /run/secrets/wayhouse, readOnly: true }
+            - { name: tls, mountPath: /run/tls, readOnly: true }
           # Phase-14 tunnel (docs/12): uncomment, add the --tunnel-* args, and
           # mount /dev/net/tun (hostPath volume).
           # NET_ADMIN is only in the bounding set for a non-root user, so the
@@ -51,6 +52,11 @@ spec:
           # hostNetwork/dnsPolicy, bind "0.0.0.0:30000-30999" in the config and
           # publish that range with hostPort entries.
       volumes:
+        - name: tls
+          secret:
+            secretName: wayhouse-tls
+            defaultMode: 0440   # group-readable; fsGroup gives the container its group
+            items: [{ key: ca.crt, path: ca.crt }]
         - name: config
           secret: { secretName: wayhouse-config }
         - name: tokens

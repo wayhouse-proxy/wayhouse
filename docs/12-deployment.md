@@ -141,8 +141,14 @@ UI, a clean restart, no token in any log).
 `wayhouse-controller init --target k8s-secret | kubectl apply -f -` prints three Secret manifests
 (`wayhouse-tokens` with every key the example Secret has, `wayhouse-keyring`, `wayhouse-tls` with
 the CA certificate and the two leaves, not the CA key) for the `wayhouse` namespace (`--namespace`).
-It refuses to print to a terminal (use `--output FILE`). The Kubernetes manifests do not mount the
-TLS Secret yet, so they still set `--allow-insecure-controller` for the UI and the node proxy.
+It refuses to print to a terminal (use `--output FILE`). The Kubernetes manifests mount that `wayhouse-tls`
+Secret (create it before `kubectl apply -k`): the controller and the aggregator serve https from it, the UI and
+the node proxy trust its `ca.crt` (`--ca-file`), the probes use `scheme: HTTPS`, and the HA overlay's replicas
+dial each other at `https://<pod>.wayhouse-controller-peers:9901` (the leaf names `*.wayhouse-controller-peers`).
+Only the aggregator keeps `--allow-insecure-controller`: it presents the instance token to each node's admin API,
+which the DaemonSet exposes as `http://<node IP>:9900`, and no certificate covers a node IP. The certificates
+name the `wayhouse` namespace; pass `--namespace` and `--san` to `init` for another. `deploy/lint.sh` fails the
+build if any other pod brings the flag back or reaches a Service over plain http.
 `ca.key` in `tls/` can sign a certificate for any name; once you have the certificates you need, move it offline (it is never mounted into a container, and `tls/` is git-ignored). Every `init` run also prints the controller certificate's SHA-256 fingerprint, which is public:
 `wayhouse-agent enroll --pin` takes it, or pass the CA with `--controller-ca`.
 
@@ -644,7 +650,7 @@ forwards to the leader then go over HTTPS. `id=host:port` still means plain HTTP
 the two forms can be mixed. Raft carries the `--ha-token`, so a replica **refuses to start** with a
 plain-HTTP peer beyond loopback (and `POST /admin/ha/members` refuses such an address with a `422`)
 unless `--allow-insecure-controller` is set, for a cluster network that is private by construction
-(the Kubernetes HA overlay sets it); the same flag covers a slave's `--parent-url`. An entry that is not `http(s)://host[:port]` (another
+(the Kubernetes HA overlay does not need it: its peers are `https://`); the same flag covers a slave's `--parent-url`. An entry that is not `http(s)://host[:port]` (another
 scheme, a path, a query, user info) stops the replica at startup naming the entry.
 Verified by `wayhouse-fleet-tests` `ha_tls.rs`: three replicas that reach each other only
 through private-CA terminators elect a leader, forward writes and all serve the last

@@ -20,11 +20,18 @@ spec:
             - --auth-token-file=/run/secrets/wayhouse/auth-token
             - --proxy-token-file=/run/secrets/wayhouse/proxy-token
             - --agent-token-file=/run/secrets/wayhouse/agent-token
+            - --tls-cert=/run/tls/controller.crt   # https from the first start; clients trust ca.crt
+            - --tls-key=/run/tls/controller.key
           ports: [{ containerPort: 9901 }]
-          readinessProbe: { httpGet: { path: /healthz, port: 9901 } }
-          livenessProbe: { httpGet: { path: /healthz, port: 9901 }, initialDelaySeconds: 10 }
-          volumeMounts: [{ name: data, mountPath: /data }, { name: tokens, mountPath: /run/secrets/wayhouse, readOnly: true }]
+          readinessProbe: { httpGet: { path: /healthz, port: 9901, scheme: HTTPS } }
+          livenessProbe: { httpGet: { path: /healthz, port: 9901, scheme: HTTPS }, initialDelaySeconds: 10 }
+          volumeMounts: [{ name: data, mountPath: /data }, { name: tokens, mountPath: /run/secrets/wayhouse, readOnly: true }, { name: tls, mountPath: /run/tls, readOnly: true }]
       volumes:
+        - name: tls
+          secret:
+            secretName: wayhouse-tls   # `wayhouse-controller init --target k8s-secret` makes it (deploy/README.md)
+            defaultMode: 0440
+            items: [{ key: ca.crt, path: ca.crt }, { key: controller.crt, path: controller.crt }, { key: controller.key, path: controller.key }]
         - name: data
           persistentVolumeClaim: { claimName: wayhouse-controller-data }
         - name: tokens
