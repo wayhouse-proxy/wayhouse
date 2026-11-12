@@ -93,8 +93,8 @@ impl LiveInterface {
         self.psk().clone()
     }
 
-    /// Switches to a rotated key: every peer on the device is updated in place (the session
-    /// carries on until its next handshake, which then uses the new key), and peers the device
+    /// Switches to a rotated key: every peer on the device is removed and added again with the
+    /// new key (the userspace backend cannot modify a peer), and peers the device
     /// lost get it when they come back. `Err` when a peer could not be updated; the key is
     /// recorded regardless, so later peers get it, and the caller retries the update.
     pub fn rekey(&self, key: &Key) -> anyhow::Result<()> {
@@ -104,15 +104,23 @@ impl LiveInterface {
                 p.preshared_key = Some(key.clone());
             }
             let host = self.wg.read_interface_data().context("reading the peers")?;
-            let mut failed = 0;
             for peer in host.peers.values() {
                 let mut peer = peer.clone();
                 peer.preshared_key = Some(key.clone());
+                // The userspace backend cannot modify a peer (it panics), so the peer is
+                // removed and added again with its endpoint; the next handshake uses the new key.
+                if let Err(e) = self.wg.remove_peer(&peer.public_key) {
+                    tracing::debug!(error = %e, "removing a peer to give it the rotated tunnel key");
+                }
                 if let Err(e) = self.wg.configure_peer(&peer) {
-                    failed += 1;
-                    tracing::warn!(error = %e, peer = %peer.public_key, "could not give a peer the rotated tunnel key");
+                    tracing::warn!(error = %e, peer = %peer.public_key, "could not give a peer the rotated tunnel key; will retry");
+                    let mut lost = self.lost();
+                    lost.retain(|p| p.public_key != peer.public_key);
+                    lost.push(peer);
                 }
             }
+            self.repair_peers_locked();
+            let failed = self.lost().len();
             anyhow::ensure!(failed == 0, "{failed} peer(s) did not take the rotated key");
             Ok(())
         })
@@ -613,8 +621,8 @@ mod tests {
         assert_eq!(live.current_psk(), Some(Key::new([2; 32])));
         let log = log.lock().unwrap();
         assert!(
-            !log.iter().any(|l| l.starts_with("remove peer")),
-            "updated in place, so the session is not torn down: {log:?}"
+            log.iter().any(|l| l.starts_with("remove peer")),
+            "removed and added again, the userspace backend cannot modify a peer: {log:?}"
         );
     }
 
@@ -625,7 +633,7 @@ mod tests {
         let stubborn = Key::new([7; 32]);
         let live = live_with_flaky_peers(
             &[peer(7, "fd00::2/128"), peer(8, "fd00::3/128")],
-            &[(&stubborn, 1)],
+            &[(&stubborn, 2)],
             &log,
         )
         .with_psk(Some(Key::new([1; 32])));
