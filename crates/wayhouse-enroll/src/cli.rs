@@ -114,6 +114,7 @@ pub async fn run(role: Role, bin: &'static str, argv: Vec<OsString>) -> Result<(
     match NodeCli::parse_from(argv).cmd {
         Cmd::Enroll(e) => {
             let dir = e.data_dir.clone().unwrap_or_else(|| default_dir(role));
+            crate::files::check_fresh(&dir)?;
             let name = enroll_into(role, &e, &dir).await?;
             eprintln!(
                 "enrolled as {name:?}; files written to {}\n{}",

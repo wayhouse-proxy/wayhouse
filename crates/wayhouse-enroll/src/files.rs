@@ -69,6 +69,22 @@ fn write_private(path: &Path, data: &[u8]) -> Result<(), FileError> {
     f.write_all(data).map_err(io(path))
 }
 
+/// Refuses a directory that already holds an enrollment: a second `enroll` would overwrite its
+/// tokens and tunnel key with truncating writes.
+pub fn check_fresh(dir: &Path) -> Result<(), FileError> {
+    let p = dir.join(META_FILE);
+    if p.exists() {
+        return Err(FileError::Io {
+            path: p,
+            source: std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "this directory is already enrolled; remove it or pick another --data-dir",
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Writes `enrollment.json` and every granted file (name -> content). A name is one of the
 /// role's fixed grant names, never a path.
 pub fn write(
@@ -143,6 +159,14 @@ mod tests {
         }
         assert_eq!(*read_psk(&dir.join(PSK_FILE)).unwrap(), *psk);
         assert_eq!(read_meta(&dir).unwrap(), meta);
+    }
+
+    #[test]
+    fn an_enrolled_directory_is_not_enrolled_again() {
+        let t = tempfile::tempdir().unwrap();
+        assert!(check_fresh(t.path()).is_ok());
+        std::fs::write(t.path().join(META_FILE), "{}").unwrap();
+        assert!(check_fresh(t.path()).is_err());
     }
 
     #[test]

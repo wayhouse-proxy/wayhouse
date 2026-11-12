@@ -50,6 +50,8 @@ use crate::ui_data::{Applied, Kind, UiOp};
 /// Default and longest code lifetime, in seconds.
 const DEFAULT_TTL: u64 = 900;
 const MAX_TTL: u64 = 7 * 24 * 3600;
+/// Codes for the roles that receive the keyring or the admin token live at most a day.
+const MAX_STEP_UP_TTL: u64 = 24 * 3600;
 /// `/enroll` takes a code and a role; anything bigger is not one.
 const MAX_ENROLL_BODY: usize = 1024;
 
@@ -242,6 +244,18 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
             format!("ttl_secs must be 1 to {MAX_TTL}"),
         );
     }
+    if let Err(why) = crate::registry::validate_name(&b.name) {
+        return err(StatusCode::BAD_REQUEST, why);
+    }
+    if b.role.needs_step_up() && ttl > MAX_STEP_UP_TTL {
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("ttl_secs for this role is at most {MAX_STEP_UP_TTL}"),
+        );
+    }
+    if b.role == Role::Ui && b.uses.is_some_and(|u| u != 1) {
+        return err(StatusCode::BAD_REQUEST, "a ui code is single use");
+    }
     if b.parent_url
         .as_deref()
         .is_some_and(|u| b.role != Role::Aggregator || !parent_url_ok(u))
@@ -406,10 +420,19 @@ async fn redeem(
         return too_many();
     }
     let (name, parent_url) = match st.ui.store.get(Kind::Enrollment, code.id()) {
-        Ok(Some(rec)) if rec["role"] == req.role.as_str() => (
-            rec["origin"].as_str().unwrap_or_default().to_owned(),
-            rec["parent_url"].as_str().map(str::to_owned),
-        ),
+        // The hash is checked here too, so a configuration answer (503) is only ever given to
+        // the holder of the code.
+        Ok(Some(rec))
+            if rec["role"] == req.role.as_str()
+                && rec["hash"]
+                    .as_str()
+                    .is_some_and(|h| wayhouse_http::token_eq(h, &code.hash())) =>
+        {
+            (
+                rec["origin"].as_str().unwrap_or_default().to_owned(),
+                rec["parent_url"].as_str().map(str::to_owned),
+            )
+        }
         Ok(_) => return refused(),
         Err(e) => return internal(e),
     };
@@ -1072,5 +1095,62 @@ mod tests {
             + &serde_json::to_string(&t.store.list(Kind::Enrollment).unwrap()).unwrap();
         assert!(!text.contains(STEP_UP));
         assert!(!text.contains(m["code"].as_str().unwrap().split_once('.').unwrap().1));
+    }
+
+    #[tokio::test]
+    async fn keyring_and_admin_codes_are_short_lived_and_a_ui_code_is_single_use() {
+        let t = setup(Some(KEY));
+        let m = |extra: Value| {
+            let mut b = json!({"name": "n", "step_up": STEP_UP});
+            b.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            b
+        };
+        for body in [
+            m(json!({"role": "proxy", "ttl_secs": MAX_STEP_UP_TTL + 1})),
+            m(json!({"role": "ui", "uses": 2})),
+            m(json!({"role": "ui", "uses": 0})),
+            m(json!({"role": "agent", "role_": 1, "name": "bad name\nx"})),
+        ] {
+            assert_eq!(mint_as(&t, body).await.0, StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(
+            mint_as(
+                &t,
+                m(json!({"role": "proxy", "uses": 5, "ttl_secs": MAX_STEP_UP_TTL}))
+            )
+            .await
+            .0,
+            StatusCode::OK,
+            "a multi-use proxy code stays possible for a k8s init container"
+        );
+        // A plain agent code still lasts up to MAX_TTL.
+        assert_eq!(
+            mint_as(&t, json!({"name": "n", "ttl_secs": MAX_TTL}))
+                .await
+                .0,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wrong_secret_never_learns_the_controller_is_misconfigured() {
+        // A proxy code on a controller that has no proxy token cannot be minted, so mint one
+        // while ready, then redeem with the right id and a wrong secret on a keyring-less twin.
+        let t = setup(Some(KEY));
+        let (_, m) = mint_as(&t, json!({"role": "aggregator", "name": "a"})).await;
+        let id = m["code"]
+            .as_str()
+            .unwrap()
+            .split('.')
+            .next()
+            .unwrap()
+            .to_owned();
+        let wrong = format!("{id}.{}", "B".repeat(43));
+        assert_eq!(
+            redeem_as(&t, &wrong, "aggregator").await.0,
+            StatusCode::UNAUTHORIZED
+        );
     }
 }

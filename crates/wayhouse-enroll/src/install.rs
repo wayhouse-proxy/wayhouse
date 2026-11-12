@@ -44,13 +44,13 @@ impl Install {
                 )
                 .into());
             }
-            extra_creds.push((name.to_owned(), unit_arg(path)?.into()));
+            extra_creds.push((name.to_owned(), check_word(path)?.into()));
         }
         let bin_path = match bin_path {
             Some(p) => p,
             None => std::env::current_exe()?,
         };
-        unit_arg(&bin_path.to_string_lossy())?;
+        check_word(&bin_path.to_string_lossy())?;
         Ok(Self {
             role,
             bin,
@@ -97,16 +97,25 @@ impl Install {
     }
 }
 
-/// A value safe inside a unit line: no whitespace, quotes, backslashes or control characters;
-/// `%` and `$` are doubled so systemd does not expand them.
-fn unit_arg(s: &str) -> Result<String, BoxErr> {
+/// A value safe inside a unit line: no whitespace, quotes, backslashes or control characters.
+fn check_word(s: &str) -> Result<&str, BoxErr> {
     if s.is_empty()
         || s.chars()
             .any(|c| c.is_whitespace() || c.is_control() || c == '"' || c == '\\' || c == '\'')
     {
         return Err(format!("{s:?} cannot be written into a systemd unit").into());
     }
-    Ok(s.replace('%', "%%").replace('$', "$$"))
+    Ok(s)
+}
+
+/// For `ExecStart=`: `%` and `$` are doubled so systemd does not expand them.
+fn unit_arg(s: &str) -> Result<String, BoxErr> {
+    Ok(check_word(s)?.replace('%', "%%").replace('$', "$$"))
+}
+
+/// For `LoadCredential=`: specifiers (`%`) expand there, `$` does not.
+fn cred_path(p: &Path) -> Result<String, BoxErr> {
+    Ok(check_word(&p.to_string_lossy())?.replace('%', "%%"))
 }
 
 /// The unit text. Pure, so a golden test pins it. `files` are the credential names enrollment
@@ -146,15 +155,19 @@ pub fn render_unit(
     if spec.role != Role::Agent {
         u.push_str("DynamicUser=yes\n");
         for f in files {
-            let _ = writeln!(u, "LoadCredential={f}:{}/{f}", dir.display());
+            let _ = writeln!(u, "LoadCredential={f}:{}/{f}", cred_path(dir)?);
         }
         for (n, p) in &spec.extra_creds {
-            let _ = writeln!(u, "LoadCredential={n}:{}", p.display());
+            let _ = writeln!(u, "LoadCredential={n}:{}", cred_path(p)?);
         }
     } else {
         u.push_str("StateDirectory=wayhouse-agent\nStateDirectoryMode=0700\n");
     }
-    let _ = write!(u, "ExecStart={}", spec.bin_path.display());
+    let _ = write!(
+        u,
+        "ExecStart={}",
+        unit_arg(&spec.bin_path.to_string_lossy())?
+    );
     for f in &flags {
         let _ = write!(u, " \\\n  {f}");
     }
@@ -343,6 +356,32 @@ mod tests {
         )
         .unwrap();
         assert!(u.contains("--x=$$HOME%%h"));
+        // A data dir that would break the line is refused, and `$` is not doubled in a credential path.
+        assert!(render_unit(
+            &spec(Role::Ui, "wayhouse-ui", &[]),
+            Path::new("/d x"),
+            &meta(Role::Ui, None),
+            &["controller-token".into()],
+            &[]
+        )
+        .is_err());
+        let c = render_unit(
+            &spec(Role::Ui, "wayhouse-ui", &["p=/etc/a$b".into()]),
+            Path::new("/d"),
+            &meta(Role::Ui, None),
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert!(c.contains("LoadCredential=p:/etc/a$b\n"), "{c}");
+        assert!(Install::new(
+            Role::Ui,
+            "wayhouse-ui",
+            Some("/bin dir/x".into()),
+            Path::new("/u"),
+            &[]
+        )
+        .is_err());
         assert!(Install::new(
             Role::Ui,
             "wayhouse-ui",

@@ -359,6 +359,8 @@ async fn main() -> anyhow::Result<()> {
             &args.proxy_token,
             &args.agent_token,
             &args.ingest_token,
+            &args.metrics_token,
+            &args.parent_token,
         ]
         .into_iter()
         .flatten()
