@@ -34,6 +34,7 @@ pub mod history;
 pub mod ingest;
 pub mod nodes;
 pub mod parent_push;
+pub mod serve;
 pub mod skew;
 pub mod target;
 pub mod trust;

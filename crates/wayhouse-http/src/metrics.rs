@@ -30,13 +30,22 @@ pub fn set_build_info(component: &'static str, version: &'static str) {
         .set(1.0);
 }
 
-/// Install the process-global recorder and set [`BUILD_INFO`]. Call once from
-/// `main`; a second call in the same process is an error.
+static RECORDER: std::sync::OnceLock<PrometheusHandle> = std::sync::OnceLock::new();
+
+/// Install the process-global recorder and set [`BUILD_INFO`]. A second call in the same
+/// process (`wayhouse-control` runs three components in one) shares the first recorder and
+/// adds its own build info to it.
 pub fn install(
     component: &'static str,
     version: &'static str,
 ) -> Result<PrometheusHandle, BuildError> {
-    let handle = PrometheusBuilder::new().install_recorder()?;
+    let handle = match RECORDER.get() {
+        Some(h) => h.clone(),
+        None => {
+            let h = PrometheusBuilder::new().install_recorder()?;
+            RECORDER.get_or_init(|| h).clone()
+        }
+    };
     set_build_info(component, version);
     Ok(handle)
 }
@@ -92,6 +101,16 @@ mod tests {
             "{body}"
         );
         assert!(!COMMIT.is_empty());
+    }
+
+    #[test]
+    fn a_second_install_shares_the_recorder_and_adds_its_build_info() {
+        let first = install("wayhouse-first", "1.0.0").unwrap();
+        let second = install("wayhouse-second", "1.0.0").expect("one process, several components");
+        let body = first.render();
+        assert!(body.contains("component=\"wayhouse-first\""), "{body}");
+        assert!(body.contains("component=\"wayhouse-second\""), "{body}");
+        assert!(second.render().contains("component=\"wayhouse-first\""));
     }
 
     #[tokio::test]
