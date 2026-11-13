@@ -90,6 +90,17 @@ pub fn check_flags(ha_peers: bool, ha_join: bool, node_id: Option<NodeId>) -> Re
     Ok(())
 }
 
+/// The node id in `--ha-node-id-file`: one whole number, what an enrolled replica was given.
+pub fn read_node_id_file(path: &std::path::Path) -> Result<NodeId, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("--ha-node-id-file {}: {e}", path.display()))?;
+    text.trim()
+        .parse::<NodeId>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| format!("--ha-node-id-file {}: not a node id", path.display()))
+}
+
 /// `/raft/*` and the membership API let a caller rewrite replicated state, so
 /// HA never starts without a peer token, and a token it
 /// is given must not be short. Unlike the client-facing `--auth-token`
@@ -546,5 +557,23 @@ mod tests {
             config.snapshot_policy,
             openraft::SnapshotPolicy::LogsSinceLast(10)
         );
+    }
+
+    #[test]
+    fn a_node_id_file_holds_one_positive_number() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("id");
+        for (text, want) in [
+            ("7\n", Some(7)),
+            (" 12 ", Some(12)),
+            ("0", None),
+            ("x", None),
+            ("", None),
+            ("-1", None),
+        ] {
+            std::fs::write(&f, text).unwrap();
+            assert_eq!(read_node_id_file(&f).ok(), want, "{text:?}");
+        }
+        assert!(read_node_id_file(&d.path().join("missing")).is_err());
     }
 }

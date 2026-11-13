@@ -494,7 +494,7 @@ curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin
 
 - The node id is chosen when the pod redeems, inside the replicated store: one above every Raft
   member and every enrollment record, spent or not, so pods redeeming at once on different replicas
-  never share an id and an id is never reused. The redeem writes a child record (the pod's name, its
+  never share an id. An id is not reused while its member or its record exists (removing the highest member and revoking its record frees it). The redeem writes a child record (the pod's name, its
   node id, its join proof hash) that `GET /enrollments` lists like a single-use controller code
   (`joining`, then `joined`); the pool itself shows `pending` and then `used`.
 - **A name enrolls once.** A second redeem for a name that already has a replica record is refused
@@ -502,10 +502,16 @@ curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin
   that lost its volume is replaced deliberately: remove the member (`DELETE /admin/ha/members/{id}`),
   revoke its record (`DELETE /enrollments/{child id}`), then it can redeem again under the same name.
   The Raft data directory therefore must be a PersistentVolumeClaim.
+- A pod stuck on `401` after a redeem answer got lost, or because a stranger enrolled its name first: open
+  `GET /enrollments`, find the child with that name (`joining` and not yours, or `joining` with no member in
+  `GET /admin/ha/members`) and revoke it (`DELETE /enrollments/{child id}`); a child that never joined has
+  no member to remove. Then the pod redeems again.
 - Whoever holds the pool code can enroll up to its remaining uses under any name with the prefix, and
   each of those gets the cluster's tokens, the keyring and the Raft token. Mint it only when the pods
   are about to start, with a short TTL (at most 24 hours), and revoke it afterwards
   (`DELETE /enrollments/{pool id}`); revoking does not undo replicas already enrolled.
+- The pod starts with `--ha-join --ha-node-id-file=<enroll dir>/ha-node-id` (the file `enroll` writes beside
+  `enrollment.json` for a replica) so its id need not be on the command line; `--ha-node-id` still works.
 - Needs the same group setup as a single-use controller code (HA, `--auth-token`, a secret key and
   `--enroll-step-up-file`). Roll every replica to this build first (the UI data level is 9).
 

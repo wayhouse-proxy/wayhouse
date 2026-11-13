@@ -1241,6 +1241,39 @@ mod tests {
     }
 
     #[test]
+    fn a_pool_redeem_whose_child_id_is_taken_or_whose_store_is_full_changes_nothing() {
+        let (s, _d) = pool_store(3);
+        let mut clash = pool_redeem("ctl-0", 2);
+        let UiOp::Redeem { pool: Some(c), .. } = &mut clash else {
+            unreachable!()
+        };
+        c.id = "abcd1234".into(); // the pool's own id
+        assert_eq!(s.apply_local(&clash).unwrap(), Applied::Refused);
+        assert_eq!(
+            s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"],
+            3
+        );
+        // Fill the collection to its cap: the next child does not fit and no use is spent.
+        let cap = Kind::Enrollment.max_records().unwrap();
+        for i in 0..cap - 1 {
+            s.apply_local(&put(
+                Kind::Enrollment,
+                &format!("{i:08x}"),
+                code_record(H2, 1, 1000),
+            ))
+            .unwrap();
+        }
+        assert_eq!(
+            s.apply_local(&pool_redeem("ctl-0", 2)).unwrap(),
+            Applied::Full(cap)
+        );
+        assert_eq!(
+            s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"],
+            3
+        );
+    }
+
+    #[test]
     fn a_pool_code_has_no_node_id_a_prefix_and_at_most_sixteen_uses() {
         assert!(validate(Kind::Enrollment, "abcd1234", &pool_record(3)).is_ok());
         assert!(validate(Kind::Enrollment, "abcd1234", &pool_record(17)).is_err());
