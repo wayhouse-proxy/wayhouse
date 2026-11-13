@@ -594,23 +594,24 @@ async fn redeem(
     let join = (role == Role::Controller).then(|| {
         if pool {
             let c = Code::generate();
-            (c.expose(), c.hash())
+            (c.expose(), c.hash(), c.id().to_owned())
         } else {
             let secret = wayhouse_enroll::generate_token();
             let hash = Code::parse(&format!("{}.{secret}", code.id()))
                 .expect("a generated token has the secret shape")
                 .hash();
-            (Zeroizing::new(format!("{}.{secret}", code.id())), hash)
+            (
+                Zeroizing::new(format!("{}.{secret}", code.id())),
+                hash,
+                code.id().to_owned(),
+            )
         }
     });
     let child = join
         .as_ref()
         .filter(|_| pool)
-        .map(|(proof, hash)| PoolChild {
-            id: Code::parse(proof)
-                .expect("a generated code parses")
-                .id()
-                .to_owned(),
+        .map(|(_, hash, id)| PoolChild {
+            id: id.clone(),
             name: name.clone(),
             join_hash: hash.clone(),
             min_node_id: next_node_id(&st),
@@ -619,7 +620,7 @@ async fn redeem(
         id: code.id().to_owned(),
         hash: code.hash(),
         now: now(),
-        join_hash: join.as_ref().filter(|_| !pool).map(|(_, h)| h.clone()),
+        join_hash: join.as_ref().filter(|_| !pool).map(|(_, h, _)| h.clone()),
         pool: child,
     };
     match apply(&st.ui, op).await {
@@ -646,7 +647,7 @@ async fn redeem(
         Ok(f) => f,
         Err(r) => return r,
     };
-    if let Some((proof, _)) = &join {
+    if let Some((proof, _, _)) = &join {
         files.insert(
             wayhouse_enroll::files::JOIN_PROOF_FILE.into(),
             proof.to_string(),

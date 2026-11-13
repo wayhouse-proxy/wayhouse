@@ -494,7 +494,7 @@ curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin
 
 - The node id is chosen when the pod redeems, inside the replicated store: one above every Raft
   member and every enrollment record, spent or not, so pods redeeming at once on different replicas
-  never share an id. An id is not reused while its member or its record exists (removing the highest member and revoking its record frees it). The redeem writes a child record (the pod's name, its
+  never share an id. An id stays taken while its member or its record exists; removing the highest member and revoking its record frees it. The redeem writes a child record (the pod's name, its
   node id, its join proof hash) that `GET /enrollments` lists like a single-use controller code
   (`joining`, then `joined`); the pool itself shows `pending` and then `used`.
 - **A name enrolls once.** A second redeem for a name that already has a replica record is refused
@@ -512,6 +512,15 @@ curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin
   (`DELETE /enrollments/{pool id}`); revoking does not undo replicas already enrolled.
 - The pod starts with `--ha-join --ha-node-id-file=<enroll dir>/ha-node-id` (the file `enroll` writes beside
   `enrollment.json` for a replica) so its id need not be on the command line; `--ha-node-id` still works.
+- **On Kubernetes**: `kubectl apply -k deploy/k8s/overlays/ha-enrolled` runs one bootstrap controller
+  (`wayhouse-controller-0`, a group of one, on the shared Secrets) and a `wayhouse-controller-replica`
+  StatefulSet whose init container redeems the pool code from the `wayhouse-enroll-code` Secret as
+  `$(POD_NAME)` and keeps the result on a volume claim (a restart spends no use). Create first the
+  Secrets `wayhouse-enroll-step-up` (key `step-up`, any 16+ character secret; `init` does not make it)
+  and, after the bootstrap controller is up, mint the pool with `name_prefix`
+  `wayhouse-controller-replica-` and `uses` at least the replica count, then
+  `kubectl create secret generic wayhouse-enroll-code --from-file=code=...`. Scaling later needs a fresh
+  code with uses left. Not validated on a real cluster (CI renders and lints it only).
 - Needs the same group setup as a single-use controller code (HA, `--auth-token`, a secret key and
   `--enroll-step-up-file`). Roll every replica to this build first (the UI data level is 9).
 
@@ -579,7 +588,7 @@ by themselves see "Per-node enrollment on Kubernetes" below, the page does not m
   advertise address. The page shows the Raft node id the replica gets, and the list shows the code as
   `joining` until the cluster has added it, then `joined`. The replica's own certificate, key and
   the cluster CA go in the paths the command names (change them as needed).
-- Not yet: a controller replica on Kubernetes (waits for the per-pod init container).
+- Not yet: a controller replica on Kubernetes from the page (see the `ha-enrolled` overlay under "One code for a controller StatefulSet").
 
 ## TLS for the fleet services
 

@@ -94,9 +94,11 @@ pub fn check_flags(ha_peers: bool, ha_join: bool, node_id: Option<NodeId>) -> Re
 pub fn read_node_id_file(path: &std::path::Path) -> Result<NodeId, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("--ha-node-id-file {}: {e}", path.display()))?;
-    text.trim()
-        .parse::<NodeId>()
-        .ok()
+    let t = text.trim();
+    // Digits only and short: no sign, no padding games, no huge file read as a number.
+    (t.len() <= 20 && t.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| t.parse::<NodeId>().ok())
+        .flatten()
         .filter(|id| *id > 0)
         .ok_or_else(|| format!("--ha-node-id-file {}: not a node id", path.display()))
 }
@@ -570,6 +572,8 @@ mod tests {
             ("x", None),
             ("", None),
             ("-1", None),
+            ("+7", None),
+            ("007", Some(7)),
         ] {
             std::fs::write(&f, text).unwrap();
             assert_eq!(read_node_id_file(&f).ok(), want, "{text:?}");

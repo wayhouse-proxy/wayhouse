@@ -25,7 +25,7 @@ solo_acme=$(docker compose -f $C/docker-compose.yml -f $C/compose.solo.yml -f $C
 smoke_plan=$(make -n deploy-smoke)
 # Every overlay must build; the Ruby below checks the rendered DaemonSets, not the source files.
 if command -v kubectl >/dev/null 2>&1; then kz="kubectl kustomize"; else kz="kustomize build"; fi
-for o in single ha web-gateway enrolled; do
+for o in single ha web-gateway enrolled ha-enrolled; do
   $kz deploy/k8s/overlays/$o > "${TMPDIR:-/tmp}/wayhouse-k8s-$o.yaml"
 done
 export K8S_RENDERED="${TMPDIR:-/tmp}/wayhouse-k8s"
@@ -45,7 +45,7 @@ errs << "seed passes --opt=value args to curl: #{bad.inspect}" unless bad.empty?
 
 # wayhouse must report a unique instance name (default = admin listen addr).
 errs << "compose wayhouse lacks --aggregator-instance" unless base["wayhouse"]["command"].any? { |a| a.start_with?("--aggregator-instance=") }
-k8s = %w[single ha web-gateway enrolled].to_h { |o| [o, YAML.load_stream(File.read("#{ENV["K8S_RENDERED"]}-#{o}.yaml"))] }
+k8s = %w[single ha web-gateway enrolled ha-enrolled].to_h { |o| [o, YAML.load_stream(File.read("#{ENV["K8S_RENDERED"]}-#{o}.yaml"))] }
 k8s.each do |o, docs|
   ds = docs.find { |d| d["kind"] == "DaemonSet" && d.dig("metadata", "name") == "wayhouse" }
   c = ds["spec"]["template"]["spec"]["containers"][0]
@@ -122,6 +122,34 @@ end
 errs << "k8s enrolled: no wayhouse-agent DaemonSet" unless k8s["enrolled"].any? { |d| d["kind"] == "DaemonSet" && d.dig("metadata", "name") == "wayhouse-agent" }
 # The other overlays keep the shared tokens and have no agent.
 %w[single ha web-gateway].each { |o| errs << "k8s #{o}: must not carry the enroll init container or the agent" if k8s[o].any? { |d| d.dig("spec", "template", "spec", "initContainers") || d.dig("metadata", "name") == "wayhouse-agent" } }
+
+# Controller replicas by pool code (overlays/ha-enrolled): each pod redeems the code in an init container
+# that reads it from the Secret, names itself after the pod, pins the CA and keeps its files on a volume.
+k8s["ha-enrolled"].each do |d|
+  errs << "k8s ha-enrolled: a manifest must not define a Secret" if d["kind"] == "Secret"
+end
+rep = k8s["ha-enrolled"].find { |d| d["kind"] == "StatefulSet" && d.dig("metadata", "name") == "wayhouse-controller-replica" }
+if rep.nil?
+  errs << "k8s ha-enrolled: no wayhouse-controller-replica StatefulSet"
+else
+  pod = rep["spec"]["template"]["spec"]
+  who = "k8s ha-enrolled: controller replica"
+  ini = (pod["initContainers"] || []).find { |c| c["name"] == "enroll" }
+  if ini.nil?
+    errs << "#{who} lacks the enroll init container"
+  else
+    args = ini["args"]
+    errs << "#{who}: enroll must read the code from a file (--code-file), never carry it" unless args.include?("--code-file=/run/enroll-code/code") && args.none? { |a| a =~ /\A--code(=|\z)/ }
+    errs << "#{who}: enroll must name the pod (--name=$(POD_NAME))" unless args.include?("--name=$(POD_NAME)")
+    errs << "#{who}: enroll must use --skip-if-enrolled" unless args.include?("--skip-if-enrolled")
+    errs << "#{who}: enroll must pin the controller with the CA and use https" unless args.include?("--controller-ca=/run/tls/ca.crt") && args.any? { |a| a =~ /\A--controller-url=https:/ }
+    errs << "#{who}: enroll needs readOnlyRootFilesystem and no privilege escalation" unless ini.dig("securityContext", "readOnlyRootFilesystem") == true && ini.dig("securityContext", "allowPrivilegeEscalation") == false
+  end
+  errs << "#{who}: must not mount the shared wayhouse-tokens Secret" if (pod["volumes"] || []).any? { |v| v.dig("secret", "secretName") == "wayhouse-tokens" }
+  errs << "#{who}: the enrollment must live on a volume claim (a restart must not spend a use)" unless (rep["spec"]["volumeClaimTemplates"] || []).any? { |v| v.dig("metadata", "name") == "enrolled" }
+  main = pod["containers"][0]["args"]
+  errs << "#{who}: the main container must join with --ha-join and read its id from the enrollment" unless main.include?("--ha-join") && main.include?("--ha-node-id-file=/enrolled/ha-node-id")
+end
 
 # NET_ADMIN is only in the bounding set for a non-root user: tunnel services run as root.
 %w[wayhouse agent].each { |s| errs << "tunnel #{s} must run as root (user: \"0\")" unless tunnel[s]["user"] == "0" }

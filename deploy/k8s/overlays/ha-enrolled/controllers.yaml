@@ -1,0 +1,157 @@
+# Bootstrap controller (wayhouse-controller-0, node id 0, a group of one) plus replicas that enroll.
+# Scaling the replica StatefulSet needs a pool code with uses left; mint it just before you scale and
+# keep the `wayhouse-enroll-code` Secret current (docs/12). Replicas keep their enrollment on a
+# PersistentVolumeClaim, so a restart spends no use; a replica that lost its volume must be removed
+# and re-enrolled by hand (docs/12).
+apiVersion: v1
+kind: Service
+metadata: { name: wayhouse-controller-peers, namespace: wayhouse }
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true     # a joining replica must resolve its peers before it is ready
+  selector: { app: wayhouse-controller }
+  ports: [{ port: 9901, targetPort: 9901 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: wayhouse-controller, namespace: wayhouse }
+spec:
+  replicas: 1
+  serviceName: wayhouse-controller-peers
+  selector: { matchLabels: { app: wayhouse-controller, role: bootstrap } }
+  template:
+    metadata: { labels: { app: wayhouse-controller, role: bootstrap } }
+    spec:
+      securityContext: { fsGroup: 65532, runAsNonRoot: true }
+      containers:
+        - name: controller
+          image: wayhouse-deploy/wayhouse-controller:local
+          args:
+            - --listen=0.0.0.0:9901
+            - --data-dir=/data
+            - --auth-token-file=/run/secrets/wayhouse/auth-token
+            - --proxy-token-file=/run/secrets/wayhouse/proxy-token
+            - --agent-token-file=/run/secrets/wayhouse/agent-token
+            - --ha-node-id=0
+            - --ha-peers=0=https://wayhouse-controller-0.wayhouse-controller-peers:9901
+            - --ha-token-file=/run/secrets/wayhouse/ha-token
+            - --secret-key-file=/run/keyring/secret.keys
+            - --enroll-step-up-file=/run/step-up/step-up
+            - --tls-cert=/run/tls/controller.crt   # one leaf for every replica: its names include *.wayhouse-controller-peers
+            - --tls-key=/run/tls/controller.key
+            - --ca-file=/run/tls/ca.crt
+          ports: [{ containerPort: 9901 }]
+          readinessProbe: { httpGet: { path: /healthz, port: 9901, scheme: HTTPS } }
+          livenessProbe: { httpGet: { path: /healthz, port: 9901, scheme: HTTPS }, initialDelaySeconds: 10 }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tokens, mountPath: /run/secrets/wayhouse, readOnly: true }
+            - { name: keyring, mountPath: /run/keyring, readOnly: true }
+            - { name: step-up, mountPath: /run/step-up, readOnly: true }
+            - { name: tls, mountPath: /run/tls, readOnly: true }
+      volumes:
+        - name: tls
+          secret:
+            secretName: wayhouse-tls
+            defaultMode: 0440
+            items: [{ key: ca.crt, path: ca.crt }, { key: controller.crt, path: controller.crt }, { key: controller.key, path: controller.key }]
+        - name: tokens
+          secret:
+            secretName: wayhouse-tokens
+            defaultMode: 0440
+            items: [{ key: controller-token, path: auth-token }, { key: proxy-token, path: proxy-token }, { key: agent-token, path: agent-token }, { key: ha-token, path: ha-token }]
+        - name: keyring
+          secret: { secretName: wayhouse-keyring, defaultMode: 0440, items: [{ key: secret.keys, path: secret.keys }] }
+        - name: step-up
+          secret: { secretName: wayhouse-enroll-step-up, defaultMode: 0440, items: [{ key: step-up, path: step-up }] }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 1Gi } }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: wayhouse-controller-replica, namespace: wayhouse }
+spec:
+  replicas: 2                          # at most the pool code's uses
+  serviceName: wayhouse-controller-peers
+  podManagementPolicy: Parallel
+  selector: { matchLabels: { app: wayhouse-controller, role: replica } }
+  template:
+    metadata: { labels: { app: wayhouse-controller, role: replica } }
+    spec:
+      securityContext: { fsGroup: 65532, runAsNonRoot: true }
+      initContainers:
+        - name: enroll
+          image: wayhouse-deploy/wayhouse-controller:local
+          args:
+            - enroll
+            - --controller-url=https://wayhouse-controller-0.wayhouse-controller-peers:9901
+            - --controller-ca=/run/tls/ca.crt
+            - --code-file=/run/enroll-code/code
+            - --data-dir=/enrolled
+            - --name=$(POD_NAME)              # the pool code is minted with name_prefix "wayhouse-controller-replica-"
+            - --advertise=https://$(POD_NAME).wayhouse-controller-peers:9901
+            - --skip-if-enrolled              # the volume survived: keep the files, spend no use
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: enrolled, mountPath: /enrolled }
+            - { name: enroll-code, mountPath: /run/enroll-code, readOnly: true }
+            - { name: tls, mountPath: /run/tls, readOnly: true }
+      containers:
+        - name: controller
+          image: wayhouse-deploy/wayhouse-controller:local
+          args:
+            - --listen=0.0.0.0:9901
+            - --data-dir=/data
+            - --auth-token-file=/enrolled/auth-token
+            - --proxy-token-file=/enrolled/proxy-token
+            - --agent-token-file=/enrolled/agent-token
+            - --ha-token-file=/enrolled/ha-token
+            - --secret-key-file=/enrolled/secret.keys
+            - --enroll-step-up-file=/enrolled/enroll-step-up
+            - --ha-join
+            - --ha-node-id-file=/enrolled/ha-node-id
+            - --ha-join-proof-file=/enrolled/ha-join-proof
+            - --ha-advertise=https://$(POD_NAME).wayhouse-controller-peers:9901
+            - --ha-join-via=https://wayhouse-controller-0.wayhouse-controller-peers:9901
+            - --tls-cert=/run/tls/controller.crt
+            - --tls-key=/run/tls/controller.key
+            - --ca-file=/run/tls/ca.crt
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          ports: [{ containerPort: 9901 }]
+          readinessProbe: { httpGet: { path: /healthz, port: 9901, scheme: HTTPS } }
+          livenessProbe: { httpGet: { path: /healthz, port: 9901, scheme: HTTPS }, initialDelaySeconds: 10 }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: enrolled, mountPath: /enrolled, readOnly: true }
+            - { name: tls, mountPath: /run/tls, readOnly: true }
+      volumes:
+        - name: tls
+          secret:
+            secretName: wayhouse-tls
+            defaultMode: 0440
+            items: [{ key: ca.crt, path: ca.crt }, { key: controller.crt, path: controller.crt }, { key: controller.key, path: controller.key }]
+        - name: enroll-code
+          secret:
+            secretName: wayhouse-enroll-code   # key `code`; you create it, it holds the pool code
+            defaultMode: 0440
+            items: [{ key: code, path: code }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 1Gi } }
+    - metadata: { name: enrolled }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 16Mi } }
