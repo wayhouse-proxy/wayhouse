@@ -23,7 +23,25 @@ async fn main() -> anyhow::Result<()> {
         println!("wayhouse-control {}", wayhouse_http::LONG_VERSION);
         return Ok(());
     }
-    let plan = plan(&argv, &Programs::linked()).map_err(anyhow::Error::msg)?;
+    let credentials = std::env::var_os("CREDENTIALS_DIRECTORY").map(std::path::PathBuf::from);
+    let plan =
+        plan(&argv, &Programs::linked(), credentials.as_deref()).map_err(anyhow::Error::msg)?;
+    // The three programs would each read `$CREDENTIALS_DIRECTORY/auth-token` and
+    // `WAYHOUSE_AUTH_TOKEN` for the same secret name, so those never apply here: per-program
+    // credential files were mapped above, and an environment secret is refused instead of
+    // handing one value to all three.
+    if let Some((k, _)) = std::env::vars().find(|(k, _)| {
+        k.starts_with("WAYHOUSE_")
+            && ["TOKEN", "PASSWORD", "STEP_UP", "PROOF"]
+                .iter()
+                .any(|w| k.contains(w))
+    }) {
+        anyhow::bail!(
+            "{k} is set, but its name is shared by all three programs; give the secret as \
+             --<program>-<name>-file or a credential named <program>-<name>"
+        );
+    }
+    std::env::remove_var("CREDENTIALS_DIRECTORY");
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("WAYHOUSE_LOG").unwrap_or_else(|_| EnvFilter::new("info")),

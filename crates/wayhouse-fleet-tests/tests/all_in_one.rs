@@ -61,6 +61,10 @@ async fn all_in_one_serves_and_wires_the_ui(tls: bool) -> Result<()> {
                 TEST_LEAF,
                 "--tls-key",
                 TEST_LEAF_KEY,
+                "--ui-tls-cert",
+                TEST_LEAF,
+                "--ui-tls-key",
+                TEST_LEAF_KEY,
                 "--ca-file",
                 TEST_CA,
             ]
