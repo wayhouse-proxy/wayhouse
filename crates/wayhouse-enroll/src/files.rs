@@ -17,6 +17,8 @@ pub const PSK_FILE: &str = "tunnel-psk";
 pub const KEYRING_FILE: &str = "secret.keys";
 /// A controller replica's proof that the cluster may add it (`<id>.<secret>`; single purpose).
 pub const JOIN_PROOF_FILE: &str = "ha-join-proof";
+/// A controller replica's Raft node id, for `--ha-node-id-file`; written beside `enrollment.json`.
+pub const NODE_ID_FILE: &str = "ha-node-id";
 
 /// `enrollment.json`: where this node enrolled and as whom. Holds no secret.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -117,6 +119,9 @@ pub fn write(
                 _ => {}
             }
         }
+    }
+    if let Some(id) = meta.node_id {
+        write_private(&dir.join(NODE_ID_FILE), format!("{id}\n").as_bytes())?;
     }
     // Last: `enrollment.json` is what marks the directory enrolled (`check_fresh`,
     // `--skip-if-enrolled`), so a write that dies half way leaves a directory that enrolls again.
@@ -248,6 +253,28 @@ mod tests {
             .map(|e| e.file_name())
             .collect();
         assert_eq!(left.len(), 3, "{left:?}");
+    }
+
+    #[test]
+    fn a_controller_replica_gets_its_node_id_as_a_plain_file_and_others_get_none() {
+        let t = tempfile::tempdir().unwrap();
+        let mut meta = Meta {
+            controller_url: "https://c".into(),
+            name: "ctl-1".into(),
+            role: Role::Controller,
+            parent_url: None,
+            node_id: Some(7),
+            tunnel_network: None,
+            advertise: None,
+        };
+        write(t.path(), &meta, &Default::default()).unwrap();
+        let p = t.path().join(NODE_ID_FILE);
+        assert_eq!(std::fs::read_to_string(&p).unwrap().trim(), "7");
+        assert_eq!(mode(&p), 0o600);
+        let t = tempfile::tempdir().unwrap();
+        meta.node_id = None;
+        write(t.path(), &meta, &Default::default()).unwrap();
+        assert!(!t.path().join(NODE_ID_FILE).exists());
     }
 
     #[test]

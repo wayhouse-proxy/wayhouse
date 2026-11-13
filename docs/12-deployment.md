@@ -506,6 +506,8 @@ curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin
   each of those gets the cluster's tokens, the keyring and the Raft token. Mint it only when the pods
   are about to start, with a short TTL (at most 24 hours), and revoke it afterwards
   (`DELETE /enrollments/{pool id}`); revoking does not undo replicas already enrolled.
+- The pod starts with `--ha-join --ha-node-id-file=<enroll dir>/ha-node-id` (the file `enroll` writes beside
+  `enrollment.json` for a replica) so its id need not be on the command line; `--ha-node-id` still works.
 - Needs the same group setup as a single-use controller code (HA, `--auth-token`, a secret key and
   `--enroll-step-up-file`). Roll every replica to this build first (the UI data level is 9).
 
