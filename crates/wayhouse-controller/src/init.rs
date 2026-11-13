@@ -433,8 +433,9 @@ fn systemd(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
         .unwrap_or_else(|| base.join("credentials"));
     let tls_dir = args.tls_dir.clone().unwrap_or_else(|| base.join("tls"));
     let s = Secrets::generate();
-    // The solo units dial the controller on loopback, so only its certificate is used; the
-    // aggregator's loopback listener stays plain http (the guard exempts loopback).
+    // The split solo units dial the controller on loopback, so only its certificate is used and the
+    // aggregator's loopback listener stays plain http (the guard exempts loopback). With
+    // `--control` the one certificate serves the controller and the aggregator.
     let tls = Tls::generate(&names(&[], &args.sans), &names(&[], &args.sans))?;
     let mut files = vec![
         plan(
@@ -478,7 +479,9 @@ fn systemd(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
     summary_tls(summary, &tls_dir, &tls).map_err(io_err)?;
     let (units, target) = if args.control {
         (
-            "wayhouse-control.service, wayhouse.service and wayhouse-solo-control.target",
+            "wayhouse-control.service and wayhouse-solo-control.target, plus \
+             wayhouse.service with wayhouse.service.d/control.conf (the proxy dials the aggregator over https \
+             and must not pull in the split units, which would fight wayhouse-control for 9901/9902)",
             "wayhouse-solo-control.target",
         )
     } else {

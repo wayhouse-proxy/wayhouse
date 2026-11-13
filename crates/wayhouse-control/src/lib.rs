@@ -5,17 +5,24 @@
 //! crate only routes one command line to them ([`plan`]) and points the UI at the other two over
 //! loopback with the same tokens a split deployment would use, so the code path is the same.
 //!
-//! Flags: `--settings-dir`, `--tls-cert`, `--tls-key` and `--ca-file` are this program's;
-//! the first applies to all three, the certificate pair to the controller and aggregator (the
-//! UI's own TLS is `--ui-tls-cert`/`--ui-tls-key`), and the CA file is trusted by the process. Everything else is namespaced: `--controller-X`, `--aggregator-X` and
-//! `--ui-X` reach flag `--X` of that program (`--ui-ui-password-file` is not needed: a flag
-//! already named `ui-...` is passed as it is). The UI's `--controller-url`, `--aggregator-url`
-//! and their token files are not flags here; they are derived.
+//! Flags: `--settings-dir`, `--tls-cert`, `--tls-key` and `--ca-file` are this program's. The
+//! settings directory applies to all three, the certificate pair to the controller and
+//! aggregator (the UI's own TLS is `--ui-tls-cert`/`--ui-tls-key`), and the CA file is trusted by
+//! the process. Everything else is namespaced: `--controller-X`, `--aggregator-X` and `--ui-X`
+//! reach flag `--X` of that program; a UI flag that is already named `ui-...` keeps its name
+//! (`--ui-ui-password-file`). The UI's `--controller-url`, `--aggregator-url` and their token
+//! files are not flags here; they are derived.
 //!
-//! Notes: TLS is decided here, from the command line only (a `tls-cert` in a settings file would
-//! not change the scheme the UI dials), so give `--tls-cert` there. The three programs share one metrics recorder, so every `/metrics` lists the series of
-//! all three. With TLS the UI reaches the others at `https://127.0.0.1:<port>`, so the shared
-//! certificate must be valid for `127.0.0.1` (and `::1` when listening there).
+//! Notes:
+//! - TLS is decided here, from the command line only (a `tls-cert` in a settings file would not
+//!   change the scheme the UI dials), so give `--tls-cert` there.
+//! - With TLS the UI reaches the others at `https://127.0.0.1:<port>`, so the shared certificate
+//!   must be valid for `127.0.0.1` (and `::1` when listening there).
+//! - The three programs share one metrics recorder, so every `/metrics` lists the series of all
+//!   three.
+//! - The token split (controller, proxy, agent, ingest) is enforced at the HTTP layer between
+//!   the listeners; inside one process it is nominal, because one compromised process holds
+//!   every token. Fleets keep the split binaries.
 
 use std::ffi::OsString;
 use std::net::{IpAddr, SocketAddr};
@@ -515,6 +522,45 @@ mod tests {
 
     /// The shipped unit must be a command line and credentials this program accepts, and the
     /// controller, aggregator and UI must each end up with their own secret files.
+    /// Every credential source the unit loads must be a file `init --target systemd --control`
+    /// writes, or the unit would not start on a fresh box.
+    #[test]
+    fn the_unit_loads_exactly_what_init_control_writes() {
+        use wayhouse_controller::init::{run, InitArgs, Target};
+        let d = std::env::temp_dir().join(format!("wh-control-init-{}", std::process::id()));
+        let args = InitArgs {
+            target: Target::Systemd,
+            dir: Some(d.clone()),
+            env_file: None,
+            credentials_dir: None,
+            tls_dir: None,
+            sans: vec![],
+            namespace: "wayhouse".into(),
+            output: None,
+            control: true,
+        };
+        run(&args, &mut Vec::new(), false, &mut Vec::new()).unwrap();
+        let unit = include_str!("../../../deploy/systemd/wayhouse-control.service");
+        let sources: Vec<&str> = unit
+            .lines()
+            .filter_map(|l| l.strip_prefix("LoadCredential="))
+            .filter_map(|l| l.split_once(':').map(|(_, src)| src))
+            .collect();
+        assert_eq!(sources.len(), 7, "{sources:?}");
+        for src in sources {
+            let file = src.strip_prefix("/etc/wayhouse/").expect(src);
+            assert!(d.join(file).is_file(), "init wrote no {file}");
+        }
+        for cert in [
+            "--tls-cert=/etc/wayhouse/tls/control.pem",
+            "--ca-file=/etc/wayhouse/tls/ca.pem",
+        ] {
+            let file = cert.split_once("/etc/wayhouse/").unwrap().1;
+            assert!(unit.contains(cert) && d.join(file).is_file(), "{cert}");
+        }
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
     #[test]
     fn the_systemd_unit_is_accepted_and_wires_each_secret_to_its_program() {
         let unit = include_str!("../../../deploy/systemd/wayhouse-control.service");
