@@ -607,10 +607,9 @@ async fn redeem(
         .as_ref()
         .filter(|_| pool)
         .map(|(proof, hash)| PoolChild {
-            id: proof
-                .split_once('.')
-                .map(|(i, _)| i)
-                .unwrap_or_default()
+            id: Code::parse(proof)
+                .expect("a generated code parses")
+                .id()
                 .to_owned(),
             name: name.clone(),
             join_hash: hash.clone(),
@@ -627,6 +626,12 @@ async fn redeem(
         Ok(Applied::Done) => {}
         Ok(Applied::Allocated(id)) => node_id = Some(id),
         Ok(Applied::Refused) => return refused(),
+        Ok(Applied::Full(max)) => {
+            return err(
+                StatusCode::CONFLICT,
+                format!("already {max} enrollment records; revoke some and ask again"),
+            )
+        }
         Ok(_) => return internal("unexpected answer to a redeem"),
         Err(r) => return r,
     }
