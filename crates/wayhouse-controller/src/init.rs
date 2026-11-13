@@ -90,6 +90,11 @@ pub struct InitArgs {
     #[arg(long, default_value = "wayhouse")]
     pub namespace: String,
 
+    /// systemd: the layout for `wayhouse-control` (controller, aggregator and UI in one process):
+    /// one certificate, `control.pem`, valid for all three, instead of `controller.pem`.
+    #[arg(long)]
+    pub control: bool,
+
     /// k8s-secret: write the manifests to this file (mode 0600, never overwritten) instead of
     /// stdout.
     #[arg(long, value_name = "FILE")]
@@ -401,6 +406,9 @@ pub fn run(
     if args.target != Target::K8sSecret && args.output.is_some() {
         return Err(InitError::WrongTarget("--output", "k8s-secret"));
     }
+    if args.target != Target::Systemd && args.control {
+        return Err(InitError::WrongTarget("--control", "systemd"));
+    }
     if args.target != Target::Compose && args.env_file.is_some() {
         return Err(InitError::WrongTarget("--env-file", "compose"));
     }
@@ -444,7 +452,18 @@ fn systemd(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
         plan(creds.join("ingest-token"), 0o600, s.ingest_token.as_bytes()),
         plan(creds.join("ui-password"), 0o600, s.ui_password.as_bytes()),
     ];
-    files.extend(tls_files(&tls_dir, &tls, false));
+    let mut tls_planned = tls_files(&tls_dir, &tls, false);
+    if args.control {
+        // One process serves all three listeners with one certificate.
+        for f in &mut tls_planned {
+            if let Some(n) = f.path.file_name().and_then(|n| n.to_str()) {
+                if let Some(rest) = n.strip_prefix("controller.") {
+                    f.path.set_file_name(format!("control.{rest}"));
+                }
+            }
+        }
+    }
+    files.extend(tls_planned);
     write_all(&files, &[(&creds, 0o700), (&tls_dir, 0o755)])?;
     let io_err = |e| InitError::Io {
         path: base.clone(),
@@ -457,10 +476,21 @@ fn systemd(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
     )
     .map_err(io_err)?;
     summary_tls(summary, &tls_dir, &tls).map_err(io_err)?;
+    let (units, target) = if args.control {
+        (
+            "wayhouse-control.service, wayhouse.service and wayhouse-solo-control.target",
+            "wayhouse-solo-control.target",
+        )
+    } else {
+        (
+            "deploy/systemd/*.service and wayhouse-solo.target",
+            "wayhouse-solo.target",
+        )
+    };
     writeln!(
         summary,
-        "Next: install deploy/systemd/*.service and wayhouse-solo.target into /etc/systemd/system, \
-         `systemctl daemon-reload`, `systemctl enable --now wayhouse-solo.target`.\n\
+        "Next: install {units} into /etc/systemd/system, \
+         `systemctl daemon-reload`, `systemctl enable --now {target}`.\n\
          The UI is at http://127.0.0.1:9903; its password is in {}/ui-password.",
         creds.display()
     )
@@ -654,6 +684,7 @@ mod tests {
             sans: vec![],
             namespace: "wayhouse".into(),
             output: None,
+            control: false,
         }
     }
 
@@ -771,6 +802,33 @@ mod tests {
         for v in secret_values(dir.path()) {
             assert!(!summary.contains(&v), "the summary shows a secret value");
         }
+    }
+
+    #[test]
+    fn control_systemd_writes_one_certificate_for_the_one_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = args(Target::Systemd, dir.path());
+        a.control = true;
+        let (_, summary) = run_to_strings(&a).unwrap();
+        let tls = dir.path().join("tls");
+        assert_eq!(mode(&tls.join("control.key")), 0o600);
+        assert_eq!(mode(&tls.join("control.pem")), 0o644);
+        assert!(!tls.join("controller.pem").exists());
+        assert!(!tls.join("aggregator.pem").exists());
+        assert!(summary.contains("wayhouse-control.service"), "{summary}");
+        // The same six credentials as the split layout: the unit renames them per program.
+        assert!(dir.path().join("credentials/ui-password").exists());
+    }
+
+    #[test]
+    fn control_is_a_systemd_option_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = args(Target::Compose, dir.path());
+        a.control = true;
+        assert!(matches!(
+            run_to_strings(&a).unwrap_err(),
+            InitError::WrongTarget("--control", _)
+        ));
     }
 
     #[test]

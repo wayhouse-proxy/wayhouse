@@ -12,7 +12,8 @@
 //! already named `ui-...` is passed as it is). The UI's `--controller-url`, `--aggregator-url`
 //! and their token files are not flags here; they are derived.
 //!
-//! Notes: the three programs share one metrics recorder, so every `/metrics` lists the series of
+//! Notes: TLS is decided here, from the command line only (a `tls-cert` in a settings file would
+//! not change the scheme the UI dials), so give `--tls-cert` there. The three programs share one metrics recorder, so every `/metrics` lists the series of
 //! all three. With TLS the UI reaches the others at `https://127.0.0.1:<port>`, so the shared
 //! certificate must be valid for `127.0.0.1` (and `::1` when listening there).
 
@@ -76,7 +77,9 @@ fn value_of(args: &[OsString], flag: &str) -> Option<String> {
 }
 
 fn has_flag(cmd: &Command, name: &str) -> bool {
-    cmd.get_arguments().any(|a| a.get_long() == Some(name))
+    cmd.get_arguments().any(|a| {
+        a.get_long() == Some(name) || a.get_all_aliases().is_some_and(|al| al.contains(&name))
+    })
 }
 
 /// The address another program reaches `cmd`'s listener at: its `--listen` (or default), with a
@@ -129,6 +132,25 @@ pub fn secret_file_flags(cmd: &Command) -> Vec<&str> {
                     .any(|w| n.contains(w))
         })
         .collect()
+}
+
+/// A secret in the environment (`WAYHOUSE_AUTH_TOKEN`) has a name all three programs share, so
+/// one value would reach all three: refused, naming the variable.
+pub fn refuse_shared_secret_env(
+    mut env: impl Iterator<Item = (String, String)>,
+) -> Result<(), String> {
+    match env.find(|(k, _)| {
+        k.starts_with("WAYHOUSE_")
+            && ["TOKEN", "PASSWORD", "STEP_UP", "PROOF"]
+                .iter()
+                .any(|w| k.contains(w))
+    }) {
+        Some((k, _)) => Err(format!(
+            "{k} is set, but its name is shared by all three programs; give the secret as \
+             --<program>-<name>-file or a credential named <program>-<name>"
+        )),
+        None => Ok(()),
+    }
 }
 
 /// `credentials` is systemd's `$CREDENTIALS_DIRECTORY`: a file `<program>-<flag without -file>`
@@ -230,6 +252,22 @@ pub fn plan(
                 }
             }
         }
+    }
+    // The UI is what a browser meets: pinned like the others, and off loopback only with its own
+    // certificate (a login over plain http would send the password in the clear).
+    let ui_addr: SocketAddr = match value_of(&forwarded[2], "listen") {
+        Some(l) => l.parse().map_err(|e| format!("--ui-listen {l}: {e}"))?,
+        None => {
+            let d = addr_flag(&programs.ui)?;
+            forwarded[2].extend(["--listen".into(), d.clone().into()]);
+            d.parse().map_err(|e| format!("--ui-listen {d}: {e}"))?
+        }
+    };
+    if !ui_addr.ip().is_loopback() && value_of(&forwarded[2], "tls-cert").is_none() {
+        return Err(format!(
+            "--ui-listen {ui_addr} is not loopback: give the UI its own certificate \
+             (--ui-tls-cert and --ui-tls-key), or keep it on loopback"
+        ));
     }
     // The UI reaches the other two over loopback with the tokens that gate them.
     let scheme = if tls { "https" } else { "http" };
@@ -420,6 +458,126 @@ mod tests {
         let p = run(&["--ui-tls-cert", "/c", "--ui-tls-key", "/k"]).unwrap();
         assert!(strs(&p.ui).contains(&"--tls-cert".to_string()));
         assert!(!strs(&p.controller).contains(&"--tls-cert".to_string()));
+    }
+
+    #[test]
+    fn an_environment_secret_shared_by_name_is_refused() {
+        let env = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect::<Vec<_>>()
+                .into_iter()
+        };
+        assert!(
+            refuse_shared_secret_env(env(&[("PATH", "/bin"), ("WAYHOUSE_LOG", "info")])).is_ok()
+        );
+        let e = refuse_shared_secret_env(env(&[("WAYHOUSE_AUTH_TOKEN", "x")])).unwrap_err();
+        assert!(e.contains("WAYHOUSE_AUTH_TOKEN"), "{e}");
+        assert!(refuse_shared_secret_env(env(&[("WAYHOUSE_UI_PASSWORD", "x")])).is_err());
+    }
+
+    #[test]
+    fn a_ui_reachable_from_other_hosts_needs_its_own_certificate() {
+        let e = run(&["--ui-listen", "0.0.0.0:9903"]).unwrap_err();
+        assert!(e.contains("--ui-tls-cert"), "{e}");
+        // The shared certificate does not cover it, and a loopback UI needs none.
+        assert!(run(&[
+            "--ui-listen",
+            "0.0.0.0:9903",
+            "--tls-cert",
+            "/c",
+            "--tls-key",
+            "/k"
+        ])
+        .is_err());
+        assert!(run(&["--ui-listen", "127.0.0.1:9903"]).is_ok());
+        assert!(run(&[
+            "--ui-listen",
+            "0.0.0.0:9903",
+            "--ui-tls-cert",
+            "/c",
+            "--ui-tls-key",
+            "/k"
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn the_ui_listen_address_is_pinned_too() {
+        let p = run(&[]).unwrap();
+        let v = strs(&p.ui);
+        assert!(
+            v.windows(2).any(|w| w == ["--listen", "127.0.0.1:9903"]),
+            "{v:?}"
+        );
+    }
+
+    /// The shipped unit must be a command line and credentials this program accepts, and the
+    /// controller, aggregator and UI must each end up with their own secret files.
+    #[test]
+    fn the_systemd_unit_is_accepted_and_wires_each_secret_to_its_program() {
+        let unit = include_str!("../../../deploy/systemd/wayhouse-control.service");
+        let d = std::env::temp_dir().join(format!("wh-control-unit-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        for id in unit
+            .lines()
+            .filter_map(|l| l.strip_prefix("LoadCredential="))
+            .filter_map(|l| l.split(':').next())
+        {
+            std::fs::write(d.join(id), "x").unwrap();
+        }
+        let exec: String = unit
+            .lines()
+            .skip_while(|l| !l.starts_with("ExecStart="))
+            .take_while(|l| l.ends_with('\\') || l.starts_with("ExecStart="))
+            .map(|l| l.trim_end_matches('\\'))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut argv: Vec<OsString> = vec!["wayhouse-control".into()];
+        argv.extend(
+            exec.split_whitespace()
+                .skip(1)
+                .map(|a| a.replace("%d", &d.display().to_string()).into()),
+        );
+        let p = plan(&argv, &Programs::linked(), Some(&d)).unwrap();
+        let file = |v: &[OsString], flag: &str, id: &str| {
+            v.windows(2)
+                .any(|w| w[0] == flag && Path::new(&w[1]) == d.join(id))
+        };
+        assert!(file(
+            &p.controller,
+            "--auth-token-file",
+            "controller-auth-token"
+        ));
+        assert!(file(
+            &p.controller,
+            "--proxy-token-file",
+            "controller-proxy-token"
+        ));
+        assert!(file(
+            &p.controller,
+            "--agent-token-file",
+            "controller-agent-token"
+        ));
+        assert!(file(
+            &p.aggregator,
+            "--auth-token-file",
+            "aggregator-auth-token"
+        ));
+        assert!(file(
+            &p.aggregator,
+            "--ingest-token-file",
+            "aggregator-ingest-token"
+        ));
+        assert!(file(&p.ui, "--ui-password-file", "ui-ui-password"));
+        assert!(file(
+            &p.ui,
+            "--controller-token-file",
+            "controller-auth-token"
+        ));
+        assert!(strs(&p.ui).contains(&"https://127.0.0.1:9902".to_string()));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
