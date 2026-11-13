@@ -2680,6 +2680,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_pool_redeem_gives_every_replica_the_same_node_id_and_child_and_survives_a_snapshot()
+    {
+        use crate::ui_data::{Applied, Kind, PoolChild, UiOp};
+        let h = "1".repeat(64);
+        let record = serde_json::json!({"role": "controller", "origin": "ctl-pool", "hash": h,
+            "created_at": 1, "expires_at": 1000, "uses": 2, "uses_left": 2, "name_prefix": "ctl-"});
+        let put = WriteRequest::Ui(UiOp::Put {
+            kind: Kind::Enrollment,
+            name: "abcd1234".into(),
+            value: record,
+        });
+        let redeem = |child: &str, name: &str| {
+            WriteRequest::Ui(UiOp::Redeem {
+                id: "abcd1234".into(),
+                hash: h.clone(),
+                now: 5,
+                join_hash: None,
+                pool: Some(PoolChild {
+                    id: child.into(),
+                    name: name.into(),
+                    join_hash: "2".repeat(64),
+                    min_node_id: 4,
+                }),
+            })
+        };
+        let (mut a, _a) = test_sm();
+        let (mut b, _b) = test_sm();
+        let log = [
+            put,
+            redeem("aaaa0001", "ctl-1"),
+            redeem("aaaa0002", "ctl-2"),
+        ];
+        for (i, req) in log.into_iter().enumerate() {
+            let on_a = apply_one(&mut a, i as u64 + 1, req.clone()).await;
+            assert_eq!(on_a, apply_one(&mut b, i as u64 + 1, req).await);
+            if i > 0 {
+                assert_eq!(
+                    on_a,
+                    WriteResponse::UiResult(Applied::Allocated(3 + i as u64)),
+                    "entry {}",
+                    i + 1
+                );
+            }
+        }
+        let snapshot = a
+            .get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
+        let (mut c, _c) = test_sm();
+        c.install_snapshot(&snapshot.meta, snapshot.snapshot)
+            .await
+            .unwrap();
+        let child = c.ui().get(Kind::Enrollment, "aaaa0002").unwrap().unwrap();
+        assert_eq!(
+            (child["origin"].as_str(), child["node_id"].as_u64()),
+            (Some("ctl-2"), Some(5))
+        );
+    }
+
+    #[tokio::test]
     async fn a_cluster_secret_applies_on_every_replica_and_travels_in_a_snapshot_as_ciphertext() {
         use crate::ui_data::{Applied, Kind, UiOp};
         let ring = wayhouse_secrets::Keyring::parse("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")
