@@ -494,7 +494,7 @@ curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin
 
 - The node id is chosen when the pod redeems, inside the replicated store: one above every Raft
   member and every enrollment record, spent or not, so pods redeeming at once on different replicas
-  never share an id. An id is not reused while its member or its record exists (removing the highest member and revoking its record frees it). The redeem writes a child record (the pod's name, its
+  never share an id. An id stays taken while its member or its record exists; removing the highest member and revoking its record frees it. The redeem writes a child record (the pod's name, its
   node id, its join proof hash) that `GET /enrollments` lists like a single-use controller code
   (`joining`, then `joined`); the pool itself shows `pending` and then `used`.
 - **A name enrolls once.** A second redeem for a name that already has a replica record is refused
