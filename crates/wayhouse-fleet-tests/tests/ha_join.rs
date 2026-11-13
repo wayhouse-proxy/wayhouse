@@ -209,6 +209,7 @@ async fn two_replicas_join_by_code_with_distinct_ids_and_the_group_survives_losi
             "enroll-step-up",
             "enrollment.json",
             "ha-join-proof",
+            "ha-node-id",
             "ha-token",
             "ingest-token",
             "proxy-token",
