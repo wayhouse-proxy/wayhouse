@@ -35,7 +35,8 @@ const spec = (role: EnrollRole, target: Target, over: Partial<Spec> = {}): Spec 
 
 const ROLES: EnrollRole[] = ["agent", "proxy", "aggregator", "ui", "controller"];
 const TARGETS: Target[] = ["systemd", "docker", "compose", "k8s"];
-const combos = ROLES.flatMap((r) => TARGETS.map((t) => [r, t] as const)).filter(([r, t]) => !unsupported(r, t));
+// A Kubernetes controller pool talks to the in-cluster controller through the overlay: no URL or pin of its own.
+const combos = ROLES.flatMap((r) => TARGETS.map((t) => [r, t] as const)).filter(([r, t]) => !unsupported(r, t) && !(r === "controller" && t === "k8s"));
 
 describe("controller replica", () => {
   const ctl = (over: Partial<Spec> = {}) =>
@@ -53,10 +54,41 @@ describe("controller replica", () => {
     expect(step.text).toContain("--listen=0.0.0.0:7443");
   });
 
-  it("needs the step-up secret and only supports systemd", () => {
+  it("needs the step-up secret and goes to systemd or Kubernetes only", () => {
     expect(needsStepUp("controller")).toBe(true);
     expect(unsupported("controller", "systemd")).toBeNull();
-    for (const t of ["docker", "compose", "k8s"] as const) expect(unsupported("controller", t)).toMatch(/systemd/);
+    expect(unsupported("controller", "k8s")).toBeNull();
+    for (const t of ["docker", "compose"] as const) expect(unsupported("controller", t)).toMatch(/systemd/);
+  });
+
+  describe("on Kubernetes (pool code)", () => {
+    const pool = (over: Partial<Spec> = {}) => generate(spec("controller", "k8s", { name: "ctl-pool", uses: 3, ...over }));
+
+    it("creates the step-up Secret, stores the code in the code Secret, then applies the overlay", () => {
+      const steps = pool();
+      expect(steps.map((s) => s.title)).toEqual([
+        "Create the step-up Secret (once, by hand)",
+        "Store the pool code as a Secret",
+        "Apply the overlay and start the replicas",
+      ]);
+      expect(steps[0].text).toContain("create secret generic wayhouse-enroll-step-up --from-file=step-up=");
+      expect(steps[1].text).toBe(
+        `printf '%s' ${CODE} | kubectl -n wayhouse create secret generic wayhouse-enroll-code --from-file=code=/dev/stdin`,
+      );
+      expect(steps[2].text).toContain("kubectl apply -k deploy/k8s/overlays/ha-enrolled");
+      expect(steps[2].text).toContain("--replicas=3");
+    });
+
+    it("only the code step holds the code, and the prompt form holds none", () => {
+      expect(pool().map((s) => s.holdsCode)).toEqual([false, true, false]);
+      const steps = pool({ code: null });
+      expect(steps.some((s) => s.holdsCode || s.text.includes(CODE))).toBe(false);
+      expect(steps[1].text).toBe("kubectl -n wayhouse create secret generic wayhouse-enroll-code --from-file=code=/dev/stdin");
+    });
+
+    it("uses the chosen namespace", () => {
+      expect(pool({ namespace: "gw" })[1].text).toContain("kubectl -n gw create");
+    });
   });
 
   it("checks the advertise address like the enroll CLI does", () => {

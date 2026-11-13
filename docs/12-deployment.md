@@ -588,7 +588,12 @@ by themselves see "Per-node enrollment on Kubernetes" below, the page does not m
   advertise address. The page shows the Raft node id the replica gets, and the list shows the code as
   `joining` until the cluster has added it, then `joined`. The replica's own certificate, key and
   the cluster CA go in the paths the command names (change them as needed).
-- Not yet: a controller replica on Kubernetes from the page (see the `ha-enrolled` overlay under "One code for a controller StatefulSet").
+- **Controller replica** with **Kubernetes** mints a **pool code** (2 to 16 uses, name prefix
+  `wayhouse-controller-replica-`, step-up secret required, 24 hours at most) for the `ha-enrolled`
+  overlay. The page asks for no URL, fingerprint or advertise address (the overlay's init container
+  knows them) and shows three steps: create the `wayhouse-enroll-step-up` Secret by hand (it is not
+  made for you), store the code as the `wayhouse-enroll-code` Secret, apply the overlay and scale the
+  replica StatefulSet to at most the code's uses. Revoke the pool in the list afterwards.
 
 ## TLS for the fleet services
 

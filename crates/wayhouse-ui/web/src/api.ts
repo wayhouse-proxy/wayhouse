@@ -464,6 +464,8 @@ export interface MintRequest {
   ttl_secs: number;
   uses: number;
   parent_url?: string;
+  /** Agent, proxy or pool controller codes: the node names a multi-use code covers. */
+  name_prefix?: string;
   /** Proxy and UI codes only. Typed per mint, sent once, never stored. */
   step_up?: string;
 }
