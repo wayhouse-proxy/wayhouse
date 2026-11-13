@@ -477,9 +477,37 @@ Failure and retry:
   leader sends the Raft token to the address in the request, so keep `ha-join-proof` as private as
   the other files.
 - Roll out every replica to the build with this feature before minting a controller code
-  (the UI data level is 8; an older replica refuses the write).
+  (the UI data level is now 9; an older replica refuses the write).
 - Not delivered: the replica's own TLS certificate and `--ca-file`. Give them after `--`.
   `--tunnel-network` comes from the first controller's flag.
+
+### One code for a controller StatefulSet (pool code)
+
+A controller code with `uses` 2 to 16 and a `name_prefix` is a **pool**: each pod redeems it under
+its own name (`ctl-0`, `ctl-1`, ...) and gets its own node id and join proof, so one code serves a
+whole StatefulSet and scaling up needs no new code (until the uses or the TTL run out).
+
+```sh
+curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
+  -d '{"role":"controller","name":"ctl-pool","name_prefix":"ctl-","uses":3,"ttl_secs":3600,"step_up":"'"$(cat step-up)"'"}'
+```
+
+- The node id is chosen when the pod redeems, inside the replicated store: one above every Raft
+  member and every enrollment record, spent or not, so pods redeeming at once on different replicas
+  never share an id and an id is never reused. The redeem writes a child record (the pod's name, its
+  node id, its join proof hash) that `GET /enrollments` lists like a single-use controller code
+  (`joining`, then `joined`); the pool itself shows `pending` and then `used`.
+- **A name enrolls once.** A second redeem for a name that already has a replica record is refused
+  (the usual `401`), even with uses left. A pod that keeps its data volume never redeems again; a pod
+  that lost its volume is replaced deliberately: remove the member (`DELETE /admin/ha/members/{id}`),
+  revoke its record (`DELETE /enrollments/{child id}`), then it can redeem again under the same name.
+  The Raft data directory therefore must be a PersistentVolumeClaim.
+- Whoever holds the pool code can enroll up to its remaining uses under any name with the prefix, and
+  each of those gets the cluster's tokens, the keyring and the Raft token. Mint it only when the pods
+  are about to start, with a short TTL (at most 24 hours), and revoke it afterwards
+  (`DELETE /enrollments/{pool id}`); revoking does not undo replicas already enrolled.
+- Needs the same group setup as a single-use controller code (HA, `--auth-token`, a secret key and
+  `--enroll-step-up-file`). Roll every replica to this build first (the UI data level is 9).
 
 ### Per-node enrollment on Kubernetes
 
@@ -522,8 +550,8 @@ the pod: **a recreated proxy pod redeems the code again**, so it needs a code th
 - Anyone who holds the code can enroll under any name with the prefix, including the name of an
   existing node, which replaces that node's token (and an agent's tunnel key). Keep the prefix
   specific and the Secret readable by the DaemonSets only.
-- Not done here: the HA controller StatefulSet still uses the shared token Secrets. A controller
-  code is single use (it carries one node id), so it does not fit one code for three pods.
+- A controller StatefulSet uses a **pool code** instead, see "One code for a controller StatefulSet"
+  below. The shipped HA overlay still uses static peers and the shared token Secrets.
 
 ### Adding a node from the UI
 
