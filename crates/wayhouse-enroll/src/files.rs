@@ -267,13 +267,13 @@ mod tests {
             tunnel_network: None,
             advertise: None,
         };
-        write(t.path(), &meta, &Default::default()).unwrap();
+        write(t.path(), &meta, &std::collections::BTreeMap::new()).unwrap();
         let p = t.path().join(NODE_ID_FILE);
         assert_eq!(std::fs::read_to_string(&p).unwrap().trim(), "7");
         assert_eq!(mode(&p), 0o600);
         let t = tempfile::tempdir().unwrap();
         meta.node_id = None;
-        write(t.path(), &meta, &Default::default()).unwrap();
+        write(t.path(), &meta, &std::collections::BTreeMap::new()).unwrap();
         assert!(!t.path().join(NODE_ID_FILE).exists());
     }
 
