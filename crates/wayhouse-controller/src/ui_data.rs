@@ -68,8 +68,28 @@ pub enum UiOp {
         /// the same atomic step that spends it. Absent for every other role.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         join_hash: Option<String>,
+        /// Set only when the code is a pool code (a controller code with several uses): the
+        /// replica this use is for. Applying it allocates the node id and writes the child.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pool: Option<PoolChild>,
     },
 }
+
+/// One replica enrolled from a pool code, as the proposer asks for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoolChild {
+    /// The child record's id: the front of the replica's join proof.
+    pub id: String,
+    /// The pod's name; one controller record per name, ever (until revoked).
+    pub name: String,
+    /// Hash of the join proof, like `join_hash` on a single-use code.
+    pub join_hash: String,
+    /// One above the highest Raft member the proposer knows; the store adds its own highest.
+    pub min_node_id: u64,
+}
+
+/// Most uses a pool code can have (one per replica).
+pub const POOL_MAX_USES: u64 = 16;
 
 /// How long after its redeem a controller replica may still ask to be added to the Raft group.
 pub const JOIN_WINDOW_SECS: u64 = 3600;
@@ -91,6 +111,8 @@ pub enum Applied {
     Refused,
     /// A controller code asked for a node id another code already holds.
     Taken,
+    /// A pool-code redeem spent a use and made a child record holding this node id.
+    Allocated(u64),
 }
 
 /// Everything replicated, for an HA snapshot.
@@ -473,8 +495,17 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                 return Err("role must be agent, proxy, aggregator, ui or controller".into());
             }
             let is_controller = role == Some("controller");
-            if is_controller != obj.contains_key("node_id") {
-                return Err("node_id is set on a controller code and only there".into());
+            let uses = obj.get("uses").and_then(Value::as_u64);
+            // A controller code with several uses is a pool: each redeem gets its own node id, so
+            // the code holds none, and each pod names itself inside the prefix.
+            let is_pool = is_controller && uses.is_some_and(|u| u > 1);
+            if (is_controller && !is_pool) != obj.contains_key("node_id") {
+                return Err("node_id is set on a single-use controller code and only there".into());
+            }
+            if is_pool != obj.contains_key("name_prefix") && is_controller {
+                return Err(
+                    "a pool controller code needs name_prefix, a single-use one has none".into(),
+                );
             }
             if !is_controller
                 && ["join_hash", "join_until", "joined"]
@@ -506,8 +537,8 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
             if let Some(p) = obj.get("name_prefix") {
                 let p = string_max(p, "name_prefix", 64)?;
                 crate::registry::validate_name(p)?;
-                if !matches!(role, Some("agent" | "proxy")) {
-                    return Err("name_prefix is for an agent or proxy code".into());
+                if !matches!(role, Some("agent" | "proxy")) && !is_pool {
+                    return Err("name_prefix is for an agent, proxy or pool controller code".into());
                 }
             }
             let origin = string_max(obj.get("origin").unwrap_or(&Value::Null), "origin", 64)?;
@@ -521,12 +552,9 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                     return Err(format!("{k} must be a unix time"));
                 }
             }
-            let uses = obj.get("uses").and_then(Value::as_u64);
-            if !uses.is_some_and(|u| (1..=1000).contains(&u)) {
-                return Err("uses must be 1 to 1000".into());
-            }
-            if is_controller && uses != Some(1) {
-                return Err("a controller code is single use".into());
+            let max_uses = if is_controller { POOL_MAX_USES } else { 1000 };
+            if !uses.is_some_and(|u| (1..=max_uses).contains(&u)) {
+                return Err(format!("uses must be 1 to {max_uses}"));
             }
             if !obj
                 .get("uses_left")
@@ -580,6 +608,8 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
 enum Write {
     Insert(Vec<u8>, Vec<u8>),
     Remove(Vec<u8>),
+    /// Not a write: the node id a pool redeem handed out, which becomes the answer.
+    Allocated(u64),
 }
 
 const APPLIED_KEY: &[u8] = b"applied";
@@ -715,6 +745,7 @@ impl UiStore {
                 hash,
                 now,
                 join_hash,
+                pool,
             } => {
                 let Some(raw) = self.records.get(key(Kind::Enrollment, id))? else {
                     return Ok(Err(Applied::Refused));
@@ -725,18 +756,59 @@ impl UiStore {
                     && rec["hash"]
                         .as_str()
                         .is_some_and(|h| wayhouse_http::token_eq(hash, h));
-                if !live {
+                // A pool code (a controller code with several uses) is redeemed with a child and
+                // nothing else does; the two must agree or the redeem is refused.
+                let is_pool = rec["role"] == "controller" && rec["uses"].as_u64() > Some(1);
+                if !live || is_pool != pool.is_some() {
                     return Ok(Err(Applied::Refused));
                 }
                 rec["uses_left"] = (rec["uses_left"].as_u64().unwrap_or(1) - 1).into();
-                if let (Some(jh), "controller") = (join_hash, rec["role"].as_str().unwrap_or("")) {
+                let mut writes = vec![];
+                let mut allocated = None;
+                if let Some(child) = pool {
+                    let child_key = key(Kind::Enrollment, &child.id);
+                    let mut next = child.min_node_id.max(1);
+                    for (other, r) in self.list(Kind::Enrollment)? {
+                        if other == child.id {
+                            return Ok(Err(Applied::Refused));
+                        }
+                        if r["role"] == "controller"
+                            && r["uses"] == 1
+                            && r["origin"] == child.name.as_str()
+                        {
+                            return Ok(Err(Applied::Refused));
+                        }
+                        next = next.max(r["node_id"].as_u64().map_or(0, |n| n + 1));
+                    }
+                    let count = self.count(Kind::Enrollment);
+                    if let Some(max) = Kind::Enrollment.max_records().filter(|m| count + 1 > *m) {
+                        return Ok(Err(Applied::Full(max)));
+                    }
+                    let child_rec = serde_json::json!({
+                        "role": "controller", "origin": child.name, "hash": child.join_hash,
+                        "created_at": now, "expires_at": rec["expires_at"], "uses": 1,
+                        "uses_left": 0, "node_id": next, "join_hash": child.join_hash,
+                        "join_until": *now + JOIN_WINDOW_SECS,
+                    });
+                    if validate(Kind::Enrollment, &child.id, &child_rec).is_err() {
+                        return Ok(Err(Applied::Refused));
+                    }
+                    writes.push(Write::Insert(child_key, serde_json::to_vec(&child_rec)?));
+                    allocated = Some(next);
+                } else if let (Some(jh), "controller") =
+                    (join_hash, rec["role"].as_str().unwrap_or(""))
+                {
                     rec["join_hash"] = jh.as_str().into();
                     rec["join_until"] = (*now + JOIN_WINDOW_SECS).into();
                 }
-                Ok(Ok(vec![Write::Insert(
+                writes.push(Write::Insert(
                     key(Kind::Enrollment, id),
                     serde_json::to_vec(&rec)?,
-                )]))
+                ));
+                if let Some(n) = allocated {
+                    writes.push(Write::Allocated(n));
+                }
+                Ok(Ok(writes))
             }
             UiOp::Delete { kind, name } => {
                 let k = key(*kind, name);
@@ -787,15 +859,19 @@ impl UiStore {
                     match &plan {
                         Err(refused) => Ok(refused.clone()),
                         Ok(writes) => {
+                            let mut answer = Applied::Done;
                             for w in writes {
                                 match w {
                                     Write::Insert(k, v) => {
-                                        records.insert(k.as_slice(), v.as_slice())?
+                                        records.insert(k.as_slice(), v.as_slice())?;
                                     }
-                                    Write::Remove(k) => records.remove(k.as_slice())?,
-                                };
+                                    Write::Remove(k) => {
+                                        records.remove(k.as_slice())?;
+                                    }
+                                    Write::Allocated(n) => answer = Applied::Allocated(*n),
+                                }
                             }
-                            Ok(Applied::Done)
+                            Ok(answer)
                         }
                     }
                 },
@@ -1027,7 +1103,161 @@ mod tests {
             hash: hash.into(),
             now,
             join_hash: None,
+            pool: None,
         }
+    }
+
+    fn pool_record(uses: u64) -> Value {
+        json!({"role": "controller", "origin": "ctl-pool", "hash": H1, "created_at": 100,
+               "expires_at": 1000, "uses": uses, "uses_left": uses, "name_prefix": "ctl-"})
+    }
+
+    fn pool_redeem(name: &str, min_node_id: u64) -> UiOp {
+        let child = format!("{:08x}", name.bytes().map(u32::from).sum::<u32>());
+        UiOp::Redeem {
+            id: "abcd1234".into(),
+            hash: H1.into(),
+            now: 200,
+            join_hash: None,
+            pool: Some(PoolChild {
+                id: child,
+                name: name.into(),
+                join_hash: H2.into(),
+                min_node_id,
+            }),
+        }
+    }
+
+    fn pool_store(uses: u64) -> (UiStore, tempfile::TempDir) {
+        let (s, d) = store();
+        s.apply_local(&put(Kind::Enrollment, "abcd1234", pool_record(uses)))
+            .unwrap();
+        (s, d)
+    }
+
+    #[test]
+    fn a_pool_code_hands_each_pod_its_own_node_id_above_the_members() {
+        let (s, _d) = pool_store(3);
+        assert_eq!(
+            s.apply_local(&pool_redeem("ctl-0", 4)).unwrap(),
+            Applied::Allocated(4)
+        );
+        assert_eq!(
+            s.apply_local(&pool_redeem("ctl-1", 4)).unwrap(),
+            Applied::Allocated(5)
+        );
+        assert_eq!(
+            s.apply_local(&pool_redeem("ctl-2", 2)).unwrap(),
+            Applied::Allocated(6)
+        );
+        // The pool is spent after its uses.
+        assert_eq!(
+            s.apply_local(&pool_redeem("ctl-3", 2)).unwrap(),
+            Applied::Refused
+        );
+        let parent = s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap();
+        assert_eq!(parent["uses_left"], 0);
+        assert!(parent.get("node_id").is_none());
+    }
+
+    #[test]
+    fn a_pool_redeem_writes_a_spent_child_that_a_join_can_use() {
+        let (s, _d) = pool_store(2);
+        let op = pool_redeem("ctl-0", 3);
+        let UiOp::Redeem { pool: Some(c), .. } = &op else {
+            unreachable!()
+        };
+        let child_id = c.id.clone();
+        s.apply_local(&op).unwrap();
+        let child = s.get(Kind::Enrollment, &child_id).unwrap().unwrap();
+        assert_eq!(child["role"], "controller");
+        assert_eq!(
+            (child["origin"].as_str(), child["node_id"].as_u64()),
+            (Some("ctl-0"), Some(3))
+        );
+        assert_eq!(
+            (child["uses"].as_u64(), child["uses_left"].as_u64()),
+            (Some(1), Some(0))
+        );
+        assert_eq!(child["join_hash"], H2);
+        assert!(child["join_until"].as_u64().is_some_and(|u| u > 200));
+        assert!(validate(Kind::Enrollment, &child_id, &child).is_ok());
+    }
+
+    #[test]
+    fn a_name_that_already_has_a_replica_is_refused_even_with_uses_left() {
+        let (s, _d) = pool_store(3);
+        assert_eq!(
+            s.apply_local(&pool_redeem("ctl-0", 2)).unwrap(),
+            Applied::Allocated(2)
+        );
+        assert_eq!(
+            s.apply_local(&pool_redeem("ctl-0", 2)).unwrap(),
+            Applied::Refused
+        );
+        assert_eq!(
+            s.get(Kind::Enrollment, "abcd1234").unwrap().unwrap()["uses_left"],
+            2
+        );
+    }
+
+    #[test]
+    fn revoking_a_replica_record_frees_its_name_and_never_its_node_id() {
+        let (s, _d) = pool_store(3);
+        s.apply_local(&pool_redeem("ctl-0", 2)).unwrap();
+        let UiOp::Redeem { pool: Some(c), .. } = pool_redeem("ctl-0", 2) else {
+            unreachable!()
+        };
+        s.apply_local(&UiOp::Delete {
+            kind: Kind::Enrollment,
+            name: c.id,
+        })
+        .unwrap();
+        // The deleted record held id 2; the next replica of the same name gets a higher one only
+        // when the proposer's membership view says so, so the proposer must pass it (members).
+        assert_eq!(
+            s.apply_local(&pool_redeem("ctl-0", 3)).unwrap(),
+            Applied::Allocated(3)
+        );
+    }
+
+    #[test]
+    fn a_pool_code_refuses_a_redeem_without_a_child_and_a_single_use_code_refuses_one_with() {
+        let (s, _d) = pool_store(2);
+        assert_eq!(
+            s.apply_local(&redeem("abcd1234", H1, 200)).unwrap(),
+            Applied::Refused
+        );
+        let (s, _d) = store();
+        let mut single = pool_record(1);
+        single["node_id"] = 2.into();
+        single.as_object_mut().unwrap().remove("name_prefix");
+        s.apply_local(&put(Kind::Enrollment, "abcd1234", single))
+            .unwrap();
+        assert_eq!(
+            s.apply_local(&pool_redeem("ctl-0", 2)).unwrap(),
+            Applied::Refused
+        );
+    }
+
+    #[test]
+    fn a_pool_code_has_no_node_id_a_prefix_and_at_most_sixteen_uses() {
+        assert!(validate(Kind::Enrollment, "abcd1234", &pool_record(3)).is_ok());
+        assert!(validate(Kind::Enrollment, "abcd1234", &pool_record(17)).is_err());
+        let mut with_id = pool_record(3);
+        with_id["node_id"] = 2.into();
+        assert!(validate(Kind::Enrollment, "abcd1234", &with_id).is_err());
+        let mut no_prefix = pool_record(3);
+        no_prefix.as_object_mut().unwrap().remove("name_prefix");
+        assert!(validate(Kind::Enrollment, "abcd1234", &no_prefix).is_err());
+        let mut single = pool_record(1);
+        assert!(
+            validate(Kind::Enrollment, "abcd1234", &single).is_err(),
+            "single use needs an id, no prefix"
+        );
+        single.as_object_mut().unwrap().remove("name_prefix");
+        single["node_id"] = 2.into();
+        assert!(validate(Kind::Enrollment, "abcd1234", &single).is_ok());
     }
 
     const H1: &str = "1111111111111111111111111111111111111111111111111111111111111111";
