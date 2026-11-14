@@ -238,8 +238,16 @@ solo.each { |n, x| (x["command"] || []).each { |a| errs << "solo: #{n} switches 
   errs << "solo: #{svc} must trust the init CA (--ca-file=/tls/ca.pem) and mount solo-tls" unless cmd.include?("--ca-file=/tls/ca.pem") && solo[svc]["volumes"].any? { |v| v["target"] == "/tls" && v["source"] == "solo-tls" }
   errs << "solo: #{svc} reaches the controller or aggregator over plain http: #{cmd.grep(/\A--(controller|aggregator)(-url)?=http:/)}" unless cmd.grep(/\A--(controller|aggregator)(-url)?=http:/).empty?
 end
-errs << "solo: the seed step must POST over https with the init CA" unless solo["seed"]["command"].include?("https://controller:9901/config") && solo["seed"]["command"].include?("/tls/ca.pem")
-errs << "solo: the keys step must install the certificates with the key files 0600" unless solo["keys"]["command"].join(" ").include?("chmod 0600 /tls/*.key")
+errs << "solo: the seed step must POST over https with the init CA" unless solo["seed"]["command"].join(" ").include?("https://controller:9901/config") && solo["seed"]["command"].join(" ").include?("/tls/ca.pem")
+errs << "solo: the keys step must install the certificates with the key files 0600" unless solo["keys"]["command"].join(" ").include?("*.key) chmod 0600")
+# A private key is mounted only by the service that serves with it; everything else gets the CA volume.
+{ "controller" => "solo-tls-controller", "aggregator" => "solo-tls-aggregator" }.each do |svc, vol|
+  errs << "solo: #{svc} must mount #{vol} at /tls" unless solo[svc]["volumes"].any? { |v| v["target"] == "/tls" && v["source"] == vol }
+end
+solo.each do |n, x|
+  next if %w[keys controller aggregator].include?(n)
+  (x["volumes"] || []).each { |v| errs << "solo: #{n} must not mount the key volume #{v["source"]}" if v["source"].to_s =~ /\Asolo-tls-/ }
+end
 errs << "solo: controller must wait for the keys step" unless solo["controller"]["depends_on"].dig("keys", "condition") == "service_completed_successfully"
 errs << "solo: the keyring must be mounted read-only into the controller" unless solo["controller"]["volumes"].any? { |v| v["target"] == "/keys" && v["read_only"] == true }
 sw = solo["wayhouse"]
@@ -266,7 +274,7 @@ cc.grep(/-file=\/run\/secrets\//).each do |a|
   name = a.split("/run/secrets/").last
   errs << "solo-control: #{a} names a secret the service does not get (#{secrets.sort})" unless secrets.include?(name)
 end
-errs << "solo-control: the keys step must install control.pem/control.key" unless solo_control["keys"]["environment"]["TLS_FILES"] == "control.pem control.key"
+errs << "solo-control: the keys step must install control.pem/control.key" unless solo_control["keys"]["environment"]["TLS_FILES"] == "control.pem control.key" && solo_control["keys"]["environment"]["AGG_TLS_FILES"].to_s.empty?
 errs << "solo-control: ports must stay on the host loopback" unless solo_control.values.flat_map { |x| x["ports"] || [] }.all? { |pt| pt["host_ip"] == "127.0.0.1" }
 errs << "solo-control: the controller must publish 9901, 9902 and 9903" unless solo_control["controller"]["ports"].map { |pt| pt["published"].to_s }.sort == %w[9901 9902 9903]
 errs << "solo-control: the proxy must not wait for a service that is not there" if solo_control["wayhouse"]["depends_on"].key?("aggregator") && solo_control["wayhouse"]["depends_on"]["aggregator"]["required"] != false
@@ -285,8 +293,10 @@ Dir["deploy/systemd/*.service"].each do |f|
   errs << "#{f}: NoNewPrivileges missing" unless t.include?("NoNewPrivileges=yes")
 end
 
-# No compose or k8s command carries a token value: only `--<name>-file` flags.
+# No compose or k8s command carries a token value: only `--<name>-file` flags. A secret is read
+# from its /run/secrets file inside the container (`docker inspect` shows the command of an exited one).
 [base, tunnel, web, solo, solo_acme].each do |cfg|
+  cfg.each_value { |x| (x["command"] || []).each { |a| errs << "compose: a command interpolates a secret into its text (#{a[/WAYHOUSE_[A-Z_]*(TOKEN|PASSWORD)[A-Z_]*/]})" if a =~ /WAYHOUSE_[A-Z_]*(TOKEN|PASSWORD)/ } }
   cfg.each_value { |x| (x["command"] || []).each { |a| errs << "compose: #{a} puts a secret on the command line" if a =~ /\A--[a-z-]*(token|password)(=|\z)/ } }
 end
 # k8s args and commands too: only the -file flags may name a token or password.

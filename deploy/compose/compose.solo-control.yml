@@ -18,7 +18,10 @@
 services:
   keys:
     environment:
+      # The controller's volume gets the one certificate. The aggregator service is off, so its
+      # volume gets none (an empty value, not an unset one).
       TLS_FILES: control.pem control.key
+      AGG_TLS_FILES: ""
 
   controller:
     build:
