@@ -1,15 +1,21 @@
 //! In-process rate limit for `POST /ui/login`. Every attempt costs an Argon2
 //! verification in `--users-file` mode, so an unthrottled login is both a
-//! brute-force target and a cheap CPU DoS. Two limits per attempt:
-//! a token bucket per client address (IPv6 by /64), and a growing delay per
-//! username, so a botnet can't spread guesses at one account. Every attempt
-//! at a name pushes its next admission out (100 ms after the first, doubling
-//! up to a 5 s cap); a successful login clears the name. The cap keeps the
-//! owner's worst wait short while still holding guessing to one try per 5 s.
-//! Names hash into a fixed set of slots, real or not, so the delay reveals
-//! nothing about which accounts exist and the memory is bounded. Behind a
-//! reverse proxy every client shares the proxy's address and the per-IP bucket
-//! degrades to a global one; the per-username delay still holds.
+//! brute-force target and a cheap CPU DoS. Three limits per attempt:
+//! a token bucket per client address (IPv6 by /64); a growing delay per
+//! (username, client address), so one client's guesses at an account get slower
+//! but cannot keep the account's owner out (a delay shared by every client would
+//! let one tight loop hold a known name locked forever); and a looser token
+//! bucket per username across all clients, so a botnet can't spread guesses at
+//! one account. Every attempt by a client at a name pushes that client's next
+//! admission out (100 ms after the first, doubling up to a 5 s cap); a successful
+//! login clears the client's delay. Names hash into a fixed set of slots, real
+//! or not, so the limits reveal nothing about which accounts exist and the
+//! memory is bounded. Behind a reverse proxy every client shares the proxy's
+//! address, so the per-client delay degrades to a per-name delay and the per-IP
+//! bucket to a global one; the per-name ceiling still holds.
+//!
+//! Known limit: a botnet that out-runs the per-name ceiling can still crowd the
+//! owner out for as long as it keeps that up; only the ceiling's rate is shared.
 //!
 //! Ephemeral and per replica, like the session store: a restart forgets
 //! everything and replicas do not share state.
@@ -40,7 +46,10 @@ pub struct Backoff {
 #[derive(Debug, Clone, Copy)]
 pub struct LoginLimits {
     pub per_ip: Bucket,
+    /// Delay per (username, client address).
     pub per_username: Backoff,
+    /// Attempts at one username from all clients together.
+    pub per_username_total: Bucket,
     /// Most tracked keys per map; at the cap new keys are refused (fail
     /// closed) once idle ones have been pruned.
     pub max_keys: usize,
@@ -58,6 +67,12 @@ impl Default for LoginLimits {
                 cap: Duration::from_secs(5),
                 forget: Duration::from_secs(600),
             },
+            // One client sustains 0.2 per second under the delay above, so it cannot
+            // use this up alone; it takes about five clients at the cap.
+            per_username_total: Bucket {
+                burst: 10,
+                refill: Duration::from_secs(1),
+            },
             max_keys: 10_000,
         }
     }
@@ -73,8 +88,8 @@ struct State {
     at: Instant,
 }
 
-/// One username slot: attempts since the last success, when the next is
-/// allowed, and when the last was admitted.
+/// One (username slot, client) pair: attempts since the last success, when the next
+/// is allowed, and when the last was admitted.
 struct Delay {
     attempts: u32,
     until: Instant,
@@ -83,14 +98,27 @@ struct Delay {
 
 #[derive(Default)]
 struct Delays {
-    map: HashMap<usize, Delay>,
+    map: HashMap<(usize, IpAddr), Delay>,
 }
 
 impl Delays {
     /// Admits an attempt and schedules the next, or says how long to wait.
     /// A refusal changes nothing, so a flood of refused requests can't push
     /// the owner's wait past the cap.
-    fn take(&mut self, key: usize, b: Backoff, now: Instant) -> Result<(), Duration> {
+    fn take(
+        &mut self,
+        key: (usize, IpAddr),
+        b: Backoff,
+        max_keys: usize,
+        now: Instant,
+    ) -> Result<(), Duration> {
+        if !self.map.contains_key(&key) && self.map.len() >= max_keys {
+            // Pairs whose delay has run out only remember an escalation; drop them to make room.
+            self.map.retain(|_, d| now < d.until);
+            if self.map.len() >= max_keys {
+                return Err(b.cap);
+            }
+        }
         if self
             .map
             .get(&key)
@@ -174,6 +202,8 @@ pub struct LoginLimiter {
 struct Inner {
     ips: Buckets<IpAddr>,
     users: Delays,
+    /// Attempts per username slot, all clients together.
+    totals: Buckets<usize>,
     /// Randomly keyed, so an attacker cannot pick names that collide with a
     /// chosen account's bucket.
     hasher: RandomState,
@@ -184,6 +214,7 @@ impl Default for Inner {
         Inner {
             ips: Buckets::default(),
             users: Delays::default(),
+            totals: Buckets::default(),
             hasher: RandomState::new(),
         }
     }
@@ -234,12 +265,12 @@ impl LoginLimiter {
         self.check_at(ip, username, Instant::now())
     }
 
-    /// Clears the delay of a username whose login succeeded, so correct
+    /// Clears `ip`'s delay at a username whose login succeeded, so correct
     /// passwords never count towards one.
-    pub fn forgive_username(&self, username: &str) {
+    pub fn forgive_username(&self, ip: IpAddr, username: &str) {
         let mut g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let slot = g.username_bucket(username);
-        g.users.map.remove(&slot);
+        g.users.map.remove(&(slot, source_key(ip)));
     }
 
     fn check_at(&self, ip: IpAddr, username: Option<&str>, now: Instant) -> Result<(), Duration> {
@@ -249,8 +280,13 @@ impl LoginLimiter {
         g.ips.take(&ip, l.per_ip, l.max_keys, now)?;
         if let Some(name) = username {
             let slot = g.username_bucket(name);
-            if let Err(wait) = g.users.take(slot, l.per_username, now) {
+            if let Err(wait) = g.totals.take(&slot, l.per_username_total, l.max_keys, now) {
                 g.ips.give_back(&ip, l.per_ip);
+                return Err(wait);
+            }
+            if let Err(wait) = g.users.take((slot, ip), l.per_username, l.max_keys, now) {
+                g.ips.give_back(&ip, l.per_ip);
+                g.totals.give_back(&slot, l.per_username_total);
                 return Err(wait);
             }
         }
@@ -280,12 +316,26 @@ mod tests {
     }
 
     fn limiter(ip_burst: u32, user: Backoff, max_keys: usize) -> LoginLimiter {
+        limiter_with_total(ip_burst, user, 1_000_000, max_keys)
+    }
+
+    /// `total_burst` attempts at one name from all clients, then one per 10 s.
+    fn limiter_with_total(
+        ip_burst: u32,
+        user: Backoff,
+        total_burst: u32,
+        max_keys: usize,
+    ) -> LoginLimiter {
         LoginLimiter::new(LoginLimits {
             per_ip: Bucket {
                 burst: ip_burst,
                 refill: Duration::from_secs(10),
             },
             per_username: user,
+            per_username_total: Bucket {
+                burst: total_burst,
+                refill: Duration::from_secs(10),
+            },
             max_keys,
         })
     }
@@ -328,12 +378,44 @@ mod tests {
     }
 
     #[test]
-    fn the_delay_is_per_username_across_ips_and_case() {
+    fn the_delay_is_per_username_and_client_and_ignores_case() {
         let l = limiter(100, backoff(), 100);
         let t0 = Instant::now();
         assert!(l.check_at(ip("192.0.2.1"), Some("Alice"), t0).is_ok());
-        assert!(l.check_at(ip("192.0.2.2"), Some("ALICE"), t0).is_err());
+        assert!(l.check_at(ip("192.0.2.1"), Some("ALICE"), t0).is_err());
         assert!(l.check_at(ip("192.0.2.3"), Some("bob"), t0).is_ok());
+    }
+
+    #[test]
+    fn one_client_hammering_a_name_cannot_keep_its_owner_out() {
+        let l = limiter(100, backoff(), 100);
+        let mut t = Instant::now();
+        for _ in 0..20 {
+            // The attacker is admitted the moment its own delay ends, every time...
+            assert!(l.check_at(ip("192.0.2.66"), Some("admin"), t).is_ok());
+            // ...and the owner, arriving inside that window, still gets in (429 before).
+            assert!(l
+                .check_at(ip("192.0.2.1"), Some("admin"), t + ms(1))
+                .is_ok());
+            l.forgive_username(ip("192.0.2.1"), "admin");
+            t += ms(400);
+        }
+    }
+
+    #[test]
+    fn many_clients_together_are_held_to_the_per_name_ceiling() {
+        let l = limiter_with_total(100, backoff(), 3, 100);
+        let t0 = Instant::now();
+        for i in 0..3 {
+            assert!(l
+                .check_at(ip(&format!("192.0.2.{i}")), Some("admin"), t0)
+                .is_ok());
+        }
+        assert!(l.check_at(ip("192.0.2.9"), Some("admin"), t0).is_err());
+        // A refused attempt gave its address token back and charged nothing.
+        assert!(l.check_at(ip("192.0.2.9"), Some("bob"), t0).is_ok());
+        let later = t0 + Duration::from_secs(10);
+        assert!(l.check_at(ip("192.0.2.9"), Some("admin"), later).is_ok());
     }
 
     #[test]
@@ -356,7 +438,7 @@ mod tests {
         let t0 = Instant::now();
         for _ in 0..3 {
             assert!(l.check_at(ip("192.0.2.1"), Some("alice"), t0).is_ok());
-            l.forgive_username("ALICE");
+            l.forgive_username(ip("192.0.2.1"), "ALICE");
         }
         assert!(l.check_at(ip("192.0.2.1"), Some("alice"), t0).is_ok());
         // The failure that follows restarts at the base delay, not the cap.
