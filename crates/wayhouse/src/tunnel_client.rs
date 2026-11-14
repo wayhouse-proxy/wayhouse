@@ -343,9 +343,13 @@ async fn subscribe_once(
 
         while let Some(event) = buf.next_event() {
             if let Some(ev) = parse_sse_event(&event) {
+                // Only a registration that will be applied needs its key: an unchanged one is
+                // skipped, so a catch-up of N origins is not N sequential fetches.
                 let psk = match &ev {
-                    Event::Registered(reg) => psk_for(base_url, token, keyring, reg).await,
-                    Event::Removed(_) => Ok(None),
+                    Event::Registered(reg) if !matches!(plan(last_applied, &ev), Action::Skip) => {
+                        psk_for(base_url, token, keyring, reg).await
+                    }
+                    _ => Ok(None),
                 };
                 if apply_event(wg, last_applied, warned, &ev, psk) {
                     retry_at.get_or_insert(tokio::time::Instant::now() + CONFIGURE_RETRY);

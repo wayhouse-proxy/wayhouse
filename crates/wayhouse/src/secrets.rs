@@ -144,11 +144,27 @@ pub async fn resolve_config(
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// How long one sealed-secret fetch may take, connect to last byte. Without it a controller
+/// that accepts and then hangs stalls the caller (the tunnel-peer loop) until restart.
+const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A sealed secret is a few hundred bytes; anything bigger is not one.
+const MAX_SEALED_BODY: usize = 64 * 1024;
+
 /// `GET {controller}/secrets/{name}/sealed` for each name; run before the config is resolved.
 pub async fn fetch_sealed(
     base_url: &str,
     token: Option<&str>,
     name: &str,
+) -> Result<Fetched, SecretError> {
+    fetch_sealed_within(base_url, token, name, FETCH_TIMEOUT).await
+}
+
+async fn fetch_sealed_within(
+    base_url: &str,
+    token: Option<&str>,
+    name: &str,
+    timeout: std::time::Duration,
 ) -> Result<Fetched, SecretError> {
     let unreadable = |why: String| SecretError::Unreadable {
         name: name.to_owned(),
@@ -160,7 +176,10 @@ pub async fn fetch_sealed(
         token.is_some(),
     )
     .map_err(unreadable)?;
-    let mut req = wayhouse_http::client().get(format!("{base_url}/secrets/{name}/sealed"));
+    // The timeout covers the body read too, so a stall mid-answer also ends.
+    let mut req = wayhouse_http::client()
+        .get(format!("{base_url}/secrets/{name}/sealed"))
+        .timeout(timeout);
     if let Some(token) = token {
         req = req.bearer_auth(token);
     }
@@ -171,11 +190,14 @@ pub async fn fetch_sealed(
         ))
     })?;
     match resp.status() {
-        s if s.is_success() => resp
-            .json::<Sealed>()
-            .await
-            .map(Fetched::Sealed)
-            .map_err(|_| unreadable("the controller's answer was not understood".into())),
+        s if s.is_success() => {
+            let body = wayhouse_http::read_capped(resp, MAX_SEALED_BODY)
+                .await
+                .map_err(|e| unreadable(e.to_string()))?;
+            serde_json::from_slice::<Sealed>(&body)
+                .map(Fetched::Sealed)
+                .map_err(|_| unreadable("the controller's answer was not understood".into()))
+        }
         reqwest::StatusCode::NOT_FOUND => Ok(Fetched::Absent),
         s => Err(unreadable(format!("the controller answered {s}"))),
     }
@@ -195,6 +217,23 @@ mod tests {
 
     fn names(n: &[&str]) -> Vec<String> {
         n.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_controller_that_accepts_and_never_answers_ends_in_an_error_not_a_hang() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let _held = tokio::spawn(async move {
+            let conn = l.accept().await;
+            std::future::pending::<()>().await;
+            drop(conn);
+        });
+        let started = std::time::Instant::now();
+        let e = fetch_sealed_within(&url, None, "x", std::time::Duration::from_millis(200))
+            .await
+            .err()
+            .expect("a stalled fetch must fail");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{e}");
     }
 
     #[test]
