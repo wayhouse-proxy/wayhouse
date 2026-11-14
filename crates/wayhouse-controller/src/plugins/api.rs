@@ -36,6 +36,18 @@ use super::{
 use crate::ha::client::{forward_to_current_leader, propose_write_as, ForwardHeaders};
 use crate::ha::{HaHandle, PluginReject, WriteRequest, WriteResponse};
 
+/// Runs a store call on the blocking pool: flushed writes and full scans must not occupy the
+/// async workers (#270).
+async fn blocking<T: Send + 'static>(
+    st: &PluginsState,
+    f: impl FnOnce(PluginStore) -> T + Send + 'static,
+) -> T {
+    let store = st.store.clone();
+    tokio::task::spawn_blocking(move || f(store))
+        .await
+        .expect("the store task panicked")
+}
+
 #[derive(Clone)]
 pub struct PluginsState {
     pub store: PluginStore,
@@ -199,9 +211,11 @@ async fn upload_module(
         Ok(i) => i,
         Err(e) => return err(StatusCode::BAD_REQUEST, e),
     };
-    match st
-        .store
-        .put_upload(&info.sha256, &body, super::MAX_ORPHAN_BYTES)
+    match blocking(&st, {
+        let (sha, body) = (info.sha256.clone(), body.clone());
+        move |s| s.put_upload(&sha, &body, super::MAX_ORPHAN_BYTES)
+    })
+    .await
     {
         Ok(()) => {}
         Err(PluginStoreError::OrphansFull) => {
@@ -250,7 +264,7 @@ async fn delete_upload(
     {
         return forwarded;
     }
-    match st.store.delete_upload(&sha256) {
+    match blocking(&st, move |s| s.delete_upload(&sha256)).await {
         Ok(super::UploadDelete::Deleted) => StatusCode::NO_CONTENT.into_response(),
         Ok(super::UploadDelete::NotFound) => err(StatusCode::NOT_FOUND, "no such uploaded module"),
         Ok(super::UploadDelete::InUse) => err(
@@ -281,11 +295,17 @@ struct InstallRequest {
 /// An install the plugins file created is edited in the file, not through the API: a
 /// change made here would be undone by the next reconcile. Only the reconciler's own
 /// calls (its actor) pass. Secrets, the webhook and suspending stay open.
-fn managed_refusal(st: &PluginsState, headers: &HeaderMap, id: &str) -> Option<Response> {
+async fn managed_refusal(st: &PluginsState, headers: &HeaderMap, id: &str) -> Option<Response> {
     if super::declared::is_file_caller(headers) {
         return None;
     }
-    let record = st.store.get(id).ok().flatten()?;
+    let record = blocking(st, {
+        let id = id.to_string();
+        move |s| s.get(&id)
+    })
+    .await
+    .ok()
+    .flatten()?;
     (record.created_by.as_deref() == Some(super::declared::FILE_ACTOR)).then(|| {
         (
             StatusCode::CONFLICT,
@@ -378,7 +398,11 @@ pub(super) async fn install_inner(
     let approved_json = serde_json::to_vec(&req.approved).expect("capabilities serialize");
     let approved = Capabilities::parse(&approved_json)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("approved: {e}")))?;
-    let Some(bytes) = st.store.get_blob(&req.sha256).map_err(internal)? else {
+    let sha = req.sha256.clone();
+    let Some(bytes) = blocking(st, move |s| s.get_blob(&sha))
+        .await
+        .map_err(internal)?
+    else {
         return Err(err(
             StatusCode::NOT_FOUND,
             "no uploaded module with that sha256; POST /plugins/modules first",
@@ -466,7 +490,12 @@ pub(super) async fn install_inner(
             }
         };
     }
-    st.store.create(&record).map_err(|e| match e {
+    blocking(st, {
+        let record = record.clone();
+        move |s| s.create(&record)
+    })
+    .await
+    .map_err(|e| match e {
         PluginStoreError::BlobMissing => err(
             StatusCode::CONFLICT,
             "the module was removed while installing; upload it again",
@@ -548,7 +577,7 @@ fn unexpected(resp: &WriteResponse) -> Response {
 }
 
 async fn list(State(st): State<PluginsState>) -> Result<Json<Vec<InstallRecord>>, ApiError> {
-    Ok(Json(st.store.list().map_err(internal)?))
+    Ok(Json(blocking(&st, |s| s.list()).await.map_err(internal)?))
 }
 
 /// The install plus its module's manifest (`null` without one), so a client can render the
@@ -557,12 +586,18 @@ async fn get_one(
     State(st): State<PluginsState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let record = st
-        .store
-        .get(&id)
+    let record = blocking(&st, {
+        let id = id.clone();
+        move |s| s.get(&id)
+    })
+    .await
+    .map_err(internal)?
+    .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such install"))?;
+    let sha = record.sha256.clone();
+    let manifest = match blocking(&st, move |s| s.get_blob(&sha))
+        .await
         .map_err(internal)?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such install"))?;
-    let manifest = match st.store.get_blob(&record.sha256).map_err(internal)? {
+    {
         Some(bytes) => inspect(&bytes).ok().and_then(|i| i.manifest),
         None => None,
     };
@@ -588,7 +623,12 @@ async fn status(
     {
         return forwarded;
     }
-    match st.store.get(&id) {
+    match blocking(&st, {
+        let id = id.clone();
+        move |s| s.get(&id)
+    })
+    .await
+    {
         Err(e) => internal(e),
         Ok(None) => err(StatusCode::NOT_FOUND, "no such install"),
         Ok(Some(_)) => Json(st.runner.status(&id).unwrap_or_default()).into_response(),
@@ -604,7 +644,7 @@ pub(super) async fn set_enabled(
     if !valid_id(&id) {
         return err(StatusCode::NOT_FOUND, "no such install");
     }
-    if let Some(refused) = managed_refusal(st, headers, &id) {
+    if let Some(refused) = managed_refusal(st, headers, &id).await {
         return refused;
     }
     if let Some(ha) = &st.ha {
@@ -631,7 +671,12 @@ pub(super) async fn set_enabled(
         )
         .await;
     }
-    match st.store.set_enabled(&id, enabled) {
+    match blocking(st, {
+        let id = id.clone();
+        move |s| s.set_enabled(&id, enabled)
+    })
+    .await
+    {
         Ok(Some(record)) => Json(record).into_response(),
         Ok(None) => err(StatusCode::NOT_FOUND, "no such install"),
         Err(e) => internal(e),
@@ -704,7 +749,12 @@ async fn put_suspended(
         )
         .await;
     } else {
-        st.store.set_suspended(&id, &req.suspended)
+        let suspended = req.suspended.clone();
+        blocking(&st, {
+            let id = id.clone();
+            move |s| s.set_suspended(&id, &suspended)
+        })
+        .await
     };
     match applied {
         Ok(Applied::Done(_)) => {
@@ -714,7 +764,12 @@ async fn put_suspended(
                 actor = actor(&headers).as_deref(),
                 "plugin capabilities suspended or resumed"
             );
-            match st.store.get(&id) {
+            match blocking(&st, {
+                let id = id.clone();
+                move |s| s.get(&id)
+            })
+            .await
+            {
                 Ok(Some(record)) => Json(record).into_response(),
                 Ok(None) => err(StatusCode::NOT_FOUND, "no such install"),
                 Err(e) => internal(e),
@@ -748,7 +803,7 @@ async fn put_config(
     if !valid_id(&id) {
         return err(StatusCode::NOT_FOUND, "no such install");
     }
-    if let Some(refused) = managed_refusal(&st, &headers, &id) {
+    if let Some(refused) = managed_refusal(&st, &headers, &id).await {
         return refused;
     }
     match put_config_inner(&st, &headers, &id, body).await {
@@ -794,12 +849,18 @@ pub(super) async fn put_config_inner(
             format!("config is over {MAX_CONFIG_BYTES} bytes"),
         ));
     }
-    let record = st
-        .store
-        .get(id)
+    let record = blocking(st, {
+        let id = id.to_string();
+        move |s| s.get(&id)
+    })
+    .await
+    .map_err(internal)?
+    .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such install"))?;
+    let sha = record.sha256.clone();
+    let Some(bytes) = blocking(st, move |s| s.get_blob(&sha))
+        .await
         .map_err(internal)?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such install"))?;
-    let Some(bytes) = st.store.get_blob(&record.sha256).map_err(internal)? else {
+    else {
         return Err(err(
             StatusCode::SERVICE_UNAVAILABLE,
             "the module for this install is not stored on this node",
@@ -884,10 +945,17 @@ pub(super) async fn put_config_inner(
                 ));
             }
         },
-        None => st
-            .store
-            .set_config(id, &config, &record.approved, &approved)
-            .map_err(internal)?,
+        None => blocking(st, {
+            let (id, config, current, approved) = (
+                id.to_string(),
+                config.clone(),
+                record.approved.clone(),
+                approved.clone(),
+            );
+            move |s| s.set_config(&id, &config, &current, &approved)
+        })
+        .await
+        .map_err(internal)?,
     };
     match applied {
         Applied::Done(_) => {
@@ -896,7 +964,12 @@ pub(super) async fn put_config_inner(
                 what = "config changed", install = %id, approval_changed = changed,
                 actor = actor(headers).as_deref(), "plugin config changed"
             );
-            match st.store.get(id) {
+            match blocking(st, {
+                let id = id.to_string();
+                move |s| s.get(&id)
+            })
+            .await
+            {
                 Ok(Some(updated)) => Ok(Json(updated).into_response()),
                 Ok(None) => Err(err(StatusCode::NOT_FOUND, "no such install")),
                 Err(e) => Err(internal(e)),
@@ -917,7 +990,7 @@ pub(super) async fn remove(
     if !valid_id(&id) {
         return err(StatusCode::NOT_FOUND, "no such install");
     }
-    if let Some(refused) = managed_refusal(&st, &headers, &id) {
+    if let Some(refused) = managed_refusal(&st, &headers, &id).await {
         return refused;
     }
     if let Some(ha) = &st.ha {
@@ -936,7 +1009,12 @@ pub(super) async fn remove(
         )
         .await;
     }
-    match st.store.delete(&id) {
+    match blocking(&st, {
+        let id = id.clone();
+        move |s| s.delete(&id)
+    })
+    .await
+    {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => err(StatusCode::NOT_FOUND, "no such install"),
         Err(e) => internal(e),
@@ -952,7 +1030,12 @@ async fn enable_webhook(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    let record = match st.store.get(&id) {
+    let record = match blocking(&st, {
+        let id = id.clone();
+        move |s| s.get(&id)
+    })
+    .await
+    {
         Ok(Some(r)) if valid_id(&id) => r,
         Ok(_) => return err(StatusCode::NOT_FOUND, "no such install"),
         Err(e) => return internal(e),
@@ -1001,7 +1084,10 @@ async fn enable_webhook(
             )
             .await;
         }
-        None => st.store.set_webhook(&id, hash.as_deref()),
+        None => {
+            let (id, hash) = (id.clone(), hash.clone());
+            blocking(&st, move |s| s.set_webhook(&id, hash.as_deref())).await
+        }
     };
     match rejected {
         Ok(Applied::Done(_)) => {
@@ -1050,7 +1136,12 @@ async fn revoke_webhook(
         )
         .await;
     }
-    match st.store.set_webhook(&id, None) {
+    match blocking(&st, {
+        let id = id.clone();
+        move |s| s.set_webhook(&id, None)
+    })
+    .await
+    {
         Ok(Applied::Done(_)) => {
             tracing::info!(
                 target: "wayhouse_controller::plugins::audit",
@@ -1074,15 +1165,17 @@ fn now() -> u64 {
 }
 
 /// The install and its approved slot, or the `404` that says which is missing.
-fn approved_slot(st: &PluginsState, id: &str, slot: &str) -> Result<InstallRecord, ApiError> {
+async fn approved_slot(st: &PluginsState, id: &str, slot: &str) -> Result<InstallRecord, ApiError> {
     if !valid_id(id) || !wayhouse_plugin_host::caps::valid_slot_name(slot) {
         return Err(err(StatusCode::NOT_FOUND, "no such install or secret slot"));
     }
-    let record = st
-        .store
-        .get(id)
-        .map_err(internal)?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such install"))?;
+    let record = blocking(st, {
+        let id = id.to_string();
+        move |s| s.get(&id)
+    })
+    .await
+    .map_err(internal)?
+    .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such install"))?;
     if !record.approved.secrets.iter().any(|s| s.name == slot) {
         return Err(err(
             StatusCode::NOT_FOUND,
@@ -1120,7 +1213,7 @@ async fn put_secret(
     Path((id, slot)): Path<(String, String)>,
     body: Bytes,
 ) -> Response {
-    if let Err(r) = approved_slot(&st, &id, &slot) {
+    if let Err(r) = approved_slot(&st, &id, &slot).await {
         return r;
     }
     let Ok(parsed) = serde_json::from_slice::<SecretBody>(&body) else {
@@ -1184,7 +1277,12 @@ async fn put_secret(
                 Err(why) => Err(err(StatusCode::SERVICE_UNAVAILABLE, why)),
             }
         }
-        None => match st.store.put_secret(&id, &slot, &sealed, updated_at) {
+        None => match blocking(&st, {
+            let (id, slot, sealed) = (id.clone(), slot.clone(), sealed.clone());
+            move |s| s.put_secret(&id, &slot, &sealed, updated_at)
+        })
+        .await
+        {
             Ok(Applied::Done(_)) => {
                 tracing::info!(
                     target: "wayhouse_controller::plugins::audit",
@@ -1212,7 +1310,7 @@ async fn delete_secret(
     headers: HeaderMap,
     Path((id, slot)): Path<(String, String)>,
 ) -> Response {
-    if let Err(r) = approved_slot(&st, &id, &slot) {
+    if let Err(r) = approved_slot(&st, &id, &slot).await {
         return r;
     }
     if let Some(ha) = &st.ha {
@@ -1243,7 +1341,12 @@ async fn delete_secret(
         )
         .await;
     }
-    match st.store.delete_secret(&id, &slot) {
+    match blocking(&st, {
+        let (id, slot) = (id.clone(), slot.clone());
+        move |s| s.delete_secret(&id, &slot)
+    })
+    .await
+    {
         Ok(true) => {
             tracing::info!(
                 target: "wayhouse_controller::plugins::audit",
@@ -1284,14 +1387,21 @@ async fn list_secrets(
     if !valid_id(&id) {
         return Err(err(StatusCode::NOT_FOUND, "no such install"));
     }
-    let record = st
-        .store
-        .get(&id)
-        .map_err(internal)?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such install"))?;
+    let record = blocking(&st, {
+        let id = id.clone();
+        move |s| s.get(&id)
+    })
+    .await
+    .map_err(internal)?
+    .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such install"))?;
     let mut slots = Vec::new();
     for slot in &record.approved.secrets {
-        let stored = st.store.get_secret(&id, &slot.name).map_err(internal)?;
+        let stored = blocking(&st, {
+            let (id, name) = (id.clone(), slot.name.clone());
+            move |s| s.get_secret(&id, &name)
+        })
+        .await
+        .map_err(internal)?;
         let status = match &stored {
             None => "unset".to_string(),
             Some(s) => {
@@ -1343,7 +1453,7 @@ async fn rewrap_secrets(State(st): State<PluginsState>, headers: HeaderMap) -> R
             return err(StatusCode::CONFLICT, why);
         }
     }
-    let stored = match st.store.all_secrets() {
+    let stored = match blocking(&st, |s| s.all_secrets()).await {
         Ok(a) => a,
         Err(e) => return internal(e),
     };
@@ -1383,7 +1493,7 @@ async fn rewrap_secrets(State(st): State<PluginsState>, headers: HeaderMap) -> R
                     Err(why) => return err(StatusCode::SERVICE_UNAVAILABLE, why),
                 }
             }
-            None => match st.store.rewrap(&items, updated_at) {
+            None => match blocking(&st, move |s| s.rewrap(&items, updated_at)).await {
                 Ok(skipped) => skipped,
                 Err(e) => return internal(e),
             },
