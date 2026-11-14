@@ -553,11 +553,32 @@ async fn revoke(
                 && rec.get("name_prefix").is_none()
                 && rec["uses_left"].as_u64() < rec["uses"].as_u64() =>
         {
-            rec["origin"].as_str().map(str::to_owned)
+            let origin = rec["origin"].as_str().map(str::to_owned);
+            // A host that enrolled again with a newer code holds that code's credentials, not
+            // this one's; leave them. Missing times count as oldest, so a doubt revokes.
+            let mine = rec["redeemed_at"].as_u64().unwrap_or(0);
+            let superseded = match st.ui.store.list(Kind::Enrollment) {
+                Ok(all) => all.iter().any(|(other, r)| {
+                    other != &id
+                        && r["role"] == "agent"
+                        && r.get("name_prefix").is_none()
+                        && r["origin"].as_str() == origin.as_deref()
+                        && r["uses_left"].as_u64() < r["uses"].as_u64()
+                        && r["redeemed_at"].as_u64().unwrap_or(0) > mine
+                }),
+                Err(e) => return internal(e),
+            };
+            origin.filter(|_| !superseded)
         }
         Ok(_) => None,
         Err(e) => return internal(e),
     };
+    // Revoke first: if it fails the code is still there and the revoke can be retried.
+    if let Some(origin) = &issued {
+        if let Err(r) = crate::origin::revoke(&st.ui, origin).await {
+            return r;
+        }
+    }
     let op = UiOp::Delete {
         kind: Kind::Enrollment,
         name: id.clone(),
@@ -565,11 +586,6 @@ async fn revoke(
     match apply(&st.ui, op).await {
         Ok(Applied::Done) => {
             tracing::warn!(enrollment = %id, actor = actor(&headers).as_deref().unwrap_or("-"), "enrollment code revoked");
-            if let Some(origin) = issued {
-                if let Err(r) = crate::origin::revoke(&st.ui, &origin).await {
-                    return r;
-                }
-            }
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(Applied::NotFound) => err(StatusCode::NOT_FOUND, "no such code"),
@@ -1201,6 +1217,48 @@ mod tests {
         .await;
         assert_eq!(st, StatusCode::NO_CONTENT);
         assert_eq!(find(&token), None);
+        assert!(t.store.list(Kind::ClusterSecret).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoking_an_old_spent_code_leaves_a_re_enrolled_hosts_credentials_alone() {
+        let t = setup(Some(KEY));
+        let first = mint(&t, "home-nas").await;
+        let (_, v) = redeem(&t, &first, "10.0.0.2").await;
+        let old_token = v["files"]["agent-token"].as_str().unwrap().to_owned();
+        // The host enrolls again with a newer code and gets new credentials.
+        let second = mint(&t, "home-nas").await;
+        let (_, v) = redeem(&t, &second, "10.0.0.3").await;
+        let live = v["files"]["agent-token"].as_str().unwrap().to_owned();
+        // Two enrollments inside one second tie; a real re-enrollment is later.
+        let first_id = first.split('.').next().unwrap();
+        let mut rec = t.store.get(Kind::Enrollment, first_id).unwrap().unwrap();
+        rec["redeemed_at"] = 1.into();
+        put(&t, Kind::Enrollment, first_id.to_owned(), rec);
+        let find = crate::origin::lookup(t.store.clone());
+        assert_eq!(find(&old_token), None, "replaced by the second enrollment");
+        let delete = |code: &str| {
+            let id = code.split('.').next().unwrap().to_owned();
+            let app = t.app.clone();
+            async move {
+                call(
+                    &app,
+                    "DELETE",
+                    &format!("/enrollments/{id}"),
+                    Value::Null,
+                    Some(ADMIN),
+                    "10.0.0.1",
+                )
+                .await
+                .0
+            }
+        };
+        assert_eq!(delete(&first).await, StatusCode::NO_CONTENT);
+        assert_eq!(find(&live).as_deref(), Some("home-nas"), "still enrolled");
+        assert!(!t.store.list(Kind::ClusterSecret).unwrap().is_empty());
+        // The newest code still cuts the host off.
+        assert_eq!(delete(&second).await, StatusCode::NO_CONTENT);
+        assert_eq!(find(&live), None);
         assert!(t.store.list(Kind::ClusterSecret).unwrap().is_empty());
     }
 
