@@ -13,6 +13,7 @@ import { PendingCodes, relative } from "../components/enroll/PendingCodes";
 import { useCan } from "../lib/session";
 import {
   ROLES,
+  POOL_PREFIX,
   TARGETS,
   generate,
   needsStepUp,
@@ -75,6 +76,7 @@ interface Minted {
   pin: string;
   imageTag: string;
   namespace: string;
+  pool: boolean;
 }
 
 const isRole = (s: string | null): s is EnrollRole => ROLES.some((r) => r.role === s);
@@ -97,6 +99,7 @@ export function AddNodePage() {
   const [advertise, setAdvertise] = useState("");
   const [ttl, setTtl] = useState(900);
   const [uses, setUses] = useState(1);
+  const [poolUses, setPoolUses] = useState(2);
   const [prompt, setPrompt] = useState(false);
   const [stepUp, setStepUp] = useState("");
   const [stepUpError, setStepUpError] = useState<string | null>(null);
@@ -136,25 +139,28 @@ export function AddNodePage() {
   const maxTtl = stepUpRole ? 86_400 : 604_800;
   const ttlChoices = TTLS.filter((t) => !stepUpRole || t.stepUpOk);
   const effectiveTtl = Math.min(ttl, maxTtl);
-  const usesFixed = role === "ui" || role === "controller";
-  const effectiveUses = usesFixed ? 1 : uses;
-  const containerTarget = target !== "systemd";
+  // A Kubernetes controller code is a pool: one code for the replica StatefulSet's pods (2 to 16 uses).
+  const pool = role === "controller" && target === "k8s";
+  const usesFixed = role === "ui" || (role === "controller" && !pool);
+  const effectiveUses = pool ? poolUses : usesFixed ? 1 : uses;
+  const containerTarget = target !== "systemd" && !pool;
 
   const errors = useMemo(() => {
     const e: Record<string, string> = {};
     if (!validName(name)) e.name = "1 to 64 letters, digits, '.', '_' or '-'.";
-    if (!validUrl(prefs.controllerUrl, { httpsOnly: true })) e.controllerUrl = "An https:// URL the new node can reach.";
-    if (!validPin(prefs.pin)) e.pin = "sha256: followed by 64 hex digits, as `wayhouse-controller init` printed it.";
+    // The overlay's init container already points at the in-cluster controller and its CA.
+    if (!pool && !validUrl(prefs.controllerUrl, { httpsOnly: true })) e.controllerUrl = "An https:// URL the new node can reach.";
+    if (!pool && !validPin(prefs.pin)) e.pin = "sha256: followed by 64 hex digits, as `wayhouse-controller init` printed it.";
     if (role === "agent" && !validBackends(backends)) e.backends = "host:port or :port, comma separated.";
-    if (role === "controller" && !validAdvertise(advertise)) e.advertise = "An https:// URL with a port, as the other replicas reach this node.";
+    if (role === "controller" && !pool && !validAdvertise(advertise)) e.advertise = "An https:// URL with a port, as the other replicas reach this node.";
     if ((role === "proxy" || role === "ui") && aggregatorUrl && !validUrl(aggregatorUrl)) e.aggregatorUrl = "An http(s) URL.";
     if (role === "aggregator" && parentUrl && !validUrl(parentUrl)) e.parentUrl = "An http(s) URL without credentials.";
     if (containerTarget && !validTag(prefs.imageTag)) e.imageTag = "A valid image tag.";
-    if (target === "k8s" && !validNamespace(prefs.namespace)) e.namespace = "A Kubernetes namespace name.";
+    if (target === "k8s" && !pool && !validNamespace(prefs.namespace)) e.namespace = "A Kubernetes namespace name.";
     if (stepUpRole && stepUp.length === 0) e.stepUp = "Required for this role.";
-    if (!Number.isInteger(effectiveUses) || effectiveUses < 1 || effectiveUses > 1000) e.uses = "1 to 1000.";
+    if (!Number.isInteger(effectiveUses) || effectiveUses < (pool ? 2 : 1) || effectiveUses > (pool ? 16 : 1000)) e.uses = pool ? "2 to 16." : "1 to 1000.";
     return e;
-  }, [name, prefs, role, backends, aggregatorUrl, parentUrl, advertise, containerTarget, target, stepUpRole, stepUp, effectiveUses]);
+  }, [name, prefs, role, pool, backends, aggregatorUrl, parentUrl, advertise, containerTarget, target, stepUpRole, stepUp, effectiveUses]);
   const valid = Object.keys(errors).length === 0 && !blocked;
 
   // Errors show once the field has been touched or a mint was tried.
@@ -178,6 +184,7 @@ export function AddNodePage() {
         ttl_secs: effectiveTtl,
         uses: effectiveUses,
         ...(role === "aggregator" && parentUrl ? { parent_url: parentUrl } : {}),
+        ...(pool ? { name_prefix: POOL_PREFIX } : {}),
         ...(secret ? { step_up: secret } : {}),
       });
       writePrefs(prefs);
@@ -192,7 +199,9 @@ export function AddNodePage() {
         controllerUrl: prefs.controllerUrl,
         pin: prefs.pin,
         imageTag: prefs.imageTag,
-        namespace: prefs.namespace,
+        // The ha-enrolled overlay is fixed to this namespace.
+        namespace: pool ? "wayhouse" : prefs.namespace,
+        pool,
       });
       setTried(false);
       void refresh();
@@ -244,6 +253,7 @@ export function AddNodePage() {
       parentUrl: minted.parentUrl,
       advertise: minted.advertise,
       namespace: minted.namespace,
+      uses: minted.code.uses,
     });
   }, [minted]);
 
@@ -279,6 +289,12 @@ export function AddNodePage() {
           {steps.map((s, i) => (
             <StepBlock key={`${minted.code.id}-${i}`} step={s} index={i} />
           ))}
+          {minted.pool && (
+            <p className="mb-4 max-w-(--measure) text-xs text-ink-muted">
+              Each replica pod gets its own Raft node id when it redeems the code. Its row below goes <strong>joining</strong> when it has
+              enrolled and <strong>joined</strong> once the cluster has added it. Revoke the pool below when the pods are up.
+            </p>
+          )}
           {minted.code.node_id !== undefined && (
             <p className="mb-4 max-w-(--measure) text-xs text-ink-muted">
               The replica will be Raft node id {minted.code.node_id}. Its row below goes <strong>joining</strong> when it has enrolled and{" "}
@@ -310,7 +326,7 @@ export function AddNodePage() {
           <FieldRow
             label="Name"
             required
-            help="What this node is called: an origin's tunnel name, a proxy's instance name."
+            help={pool ? `What this pool code is called. The pods are named ${POOL_PREFIX}0, ${POOL_PREFIX}1 and so on.` : "What this node is called: an origin's tunnel name, a proxy's instance name."}
             error={shown("name")}
             render={(a) => <Input {...a} value={name} onChange={(e) => setName(e.target.value)} mono placeholder="home-nas" />}
           />
@@ -327,24 +343,28 @@ export function AddNodePage() {
               </Select>
             )}
           />
-          <FieldRow
-            label="Controller URL"
-            required
-            help="Where the new node reaches the controller."
-            error={shown("controllerUrl")}
-            render={(a) => (
-              <Input {...a} value={prefs.controllerUrl} onChange={(e) => setPrefs({ ...prefs, controllerUrl: e.target.value.trim() })} mono placeholder="https://controller.example:9901" className="w-full max-w-xl" />
-            )}
-          />
-          <FieldRow
-            label="Certificate fingerprint"
-            required
-            help="The node checks the controller's certificate against this before it sends the code. `wayhouse-controller init` printed it."
-            error={shown("pin")}
-            render={(a) => (
-              <Input {...a} value={prefs.pin} onChange={(e) => setPrefs({ ...prefs, pin: e.target.value.trim() })} mono placeholder="sha256:…" className="w-full max-w-xl" />
-            )}
-          />
+          {!pool && (
+            <FieldRow
+              label="Controller URL"
+              required
+              help="Where the new node reaches the controller."
+              error={shown("controllerUrl")}
+              render={(a) => (
+                <Input {...a} value={prefs.controllerUrl} onChange={(e) => setPrefs({ ...prefs, controllerUrl: e.target.value.trim() })} mono placeholder="https://controller.example:9901" className="w-full max-w-xl" />
+              )}
+            />
+          )}
+          {!pool && (
+            <FieldRow
+              label="Certificate fingerprint"
+              required
+              help="The node checks the controller's certificate against this before it sends the code. `wayhouse-controller init` printed it."
+              error={shown("pin")}
+              render={(a) => (
+                <Input {...a} value={prefs.pin} onChange={(e) => setPrefs({ ...prefs, pin: e.target.value.trim() })} mono placeholder="sha256:…" className="w-full max-w-xl" />
+              )}
+            />
+          )}
           {role === "agent" && (
             <FieldRow
               label="Game server addresses"
@@ -362,7 +382,7 @@ export function AddNodePage() {
               render={(a) => <Input {...a} value={aggregatorUrl} onChange={(e) => setAggregatorUrl(e.target.value.trim())} mono placeholder="https://aggregator.example:9902" className="w-full max-w-xl" />}
             />
           )}
-          {role === "controller" && (
+          {role === "controller" && !pool && (
             <FieldRow
               label="Advertise address"
               required
@@ -387,7 +407,7 @@ export function AddNodePage() {
               render={(a) => <Input {...a} value={prefs.imageTag} onChange={(e) => setPrefs({ ...prefs, imageTag: e.target.value.trim() })} mono />}
             />
           )}
-          {target === "k8s" && (
+          {target === "k8s" && !pool && (
             <FieldRow
               label="Namespace"
               error={shown("namespace")}
@@ -409,10 +429,10 @@ export function AddNodePage() {
           />
           <FieldRow
             label="Uses"
-            help={usesFixed ? "A UI or controller code works once." : "More than one only for a fleet that shares a code, such as per-pod init containers."}
+            help={pool ? "One use per replica pod; scale the StatefulSet to at most this many." : usesFixed ? "A UI or controller code works once." : "More than one only for a fleet that shares a code, such as per-pod init containers."}
             error={shown("uses")}
             render={(a) => (
-              <Input {...a} type="number" min={1} max={1000} disabled={usesFixed} value={effectiveUses} onChange={(e) => setUses(Number(e.target.value))} className="w-24" />
+              <Input {...a} type="number" min={pool ? 2 : 1} max={pool ? 16 : 1000} disabled={usesFixed} value={effectiveUses} onChange={(e) => (pool ? setPoolUses : setUses)(Number(e.target.value))} className="w-24" />
             )}
           />
           {stepUpRole && (

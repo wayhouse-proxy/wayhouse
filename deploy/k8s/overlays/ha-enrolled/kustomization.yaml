@@ -1,0 +1,24 @@
+# HA controllers that grow by enrollment: one bootstrap controller (a one-voter Raft group on the
+# shared Secrets) and a second StatefulSet whose pods each redeem ONE multi-use controller code
+# (a pool code, docs/12 "One code for a controller StatefulSet") and join the group. Needs, besides
+# what `wayhouse-controller init --target k8s-secret` makes, the Secrets `wayhouse-enroll-step-up`
+# (key `step-up`) and `wayhouse-enroll-code` (key `code`) that you create (deploy/README.md).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - controllers.yaml
+patches:
+  # The StatefulSets replace the single-writer Deployment and its shared PVC.
+  - target: { kind: Deployment, name: wayhouse-controller }
+    patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata: { name: wayhouse-controller }
+  - target: { kind: PersistentVolumeClaim, name: wayhouse-controller-data }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata: { name: wayhouse-controller-data }

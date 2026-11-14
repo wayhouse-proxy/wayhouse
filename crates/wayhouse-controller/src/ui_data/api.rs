@@ -612,7 +612,9 @@ fn answer(applied: &Applied, ok: impl FnOnce() -> Response) -> Response {
         ),
         Applied::Refused => err(StatusCode::UNAUTHORIZED, "invalid or expired code"),
         Applied::Taken => err(StatusCode::CONFLICT, "that node id is already taken"),
-        Applied::Replayed => internal("a write was answered as a replay"),
+        Applied::Replayed | Applied::Allocated(_) => {
+            internal("a write was answered as a replay or a redeem")
+        }
     }
 }
 

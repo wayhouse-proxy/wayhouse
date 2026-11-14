@@ -113,6 +113,7 @@ kubectl apply -k deploy/k8s/overlays/single
 
 Overlays (`deploy/k8s/overlays/`): `single` is the default (one standalone controller, one aggregator);
 `enrolled` is `single` with per-node enrollment: the proxy DaemonSet and an origin-agent DaemonSet redeem one multi-use code from a `wayhouse-enroll-code` Secret in an init container, one identity per node (`docs/12-deployment.md` "Per-node enrollment on Kubernetes");
+`ha-enrolled` is HA that grows by enrollment: a one-voter bootstrap controller plus a replica StatefulSet whose pods join with one pool code (`docs/12-deployment.md` "One code for a controller StatefulSet"; needs the extra `wayhouse-enroll-step-up` and `wayhouse-enroll-code` Secrets you create);
 `web-gateway` adds the Caddy tier (`docs/web-proxy.md`; label nodes `wayhouse/web-gateway=true`);
 `ha` swaps the controller for a 3-node Raft StatefulSet (ids = pod ordinals, Kubernetes 1.28+) and
 needs an extra `ha-token` key (16+ characters) in the `wayhouse-tokens` Secret (`init` makes it). Preview with `kubectl kustomize <overlay>`.

@@ -17,6 +17,9 @@
 //! proof that came with the files), and the cluster runs the member add itself, so no admin
 //! token is needed on the new host. The node id is chosen when the code is minted and is unique
 //! across codes (the replicated store refuses a second code with the same id).
+//! A controller code with several uses and a `name_prefix` is a pool for a StatefulSet: the node id
+//! is allocated when each pod redeems (in the same atomic store step that spends the use and
+//! writes a child record), and a name enrolls once.
 //!
 //! The tunnel key is sealed under the cluster keyring as `tunnel-psk-<hash of origin>` so
 //! proxies fetch it through `GET /secrets/{name}/sealed` with their own scoped token; the agent
@@ -53,7 +56,7 @@ use zeroize::Zeroizing;
 use crate::ha::members::Joiner;
 use crate::ha::{WriteRequest, WriteResponse};
 use crate::ui_data::api::{actor, err, internal, now, UiState};
-use crate::ui_data::{Applied, Kind, UiOp};
+use crate::ui_data::{self, Applied, Kind, PoolChild, UiOp};
 
 /// Default and longest code lifetime, in seconds.
 const DEFAULT_TTL: u64 = 900;
@@ -287,21 +290,32 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
             format!("ttl_secs for this role is at most {MAX_STEP_UP_TTL}"),
         );
     }
-    if matches!(b.role, Role::Ui | Role::Controller) && b.uses.is_some_and(|u| u != 1) {
+    if b.role == Role::Ui && b.uses.is_some_and(|u| u != 1) {
+        return err(StatusCode::BAD_REQUEST, "a ui code is single use");
+    }
+    // A controller code with more than one use is a pool: a StatefulSet's pods each redeem it
+    // under their own name and get their own node id. A single-use one has its id fixed at mint.
+    let pool = b.role == Role::Controller && b.uses.is_some_and(|u| u > 1);
+    if b.role == Role::Controller
+        && (b.uses.is_some_and(|u| u > ui_data::POOL_MAX_USES) || pool != b.name_prefix.is_some())
+    {
         return err(
             StatusCode::BAD_REQUEST,
-            "a ui or controller code is single use",
+            format!(
+                "a controller code is single use, or a pool of 2 to {} uses with a name_prefix",
+                ui_data::POOL_MAX_USES
+            ),
         );
     }
     if let Some(p) = &b.name_prefix {
-        let ok = matches!(b.role, Role::Agent | Role::Proxy)
+        let ok = (matches!(b.role, Role::Agent | Role::Proxy) || pool)
             && p.len() > 1
             && p.ends_with('-')
             && crate::registry::validate_name(p).is_ok();
         if !ok {
             return err(
                 StatusCode::BAD_REQUEST,
-                "name_prefix is for an agent or proxy code and must be a name ending in '-'",
+                "name_prefix is for an agent, proxy or pool controller code and must be a name ending in '-'",
             );
         }
     }
@@ -343,7 +357,7 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
     // A controller code carries the node id the replica will have. The id is picked above every
     // member and every other code; the store refuses a duplicate atomically, so a clash with a
     // code minted at the same moment elsewhere moves on to the next id.
-    let first_id = (b.role == Role::Controller).then(|| next_node_id(&st));
+    let first_id = (b.role == Role::Controller && !pool).then(|| next_node_id(&st));
     let mut node_id = first_id;
     let mut attempts = 0;
     loop {
@@ -432,7 +446,7 @@ async fn list(State(st): State<EnrollState>) -> Response {
         .map(|(id, mut v)| {
             let status = if v["joined"] == true {
                 "joined"
-            } else if v["uses_left"] == 0 && v["role"] == "controller" {
+            } else if v["uses_left"] == 0 && v["role"] == "controller" && v["uses"] == 1 {
                 // Redeemed; the node has not been added to the Raft group yet.
                 "joining"
             } else if v["uses_left"] == 0 {
@@ -514,25 +528,27 @@ async fn redeem(
     if !st.limiter.take(&id_key, PER_ID) {
         return too_many();
     }
-    let (name, parent_url, node_id, prefix) = match st.ui.store.get(Kind::Enrollment, code.id()) {
-        // The hash is checked here too, so a configuration answer (503) is only ever given to
-        // the holder of the code.
-        Ok(Some(rec))
-            if rec["role"] == req.role.as_str()
-                && rec["hash"]
-                    .as_str()
-                    .is_some_and(|h| wayhouse_http::token_eq(h, &code.hash())) =>
-        {
-            (
-                rec["origin"].as_str().unwrap_or_default().to_owned(),
-                rec["parent_url"].as_str().map(str::to_owned),
-                rec["node_id"].as_u64(),
-                rec["name_prefix"].as_str().map(str::to_owned),
-            )
-        }
-        Ok(_) => return refused(),
-        Err(e) => return internal(e),
-    };
+    let (name, parent_url, mut node_id, prefix, pool) =
+        match st.ui.store.get(Kind::Enrollment, code.id()) {
+            // The hash is checked here too, so a configuration answer (503) is only ever given to
+            // the holder of the code.
+            Ok(Some(rec))
+                if rec["role"] == req.role.as_str()
+                    && rec["hash"]
+                        .as_str()
+                        .is_some_and(|h| wayhouse_http::token_eq(h, &code.hash())) =>
+            {
+                (
+                    rec["origin"].as_str().unwrap_or_default().to_owned(),
+                    rec["parent_url"].as_str().map(str::to_owned),
+                    rec["node_id"].as_u64(),
+                    rec["name_prefix"].as_str().map(str::to_owned),
+                    rec["role"] == "controller" && rec["uses"].as_u64() > Some(1),
+                )
+            }
+            Ok(_) => return refused(),
+            Err(e) => return internal(e),
+        };
     let role = req.role;
     // A prefix code is for many pods: each names itself, inside the prefix. Checked before the
     // use is spent, and only for the holder of a valid code.
@@ -573,22 +589,50 @@ async fn redeem(
     }
     // A controller replica also gets a proof it can show later to be added to the Raft group;
     // only its hash is recorded, in the same step that spends the code.
+    // A pool code's replica gets a record of its own, so its proof is a fresh code, not one tied
+    // to the pool's id.
     let join = (role == Role::Controller).then(|| {
-        let secret = wayhouse_enroll::generate_token();
-        let hash = Code::parse(&format!("{}.{secret}", code.id()))
-            .expect("a generated token has the secret shape")
-            .hash();
-        (Zeroizing::new(format!("{}.{secret}", code.id())), hash)
+        if pool {
+            let c = Code::generate();
+            (c.expose(), c.hash(), c.id().to_owned())
+        } else {
+            let secret = wayhouse_enroll::generate_token();
+            let hash = Code::parse(&format!("{}.{secret}", code.id()))
+                .expect("a generated token has the secret shape")
+                .hash();
+            (
+                Zeroizing::new(format!("{}.{secret}", code.id())),
+                hash,
+                code.id().to_owned(),
+            )
+        }
     });
+    let child = join
+        .as_ref()
+        .filter(|_| pool)
+        .map(|(_, hash, id)| PoolChild {
+            id: id.clone(),
+            name: name.clone(),
+            join_hash: hash.clone(),
+            min_node_id: next_node_id(&st),
+        });
     let op = UiOp::Redeem {
         id: code.id().to_owned(),
         hash: code.hash(),
         now: now(),
-        join_hash: join.as_ref().map(|(_, h)| h.clone()),
+        join_hash: join.as_ref().filter(|_| !pool).map(|(_, h, _)| h.clone()),
+        pool: child,
     };
     match apply(&st.ui, op).await {
         Ok(Applied::Done) => {}
+        Ok(Applied::Allocated(id)) => node_id = Some(id),
         Ok(Applied::Refused) => return refused(),
+        Ok(Applied::Full(max)) => {
+            return err(
+                StatusCode::CONFLICT,
+                format!("already {max} enrollment records; revoke some and ask again"),
+            )
+        }
         Ok(_) => return internal("unexpected answer to a redeem"),
         Err(r) => return r,
     }
@@ -603,7 +647,7 @@ async fn redeem(
         Ok(f) => f,
         Err(r) => return r,
     };
-    if let Some((proof, _)) = &join {
+    if let Some((proof, _, _)) = &join {
         files.insert(
             wayhouse_enroll::files::JOIN_PROOF_FILE.into(),
             proof.to_string(),
@@ -1879,6 +1923,128 @@ mod tests {
         )
         .await;
         assert_eq!(list["items"][0]["status"], "joining");
+    }
+
+    async fn mint_pool(t: &T, uses: u64) -> Value {
+        let (st, m) = mint_as(
+            t,
+            json!({"role": "controller", "name": "ctl-pool", "name_prefix": "ctl-",
+                   "uses": uses, "step_up": STEP_UP}),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{m}");
+        m
+    }
+
+    #[tokio::test]
+    async fn a_pool_code_enrolls_each_named_pod_with_its_own_node_id_and_proof() {
+        let t = setup_ha().await;
+        let m = mint_pool(&t, 3).await;
+        assert!(m.get("node_id").is_none(), "{m}");
+        let code = m["code"].as_str().unwrap();
+        let (st, a) = redeem_named(&t, code, "controller", json!("ctl-1")).await;
+        assert_eq!(st, StatusCode::OK, "{a}");
+        let (st, b) = redeem_named(&t, code, "controller", json!("ctl-2")).await;
+        assert_eq!(st, StatusCode::OK, "{b}");
+        assert_eq!((&a["node_id"], &b["node_id"]), (&json!(2), &json!(3)));
+        assert_eq!((&a["name"], &b["name"]), (&json!("ctl-1"), &json!("ctl-2")));
+        let (pa, pb) = (
+            a["files"]["ha-join-proof"].as_str().unwrap(),
+            b["files"]["ha-join-proof"].as_str().unwrap(),
+        );
+        assert_ne!(pa.split_once('.').unwrap().0, pb.split_once('.').unwrap().0);
+        assert_ne!(pa.split_once('.').unwrap().0, m["id"].as_str().unwrap());
+        assert!(a["files"]["secret.keys"].is_string());
+        // The proof passes the 401 gate (it reaches the identity check) and names its own node.
+        let other = stub_node(9).await;
+        let (st, v) = join(&t, pa, &other, "10.0.0.5").await;
+        assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    }
+
+    #[tokio::test]
+    async fn a_pool_name_enrolls_once_and_a_bad_or_missing_name_spends_nothing() {
+        let t = setup_ha().await;
+        let m = mint_pool(&t, 3).await;
+        let code = m["code"].as_str().unwrap();
+        assert_eq!(
+            redeem_named(&t, code, "controller", json!("ctl-1")).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            redeem_named(&t, code, "controller", json!("ctl-1")).await.0,
+            StatusCode::UNAUTHORIZED,
+            "a name that already has a replica"
+        );
+        for name in [json!("other-1"), json!(null)] {
+            assert_eq!(
+                redeem_named(&t, code, "controller", name).await.0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+        let pool = t
+            .store
+            .get(Kind::Enrollment, m["id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(pool["uses_left"], 2, "only the one good redeem spent a use");
+    }
+
+    #[tokio::test]
+    async fn a_pool_code_needs_a_prefix_and_at_most_sixteen_uses_and_a_single_use_code_takes_no_prefix(
+    ) {
+        let t = setup_ha().await;
+        for body in [
+            json!({"role": "controller", "name": "p", "uses": 3, "step_up": STEP_UP}),
+            json!({"role": "controller", "name": "p", "name_prefix": "ctl-", "uses": 17, "step_up": STEP_UP}),
+            json!({"role": "controller", "name": "p", "name_prefix": "ctl-", "step_up": STEP_UP}),
+        ] {
+            assert_eq!(mint_as(&t, body).await.0, StatusCode::BAD_REQUEST);
+        }
+        assert!(t.store.list(Kind::Enrollment).unwrap().is_empty());
+        let (st, _) = mint_as(
+            &t,
+            json!({"role": "controller", "name": "ctl-pool", "name_prefix": "ctl-", "uses": 2}),
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::FORBIDDEN,
+            "a pool needs the step-up secret too"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_listing_shows_a_pool_and_each_replica_it_made() {
+        let t = setup_ha().await;
+        let m = mint_pool(&t, 2).await;
+        for n in ["ctl-1", "ctl-2"] {
+            redeem_named(&t, m["code"].as_str().unwrap(), "controller", json!(n)).await;
+        }
+        let (_, list) = call(
+            &t.app,
+            "GET",
+            "/enrollments",
+            Value::Null,
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        let items = list["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3, "{list}");
+        let mut seen: Vec<_> = items
+            .iter()
+            .map(|i| (i["origin"].as_str().unwrap(), i["status"].as_str().unwrap()))
+            .collect();
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            [
+                ("ctl-1", "joining"),
+                ("ctl-2", "joining"),
+                ("ctl-pool", "used")
+            ]
+        );
+        assert!(!list.to_string().contains("join_hash"));
     }
 
     #[tokio::test]

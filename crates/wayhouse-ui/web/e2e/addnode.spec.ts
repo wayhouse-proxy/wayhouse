@@ -107,3 +107,34 @@ for (const scheme of ["light", "dark"] as const) {
     expect(await serious()).toEqual([]);
   });
 }
+
+// The Kubernetes pool-code form and its steps.
+for (const scheme of ["light", "dark"] as const) {
+  test(`controller pool on Kubernetes: form and result have no serious accessibility violations (${scheme})`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: scheme });
+    await page.route("**/ui/session", (r) => r.fulfill({ json: { authenticated: true, username: "ana", role: "admin" } }));
+    await page.route("**/ws/**", (r) => r.abort());
+    await page.route("**/api/enrollments", (r) =>
+      r.request().method() === "POST"
+        ? r.fulfill({ json: { id: "p00l01", code: CODE, role: "controller", name: "ctl-pool", expires_at: Math.floor(Date.now() / 1000) + 900, uses: 3 } })
+        : r.fulfill({ json: { items: [] } }),
+    );
+    const serious = async () =>
+      (await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze()).violations
+        .filter((v) => v.impact === "serious" || v.impact === "critical")
+        .map((v) => `${v.id}: ${v.nodes[0]?.target.join(" ")}`);
+
+    await page.goto("/nodes/add");
+    await page.getByLabel("Role").selectOption("controller");
+    await page.getByLabel("Set up with").selectOption("k8s");
+    await page.getByLabel("Name", { exact: false }).first().fill("ctl-pool");
+    await page.getByLabel("Uses").fill("3");
+    await page.getByLabel("Step-up secret").fill("correct step-up secret");
+    expect(await serious()).toEqual([]);
+
+    await page.getByRole("button", { name: "Create code" }).click();
+    await expect(page.getByLabel("Step 2 text")).toContainText("wayhouse-enroll-code");
+    await expect(page.getByLabel("Step 3 text")).toContainText("--replicas=3");
+    expect(await serious()).toEqual([]);
+  });
+}
