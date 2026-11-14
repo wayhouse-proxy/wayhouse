@@ -303,3 +303,63 @@ fn verify_plugin_runs_the_client_validator() {
         .status
         .success());
 }
+
+fn catalog_plugin_index() -> String {
+    r#"{"schema":2,"kind":"plugin","name":"p","plugins":[{"name":"demo","description":"d","license":"MIT","categories":["integration"],"tags":[],"latest":"0.1.0","abi":"0.2","signed":false,"updated":"2026-11-12","detail_url":"https://example.com/demo.json"}]}"#
+        .to_owned()
+}
+
+fn plugin_detail(name: &str) -> String {
+    format!(
+        r#"{{"schema":2,"kind":"plugin","name":"{name}","versions":[{{"version":"0.1.0","abi":"0.2","url":"https://example.com/p.wasm","sha256":"{}","size":10}}]}}"#,
+        "a".repeat(64)
+    )
+}
+
+#[test]
+fn verify_plugin_checks_the_detail_files_of_a_catalog_index() {
+    let t = tempfile::tempdir().unwrap();
+    let index = t.path().join("index.json");
+    std::fs::write(&index, catalog_plugin_index()).unwrap();
+    let details = t.path().join("details");
+    std::fs::create_dir(&details).unwrap();
+    std::fs::write(details.join("demo.json"), plugin_detail("demo")).unwrap();
+
+    let r = run(&[
+        "verify-plugin".as_ref(),
+        index.as_os_str(),
+        "--details-dir".as_ref(),
+        details.as_os_str(),
+    ]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    assert!(String::from_utf8_lossy(&r.stdout).contains("1 plugins, 1 versions"));
+
+    // The detail files are needed, and must be the plugin's own.
+    assert!(!run(&["verify-plugin".as_ref(), index.as_os_str()])
+        .status
+        .success());
+    std::fs::write(details.join("demo.json"), plugin_detail("other")).unwrap();
+    assert!(!run(&[
+        "verify-plugin".as_ref(),
+        index.as_os_str(),
+        "--details-dir".as_ref(),
+        details.as_os_str(),
+    ])
+    .status
+    .success());
+}
+
+#[test]
+fn verify_plugin_refuses_a_signed_flag_that_the_newest_version_does_not_back() {
+    let t = tempfile::tempdir().unwrap();
+    let index = t.path().join("index.json");
+    // The entry says signed, but the version has no signature_url.
+    std::fs::write(
+        &index,
+        plugin_index("https://example.com/p.wasm").replace(r#""signed":false"#, r#""signed":true"#),
+    )
+    .unwrap();
+    assert!(!run(&["verify-plugin".as_ref(), index.as_os_str()])
+        .status
+        .success());
+}

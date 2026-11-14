@@ -129,6 +129,11 @@ pub fn render_unit(
 ) -> Result<String, BoxErr> {
     let url = unit_arg(&meta.controller_url)?;
     let name = unit_arg(&meta.name)?;
+    // Only a controller replica's unit turns this credential into a flag; for any other role it
+    // would be loaded and never used.
+    if spec.role != Role::Controller && spec.extra_creds.iter().any(|(n, _)| n == "tls-key") {
+        return Err("--credential tls-key=PATH is only for controller replica installs".into());
+    }
     let mut flags: Vec<String> = match spec.role {
         Role::Agent => vec!["--data-dir=/var/lib/wayhouse-agent".into()],
         Role::Proxy => vec![
@@ -168,14 +173,15 @@ pub fn render_unit(
                 "--secret-key-file=%d/secret.keys".into(),
             ];
             // The key goes in as a credential: the unit runs as a dynamic user, which could only
-            // read a world-readable key file. A hand-written --tls-key would be a second source.
+            // read a world-readable key file, so a hand-written --tls-key (which names a path
+            // the unit cannot read) is refused whether or not the credential is given.
+            if extra
+                .iter()
+                .any(|a| a == "--tls-key" || a.starts_with("--tls-key="))
+            {
+                return Err("a controller replica's unit cannot read a --tls-key path (it runs as a dynamic user); pass the key with --credential tls-key=PATH instead".into());
+            }
             if spec.extra_creds.iter().any(|(n, _)| n == "tls-key") {
-                if extra
-                    .iter()
-                    .any(|a| a == "--tls-key" || a.starts_with("--tls-key="))
-                {
-                    return Err("--credential tls-key=PATH already sets --tls-key; drop --tls-key after `--`".into());
-                }
                 flags.push("--tls-key=%d/tls-key".into());
             }
             // A replica with another network than the cluster's refuses tunnel writes.
@@ -553,6 +559,16 @@ mod tests {
             "--tls-key=/k".to_owned(),
         ];
         assert!(render_unit(&s, Path::new("/d"), &m, &[], &both).is_err());
+        // ...and without the credential too: the dynamic user cannot read that path either.
+        let plain = spec(Role::Controller, "wayhouse-controller", &[]);
+        assert!(render_unit(&plain, Path::new("/d"), &m, &[], &both).is_err());
+        // Other roles never turn the credential into a flag, so it is refused, not ignored.
+        let proxy = spec(
+            Role::Proxy,
+            "wayhouse",
+            &["tls-key=/etc/wayhouse/x.key".into()],
+        );
+        assert!(render_unit(&proxy, Path::new("/d"), &meta(Role::Proxy, None), &[], &[]).is_err());
         // Without the credential nothing is added.
         let plain = spec(Role::Controller, "wayhouse-controller", &[]);
         let u = render_unit(&plain, Path::new("/d"), &m, &[], &listen).unwrap();

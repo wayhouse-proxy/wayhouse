@@ -511,7 +511,10 @@ sudo wayhouse-controller install --systemd --controller-url https://ctl-1.intern
   --credential tls-key=/etc/wayhouse/ctl-4.key \
   -- --listen 0.0.0.0:9901 --tls-cert /etc/wayhouse/ctl-4.pem --ca-file /etc/wayhouse/ca.pem
 # The unit runs as a dynamic user. `--credential tls-key=PATH` has systemd hand it the key (kept
-# root-only) and adds `--tls-key=%d/tls-key` itself; do not also pass --tls-key after `--`.
+# root-only) and adds `--tls-key=%d/tls-key` itself; a --tls-key after `--` is refused, with or
+# without the credential (that path would be unreadable to the unit). Only controller replicas take
+# this credential. The unit reads the key when it starts, so after renewing the key file run
+# `systemctl restart wayhouse-controller`.
 ```
 
 What happens, in order:
