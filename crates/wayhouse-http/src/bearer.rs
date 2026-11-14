@@ -60,25 +60,21 @@ pub(crate) fn redact_userinfo(url: &str) -> String {
     format!("{scheme}://{host}")
 }
 
+/// Decides from the same parse every request goes through (`url::Url`), so a spelling the
+/// parser accepts cannot slip past a hand-cut check. An unparsable URL counts as in the clear.
 pub(crate) fn sends_bearer_in_clear(url: &str) -> bool {
-    let Some(rest) = url
-        .get(..7)
-        .filter(|scheme| scheme.eq_ignore_ascii_case("http://"))
-        .map(|_| &url[7..])
-    else {
+    let Ok(url) = url::Url::parse(url) else {
+        return true;
+    };
+    if url.scheme() != "http" {
         return false;
+    }
+    let loopback = match url.host() {
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.to_canonical().is_loopback(),
+        None => false,
     };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let authority = authority.rsplit('@').next().unwrap_or_default();
-    let host = if let Some(v6) = authority.strip_prefix('[') {
-        v6.split(']').next().unwrap_or_default()
-    } else {
-        authority.split(':').next().unwrap_or_default()
-    };
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.to_canonical().is_loopback());
     !loopback
 }
 
@@ -93,6 +89,15 @@ mod tests {
             "http://10.0.0.5:8080/path",
             "HTTP://[2001:db8::1]:8080",
             "http://user@host.example",
+            // Forms the `url` crate (what a request goes through) accepts but a hand-cut
+            // parse misreads: backslash, missing slashes, leading space, embedded tab.
+            "http://10.0.0.4\\@127.0.0.1:9900",
+            "http:10.0.0.4:9900",
+            "http:/10.0.0.4",
+            " http://10.0.0.4",
+            "ht\ttp://10.0.0.4",
+            // Unparsable: treated as in the clear rather than waved through.
+            "http://",
         ] {
             assert!(sends_bearer_in_clear(clear), "{clear}");
         }
