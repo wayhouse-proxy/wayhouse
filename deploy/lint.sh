@@ -96,10 +96,10 @@ errs << "k8s ha: replicas must trust the CA for the Raft peers (--ca-file) and n
 k8s.each { |o, docs| docs.each { |d| errs << "k8s #{o}: a manifest must not define the wayhouse-tls Secret" if d["kind"] == "Secret" && d.dig("metadata", "name") == "wayhouse-tls" } }
 
 # Per-node enrollment (components/enroll and components/agent): an init container redeems a multi-use
-# code that lives in the wayhouse-enroll-code Secret (never in a manifest), names the pod after its
+# code that lives in a wayhouse-enroll-code-proxy / -agent Secret (never in a manifest; a code has one role), names the pod after its
 # node, and the main container reads what it wrote. The shared tokens leave the proxy DaemonSet.
 k8s["enrolled"].each do |d|
-  errs << "k8s enrolled: a manifest must not define the wayhouse-enroll-code Secret (it holds the code)" if d["kind"] == "Secret"
+  errs << "k8s enrolled: a manifest must not define a wayhouse-enroll-code Secret (it holds the code)" if d["kind"] == "Secret"
   pod = d.dig("spec", "template", "spec") or next
   who = "k8s enrolled: #{d.dig("metadata", "name")}"
   ini = (pod["initContainers"] || []).find { |c| c["name"] == "enroll" }
@@ -113,7 +113,8 @@ k8s["enrolled"].each do |d|
     errs << "#{who}: enroll must use --skip-if-enrolled (a restarted pod must not spend another use)" unless args.include?("--skip-if-enrolled")
     errs << "#{who}: enroll must pin the controller with the CA and use https" unless args.include?("--controller-ca=/run/tls/ca.crt") && args.any? { |a| a =~ /\A--controller-url=https:/ }
     errs << "#{who}: NODE_NAME must come from spec.nodeName" unless (ini["env"] || []).any? { |e| e["name"] == "NODE_NAME" && e.dig("valueFrom", "fieldRef", "fieldPath") == "spec.nodeName" }
-    errs << "#{who}: the code Secret must be wayhouse-enroll-code" unless (pod["volumes"] || []).any? { |v| v.dig("secret", "secretName") == "wayhouse-enroll-code" }
+    secret = d.dig("metadata", "name") == "wayhouse" ? "wayhouse-enroll-code-proxy" : "wayhouse-enroll-code-agent"
+    errs << "#{who}: the code Secret must be #{secret} (a code has one role, so the proxy and the agent each have their own)" unless (pod["volumes"] || []).any? { |v| v.dig("secret", "secretName") == secret }
     errs << "#{who}: enroll needs readOnlyRootFilesystem and no privilege escalation" unless ini.dig("securityContext", "readOnlyRootFilesystem") == true && ini.dig("securityContext", "allowPrivilegeEscalation") == false
   end
   if d.dig("metadata", "name") == "wayhouse"

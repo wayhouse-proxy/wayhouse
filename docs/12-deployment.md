@@ -617,7 +617,10 @@ curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin
   -H 'Content-Type: application/json' \
   -d '{"role":"agent","name":"k8s-agents","name_prefix":"agent-","uses":20,"ttl_secs":86400}' \
   | jq -r .code > code
-kubectl -n wayhouse create secret generic wayhouse-enroll-code --from-file=code=code && rm code
+kubectl -n wayhouse create secret generic wayhouse-enroll-code-agent --from-file=code=code && rm code
+# The proxy DaemonSet needs its own code (role proxy, prefix k8s-, step-up secret, at most 24 hours),
+# in its own Secret: a code has one role, so one Secret cannot serve both DaemonSets.
+kubectl -n wayhouse create secret generic wayhouse-enroll-code-proxy --from-file=code=proxy-code && rm proxy-code
 kubectl apply -k deploy/k8s/overlays/enrolled
 ```
 
@@ -631,7 +634,8 @@ The agent keeps its files on the node (a `hostPath`), so a recreated agent pod a
 survive. The proxy runs as a non-root user and its files live in an emptyDir, which is gone with
 the pod: **a recreated proxy pod redeems the code again**, so it needs a code that is still valid.
 
-- The code is not in any manifest: you create the `wayhouse-enroll-code` Secret, and `deploy/lint.sh`
+- The codes are not in any manifest: you create the `wayhouse-enroll-code-proxy` and
+  `wayhouse-enroll-code-agent` Secrets (the controller pool code below keeps `wayhouse-enroll-code`), and `deploy/lint.sh`
   fails a render that defines it, passes `--code=`, or mounts the shared tokens on the enrolled proxy.
 - A code stops working at its expiry whatever uses are left (`ttl_secs`). Keep the Secret in place
   while proxy pods can be recreated, and when you roll, add or replace nodes, mint a fresh code

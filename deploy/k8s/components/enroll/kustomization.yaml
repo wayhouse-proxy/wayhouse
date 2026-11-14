@@ -1,5 +1,5 @@
 # Per-node enrollment for the wayhouse proxy DaemonSet (docs/12 "Kubernetes"): an init container
-# redeems one multi-use code from the `wayhouse-enroll-code` Secret, names itself k8s-<node name>,
+# redeems one multi-use code from the `wayhouse-enroll-code-proxy` Secret, names itself k8s-<node name>,
 # and the proxy reads the tokens it got from an emptyDir instead of the shared `wayhouse-tokens`.
 # The code is never in a manifest: create the Secret yourself (deploy/README.md).
 apiVersion: kustomize.config.k8s.io/v1alpha1
@@ -20,7 +20,7 @@ patches:
         value:
           name: enroll-code
           secret:
-            secretName: wayhouse-enroll-code   # key `code`; you create it, it holds the multi-use code
+            secretName: wayhouse-enroll-code-proxy   # key `code`; you create it, it holds the multi-use code
             defaultMode: 0440
             items: [{ key: code, path: code }]
       # Same path the base used for the ingest token, so the proxy's flags do not change.

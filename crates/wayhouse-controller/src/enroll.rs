@@ -635,6 +635,17 @@ async fn redeem(
                     rec["role"] == "controller" && rec["uses"].as_u64() > Some(1),
                 )
             }
+            // The right code for another role (a proxy and an agent DaemonSet sharing one Secret):
+            // not an attempt at guessing, so it must not use up the code's attempts for the
+            // pods that do match. Only a holder of the valid code gets here.
+            Ok(Some(rec))
+                if rec["hash"]
+                    .as_str()
+                    .is_some_and(|h| wayhouse_http::token_eq(h, &code.hash())) =>
+            {
+                st.limiter.refund(&id_key);
+                return refused();
+            }
             Ok(_) => return refused(),
             Err(e) => return internal(e),
         };
@@ -1253,6 +1264,26 @@ mod tests {
         let id = code.split('.').next().unwrap();
         let rec = t.store.get(Kind::Enrollment, id).unwrap().unwrap();
         assert_eq!(rec["uses_left"], 1, "the code is still good");
+    }
+
+    #[tokio::test]
+    async fn a_pod_with_the_wrong_role_does_not_use_up_the_codes_attempts() {
+        let t = setup(Some(KEY));
+        let code = mint(&t, "home-nas").await;
+        for i in 0..PER_ID + 2 {
+            let (st, _) = call(
+                &t.app,
+                "POST",
+                "/enroll",
+                json!({"code": code, "role": "proxy"}),
+                None,
+                &format!("10.0.1.{i}"),
+            )
+            .await;
+            assert_eq!(st, StatusCode::UNAUTHORIZED, "attempt {i}");
+        }
+        let (st, v) = redeem(&t, &code, "10.0.2.1").await;
+        assert_eq!(st, StatusCode::OK, "{v}");
     }
 
     #[tokio::test]
