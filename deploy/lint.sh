@@ -12,7 +12,11 @@ sh deploy/check-observability.sh
 # Render the defaults: CI's deploy job exports BIN_SOURCE=prebuilt, which must not
 # change what these checks see.
 unset BIN_SOURCE
-export WAYHOUSE_CONTROLLER_TOKEN=x WAYHOUSE_PROXY_TOKEN=p WAYHOUSE_AGENT_TOKEN=a WAYHOUSE_AGGREGATOR_TOKEN=x WAYHOUSE_INGEST_TOKEN=y WAYHOUSE_UI_PASSWORD=x \
+# Distinct sentinel values, so a rendered command that interpolates one is caught by its value
+# (the rendered config holds values, not variable names).
+export WAYHOUSE_CONTROLLER_TOKEN=lint-sentinel-controller WAYHOUSE_PROXY_TOKEN=lint-sentinel-proxy \
+       WAYHOUSE_AGENT_TOKEN=lint-sentinel-agent WAYHOUSE_AGGREGATOR_TOKEN=lint-sentinel-aggregator \
+       WAYHOUSE_INGEST_TOKEN=lint-sentinel-ingest WAYHOUSE_UI_PASSWORD=lint-sentinel-ui \
        WAYHOUSE_TUNNEL_ENDPOINT=1.2.3.4:51820
 C=deploy/compose
 
@@ -296,7 +300,7 @@ end
 # No compose or k8s command carries a token value: only `--<name>-file` flags. A secret is read
 # from its /run/secrets file inside the container (`docker inspect` shows the command of an exited one).
 [base, tunnel, web, solo, solo_acme].each do |cfg|
-  cfg.each_value { |x| (x["command"] || []).each { |a| errs << "compose: a command interpolates a secret into its text (#{a[/WAYHOUSE_[A-Z_]*(TOKEN|PASSWORD)[A-Z_]*/]})" if a =~ /WAYHOUSE_[A-Z_]*(TOKEN|PASSWORD)/ } }
+  cfg.each_value { |x| (x["command"] || []).each { |a| errs << "compose: a command interpolates a secret into its text (#{a[/lint-sentinel-[a-z]+/]})" if a =~ /lint-sentinel-/ } }
   cfg.each_value { |x| (x["command"] || []).each { |a| errs << "compose: #{a} puts a secret on the command line" if a =~ /\A--[a-z-]*(token|password)(=|\z)/ } }
 end
 # k8s args and commands too: only the -file flags may name a token or password.
