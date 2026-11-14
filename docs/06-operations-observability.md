@@ -663,12 +663,18 @@ Sessions expire: `--session-idle-timeout-secs` (default 1800) and
 `--session-max-age-secs` (default 43200, also the cookie's `Max-Age`), with at
 most `--max-sessions` (default 1000) held at once. `POST /ui/login` is
 rate-limited per client address (a burst of 10, then one attempt per 3 s) and
-slowed per username: every attempt at a name delays the next one for that name
-by 100 ms, doubling to a 5 s cap, and a successful login clears it. Too-early
-attempts get `429` + `Retry-After`. Guessing at one account is held to one try
-per 5 s whichever addresses it comes from. The owner's wait is at most 5 s
-once the guessing stops, but someone who keeps retrying your username right
-at each `Retry-After` can keep you out for as long as they persist. The delay
+slowed per username and client address: every attempt at a name from one address
+delays the next one from that address by 100 ms, doubling to a 5 s cap, and a
+successful login clears it. Too-early attempts get `429` + `Retry-After`. Because the
+delay is per address, someone hammering your username cannot keep you out from a
+different address. Attempts at one name from all addresses together are held to a
+burst of 10, then one per 3 s, so a guesser spread over many addresses still gets at
+most one try per 3 s per name. An IPv6 /64 counts as one address, so rotating inside it
+does not help. Behind a reverse proxy every client has the proxy's
+address, so pass `--trusted-proxy <proxy address>` (repeat or comma-separate for several):
+requests from those addresses are throttled under the client in the right-most
+`X-Forwarded-For` entry that is not itself a trusted proxy. Without the flag the header is
+ignored, because any client could spoof it. The delay
 is kept in memory on each controller replica (a restart or another replica
 starts fresh), and names share a fixed set of 1024 slots, so it neither leaks
 which accounts exist nor grows with attacker-chosen names.

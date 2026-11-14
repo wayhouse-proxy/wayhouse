@@ -68,10 +68,11 @@ impl Default for LoginLimits {
                 forget: Duration::from_secs(600),
             },
             // One client sustains 0.2 per second under the delay above, so it cannot
-            // use this up alone; it takes about five clients at the cap.
+            // use this up alone; it takes about three clients at the cap. A distributed
+            // guesser gets one try per 3 s per name here, however many addresses it has.
             per_username_total: Bucket {
                 burst: 10,
-                refill: Duration::from_secs(1),
+                refill: Duration::from_secs(3),
             },
             max_keys: 10_000,
         }
@@ -249,6 +250,27 @@ fn source_key(ip: IpAddr) -> IpAddr {
             }
         },
     }
+}
+
+/// The address a login attempt is throttled under. This is the socket peer, unless the peer is
+/// one of the operator's `trusted` reverse proxies: then it is the nearest `X-Forwarded-For`
+/// entry (counting from the right, which is the end the proxy appended) that is not itself a
+/// trusted proxy. The header is never read from any other peer (it can be spoofed), and an entry
+/// that does not parse stops the walk and falls back to the peer, so a malformed header can only
+/// make the delay coarser, never let a client pick its own key.
+pub fn client_ip(peer: IpAddr, forwarded: Option<&str>, trusted: &[IpAddr]) -> IpAddr {
+    let is_trusted = |ip: IpAddr| trusted.iter().any(|t| source_key(*t) == source_key(ip));
+    if !is_trusted(peer) {
+        return peer;
+    }
+    for entry in forwarded.unwrap_or("").rsplit(',') {
+        match entry.trim().parse::<IpAddr>() {
+            Ok(ip) if is_trusted(ip) => {}
+            Ok(ip) => return ip,
+            Err(_) => return peer,
+        }
+    }
+    peer
 }
 
 impl LoginLimiter {
@@ -485,6 +507,71 @@ mod tests {
         }
         let tracked = l.inner.lock().unwrap().users.map.len();
         assert!(tracked <= USERNAME_BUCKETS, "{tracked} username buckets");
+    }
+
+    #[test]
+    fn a_trusted_proxy_vouches_for_the_forwarded_address_and_nobody_else_does() {
+        let proxy = ip("10.0.0.5");
+        let trusted = [proxy];
+        // Behind the proxy, the client is the entry the proxy appended.
+        assert_eq!(
+            client_ip(proxy, Some("203.0.113.9"), &trusted),
+            ip("203.0.113.9")
+        );
+        // A client's own earlier entries are ignored: the rightmost untrusted one wins.
+        assert_eq!(
+            client_ip(proxy, Some("1.2.3.4, 203.0.113.9"), &trusted),
+            ip("203.0.113.9")
+        );
+        // A chain of trusted proxies is walked through.
+        assert_eq!(
+            client_ip(proxy, Some("203.0.113.9, 10.0.0.5"), &trusted),
+            ip("203.0.113.9")
+        );
+        // Any other peer cannot name its own address.
+        assert_eq!(
+            client_ip(ip("198.51.100.7"), Some("203.0.113.9"), &trusted),
+            ip("198.51.100.7")
+        );
+        // No header, a malformed entry, or only proxies: the peer.
+        assert_eq!(client_ip(proxy, None, &trusted), proxy);
+        assert_eq!(client_ip(proxy, Some("1.2.3.4, junk"), &trusted), proxy);
+        assert_eq!(client_ip(proxy, Some("10.0.0.5"), &trusted), proxy);
+        // No trusted proxies configured: always the peer.
+        assert_eq!(client_ip(proxy, Some("203.0.113.9"), &[]), proxy);
+        // An IPv4-mapped peer matches its IPv4 proxy.
+        assert_eq!(
+            client_ip(ip("::ffff:10.0.0.5"), Some("203.0.113.9"), &trusted),
+            ip("203.0.113.9")
+        );
+    }
+
+    #[test]
+    fn the_delay_map_is_capped_fails_closed_and_frees_room_when_delays_end() {
+        let mut d = Delays::default();
+        let t0 = Instant::now();
+        let key = |n: usize, a: &str| (n, ip(a));
+        assert!(d.take(key(1, "192.0.2.1"), backoff(), 2, t0).is_ok());
+        assert!(d.take(key(1, "192.0.2.2"), backoff(), 2, t0).is_ok());
+        // Two live delays fill the map: a third client is refused, not tracked.
+        assert!(d.take(key(1, "192.0.2.3"), backoff(), 2, t0).is_err());
+        assert_eq!(d.map.len(), 2);
+        // Once the delays have ended they are pruned to make room.
+        assert!(d
+            .take(key(1, "192.0.2.3"), backoff(), 2, t0 + ms(150))
+            .is_ok());
+    }
+
+    #[test]
+    fn a_delayed_attempt_hands_back_both_the_address_and_the_name_token() {
+        // Two tokens each: the second attempt is delayed, and must not keep either of its two.
+        let l = limiter_with_total(2, backoff(), 2, 100);
+        let t0 = Instant::now();
+        assert!(l.check_at(ip("192.0.2.1"), Some("alice"), t0).is_ok());
+        assert!(l.check_at(ip("192.0.2.1"), Some("alice"), t0).is_err());
+        assert!(l
+            .check_at(ip("192.0.2.1"), Some("alice"), t0 + ms(100))
+            .is_ok());
     }
 
     #[test]

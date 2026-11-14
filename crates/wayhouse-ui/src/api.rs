@@ -89,6 +89,9 @@ pub struct AppState {
     pub ws_session_recheck: Duration,
     /// Throttles `POST /ui/login` per client address and per username.
     pub login_limiter: Arc<LoginLimiter>,
+    /// Reverse proxies whose `X-Forwarded-For` the login throttle believes
+    /// ([`crate::login_limit::client_ip`]); empty means the socket peer is the client.
+    pub trusted_proxies: Arc<Vec<IpAddr>>,
     /// Bounds concurrent Argon2 verifications, so a flood of logins can't
     /// occupy every blocking thread.
     pub verify_permits: Arc<tokio::sync::Semaphore>,
@@ -133,6 +136,7 @@ impl AppState {
             secure_cookie: false,
             ws_session_recheck: Duration::from_secs(30),
             login_limiter: Arc::new(LoginLimiter::default()),
+            trusted_proxies: Arc::new(Vec::new()),
             verify_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_VERIFIES)),
             registries: Arc::new(
                 crate::registries::Registries::load(None, true)
@@ -183,6 +187,11 @@ impl AppState {
 
     pub fn with_login_limits(mut self, limits: LoginLimits) -> Self {
         self.login_limiter = Arc::new(LoginLimiter::new(limits));
+        self
+    }
+
+    pub fn with_trusted_proxies(mut self, proxies: Vec<IpAddr>) -> Self {
+        self.trusted_proxies = Arc::new(proxies);
         self
     }
 
@@ -308,10 +317,19 @@ async fn login(
     // `ConnectInfo` as an `Extension` so a missing one (no real socket,
     // as in tests) is `None` rather than a rejection.
     peer: Option<axum::Extension<axum::extract::ConnectInfo<wayhouse_http::tls::PeerAddr>>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> Response {
     // No peer address (a test harness without a real socket) shares one key.
-    let ip = peer.map_or(IpAddr::from([0, 0, 0, 0]), |p| (p.0).0 .0.ip());
+    let peer = peer.map_or(IpAddr::from([0, 0, 0, 0]), |p| (p.0).0 .0.ip());
+    // Behind a configured reverse proxy the client is the forwarded address; otherwise the peer.
+    let forwarded = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect::<Vec<_>>()
+        .join(",");
+    let ip = crate::login_limit::client_ip(peer, Some(&forwarded), &state.trusted_proxies);
     // Throttle before any password work. In legacy/open mode there is no
     // username, so only the per-address bucket applies.
     // Every name, real or not, is delayed in one of a fixed set of hashed

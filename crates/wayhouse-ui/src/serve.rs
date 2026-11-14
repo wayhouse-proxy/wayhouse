@@ -82,6 +82,13 @@ struct Args {
     #[arg(long, default_value_t = 43200)]
     session_max_age_secs: u64,
 
+    /// Address of a reverse proxy in front of this UI (repeat or comma-separate for several).
+    /// Only requests from these addresses are believed when they say who the client is
+    /// (`X-Forwarded-For`), so the login delay applies per client instead of per proxy. Leave
+    /// it unset when clients connect directly: the header can be spoofed.
+    #[arg(long, value_delimiter = ',')]
+    trusted_proxy: Vec<std::net::IpAddr>,
+
     /// Most browser sessions held at once; at the cap the oldest is evicted.
     #[arg(long, default_value_t = 1000)]
     max_sessions: usize,
@@ -257,6 +264,7 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
         // address has no name to check against.)
         .with_loopback_host_only(!login_required && args.listen.ip().is_loopback())
         .with_secure_cookie(tls_cert.is_some())
+        .with_trusted_proxies(args.trusted_proxy.clone())
         .with_session_limits(crate::session::SessionLimits {
             idle_timeout: std::time::Duration::from_secs(args.session_idle_timeout_secs),
             max_age: std::time::Duration::from_secs(args.session_max_age_secs),
