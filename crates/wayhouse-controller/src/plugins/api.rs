@@ -671,7 +671,7 @@ pub(super) async fn set_enabled(
         )
         .await;
     }
-    match blocking(&st, {
+    match blocking(st, {
         let id = id.clone();
         move |s| s.set_enabled(&id, enabled)
     })
