@@ -551,12 +551,13 @@ mod tests {
             let file = src.strip_prefix("/etc/wayhouse/").expect(src);
             assert!(d.join(file).is_file(), "init wrote no {file}");
         }
-        for cert in [
+        for flag in [
             "--tls-cert=/etc/wayhouse/tls/control.pem",
             "--ca-file=/etc/wayhouse/tls/ca.pem",
         ] {
-            let file = cert.split_once("/etc/wayhouse/").unwrap().1;
-            assert!(unit.contains(cert) && d.join(file).is_file(), "{cert}");
+            let file = flag.split_once("/etc/wayhouse/").unwrap().1;
+            assert!(unit.contains(flag), "the unit lacks {file}");
+            assert!(d.join(file).is_file(), "init wrote no {file}");
         }
         std::fs::remove_dir_all(&d).unwrap();
     }
