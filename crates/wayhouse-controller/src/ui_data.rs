@@ -72,14 +72,19 @@ pub enum UiOp {
         /// replica this use is for. Applying it allocates the node id and writes the child.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pool: Option<PoolChild>,
-        /// Set for a prefix code: the name this redeem claims. Refused (`NameTaken`) in the same
+        /// Set for an agent redeem: the origin name whose tunnel key `psk` is. With `exclusive`
+        /// (a prefix code, whose name the pod chose) it is refused (`NameTaken`) in the same
         /// atomic step when the name already holds a token or a tunnel key, so the check cannot
-        /// race another redeem or a lagging follower.
+        /// race another redeem or a lagging follower. Only the agent role claims a name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// Refuse the redeem when `name` already holds credentials.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        exclusive: bool,
         /// With `name`: the sealed tunnel key (a `ClusterSecret` record) for that name, written in
-        /// the same step. This is what makes the claim: a second redeem for the name finds the key
-        /// and is refused, on every replica, whatever order the token and key writes land in.
+        /// the same step as the cap check and the spent use. With `exclusive` this is what makes
+        /// the claim: a second redeem for the name finds the key and is refused, on every
+        /// replica, whatever order the token and key writes land in.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         psk: Option<Value>,
     },
@@ -103,6 +108,14 @@ pub const POOL_MAX_USES: u64 = 16;
 
 /// How long after its redeem a controller replica may still ask to be added to the Raft group.
 pub const JOIN_WINDOW_SECS: u64 = 3600;
+
+/// Sealed tunnel keys are named `tunnel-psk-…` (see `wayhouse_enroll::psk_secret_name`).
+pub(crate) fn is_tunnel_key(name: &str) -> bool {
+    name.starts_with("tunnel-psk-")
+}
+
+/// Most tunnel keys: one per origin, two during a rotation, for 2048 origins.
+const TUNNEL_KEYS_MAX: usize = 4096;
 
 /// What applying one op did; everything but `Done` and `Replayed` changed nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,6 +266,16 @@ impl Kind {
         }
     }
 
+    /// Most records of the class `name` belongs to: like [`Kind::max_records`], except that
+    /// tunnel keys (`tunnel-psk-*`) are counted apart from operator secrets, so a large fleet
+    /// cannot crowd out `PUT /secrets`.
+    pub(crate) fn max_records_for(self, name: &str) -> Option<usize> {
+        if self == Kind::ClusterSecret && is_tunnel_key(name) {
+            return Some(TUNNEL_KEYS_MAX);
+        }
+        self.max_records()
+    }
+
     /// Most named records of this kind; `None` for the single records.
     pub(crate) fn max_records(self) -> Option<usize> {
         match self {
@@ -262,7 +285,7 @@ impl Kind {
             Kind::FeatureOverride => Some(64),
             // Sized for a fleet of about 500 nodes with room to spare.
             Kind::NodeTags => Some(1000),
-            // Room for a fleet of origins: each holds one tunnel key (two during a rotation).
+            // Operator secrets; tunnel keys have a cap of their own (`TUNNEL_KEYS_MAX`).
             Kind::ClusterSecret => Some(2048),
             Kind::Enrollment => Some(200),
             Kind::OriginToken => Some(2048),
@@ -655,6 +678,21 @@ impl UiStore {
         self.records.scan_prefix(key(kind, "")).count()
     }
 
+    /// How many records are in the same cap class as the record `name` of `kind` (see
+    /// [`Kind::max_records_for`]).
+    pub(crate) fn count_class(&self, kind: Kind, name: &str) -> usize {
+        if kind != Kind::ClusterSecret {
+            return self.count(kind);
+        }
+        let prefix = key(kind, "");
+        let tunnel = is_tunnel_key(name);
+        self.records
+            .scan_prefix(&prefix)
+            .filter_map(Result::ok)
+            .filter(|(k, _)| is_tunnel_key(&String::from_utf8_lossy(&k[prefix.len()..])) == tunnel)
+            .count()
+    }
+
     /// Named records of `kind`, by name.
     pub fn list(&self, kind: Kind) -> Result<Vec<(String, Value)>, UiStoreError> {
         let prefix = key(kind, "");
@@ -709,8 +747,8 @@ impl UiStore {
                         }
                     }
                 }
-                if let Some(max) = kind.max_records() {
-                    if self.records.get(&k)?.is_none() && self.count(*kind) >= max {
+                if let Some(max) = kind.max_records_for(name) {
+                    if self.records.get(&k)?.is_none() && self.count_class(*kind, name) >= max {
                         return Ok(Err(Applied::Full(max)));
                     }
                 }
@@ -760,6 +798,7 @@ impl UiStore {
                 join_hash,
                 pool,
                 name,
+                exclusive,
                 psk,
             } => {
                 let Some(raw) = self.records.get(key(Kind::Enrollment, id))? else {
@@ -777,7 +816,7 @@ impl UiStore {
                 if !live || is_pool != pool.is_some() {
                     return Ok(Err(Applied::Refused));
                 }
-                if let Some(name) = name {
+                if let (Some(name), true) = (name, *exclusive) {
                     let token = self
                         .list(Kind::OriginToken)?
                         .iter()
@@ -795,9 +834,15 @@ impl UiStore {
                     if validate(Kind::ClusterSecret, &secret, psk).is_err() {
                         return Ok(Err(Applied::Refused));
                     }
-                    let count = self.count(Kind::ClusterSecret);
-                    if let Some(max) = Kind::ClusterSecret.max_records().filter(|m| count + 1 > *m)
-                    {
+                    let max = Kind::ClusterSecret.max_records_for(&secret);
+                    if let Some(max) = max.filter(|m| {
+                        self.records
+                            .get(key(Kind::ClusterSecret, &secret))
+                            .ok()
+                            .flatten()
+                            .is_none()
+                            && self.count_class(Kind::ClusterSecret, &secret) >= *m
+                    }) {
                         return Ok(Err(Applied::Full(max)));
                     }
                     writes.push(Write::Insert(
@@ -1151,6 +1196,7 @@ mod tests {
             pool: None,
             name: None,
             psk: None,
+            exclusive: false,
         }
     }
 
@@ -1174,10 +1220,14 @@ mod tests {
             })
             .unwrap();
         let mut op = redeem("abcd1234", H1, 200);
-        let UiOp::Redeem { name, .. } = &mut op else {
+        let UiOp::Redeem {
+            name, exclusive, ..
+        } = &mut op
+        else {
             unreachable!()
         };
         *name = Some("k8s-a".into());
+        *exclusive = true;
         assert_eq!(store.apply_local(&op).unwrap(), Applied::NameTaken);
         let rec = store.get(Kind::Enrollment, "abcd1234").unwrap().unwrap();
         assert_eq!(rec["uses_left"], 3, "no use spent");
@@ -1198,10 +1248,17 @@ mod tests {
             .unwrap();
         let claim = |nonce: &str| {
             let mut op = redeem("abcd1234", H1, 200);
-            let UiOp::Redeem { name, psk, .. } = &mut op else {
+            let UiOp::Redeem {
+                name,
+                psk,
+                exclusive,
+                ..
+            } = &mut op
+            else {
                 unreachable!()
             };
             *name = Some("k8s-a".into());
+            *exclusive = true;
             *psk = Some(json!({"key_id": "k", "nonce": nonce, "ciphertext": "c", "set_at": 200}));
             op
         };
@@ -1221,6 +1278,45 @@ mod tests {
         assert_eq!(rec["uses_left"], 2, "only the winner spent a use");
     }
 
+    #[test]
+    fn a_redeem_into_a_full_tunnel_key_store_is_refused_and_spends_nothing() {
+        let (store, _d) = store();
+        let rec = json!({"role": "agent", "origin": "nas", "hash": H1, "created_at": 100,
+            "expires_at": 1000, "uses": 1, "uses_left": 1});
+        store
+            .apply_local(&put(Kind::Enrollment, "abcd1234", rec))
+            .unwrap();
+        let key = json!({"key_id": "k", "nonce": "n", "ciphertext": "c", "set_at": 200});
+        for i in 0..TUNNEL_KEYS_MAX {
+            let name = format!("tunnel-psk-{i:016x}");
+            assert_eq!(
+                store
+                    .apply_local(&put(Kind::ClusterSecret, &name, key.clone()))
+                    .unwrap(),
+                Applied::Done
+            );
+        }
+        // Operator secrets have their own room.
+        assert_eq!(
+            store
+                .apply_local(&put(Kind::ClusterSecret, "operator-one", key.clone()))
+                .unwrap(),
+            Applied::Done
+        );
+        let mut op = redeem("abcd1234", H1, 200);
+        let UiOp::Redeem { name, psk, .. } = &mut op else {
+            unreachable!()
+        };
+        *name = Some("nas".into());
+        *psk = Some(key);
+        assert_eq!(
+            store.apply_local(&op).unwrap(),
+            Applied::Full(TUNNEL_KEYS_MAX)
+        );
+        let rec = store.get(Kind::Enrollment, "abcd1234").unwrap().unwrap();
+        assert_eq!(rec["uses_left"], 1, "no use spent");
+    }
+
     fn pool_record(uses: u64) -> Value {
         json!({"role": "controller", "origin": "ctl-pool", "hash": H1, "created_at": 100,
                "expires_at": 1000, "uses": uses, "uses_left": uses, "name_prefix": "ctl-"})
@@ -1235,6 +1331,7 @@ mod tests {
             join_hash: None,
             name: None,
             psk: None,
+            exclusive: false,
             pool: Some(PoolChild {
                 id: child,
                 name: name.into(),

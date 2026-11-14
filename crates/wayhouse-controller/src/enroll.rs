@@ -511,6 +511,7 @@ async fn sweep_finished_codes(ui: &UiState) -> Result<(), Response> {
         })
         .map(|(id, _)| id)
         .collect();
+    let removed = finished.len();
     for name in finished {
         apply(
             ui,
@@ -520,6 +521,9 @@ async fn sweep_finished_codes(ui: &UiState) -> Result<(), Response> {
             },
         )
         .await?;
+    }
+    if removed > 0 {
+        tracing::info!(removed, "swept spent or expired enrollment codes");
     }
     Ok(())
 }
@@ -533,14 +537,26 @@ fn origin_stores_full(st: &EnrollState, name: &str) -> Option<&'static str> {
         let all = st.ui.store.list(kind).ok()?;
         (all.len() >= max && !all.iter().any(owned)).then_some(())
     };
+    let key = wayhouse_enroll::psk_secret_name(name);
+    if st
+        .ui
+        .store
+        .get(Kind::ClusterSecret, &key)
+        .ok()
+        .flatten()
+        .is_none()
+        && Kind::ClusterSecret
+            .max_records_for(&key)
+            .is_some_and(|max| st.ui.store.count_class(Kind::ClusterSecret, &key) >= max)
+    {
+        return Some("the secret store is full; delete origins or secrets that are no longer used");
+    }
     if st.ui.auth_token.is_some()
         && full(Kind::OriginToken, &|(_, v)| v["origin"] == name).is_some()
     {
         return Some("the origin token store is full; delete origins that are no longer used");
     }
-    let key = wayhouse_enroll::psk_secret_name(name);
-    full(Kind::ClusterSecret, &|(n, _)| *n == key)
-        .map(|()| "the secret store is full; delete origins or secrets that are no longer used")
+    None
 }
 
 /// `DELETE /enrollments/{id}`: revokes a code, spent or not. A spent single-name agent code
@@ -750,9 +766,10 @@ async fn redeem(
             join_hash: hash.clone(),
             min_node_id: next_node_id(&st),
         });
-    // A prefix code's agent claims its name by writing its tunnel key in the redeem itself (see
-    // `UiOp::Redeem::psk`), so the key is made and sealed before the use is spent.
-    let claimed = if prefixed && role == Role::Agent {
+    // An agent writes its tunnel key in the redeem itself (see `UiOp::Redeem::psk`), so the key
+    // is made and sealed before the use is spent, and the cap check is atomic with the write.
+    // For a prefix code this is also the claim on the name.
+    let claimed = if role == Role::Agent {
         let psk = wayhouse_enroll::generate_psk();
         match seal_psk(&st.ui, &wayhouse_enroll::psk_secret_name(&name), &psk).await {
             Ok(record) => Some((psk, record)),
@@ -767,7 +784,8 @@ async fn redeem(
         now: now(),
         join_hash: join.as_ref().filter(|_| !pool).map(|(_, h, _)| h.clone()),
         pool: child,
-        name: prefixed.then(|| name.clone()),
+        name: claimed.is_some().then(|| name.clone()),
+        exclusive: prefixed,
         psk: claimed.as_ref().map(|(_, record)| record.clone()),
     };
     match apply(&st.ui, op).await {
@@ -1357,6 +1375,64 @@ mod tests {
         let id = code.split('.').next().unwrap();
         let rec = t.store.get(Kind::Enrollment, id).unwrap().unwrap();
         assert_eq!(rec["uses_left"], 1, "the code is still good");
+    }
+
+    fn fill_secrets(t: &T, n: usize, name: impl Fn(usize) -> String) {
+        for i in 0..n {
+            put(
+                t,
+                Kind::ClusterSecret,
+                name(i),
+                json!({"key_id": "k", "nonce": "n", "ciphertext": "c", "set_at": 1}),
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_full_tunnel_key_store_refuses_a_redeem_before_the_use_is_spent() {
+        let t = setup(Some(KEY));
+        let code = mint(&t, "home-nas").await;
+        let max = Kind::ClusterSecret.max_records_for("tunnel-psk-0").unwrap();
+        fill_secrets(&t, max, |i| format!("tunnel-psk-{i:016x}"));
+        let (st, v) = redeem(&t, &code, "10.0.0.2").await;
+        assert_eq!(st, StatusCode::INSUFFICIENT_STORAGE, "{v}");
+        let id = code.split('.').next().unwrap();
+        let rec = t.store.get(Kind::Enrollment, id).unwrap().unwrap();
+        assert_eq!(rec["uses_left"], 1, "the code is still good");
+    }
+
+    #[tokio::test]
+    async fn operator_secrets_filling_their_cap_do_not_block_enrollment() {
+        let t = setup(Some(KEY));
+        let code = mint(&t, "home-nas").await;
+        let max = Kind::ClusterSecret.max_records().unwrap();
+        fill_secrets(&t, max, |i| format!("operator-{i}"));
+        let (st, v) = redeem(&t, &code, "10.0.0.2").await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+    }
+
+    #[tokio::test]
+    async fn the_sweep_removes_spent_agent_codes_and_leaves_controller_codes_alone() {
+        let t = setup(Some(KEY));
+        let spent = |role: &str| {
+            let mut v = json!({"role": role, "origin": "x", "hash": "a".repeat(64), "uses": 1,
+                   "created_at": 1, "uses_left": 0, "expires_at": u64::MAX});
+            if role == "controller" {
+                v["node_id"] = 2.into();
+            }
+            v
+        };
+        put(&t, Kind::Enrollment, "aaaaaaaa".into(), spent("agent"));
+        put(&t, Kind::Enrollment, "bbbbbbbb".into(), spent("controller"));
+        let ui = UiState {
+            store: t.store.clone(),
+            auth_token: Some(Arc::from(ADMIN)),
+            ha: None,
+            keyring: t.keyring.clone(),
+        };
+        sweep_finished_codes(&ui).await.unwrap();
+        assert!(t.store.get(Kind::Enrollment, "aaaaaaaa").unwrap().is_none());
+        assert!(t.store.get(Kind::Enrollment, "bbbbbbbb").unwrap().is_some());
     }
 
     #[tokio::test]
