@@ -637,6 +637,34 @@ async fn a_secret_and_a_webhook_go_through_a_follower_and_no_node_stores_the_sec
         "hooks must not be served on the admin port"
     );
 
+    // Revoked through the follower, the old token is refused on every node (#294).
+    let revoked = http
+        .delete(format!("{}/plugins/{id}/webhook", bases[follower]))
+        .bearer_auth(AUTH_TOKEN)
+        .send()
+        .await?;
+    ensure!(
+        revoked.status().is_success(),
+        "revoke: {}",
+        revoked.status()
+    );
+    for (i, hook) in hooks.iter().enumerate() {
+        wait_until(
+            || async {
+                let r = http
+                    .post(format!("{hook}{path}"))
+                    .bearer_auth(&token)
+                    .body("{}")
+                    .send()
+                    .await?;
+                Ok(r.status() == 401)
+            },
+            Duration::from_secs(15),
+            &format!("node {i} refuses the revoked webhook token"),
+        )
+        .await?;
+    }
+
     // No node's files hold the secret or its base64. The store writes through at commit; the install
     // name must show up in the scanned files, so the scan is not vacuous.
     tokio::time::sleep(Duration::from_secs(3)).await;
