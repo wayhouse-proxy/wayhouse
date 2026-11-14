@@ -72,6 +72,16 @@ pub enum UiOp {
         /// replica this use is for. Applying it allocates the node id and writes the child.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pool: Option<PoolChild>,
+        /// Set for a prefix code: the name this redeem claims. Refused (`NameTaken`) in the same
+        /// atomic step when the name already holds a token or a tunnel key, so the check cannot
+        /// race another redeem or a lagging follower.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// With `name`: the sealed tunnel key (a `ClusterSecret` record) for that name, written in
+        /// the same step. This is what makes the claim: a second redeem for the name finds the key
+        /// and is refused, on every replica, whatever order the token and key writes land in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        psk: Option<Value>,
     },
 }
 
@@ -111,6 +121,8 @@ pub enum Applied {
     Refused,
     /// A controller code asked for a node id another code already holds.
     Taken,
+    /// A prefix-code redeem named an origin that already holds a token or a tunnel key.
+    NameTaken,
     /// A pool-code redeem spent a use and made a child record holding this node id.
     Allocated(u64),
 }
@@ -747,6 +759,8 @@ impl UiStore {
                 now,
                 join_hash,
                 pool,
+                name,
+                psk,
             } => {
                 let Some(raw) = self.records.get(key(Kind::Enrollment, id))? else {
                     return Ok(Err(Applied::Refused));
@@ -763,11 +777,38 @@ impl UiStore {
                 if !live || is_pool != pool.is_some() {
                     return Ok(Err(Applied::Refused));
                 }
+                if let Some(name) = name {
+                    let token = self
+                        .list(Kind::OriginToken)?
+                        .iter()
+                        .any(|(_, v)| v["origin"] == name.as_str());
+                    let key = self
+                        .get(Kind::ClusterSecret, &wayhouse_enroll::psk_secret_name(name))?
+                        .is_some();
+                    if token || key {
+                        return Ok(Err(Applied::NameTaken));
+                    }
+                }
+                let mut writes = vec![];
+                if let (Some(name), Some(psk)) = (name, psk) {
+                    let secret = wayhouse_enroll::psk_secret_name(name);
+                    if validate(Kind::ClusterSecret, &secret, psk).is_err() {
+                        return Ok(Err(Applied::Refused));
+                    }
+                    let count = self.count(Kind::ClusterSecret);
+                    if let Some(max) = Kind::ClusterSecret.max_records().filter(|m| count + 1 > *m)
+                    {
+                        return Ok(Err(Applied::Full(max)));
+                    }
+                    writes.push(Write::Insert(
+                        key(Kind::ClusterSecret, &secret),
+                        serde_json::to_vec(psk)?,
+                    ));
+                }
                 rec["uses_left"] = (rec["uses_left"].as_u64().unwrap_or(1) - 1).into();
                 // When the code was last spent: revoking an old code must not cut off a host
                 // that has since enrolled again with a newer one.
                 rec["redeemed_at"] = (*now).into();
-                let mut writes = vec![];
                 let mut allocated = None;
                 if let Some(child) = pool {
                     let child_key = key(Kind::Enrollment, &child.id);
@@ -1108,7 +1149,76 @@ mod tests {
             now,
             join_hash: None,
             pool: None,
+            name: None,
+            psk: None,
         }
+    }
+
+    #[test]
+    fn a_redeem_for_a_name_that_holds_credentials_is_refused_and_spends_nothing() {
+        let (store, _d) = store();
+        let rec = json!({"role": "agent", "origin": "pods", "hash": H1, "created_at": 100,
+            "expires_at": 1000, "uses": 3, "uses_left": 3, "name_prefix": "k8s-"});
+        store
+            .apply_local(&UiOp::Put {
+                kind: Kind::Enrollment,
+                name: "abcd1234".into(),
+                value: rec,
+            })
+            .unwrap();
+        store
+            .apply_local(&UiOp::Put {
+                kind: Kind::OriginToken,
+                name: "a".repeat(64),
+                value: json!({"origin": "k8s-a", "created_at": 1}),
+            })
+            .unwrap();
+        let mut op = redeem("abcd1234", H1, 200);
+        let UiOp::Redeem { name, .. } = &mut op else {
+            unreachable!()
+        };
+        *name = Some("k8s-a".into());
+        assert_eq!(store.apply_local(&op).unwrap(), Applied::NameTaken);
+        let rec = store.get(Kind::Enrollment, "abcd1234").unwrap().unwrap();
+        assert_eq!(rec["uses_left"], 3, "no use spent");
+        let UiOp::Redeem { name, .. } = &mut op else {
+            unreachable!()
+        };
+        *name = Some("k8s-b".into());
+        assert_eq!(store.apply_local(&op).unwrap(), Applied::Done);
+    }
+
+    #[test]
+    fn a_redeem_claims_its_name_by_writing_the_key_so_a_second_one_for_it_is_refused() {
+        let (store, _d) = store();
+        let rec = json!({"role": "agent", "origin": "pods", "hash": H1, "created_at": 100,
+            "expires_at": 1000, "uses": 3, "uses_left": 3, "name_prefix": "k8s-"});
+        store
+            .apply_local(&put(Kind::Enrollment, "abcd1234", rec))
+            .unwrap();
+        let claim = |nonce: &str| {
+            let mut op = redeem("abcd1234", H1, 200);
+            let UiOp::Redeem { name, psk, .. } = &mut op else {
+                unreachable!()
+            };
+            *name = Some("k8s-a".into());
+            *psk = Some(json!({"key_id": "k", "nonce": nonce, "ciphertext": "c", "set_at": 200}));
+            op
+        };
+        assert_eq!(store.apply_local(&claim("first")).unwrap(), Applied::Done);
+        // Both ops were built before either applied, as two racing requests are.
+        assert_eq!(
+            store.apply_local(&claim("second")).unwrap(),
+            Applied::NameTaken
+        );
+        let key = wayhouse_enroll::psk_secret_name("k8s-a");
+        assert_eq!(
+            store.get(Kind::ClusterSecret, &key).unwrap().unwrap()["nonce"],
+            "first",
+            "the loser did not overwrite the winner's key"
+        );
+        let rec = store.get(Kind::Enrollment, "abcd1234").unwrap().unwrap();
+        assert_eq!(rec["uses_left"], 2, "only the winner spent a use");
     }
 
     fn pool_record(uses: u64) -> Value {
@@ -1123,6 +1233,8 @@ mod tests {
             hash: H1.into(),
             now: 200,
             join_hash: None,
+            name: None,
+            psk: None,
             pool: Some(PoolChild {
                 id: child,
                 name: name.into(),

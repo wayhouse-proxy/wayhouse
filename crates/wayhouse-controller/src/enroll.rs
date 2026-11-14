@@ -476,7 +476,11 @@ async fn list(State(st): State<EnrollState>) -> Response {
     Json(json!({ "items": items })).into_response()
 }
 
-/// Whether `name` already holds an origin token or a tunnel key.
+const NAME_TAKEN: &str =
+    "this name is already enrolled; delete the origin first to enroll it again";
+
+/// Whether `name` already holds an origin token or a tunnel key. The redeem op checks again in
+/// the atomic step that spends the use; this early check only saves a round trip.
 fn name_holds_credentials(st: &EnrollState, name: &str) -> bool {
     let token = st
         .ui
@@ -705,10 +709,8 @@ async fn redeem(
     // shortcut: only names with a token or tunnel key count, a hand-registered one with neither
     // is not seen here; upgrade if prefix codes need to protect those too.
     if prefixed && name_holds_credentials(&st, &name) {
-        return err(
-            StatusCode::CONFLICT,
-            "this name is already enrolled; delete the origin first to enroll it again",
-        );
+        st.limiter.refund(&id_key);
+        return err(StatusCode::CONFLICT, NAME_TAKEN);
     }
     if role == Role::Agent {
         if let Some(why) = origin_stores_full(&st, &name) {
@@ -748,17 +750,35 @@ async fn redeem(
             join_hash: hash.clone(),
             min_node_id: next_node_id(&st),
         });
+    // A prefix code's agent claims its name by writing its tunnel key in the redeem itself (see
+    // `UiOp::Redeem::psk`), so the key is made and sealed before the use is spent.
+    let claimed = if prefixed && role == Role::Agent {
+        let psk = wayhouse_enroll::generate_psk();
+        match seal_psk(&st.ui, &wayhouse_enroll::psk_secret_name(&name), &psk).await {
+            Ok(record) => Some((psk, record)),
+            Err(r) => return r,
+        }
+    } else {
+        None
+    };
     let op = UiOp::Redeem {
         id: code.id().to_owned(),
         hash: code.hash(),
         now: now(),
         join_hash: join.as_ref().filter(|_| !pool).map(|(_, h, _)| h.clone()),
         pool: child,
+        name: prefixed.then(|| name.clone()),
+        psk: claimed.as_ref().map(|(_, record)| record.clone()),
     };
     match apply(&st.ui, op).await {
         Ok(Applied::Done) => {}
         Ok(Applied::Allocated(id)) => node_id = Some(id),
         Ok(Applied::Refused) => return refused(),
+        Ok(Applied::NameTaken) => {
+            // The code was valid: this is not a guess, so it does not count against the code.
+            st.limiter.refund(&id_key);
+            return err(StatusCode::CONFLICT, NAME_TAKEN);
+        }
         Ok(Applied::Full(max)) => {
             return err(
                 StatusCode::CONFLICT,
@@ -775,7 +795,7 @@ async fn redeem(
             .store
             .list(Kind::OriginToken)
             .is_ok_and(|l| l.iter().any(|(_, v)| v["origin"] == name.as_str()));
-    let mut files = match grant_files(&st, role, &name).await {
+    let mut files = match grant_files(&st, role, &name, claimed.map(|(psk, _)| psk)).await {
         Ok(f) => f,
         Err(r) => return r,
     };
@@ -911,6 +931,8 @@ async fn grant_files(
     st: &EnrollState,
     role: Role,
     name: &str,
+    // The tunnel key when the redeem already stored it (a prefix code's claim).
+    stored_psk: Option<Zeroizing<String>>,
 ) -> Result<std::collections::BTreeMap<String, String>, Response> {
     let g = &st.grants;
     let mut f = std::collections::BTreeMap::new();
@@ -921,8 +943,14 @@ async fn grant_files(
     };
     match role {
         Role::Agent => {
-            let psk = wayhouse_enroll::generate_psk();
-            store_psk(&st.ui, name, &psk).await?;
+            let psk = match stored_psk {
+                Some(psk) => psk,
+                None => {
+                    let psk = wayhouse_enroll::generate_psk();
+                    store_psk(&st.ui, name, &psk).await?;
+                    psk
+                }
+            };
             // A re-enroll starts over at generation 0: no key of an earlier life may linger.
             crate::origin::forget_generations_except(&st.ui, name, 0).await?;
             put("tunnel-psk", Some(&psk));
@@ -975,10 +1003,28 @@ pub(crate) async fn store_psk_as(
     name: String,
     psk: &Zeroizing<String>,
 ) -> Result<(), Response> {
+    let record = seal_psk(ui, &name, psk).await?;
+    let op = UiOp::Put {
+        kind: Kind::ClusterSecret,
+        name,
+        value: record,
+    };
+    match apply(ui, op).await {
+        Ok(Applied::Done) => Ok(()),
+        Ok(other) => Err(internal(format!(
+            "storing the tunnel key answered {other:?}"
+        ))),
+        Err(r) => Err(r),
+    }
+}
+
+/// Seals `psk` as the cluster secret `name`, without storing it.
+#[allow(clippy::result_large_err)]
+async fn seal_psk(ui: &UiState, name: &str, psk: &Zeroizing<String>) -> Result<Value, Response> {
     let sealed = ui
         .keyring
         .current()
-        .seal_cluster(&name, psk.as_bytes())
+        .seal_cluster(name, psk.as_bytes())
         .map_err(internal)?;
     if let Some(ha) = &ui.ha {
         // As for any cluster secret: sealed under a key every node must already hold.
@@ -995,18 +1041,7 @@ pub(crate) async fn store_psk_as(
         "key_id": sealed.key_id, "nonce": sealed.nonce, "ciphertext": sealed.ciphertext, "set_at": now(),
         "actor": "enrollment",
     });
-    let op = UiOp::Put {
-        kind: Kind::ClusterSecret,
-        name,
-        value: record,
-    };
-    match apply(ui, op).await {
-        Ok(Applied::Done) => Ok(()),
-        Ok(other) => Err(internal(format!(
-            "storing the tunnel key answered {other:?}"
-        ))),
-        Err(r) => Err(r),
-    }
+    Ok(record)
 }
 
 #[cfg(test)]
@@ -1379,6 +1414,87 @@ mod tests {
         // The refusal spent no use: 3 uses, 2 spent.
         let rec = t.store.list(Kind::Enrollment).unwrap();
         assert_eq!(rec[0].1["uses_left"], 1);
+    }
+
+    #[tokio::test]
+    async fn two_pods_racing_for_one_name_cannot_both_get_it() {
+        let t = setup(Some(KEY));
+        let (st, v) = call(
+            &t.app,
+            "POST",
+            "/enrollments",
+            json!({"role": "agent", "name": "pods", "name_prefix": "k8s-", "uses": 5}),
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let code = v["code"].as_str().unwrap().to_owned();
+        let enroll = |ip: &'static str| {
+            call(
+                &t.app,
+                "POST",
+                "/enroll",
+                json!({"code": code, "role": "agent", "name": "k8s-a"}),
+                None,
+                ip,
+            )
+        };
+        let (a, b, c) = tokio::join!(enroll("10.0.1.1"), enroll("10.0.1.2"), enroll("10.0.1.3"));
+        let mut got = [a.0, b.0, c.0];
+        got.sort();
+        assert_eq!(
+            got,
+            [StatusCode::OK, StatusCode::CONFLICT, StatusCode::CONFLICT]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_taken_name_does_not_use_up_the_codes_attempts_for_the_other_pods() {
+        let t = setup(Some(KEY));
+        let (st, v) = call(
+            &t.app,
+            "POST",
+            "/enrollments",
+            json!({"role": "agent", "name": "pods", "name_prefix": "k8s-", "uses": 5}),
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let code = v["code"].as_str().unwrap().to_owned();
+        let enroll = |name: String, ip: String| {
+            let (app, code) = (t.app.clone(), code.clone());
+            async move {
+                call(
+                    &app,
+                    "POST",
+                    "/enroll",
+                    json!({"code": code, "role": "agent", "name": name}),
+                    None,
+                    &ip,
+                )
+                .await
+                .0
+            }
+        };
+        assert_eq!(
+            enroll("k8s-a".into(), "10.0.1.1".into()).await,
+            StatusCode::OK
+        );
+        // A crash-looping pod retries its taken name from many addresses.
+        for i in 0..PER_ID + 3 {
+            assert_eq!(
+                enroll("k8s-a".into(), format!("10.0.2.{i}")).await,
+                StatusCode::CONFLICT,
+                "attempt {i}"
+            );
+        }
+        assert_eq!(
+            enroll("k8s-b".into(), "10.0.3.1".into()).await,
+            StatusCode::OK,
+            "the code still works for the other pods"
+        );
     }
 
     #[tokio::test]

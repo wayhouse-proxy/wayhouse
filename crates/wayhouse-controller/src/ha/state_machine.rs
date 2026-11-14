@@ -2650,6 +2650,8 @@ mod tests {
             now: 5,
             join_hash: None,
             pool: None,
+            name: None,
+            psk: None,
         });
         let (mut a, _a) = test_sm();
         let (mut b, _b) = test_sm();
@@ -2697,6 +2699,8 @@ mod tests {
                 hash: h.clone(),
                 now: 5,
                 join_hash: None,
+                name: None,
+                psk: None,
                 pool: Some(PoolChild {
                     id: child.into(),
                     name: name.into(),
