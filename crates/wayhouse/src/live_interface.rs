@@ -191,6 +191,7 @@ pub(crate) mod testing {
             Ok(())
         }
         fn remove_peer(&self, _: &Key) -> Result<(), WireguardInterfaceError> {
+            self.log.lock().unwrap().push("remove_peer".into());
             Ok(())
         }
         fn read_interface_data(&self) -> Result<Host, WireguardInterfaceError> {

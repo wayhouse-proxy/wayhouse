@@ -308,6 +308,9 @@ async fn subscribe_once(
 
     let mut buf = wayhouse_http::sse::EventBuffer::new();
     let mut retry_at: Option<tokio::time::Instant> = None;
+    // After a failed key fetch the controller's secret store is not asked again until the
+    // reconnect, so one hung or refusing controller costs one timeout, not one per event.
+    let mut fetch_failed: Option<String> = None;
     loop {
         let read = match retry_at {
             Some(at) => match tokio::time::timeout_at(at, resp.chunk()).await {
@@ -346,8 +349,11 @@ async fn subscribe_once(
                 // Only a registration that will be applied needs its key: an unchanged one is
                 // skipped, so a catch-up of N origins is not N sequential fetches.
                 let psk = match &ev {
-                    Event::Registered(reg) if !matches!(plan(last_applied, &ev), Action::Skip) => {
-                        psk_for(base_url, token, keyring, reg).await
+                    Event::Registered(reg)
+                        if reg.key_ref.is_some()
+                            && !matches!(plan(last_applied, &ev), Action::Skip) =>
+                    {
+                        psk_for(base_url, token, keyring, reg, &mut fetch_failed).await
                     }
                     _ => Ok(None),
                 };
@@ -366,13 +372,25 @@ async fn psk_for(
     token: Option<&str>,
     keyring: Option<&wayhouse_secrets::KeyringHandle>,
     reg: &PeerRegistration,
+    fetch_failed: &mut Option<String>,
 ) -> Result<Option<Key>, String> {
     let Some(name) = &reg.key_ref else {
         return Ok(None);
     };
-    let fetched = crate::secrets::fetch_sealed(base_url, token, name)
+    if let Some(why) = fetch_failed {
+        return Err(why.clone());
+    }
+    let fetched = crate::secrets::fetch_sealed_classified(base_url, token, name)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|(e, outage)| {
+            let why = e.to_string();
+            // Only an outage stops later fetches on this stream; a problem with this one
+            // origin's secret must not hold back the other origins.
+            if outage {
+                *fetch_failed = Some(why.clone());
+            }
+            why
+        })?;
     open_psk(
         reg,
         keyring
@@ -434,6 +452,21 @@ fn apply_event(
             }
         }
         Action::Reconcile(reg) => {
+            // Never configure the peer without the key its origin holds: that would silently
+            // drop the PSK protection. An origin that rotated its public key is cut off at once
+            // (the old key must stop working); any other change keeps the installed peer and its
+            // record, so a later removal still finds it, and the retry reconciles it again.
+            let psk = match psk {
+                Ok(k) => k,
+                Err(why) => {
+                    tracing::warn!(origin = %reg.name, "not configuring the peer: {why}");
+                    if let Some(old) = replaced_pubkey(last_applied, reg) {
+                        remove_peer(wg, &reg.name, old);
+                        last_applied.remove(&reg.name);
+                    }
+                    return true;
+                }
+            };
             let replaced = replaced_pubkey(last_applied, reg).is_some();
             if let Some(old) = replaced_pubkey(last_applied, reg) {
                 remove_peer(wg, &reg.name, old);
@@ -441,16 +474,6 @@ fn apply_event(
             // Recorded only once the peer is configured: an identical
             // registration is skipped by `plan`, so one recorded after a failed
             // configure would never be retried.
-            let psk = match psk {
-                Ok(k) => k,
-                Err(why) => {
-                    // Never configure the peer without the key its origin holds: that would
-                    // silently drop the PSK protection. Retried on the next reconnect.
-                    tracing::warn!(origin = %reg.name, "not configuring the peer: {why}");
-                    last_applied.remove(&reg.name);
-                    return true;
-                }
-            };
             match reconcile_peer(wg, reg, psk) {
                 Reconciled::Configured => {
                     last_applied.insert(reg.name.clone(), reg.clone());
@@ -791,6 +814,83 @@ mod tests {
         assert!(
             wg.log.lock().unwrap().is_empty(),
             "nothing reached the device"
+        );
+    }
+
+    fn fake_wg() -> crate::live_interface::testing::Fake {
+        crate::live_interface::testing::Fake {
+            log: std::sync::Arc::default(),
+            fail_assign: vec![],
+            fail_remove: false,
+            fail_configure: std::sync::Mutex::new(0),
+        }
+    }
+
+    #[test]
+    fn a_failed_key_fetch_keeps_the_installed_peer_when_only_other_fields_changed() {
+        let wg = fake_wg();
+        let reg = origin("home", None);
+        let mut applied = HashMap::new();
+        apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &Event::Registered(reg.clone()),
+            Ok(None),
+        );
+        let installed = wg.log.lock().unwrap().len();
+        let mut changed = reg.clone();
+        changed.tunnel_address = Some("10.60.0.9".into());
+        assert!(apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &Event::Registered(changed),
+            Err("controller down".into()),
+        ));
+        assert_eq!(applied.get("home"), Some(&reg), "the record stays");
+        assert_eq!(wg.log.lock().unwrap().len(), installed, "device untouched");
+        // A later removal still finds the peer.
+        apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &Event::Removed("home".into()),
+            Ok(None),
+        );
+        assert!(applied.is_empty());
+        assert!(
+            wg.log.lock().unwrap().len() > installed,
+            "the peer was removed"
+        );
+    }
+
+    #[test]
+    fn a_failed_key_fetch_for_a_rotated_public_key_cuts_the_old_peer_off() {
+        let wg = fake_wg();
+        let reg = origin("home", None);
+        let mut applied = HashMap::new();
+        apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &Event::Registered(reg.clone()),
+            Ok(None),
+        );
+        let installed = wg.log.lock().unwrap().len();
+        let mut rotated = reg.clone();
+        rotated.pubkey = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into();
+        assert!(apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &Event::Registered(rotated),
+            Err("controller down".into()),
+        ));
+        assert!(applied.is_empty(), "no record of a peer that is gone");
+        assert!(
+            wg.log.lock().unwrap().len() > installed,
+            "the old key's peer was removed"
         );
     }
 

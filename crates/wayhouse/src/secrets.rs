@@ -157,6 +157,19 @@ pub async fn fetch_sealed(
     token: Option<&str>,
     name: &str,
 ) -> Result<Fetched, SecretError> {
+    fetch_sealed_classified(base_url, token, name)
+        .await
+        .map_err(|(e, _)| e)
+}
+
+/// Like [`fetch_sealed`], and says whether a failure looks like an outage of the controller's
+/// secret store (it could not be reached, refused this proxy's token, or answered 502 to 504)
+/// rather than a problem with this one secret. A caller may stop asking after an outage.
+pub async fn fetch_sealed_classified(
+    base_url: &str,
+    token: Option<&str>,
+    name: &str,
+) -> Result<Fetched, (SecretError, bool)> {
     fetch_sealed_within(base_url, token, name, FETCH_TIMEOUT).await
 }
 
@@ -165,17 +178,22 @@ async fn fetch_sealed_within(
     token: Option<&str>,
     name: &str,
     timeout: std::time::Duration,
-) -> Result<Fetched, SecretError> {
-    let unreadable = |why: String| SecretError::Unreadable {
-        name: name.to_owned(),
-        why,
+) -> Result<Fetched, (SecretError, bool)> {
+    let unreadable = |why: String, outage: bool| {
+        (
+            SecretError::Unreadable {
+                name: name.to_owned(),
+                why,
+            },
+            outage,
+        )
     };
     wayhouse_http::bearer::check_bearer_transport_global(
         "the controller URL",
         base_url,
         token.is_some(),
     )
-    .map_err(unreadable)?;
+    .map_err(|why| unreadable(why, false))?;
     // The timeout covers the body read too, so a stall mid-answer also ends.
     let mut req = wayhouse_http::client()
         .get(format!("{base_url}/secrets/{name}/sealed"))
@@ -184,22 +202,28 @@ async fn fetch_sealed_within(
         req = req.bearer_auth(token);
     }
     let resp = req.send().await.map_err(|e| {
-        unreadable(format!(
-            "the controller could not be reached: {}",
-            wayhouse_http::error_chain(&e)
-        ))
+        unreadable(
+            format!(
+                "the controller could not be reached: {}",
+                wayhouse_http::error_chain(&e)
+            ),
+            true,
+        )
     })?;
     match resp.status() {
         s if s.is_success() => {
             let body = wayhouse_http::read_capped(resp, MAX_SEALED_BODY)
                 .await
-                .map_err(|e| unreadable(e.to_string()))?;
+                .map_err(|e| unreadable(e.to_string(), false))?;
             serde_json::from_slice::<Sealed>(&body)
                 .map(Fetched::Sealed)
-                .map_err(|_| unreadable("the controller's answer was not understood".into()))
+                .map_err(|_| unreadable("the controller's answer was not understood".into(), false))
         }
         reqwest::StatusCode::NOT_FOUND => Ok(Fetched::Absent),
-        s => Err(unreadable(format!("the controller answered {s}"))),
+        s => Err(unreadable(
+            format!("the controller answered {s}"),
+            matches!(s.as_u16(), 401 | 403 | 502..=504),
+        )),
     }
 }
 
@@ -229,11 +253,59 @@ mod tests {
             drop(conn);
         });
         let started = std::time::Instant::now();
-        let e = fetch_sealed_within(&url, None, "x", std::time::Duration::from_millis(200))
+        let (e, outage) =
+            fetch_sealed_within(&url, None, "x", std::time::Duration::from_millis(200))
+                .await
+                .err()
+                .expect("a stalled fetch must fail");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{e}");
+        assert!(outage, "a stall is an outage");
+    }
+
+    #[tokio::test]
+    async fn an_answer_over_the_body_cap_is_refused() {
+        let big = "a".repeat(MAX_SEALED_BODY + 1);
+        let app = axum::Router::new().route(
+            "/secrets/{name}/sealed",
+            axum::routing::get(move || {
+                let big = big.clone();
+                async move { big }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let e = fetch_sealed(&url, None, "x")
             .await
             .err()
-            .expect("a stalled fetch must fail");
-        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{e}");
+            .expect("an oversized answer must fail");
+        assert!(matches!(e, SecretError::Unreadable { .. }), "{e}");
+    }
+
+    #[tokio::test]
+    async fn only_an_outage_is_classified_as_one() {
+        for (status, outage) in [(500u16, false), (503, true), (401, true), (403, true)] {
+            let app = axum::Router::new().route(
+                "/secrets/{name}/sealed",
+                axum::routing::get(move || async move {
+                    axum::http::StatusCode::from_u16(status).unwrap()
+                }),
+            );
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", l.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+            let (_, got) = fetch_sealed_classified(&url, None, "x")
+                .await
+                .err()
+                .expect("an error status fails");
+            assert_eq!(got, outage, "{status}");
+        }
+        // Nothing listens: an outage.
+        let (_, got) = fetch_sealed_classified("http://127.0.0.1:1", None, "x")
+            .await
+            .err()
+            .expect("unreachable");
+        assert!(got);
     }
 
     #[test]
