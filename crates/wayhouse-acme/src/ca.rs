@@ -88,14 +88,24 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
     Some(at.duration_since(SystemTime::now()).unwrap_or_default())
 }
 
-/// The default client: HTTPS only, the platform's certificate verifier.
-fn default_client() -> Result<Box<dyn HttpClient>, IssueError> {
+/// The default client: HTTPS only, the platform's certificate verifier plus `extra_roots`.
+fn default_client(
+    extra_roots: &[rustls_pki_types::CertificateDer<'static>],
+) -> Result<Box<dyn HttpClient>, IssueError> {
     // ring is also compiled in (reqwest's fallback), so rustls cannot pick a process
     // default on its own; an earlier install, e.g. by wayhouse-http, stays.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let verifier = rustls_platform_verifier::Verifier::new_with_extra_roots(
+        extra_roots.iter().cloned(),
+        Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+    )
+    .map_err(|e| IssueError::Account(e.to_string()))?;
+    let tls = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
     let connector = hyper_rustls::HttpsConnectorBuilder::new()
-        .try_with_platform_verifier()
-        .map_err(|e| IssueError::Account(e.to_string()))?
+        .with_tls_config(tls)
         .https_only()
         .enable_http1()
         .enable_http2()
@@ -124,7 +134,18 @@ pub struct AcmeCa {
     /// Pause between publishing an HTTP-01 answer and telling the CA to look, so a replicated
     /// answer reaches the node the gateways ask.
     http_settle: Duration,
+    /// Pause between tries of a failed challenge cleanup.
+    cleanup_pause: Duration,
+    /// The least the whole cleanup phase of an order may take (it gets `propagation` if longer).
+    cleanup_floor: Duration,
+    /// Challenge records the last order could not remove, as `name: reason`.
+    cleanup_failures: Arc<Mutex<Vec<String>>>,
+    /// Roots trusted on top of the platform's (`--ca-file`), for a private ACME CA.
+    extra_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
 }
+
+/// Tries per challenge cleanup before the record is reported as left behind.
+const CLEANUP_TRIES: u32 = 3;
 
 /// Which challenge an order answers, and with what.
 #[derive(Clone, Copy)]
@@ -139,13 +160,13 @@ enum Presented {
     Http { token: String },
 }
 
-/// The time one order may take: every name is solved one after another and may wait up to
-/// `propagation`, so the allowance grows with the name count; the margin covers the CA round trips.
+/// The time one order may take: every name is solved one after another and may spend up to
+/// `propagation` in `present` and as much again waiting for the record, so the allowance grows with the name count; the margin covers the CA round trips.
 /// At most [`MAX_ORDER`], so a stalled CA or plugin cannot hold an order for days.
 fn order_limit(propagation: Duration, names: usize, margin: Duration) -> Duration {
     let names = u32::try_from(names.max(1)).unwrap_or(u32::MAX);
     propagation
-        .saturating_mul(names)
+        .saturating_mul(2 * names)
         .saturating_add(margin)
         .min(MAX_ORDER)
 }
@@ -166,6 +187,10 @@ impl AcmeCa {
             retry_after: Arc::default(),
             eab: None,
             http_settle: Duration::from_secs(2),
+            cleanup_pause: Duration::from_secs(5),
+            cleanup_floor: Duration::from_secs(30),
+            cleanup_failures: Arc::default(),
+            extra_roots: Vec::new(),
         }
     }
 
@@ -204,6 +229,36 @@ impl AcmeCa {
         self
     }
 
+    /// Trusts the certificates in `pem` (an operator's own CA bundle) on top of the platform's
+    /// roots when talking to the ACME CA.
+    ///
+    /// # Errors
+    /// [`IssueError::Account`] if `pem` holds no certificate or an unreadable one.
+    pub fn with_extra_roots_pem(mut self, pem: &[u8]) -> Result<Self, IssueError> {
+        use rustls_pki_types::pem::PemObject;
+        let roots = rustls_pki_types::CertificateDer::pem_slice_iter(pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| IssueError::Account(format!("the extra CA roots: {e}")))?;
+        if roots.is_empty() {
+            return Err(IssueError::Account(
+                "the extra CA roots hold no certificate".into(),
+            ));
+        }
+        self.extra_roots = roots;
+        Ok(self)
+    }
+
+    /// The challenge records the last orders could not remove (`name: reason`), cleared by the
+    /// call. A record left behind is harmless to issuance but should be removed by hand.
+    pub fn take_cleanup_failures(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .cleanup_failures
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     /// How long the solver may take to make a record visible.
     #[must_use]
     pub fn propagation_timeout(mut self, d: Duration) -> Self {
@@ -231,6 +286,8 @@ impl AcmeCa {
             .timeout(Duration::from_secs(20));
         self.order_margin = Duration::from_secs(60);
         self.http_settle = Duration::ZERO;
+        self.cleanup_pause = Duration::from_millis(5);
+        self.cleanup_floor = Duration::from_millis(50);
         self
     }
 
@@ -243,7 +300,7 @@ impl AcmeCa {
             .take();
         let inner = match &self.http {
             Some(f) => f(),
-            None => default_client()?,
+            None => default_client(&self.extra_roots)?,
         };
         Ok(Account::builder_with_http(Box::new(RetryAfterSlot {
             inner,
@@ -389,11 +446,33 @@ impl AcmeCa {
                 limit.as_secs()
             ))),
         };
+        // One budget for the whole phase: it runs after the order's own limit, and a hung
+        // plugin must not hold every later site for hours.
+        let deadline = tokio::time::Instant::now() + propagation.max(self.cleanup_floor);
         for p in &presented {
             match (p, solver) {
                 (Presented::Dns { fqdn, value }, Solver::Dns(s)) => {
-                    if let Err(e) = s.cleanup(fqdn, value).await {
+                    let retried = tokio::time::timeout_at(deadline, async {
+                        let mut tried = 0;
+                        loop {
+                            tried += 1;
+                            match s.cleanup(fqdn, value).await {
+                                Ok(()) => return None,
+                                Err(e) if tried == CLEANUP_TRIES => return Some(e.to_string()),
+                                Err(_) => tokio::time::sleep(self.cleanup_pause * tried).await,
+                            }
+                        }
+                    })
+                    .await;
+                    let failed = retried.unwrap_or_else(|_| {
+                        Some("the cleanup did not finish within its time budget".into())
+                    });
+                    if let Some(e) = failed {
                         tracing::warn!(%fqdn, error = %e, "acme: dns cleanup failed");
+                        self.cleanup_failures
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("{fqdn}: {e}"));
                     }
                 }
                 (Presented::Http { token }, Solver::Http(s)) => {
@@ -537,6 +616,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extra_roots_must_be_pem_certificates_and_build_a_client() {
+        let ca = || AcmeCa::new("https://ca.example/dir", true);
+        assert!(ca().with_extra_roots_pem(b"").is_err());
+        assert!(ca().with_extra_roots_pem(b"not a pem").is_err());
+        let key = rcgen::KeyPair::generate().unwrap();
+        let pem = rcgen::CertificateParams::new(vec!["ca.example".into()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap()
+            .pem();
+        let ca = ca().with_extra_roots_pem(pem.as_bytes()).unwrap();
+        assert!(default_client(&ca.extra_roots).is_ok());
+    }
+
+    #[test]
     fn a_new_account_call_forgets_a_stale_retry_after() {
         let ca = AcmeCa::new("https://ca.invalid/dir", true);
         *ca.retry_after.lock().unwrap() = Some(Duration::from_secs(60));
@@ -547,9 +641,10 @@ mod tests {
     #[test]
     fn the_order_limit_grows_with_the_number_of_names() {
         let (wait, margin) = (Duration::from_secs(120), Duration::from_secs(300));
-        assert_eq!(order_limit(wait, 1, margin), Duration::from_secs(420));
-        assert_eq!(order_limit(wait, 0, margin), Duration::from_secs(420));
-        assert_eq!(order_limit(wait, 10, margin), Duration::from_secs(1500));
+        // Each name may take a propagation wait in `wait_visible` and as much again in `present`.
+        assert_eq!(order_limit(wait, 1, margin), Duration::from_secs(540));
+        assert_eq!(order_limit(wait, 0, margin), Duration::from_secs(540));
+        assert_eq!(order_limit(wait, 10, margin), Duration::from_secs(2700));
         assert_eq!(
             order_limit(Duration::from_secs(3600), 100, margin),
             MAX_ORDER

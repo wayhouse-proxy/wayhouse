@@ -69,7 +69,13 @@ impl From<&IssueError> for Failure {
 /// Resolves a site's `dns_plugin` to the solver that drives it. `None` means the plugin is
 /// not available on this node (not installed, disabled, not approved for the trigger).
 pub trait SolverSource: Send + Sync {
-    fn solver_for(&self, dns_plugin: &str) -> Option<Arc<dyn DnsSolver>>;
+    /// `propagation_timeout` is the site's: how long the provider may take to show a record,
+    /// which also bounds one call to the plugin.
+    fn solver_for(
+        &self,
+        dns_plugin: &str,
+        propagation_timeout: Duration,
+    ) -> Option<Arc<dyn DnsSolver>>;
 }
 
 /// The solver source of a controller that has no DNS plugin hook yet: every order fails with a
@@ -77,7 +83,7 @@ pub trait SolverSource: Send + Sync {
 pub struct NoSolvers;
 
 impl SolverSource for NoSolvers {
-    fn solver_for(&self, _: &str) -> Option<Arc<dyn DnsSolver>> {
+    fn solver_for(&self, _: &str, _: Duration) -> Option<Arc<dyn DnsSolver>> {
         None
     }
 }
@@ -221,12 +227,25 @@ impl Runner {
                     continue;
                 }
             }
-            match self.issue_site(site, term, now).await {
+            let outcome = self.issue_site(site, term, now).await;
+            let left = self.ca.take_cleanup_failures();
+            match outcome {
                 Ok(()) => {
+                    if !left.is_empty() {
+                        self.record_leftovers(site, &left).await;
+                    }
                     metrics::counter!("wayhouse_acme_issue_total", "result" => "ok").increment(1);
                     issued.push(site.name.clone());
                 }
-                Err(why) => {
+                Err(mut why) => {
+                    if !left.is_empty() {
+                        // Both parts are cut first, so the note is never the part that is lost.
+                        why.why = format!(
+                            "{}; {}",
+                            one_line(&why.why, 280),
+                            one_line(&leftovers_note(&left), 200)
+                        );
+                    }
                     metrics::counter!("wayhouse_acme_issue_total", "result" => "error")
                         .increment(1);
                     tracing::warn!(site = %site.name, error = %why.why, "acme: issuance failed");
@@ -272,12 +291,15 @@ impl Runner {
         let wait = Duration::from_secs(site.propagation_timeout_secs);
         let (bundle, _) = match site.challenge {
             ChallengeKind::Dns01 => {
-                let solver = self.solvers.solver_for(&site.dns_plugin).ok_or_else(|| {
-                    format!(
-                        "the DNS plugin {:?} is not available on this node",
-                        site.dns_plugin
-                    )
-                })?;
+                let solver = self
+                    .solvers
+                    .solver_for(&site.dns_plugin, wait)
+                    .ok_or_else(|| {
+                        format!(
+                            "the DNS plugin {:?} is not available on this node",
+                            site.dns_plugin
+                        )
+                    })?;
                 // A site whose challenge names are CNAMEd elsewhere writes its records there.
                 let solver: Arc<dyn DnsSolver> = match &site.challenge_zone {
                     Some(zone) => Arc::new(DelegatedSolver::new(solver, zone)),
@@ -394,6 +416,27 @@ impl Runner {
         })
     }
 
+    /// The order succeeded but the provider kept a challenge record: say so in the site status
+    /// (a notice, not a failure: no backoff) until the next issuance clears it.
+    async fn record_leftovers(&self, site: &Site, left: &[String]) {
+        let attempt = Attempt {
+            last_error: Some(one_line(
+                &format!("issued, but {}", leftovers_note(left)),
+                500,
+            )),
+            ..Attempt::default()
+        };
+        if let Err(e) = self
+            .propose(AcmeOp::Attempt {
+                site: site.name.clone(),
+                attempt,
+            })
+            .await
+        {
+            tracing::warn!(site = %site.name, error = %e, "acme: could not record the leftover records");
+        }
+    }
+
     async fn record_failure(&self, site: &Site, failure: &Failure, now: u64) {
         let prev = self
             .store
@@ -416,7 +459,7 @@ impl Runner {
         let attempt = Attempt {
             failures: prev.failures + 1,
             next_attempt_at: now + wait,
-            last_error: Some(failure.why.chars().take(500).collect()),
+            last_error: Some(one_line(&failure.why, 500)),
             window_start,
             window_failures,
         };
@@ -483,6 +526,29 @@ impl HttpSolver for Publisher<'_> {
 }
 
 /// A stable value in `[0, 1]` per site, so sites issued together do not renew together.
+fn leftovers_note(left: &[String]) -> String {
+    format!(
+        "the TXT record could not be removed ({}); remove it at the DNS provider",
+        left.join("; ")
+    )
+}
+
+/// An error text for the site status: control characters (a CA or plugin message is not
+/// trusted text) and runs of blanks collapse to one space, at most `max` characters.
+fn one_line(why: &str, max: usize) -> String {
+    let cleaned: String = why
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max)
+        .collect()
+}
+
 fn jitter(site: &str) -> f64 {
     let h = site
         .bytes()
@@ -502,10 +568,43 @@ mod tests {
     const DAY: u64 = 86_400;
     const KEY: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
 
-    struct OneSolver(MemDns);
+    /// Serves the plugin named `dns`; `stuck` makes its `cleanup` always fail, `asked_for`
+    /// remembers the propagation timeout the runner passed.
+    struct OneSolver {
+        dns: MemDns,
+        stuck: bool,
+        asked_for: Arc<AtomicU64>,
+    }
+    impl OneSolver {
+        fn of(dns: MemDns) -> Self {
+            Self {
+                dns,
+                stuck: false,
+                asked_for: Arc::default(),
+            }
+        }
+    }
     impl SolverSource for OneSolver {
-        fn solver_for(&self, plugin: &str) -> Option<Arc<dyn DnsSolver>> {
-            (plugin == "dns").then(|| Arc::new(self.0.clone()) as Arc<dyn DnsSolver>)
+        fn solver_for(&self, plugin: &str, wait: Duration) -> Option<Arc<dyn DnsSolver>> {
+            self.asked_for.store(wait.as_secs(), Ordering::SeqCst);
+            (plugin == "dns").then(|| match self.stuck {
+                true => Arc::new(StuckCleanup(self.dns.clone())) as Arc<dyn DnsSolver>,
+                false => Arc::new(self.dns.clone()),
+            })
+        }
+    }
+
+    struct StuckCleanup(MemDns);
+    #[async_trait::async_trait]
+    impl DnsSolver for StuckCleanup {
+        async fn present(&self, f: &str, v: &str) -> Result<(), SolverError> {
+            self.0.present(f, v).await
+        }
+        async fn cleanup(&self, _: &str, _: &str) -> Result<(), SolverError> {
+            Err(SolverError("provider busy".into()))
+        }
+        async fn wait_visible(&self, f: &str, v: &str, t: Duration) -> Result<(), SolverError> {
+            self.0.wait_visible(f, v, t).await
         }
     }
 
@@ -516,11 +615,16 @@ mod tests {
         dns: MemDns,
         now: Arc<AtomicU64>,
         keyring: KeyringHandle,
+        asked_for: Arc<AtomicU64>,
         db: crate::kv::Db,
         _dir: tempfile::TempDir,
     }
 
     async fn fixture_with(keyring: KeyringHandle) -> Fixture {
+        fixture_using(keyring, false).await
+    }
+
+    async fn fixture_using(keyring: KeyringHandle, stuck: bool) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = AcmeStore::open(&db).unwrap();
@@ -534,11 +638,16 @@ mod tests {
         let ca = AcmeCa::new(&fake.directory_url(), true)
             .with_http(FakeCa::http_factory())
             .fast_retry();
+        let asked_for = Arc::new(AtomicU64::new(0));
         let runner = Runner::new(
             store.clone(),
             ca,
             &fake.directory_url(),
-            Arc::new(OneSolver(dns.clone())),
+            Arc::new(OneSolver {
+                dns: dns.clone(),
+                stuck,
+                asked_for: asked_for.clone(),
+            }),
             keyring.clone(),
             None,
             clock,
@@ -550,6 +659,7 @@ mod tests {
             dns,
             now,
             keyring,
+            asked_for,
             db,
             _dir: dir,
         }
@@ -901,6 +1011,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_solver_is_built_for_the_sites_propagation_timeout() {
+        let f = fixture().await;
+        let mut s = site("web", "a.example.com");
+        s.propagation_timeout_secs = 777;
+        put(&f, s);
+        f.runner.run_once().await;
+        assert_eq!(f.asked_for.load(Ordering::SeqCst), 777);
+    }
+
+    #[tokio::test]
+    async fn last_error_is_one_clean_line() {
+        let f = fixture().await;
+        put(&f, site("web", "a.example.com"));
+        f.dns.fail_next_present("line one\n\x1b[31mred\u{7}  end");
+        f.runner.run_once().await;
+        let err = f.store.attempt("web").unwrap().unwrap().last_error.unwrap();
+        assert!(!err.chars().any(char::is_control), "{err:?}");
+        assert!(err.contains("line one [31mred end"), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_long_error_does_not_push_the_leftover_note_out_of_last_error() {
+        let f = fixture_using(KeyringHandle::new(Keyring::parse(KEY).unwrap()), true).await;
+        put(&f, site("web", "a.example.com"));
+        f.dns.fail_next_present(&"x".repeat(900));
+        f.runner.run_once().await;
+        let err = f.store.attempt("web").unwrap().unwrap().last_error.unwrap();
+        assert!(err.len() <= 500, "{}", err.len());
+        assert!(err.contains("could not be removed"), "{err}");
+        assert!(
+            err.contains("xxxxxxxx"),
+            "the order's own error is kept too: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_record_that_could_not_be_removed_shows_in_the_site_status() {
+        let f = fixture_using(KeyringHandle::new(Keyring::parse(KEY).unwrap()), true).await;
+        put(&f, site("web", "a.example.com"));
+        assert_eq!(f.runner.run_once().await, ran(&["web"], &[]));
+        assert!(
+            f.store.cert("web").unwrap().is_some(),
+            "the order still succeeded"
+        );
+        let a = f.store.attempt("web").unwrap().unwrap();
+        let err = a.last_error.unwrap();
+        assert!(err.contains("could not be removed"), "{err}");
+        assert!(err.contains("_acme-challenge.a.example.com"), "{err}");
+        assert_eq!(a.next_attempt_at, 0, "this is a notice, not a backoff");
+        assert_eq!(f.runner.run_once().await, ran(&[], &[]), "no reissue");
+    }
+
+    #[tokio::test]
     async fn the_hourly_failure_cap_waits_out_the_window() {
         let f = fixture().await;
         put(&f, site("web", "a.example.com"));
@@ -977,7 +1140,7 @@ mod tests {
             f.store.clone(),
             ca,
             &f.fake.directory_url(),
-            Arc::new(OneSolver(f.dns.clone())),
+            Arc::new(OneSolver::of(f.dns.clone())),
             f.keyring.clone(),
             None,
             Arc::new(move || now.load(Ordering::SeqCst)),
@@ -1004,7 +1167,7 @@ mod tests {
             f.store.clone(),
             ca,
             &other.directory_url(),
-            Arc::new(OneSolver(f.dns.clone())),
+            Arc::new(OneSolver::of(f.dns.clone())),
             f.keyring.clone(),
             None,
             Arc::new(move || now.load(Ordering::SeqCst)),
@@ -1058,7 +1221,7 @@ mod tests {
             store.clone(),
             ca,
             &fake.directory_url(),
-            Arc::new(OneSolver(dns)),
+            Arc::new(OneSolver::of(dns)),
             KeyringHandle::new(Keyring::parse(KEY).unwrap()),
             Some(ha.clone()),
             clock,
