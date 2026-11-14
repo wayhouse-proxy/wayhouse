@@ -115,6 +115,8 @@ pub enum CallError {
     Trap(String),
 }
 
+const MAX_PARTIAL_LOG_BYTES: usize = 2048;
+
 /// The lines a failed call logged, for its error text (state puts stay discarded).
 fn partial_logs(logs: &[LogLine], scrubber: &crate::secret::Scrubber) -> String {
     if logs.is_empty() {
@@ -124,7 +126,17 @@ fn partial_logs(logs: &[LogLine], scrubber: &crate::secret::Scrubber) -> String 
         .iter()
         .map(|l| format!("{:?}: {}", l.level, scrubber.scrub_str(&l.msg)))
         .collect();
-    format!(" (log before it failed: {})", lines.join(" | "))
+    let mut text = lines.join(" | ");
+    // The error text ends up in the status; keep it short.
+    if text.len() > MAX_PARTIAL_LOG_BYTES {
+        let mut cut = MAX_PARTIAL_LOG_BYTES;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push('…');
+    }
+    format!(" (log before it failed: {text})")
 }
 
 struct CallState {

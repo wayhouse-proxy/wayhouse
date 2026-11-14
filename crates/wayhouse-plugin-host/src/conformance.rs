@@ -98,7 +98,10 @@ pub fn check_with_config(bytes: &[u8], config: &serde_json::Value) -> Report {
             Err(e) => report.problems.push(describe("on_timer", &e)),
         }
     }
-    if report.problems.is_empty() {
+    // Only init and on_timer are called, so a webhook or event handler may be the one that
+    // uses the capability.
+    let unchecked = effective.triggers.on_webhook || !effective.triggers.on_event.is_empty();
+    if report.problems.is_empty() && !unchecked {
         let used = |f: fn(&Effects) -> bool| {
             [&report.init, &report.on_timer]
                 .into_iter()

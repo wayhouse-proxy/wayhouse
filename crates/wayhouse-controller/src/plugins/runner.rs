@@ -143,6 +143,9 @@ pub struct Runner {
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Hooks pending per install, bounded by [`HOOK_QUEUE`].
     pending: Mutex<HashMap<String, usize>>,
+    /// The install list and the store version it was read at: a scan re-lists only when
+    /// the store's change counter moved.
+    listed: Mutex<Option<(u64, Arc<Vec<InstallRecord>>)>>,
 }
 
 /// Releases a place in an install's hook queue.
@@ -230,6 +233,7 @@ impl Runner {
             keyring,
             locks: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            listed: Mutex::new(None),
         })
     }
 
@@ -286,6 +290,32 @@ impl Runner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// The installs, re-read only when the store changed since the last read. The version is
+    /// taken before the read, so a write that lands in between only costs one more read.
+    async fn installs(&self) -> Result<Arc<Vec<InstallRecord>>, String> {
+        let version = *self.store.watch().borrow();
+        let cached = self
+            .listed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some((at, list)) = cached {
+            if at == version {
+                return Ok(list);
+            }
+        }
+        let list = Arc::new(
+            self.blocking(|store| store.list().map_err(|e| e.to_string()))
+                .await
+                .and_then(|r| r)?,
+        );
+        *self
+            .listed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((version, list.clone()));
+        Ok(list)
+    }
+
     /// One scheduling pass at `now`: start every due tick and wait for them all.
     pub async fn run_due(self: &Arc<Self>, now: Instant) {
         let mut running = tokio::task::JoinSet::new();
@@ -303,11 +333,7 @@ impl Runner {
             self.lock_status().clear();
             return;
         };
-        let installs = match self
-            .blocking(|store| store.list().map_err(|e| e.to_string()))
-            .await
-            .and_then(|r| r)
-        {
+        let installs = match self.installs().await {
             Ok(i) => i,
             Err(e) => {
                 tracing::error!(error = %e, "plugin runner could not list installs");
