@@ -250,6 +250,37 @@ pub fn plan(
         forwarded[target].insert(0, format!("wayhouse-{prefix}").into());
     }
     if let Some(dir) = credentials {
+        // A credential no program takes would load fine and turn nothing on, so a component could
+        // start with no login (#679). Refuse it by name instead.
+        let expected: Vec<String> = comps
+            .iter()
+            .flat_map(|(prefix, cmd)| {
+                secret_file_flags(cmd)
+                    .into_iter()
+                    .map(move |f| format!("{prefix}-{}", f.trim_end_matches("-file")))
+            })
+            .collect();
+        let mut stray: Vec<String> = std::fs::read_dir(dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_file())
+            .filter_map(|e| e.file_name().into_string().ok())
+            // Files the unit points a path flag at (`--tls-key=%d/tls-key`) are not secrets.
+            .filter(|n| {
+                ["token", "password", "step-up", "proof"]
+                    .iter()
+                    .any(|w| n.contains(w))
+            })
+            .filter(|n| !expected.contains(n))
+            .collect();
+        stray.sort();
+        if let Some(name) = stray.first() {
+            return Err(format!(
+                "credential {name:?} maps to no flag of the three programs, so it would do \
+                 nothing; name it <program>-<flag>: {}",
+                expected.join(", ")
+            ));
+        }
         for (target, (prefix, cmd)) in comps.iter().enumerate() {
             for flag in secret_file_flags(cmd) {
                 let file = dir.join(format!("{prefix}-{}", flag.trim_end_matches("-file")));
@@ -428,6 +459,21 @@ mod tests {
         assert!(has(&p.ui, "--aggregator-token-file", Path::new("/given")));
         // No credential for a flag means no flag.
         assert!(!p.controller.iter().any(|a| a == "--proxy-token-file"));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_credential_without_a_program_prefix_is_refused_by_name() {
+        let d = std::env::temp_dir().join(format!("wh-control-stray-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("ui-ui-password"), "x").unwrap();
+        std::fs::write(d.join("ui-password"), "x").unwrap();
+        let argv: Vec<OsString> = ["wayhouse-control"].map(Into::into).into();
+        let e = plan(&argv, &Programs::linked(), Some(&d)).unwrap_err();
+        assert!(e.contains("\"ui-password\""), "{e}");
+        assert!(e.contains("ui-ui-password"), "names what it expects: {e}");
+        std::fs::remove_file(d.join("ui-password")).unwrap();
+        plan(&argv, &Programs::linked(), Some(&d)).unwrap();
         std::fs::remove_dir_all(&d).unwrap();
     }
 

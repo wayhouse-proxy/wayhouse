@@ -23,7 +23,9 @@ enable `wayhouse-solo-control.target` (it conflicts with `wayhouse-solo.target`)
 `control.pem`, serves the controller and the aggregator; the binary is `wayhouse-control`. See
 [`docs/12-deployment.md`](../../docs/12-deployment.md#all-in-one-process-wayhouse-control).
 
-The UI is at <http://127.0.0.1:9903>; the password is in
+The UI is at <http://127.0.0.1:9903>. Both UI units serve the built frontend from
+`/usr/share/wayhouse/web`: copy the build output there (`make ui` builds `web/dist`; the container
+images carry it as `/web`), or every page is a 404. The password is in
 `/etc/wayhouse/credentials/ui-password`. The first proxy config goes in through the UI (Settings) or
 `curl --cacert /etc/wayhouse/tls/ca.pem --data-binary @wayhouse.yaml -H "Authorization: Bearer $TOKEN" https://127.0.0.1:9901/config`.
 

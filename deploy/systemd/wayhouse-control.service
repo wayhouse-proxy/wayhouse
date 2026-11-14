@@ -24,6 +24,7 @@ ExecStart=/usr/local/bin/wayhouse-control \
   --tls-cert=/etc/wayhouse/tls/control.pem \
   --tls-key=%d/tls-key \
   --ca-file=/etc/wayhouse/tls/ca.pem \
+  --ui-static-dir=/usr/share/wayhouse/web \
   --controller-data-dir=/var/lib/wayhouse/controller \
   --controller-plugins \
   --controller-secret-key-file=/var/lib/wayhouse/secret.keys \

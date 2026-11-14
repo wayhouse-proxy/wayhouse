@@ -15,6 +15,7 @@ ExecStart=/usr/local/bin/wayhouse-ui \
   --listen=127.0.0.1:9903 \
   --controller-url=https://127.0.0.1:9901 \
   --ca-file=/etc/wayhouse/tls/ca.pem \
+  --static-dir=/usr/share/wayhouse/web \
   --aggregator-url=http://127.0.0.1:9902
 Restart=on-failure
 RestartSec=2

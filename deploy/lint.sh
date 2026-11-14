@@ -291,6 +291,7 @@ Dir["deploy/systemd/*.service"].each do |f|
   errs << "#{f}: puts a token or password on the command line" if t =~ /--[a-z-]*(token|password)(=|\s)/
   errs << "#{f}: must not read tokens from an EnvironmentFile" if t.include?("EnvironmentFile=") && t =~ /TOKEN|PASSWORD/
   errs << "#{f}: NoNewPrivileges missing" unless t.include?("NoNewPrivileges=yes")
+  errs << "#{f}: serves the UI but passes no --static-dir (every page would be a 404)" if t =~ /ExecStart=\S*wayhouse-(ui|control)\b/ && t !~ /--(ui-)?static-dir=\S/
 end
 
 # No compose or k8s command carries a token value: only `--<name>-file` flags. A secret is read
