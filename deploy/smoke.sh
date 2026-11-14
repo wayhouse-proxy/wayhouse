@@ -28,7 +28,8 @@ SCHEME=${SCHEME:-http}
 curl() { command curl ${CA:+--cacert "$CA"} "$@"; }
 CTRL=$SCHEME://127.0.0.1:9901
 AGG=$SCHEME://127.0.0.1:9902
-UI=http://127.0.0.1:9903
+# The all-in-one solo overlay serves the UI over https too (UI_URL says so).
+UI=${UI_URL:-http://127.0.0.1:9903}
 WAYHOUSE_ADMIN=http://127.0.0.1:9900
 
 retry "controller /healthz" curl -fsS "$CTRL/healthz"

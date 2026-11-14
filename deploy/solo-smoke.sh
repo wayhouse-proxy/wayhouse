@@ -27,14 +27,16 @@ if sh "$(dirname "$0")/solo/init.sh" "$ENV_FILE" >/dev/null 2>&1; then fail "ini
 echo "ok: init wrote a 0600 env file with random tokens and refuses to overwrite it"
 # The certificates init made: the private keys are owner-only on the host, the CA is public.
 : "${WAYHOUSE_TLS_DIR:?the env file lacks WAYHOUSE_TLS_DIR}"
-for k in controller.key aggregator.key ca.key; do
+# SOLO_KEYS: the key files init wrote; the all-in-one layout has one (control.key).
+SOLO_KEYS=${SOLO_KEYS:-controller.key aggregator.key}
+for k in $SOLO_KEYS ca.key; do
   [ "$(stat -c %a "$WAYHOUSE_TLS_DIR/$k")" = 600 ] || fail "$WAYHOUSE_TLS_DIR/$k is not mode 0600"
 done
 echo "ok: init wrote the private keys with mode 0600"
 CA="$WAYHOUSE_TLS_DIR/ca.pem"
 curl() { command curl --cacert "$CA" "$@"; }
 CTRL=https://127.0.0.1:9901
-UI=http://127.0.0.1:9903
+UI=${UI_URL:-http://127.0.0.1:9903}
 auth="Authorization: Bearer $WAYHOUSE_CONTROLLER_TOKEN"
 
 # https from the first start: the controller answers over TLS (trusting only the init CA), a client
@@ -50,8 +52,11 @@ retry "controller serves the plugin API" curl -fsS -H "$auth" "$CTRL/plugins"
 # The keyring exists, is owner-only and belongs to the controller's user.
 keys_vol="${SOLO_PROJECT}_solo-keys"
 tls_vol="${SOLO_PROJECT}_solo-tls"
-tls_modes=$(docker run --rm -v "$tls_vol":/tls:ro busybox:1.37.0 sh -c 'stat -c "%a %u %n" /tls/controller.key /tls/aggregator.key /tls/ca.pem')
-case "$tls_modes" in "600 65532 /tls/controller.key"*"600 65532 /tls/aggregator.key"*"644 65532 /tls/ca.pem"*) echo "ok: the keys are 0600 and owned by 65532 inside the stack" ;; *) fail "tls volume modes: $tls_modes" ;; esac
+tls_paths=$(for k in $SOLO_KEYS ca.pem; do printf '/tls/%s ' "$k"; done)
+tls_modes=$(docker run --rm -v "$tls_vol":/tls:ro busybox:1.37.0 sh -c "stat -c '%a %u %n' $tls_paths" | tr '\n' ';')
+want=$(for k in $SOLO_KEYS; do printf '600 65532 /tls/%s;' "$k"; done)"644 65532 /tls/ca.pem;"
+[ "$tls_modes" = "$want" ] || fail "tls volume modes: $tls_modes (want $want)"
+echo "ok: the keys are 0600 and owned by 65532 inside the stack"
 inspect_keys() {
   docker run --rm -v "$keys_vol":/keys:ro busybox:1.37.0 sh -c 'stat -c "%a %u" /keys/secret.keys; sha256sum /keys/secret.keys'
 }
@@ -66,6 +71,12 @@ list=$(curl -fsS -H "$auth" "$CTRL/secrets")
 echo "$list" | grep -q '"solo-smoke"' || fail "the stored secret is not listed"
 if echo "$list" | grep -q 'solo-smoke-value'; then fail "GET /secrets shows the value"; fi
 echo "ok: a secret is sealed, listed by name, and never shown"
+
+# All-in-one layout: one process holds all three listeners.
+if [ -n "${UI_URL:-}" ]; then
+  retry "the aggregator answers from the same process" curl -fsS "https://127.0.0.1:9902/healthz"
+  retry "the UI answers over https from the same process" curl -fsS "$UI/healthz"
+fi
 
 # Pushing a config through the UI's BFF works with a session cookie.
 cookie=$(curl -sS -D - -o /dev/null -X POST -H 'content-type: application/json' \

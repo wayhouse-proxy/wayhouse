@@ -1,0 +1,63 @@
+# Solo bundle, all-in-one (docs/12-deployment.md, "One box"): the controller, the aggregator and
+# the UI run as ONE process, `wayhouse-control`, in the service that is still called `controller`
+# (so the seed step and every hostname stay the same). Use it as a third overlay:
+#   wayhouse-controller init --target compose --control   # one certificate, control.pem
+#   docker compose -f docker-compose.yml -f compose.solo.yml -f compose.solo-control.yml up -d --build
+# Same listeners (9901 controller, 9902 aggregator, 9903 UI), same tokens, same volumes as the
+# split solo bundle, on the host's loopback only. What differs:
+#   - one container, one certificate (control.pem, valid for `controller` and loopback; the UI
+#     and the proxy dial the aggregator on loopback); the split `aggregator` and `ui` services
+#     are switched off (profile `split`)
+#   - the UI serves https from that certificate (it listens on the container's 0.0.0.0, and
+#     wayhouse-control refuses a login page over plain http off loopback): open
+#     https://127.0.0.1:9903 and accept the warning (the init CA has no name constraints, so do
+#     not add it to a browser or system trust store; keep ca.key out of backups)
+#   - the three programs are one process: if one stops, the process exits and compose restarts
+#     all three; a fleet keeps the split services
+# Single node only. The controller binary stays the way to run Raft replicas.
+services:
+  keys:
+    environment:
+      TLS_FILES: control.pem control.key
+
+  controller:
+    build:
+      target: wayhouse-control
+    image: wayhouse-deploy/wayhouse-control:local
+    command:
+      - --controller-listen=0.0.0.0:9901
+      - --controller-data-dir=/data
+      - --controller-auth-token-file=/run/secrets/auth-token
+      - --controller-proxy-token-file=/run/secrets/proxy-token
+      - --controller-agent-token-file=/run/secrets/agent-token
+      - --controller-plugins
+      - --controller-secret-key-file=/keys/secret.keys
+      - --aggregator-listen=0.0.0.0:9902
+      - --aggregator-auth-token-file=/run/secrets/aggregator-auth-token
+      - --aggregator-ingest-token-file=/run/secrets/ingest-token
+      - --aggregator-instance-url-allow=127.0.0.0/8
+      - --ui-listen=0.0.0.0:9903
+      - --ui-ui-password-file=/run/secrets/ui-password
+      - --ui-tls-cert=/tls/control.pem
+      - --ui-tls-key=/tls/control.key
+      - --tls-cert=/tls/control.pem
+      - --tls-key=/tls/control.key
+      - --ca-file=/tls/ca.pem
+      - --settings-dir=/settings
+    secrets:
+      - { source: aggregator-token, target: aggregator-auth-token }
+      - ingest-token
+      - ui-password
+    ports:
+      - "127.0.0.1:9902:9902"
+      - "127.0.0.1:9903:9903"
+
+  # Folded into the `controller` service above.
+  aggregator:
+    profiles: [split]
+  ui:
+    profiles: [split]
+
+  wayhouse:
+    depends_on:
+      aggregator: { required: false }
