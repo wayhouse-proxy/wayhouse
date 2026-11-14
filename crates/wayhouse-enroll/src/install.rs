@@ -77,6 +77,50 @@ impl Install {
         }
     }
 
+    /// Everything about the unit that can be known before the one-time code is spent: a unit
+    /// that could never start, or that would be written wrong, must not cost the code (for an
+    /// agent re-enroll, the old token and key too).
+    pub fn preflight(
+        &self,
+        requested_dir: Option<&Path>,
+        controller_url: &str,
+        advertise: Option<&str>,
+        extra: &[String],
+    ) -> Result<(), BoxErr> {
+        let flag = |name: &str| {
+            extra
+                .iter()
+                .any(|a| a == name || a.strip_prefix(name).is_some_and(|r| r.starts_with('=')))
+        };
+        if self.role == Role::Agent && requested_dir.is_some_and(|d| d != self.data_dir()) {
+            return Err(format!(
+                "the agent's unit keeps its files in {}; drop --data-dir",
+                self.data_dir().display()
+            )
+            .into());
+        }
+        // The UI starts on loopback holding the enrolled admin token; without a login every
+        // local user would be a fleet admin.
+        if self.role == Role::Ui
+            && !self.extra_creds.iter().any(|(n, _)| n == "ui-password")
+            && !flag("--users-file")
+            && !flag("--ui-password-file")
+        {
+            return Err("a UI unit without a login would make every local user a fleet admin: pass --credential ui-password=PATH, or --users-file PATH after `--`".into());
+        }
+        // The name and id arrive with the redeem; a stand-in is enough to check the rest.
+        let stand_in = Meta {
+            controller_url: controller_url.to_owned(),
+            name: "node".into(),
+            role: self.role,
+            parent_url: None,
+            node_id: Some(1),
+            tunnel_network: None,
+            advertise: Some(advertise.unwrap_or("https://node.invalid").to_owned()),
+        };
+        render_unit(self, &self.data_dir(), &stand_in, &[], extra).map(drop)
+    }
+
     /// Refuses to go on when it would replace a unit or an earlier enrollment.
     pub fn check_free(&self, data_dir: &Path) -> Result<(), BoxErr> {
         if self.unit_path().exists() {

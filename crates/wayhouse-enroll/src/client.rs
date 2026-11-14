@@ -36,6 +36,8 @@ pub enum EnrollError {
     NoPin,
     #[error("not a valid controller URL")]
     BadUrl,
+    #[error("the controller URL must not contain a user name or password")]
+    UrlUserInfo,
     #[error("not a SHA-256 fingerprint: expected 64 hex digits, optionally colon-separated")]
     BadFingerprint,
     #[error("--controller-ca: {0}")]
@@ -73,15 +75,27 @@ fn is_loopback(host: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
-/// The URL's host when it may carry a code: `https`, or `http` to loopback.
-fn check_url(url: &str) -> Result<(), EnrollError> {
+/// The parsed URL when it may carry a code: `https`, or `http` to loopback. Everything after
+/// this works on the parsed URL (its scheme is lowercase, surrounding blanks are gone), never
+/// on the text the operator typed.
+fn check_url(url: &str) -> Result<reqwest::Url, EnrollError> {
     let u = reqwest::Url::parse(url).map_err(|_| EnrollError::BadUrl)?;
+    if !u.username().is_empty() || u.password().is_some() {
+        return Err(EnrollError::UrlUserInfo);
+    }
     match (u.scheme(), u.host_str()) {
-        ("https", Some(_)) => Ok(()),
-        ("http", Some(h)) if is_loopback(h) => Ok(()),
+        ("https", Some(_)) => Ok(u),
+        ("http", Some(h)) if is_loopback(h) => Ok(u),
         ("http", Some(_)) => Err(EnrollError::PlainHttp),
         _ => Err(EnrollError::BadUrl),
     }
+}
+
+/// The controller URL as it is used and stored: parsed (lowercase scheme and host, no
+/// surrounding blanks, no trailing `/`) and checked like [`redeem`] checks it. What `enroll`
+/// writes into the node's files, and so into a unit, is this form, never the typed text.
+pub fn normalize_url(url: &str) -> Result<String, EnrollError> {
+    Ok(check_url(url)?.as_str().trim_end_matches('/').to_owned())
 }
 
 /// Accepts exactly one certificate, whatever its names or chain; handshake signatures are still
@@ -163,6 +177,9 @@ fn http_client(pin: Option<&Pin>, https: bool) -> Result<reqwest::Client, Enroll
             )
         }
     };
+    // Plain http only ever goes to loopback, in the clear, with the one-time code: no
+    // `HTTP_PROXY` may see it, pinned or not.
+    let b = if https { b } else { b.no_proxy() };
     b.timeout(std::time::Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -178,15 +195,15 @@ pub async fn redeem(
     role: Role,
     name: Option<&str>,
 ) -> Result<RedeemResponse, EnrollError> {
-    check_url(controller_url)?;
-    let client = http_client(pin, controller_url.starts_with("https://"))?;
+    let url = check_url(controller_url)?;
+    let client = http_client(pin, url.scheme() == "https")?;
     let body = RedeemRequest {
         code: code.expose().to_string(),
         role,
         name: name.map(str::to_owned),
     };
     let resp = client
-        .post(format!("{}/enroll", controller_url.trim_end_matches('/')))
+        .post(format!("{}/enroll", url.as_str().trim_end_matches('/')))
         .json(&body)
         .send()
         .await
@@ -232,6 +249,63 @@ mod tests {
             "nonsense",
         ] {
             assert!(check_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_url_that_is_used_and_stored_is_the_parsed_one() {
+        for (typed, parsed) in [
+            ("HTTPS://C.Example", "https://c.example"),
+            (" https://c.example:9901/ ", "https://c.example:9901"),
+            ("http://127.0.0.1:1/", "http://127.0.0.1:1"),
+        ] {
+            assert_eq!(normalize_url(typed).unwrap(), parsed, "{typed:?}");
+        }
+        // User info would end up in a 0644 unit and in `ps`.
+        for bad in ["https://user:pw@c.example", "https://user@c.example"] {
+            assert!(
+                matches!(normalize_url(bad), Err(EnrollError::UrlUserInfo)),
+                "{bad}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn loopback_http_ignores_the_proxy_environment_pinned_or_not() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut c, _) = l.accept().await.unwrap();
+            let _ = c.read(&mut [0u8; 1024]).await;
+            let _ = c
+                .write_all(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n")
+                .await;
+        });
+        // A proxy nobody listens on: a client that used it could not reach the server.
+        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:1");
+        std::env::set_var("http_proxy", "http://127.0.0.1:1");
+        let pin = Pin::Fingerprint([0; 32]);
+        let e = redeem(&url, Some(&pin), &Code::generate(), Role::Agent, None)
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(e, EnrollError::Refused), "{e}");
+    }
+
+    #[tokio::test]
+    async fn an_https_url_in_any_spelling_still_needs_a_pin() {
+        let code = Code::generate();
+        for url in [
+            "HTTPS://c.example",
+            " https://c.example",
+            "Https://c.example ",
+        ] {
+            let e = redeem(url, None, &code, Role::Agent, None)
+                .await
+                .err()
+                .unwrap();
+            assert!(matches!(e, EnrollError::NoPin), "{url:?}: {e}");
         }
     }
 

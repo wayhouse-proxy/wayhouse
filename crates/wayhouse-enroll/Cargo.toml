@@ -22,6 +22,7 @@ tokio-rustls.workspace = true
 wayhouse-http.workspace = true
 reqwest.workspace = true
 clap.workspace = true
+nix = { workspace = true, features = ["user"] }
 
 [dev-dependencies]
 tempfile.workspace = true
