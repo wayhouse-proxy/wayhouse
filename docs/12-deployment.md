@@ -163,12 +163,13 @@ single-node, so nothing joins it as a replica.
 What differs:
 
 - **One certificate.** `control.pem` is valid for `localhost`, `127.0.0.1`, `::1` and the names the
-  one process answers to (`controller` and `aggregator` in compose). The UI dials the other two over
-  loopback with their own tokens, so the code path equals the split layout.
+  one process answers to (`controller` in compose, plus any `--san`). The UI dials the other two
+  over loopback with their own tokens, so the code path equals the split layout.
 - **The UI serves https in compose.** It listens on the container's `0.0.0.0`, and `wayhouse-control`
   refuses a non-loopback UI without its own certificate (a login over plain http would send the
-  password in the clear). Open <https://127.0.0.1:9903> and trust `tls/ca.pem`, or accept the
-  warning. On systemd the UI stays on loopback http.
+  password in the clear). Open <https://127.0.0.1:9903> and accept the browser warning. Do not add
+  `tls/ca.pem` to a browser or system trust store: the init CA has no name constraints, so it could
+  vouch for any name. Keep `ca.key` out of backups. On systemd the UI stays on loopback http.
 - **Flags are namespaced.** `--controller-X`, `--aggregator-X` and `--ui-X` reach program `X` (a UI
   flag that already starts with `ui-` keeps it: `--ui-ui-password-file`). `--settings-dir`,
   `--tls-cert`, `--tls-key` and `--ca-file` are shared; the UI's own TLS is `--ui-tls-cert` and
@@ -193,9 +194,13 @@ What differs:
 
 **Moving on to the split layout or to HA** (nothing is lost; the data directory, keyring, tokens and
 settings are the same files). Stop the process, then copy `control.pem` and `control.key` to
-`controller.*` and `aggregator.*` in the same `tls/` directory (their names cover both services; the
-CA stays), switch the units or the compose overlay back (leave out `compose.solo-control.yml`; on
-systemd use `wayhouse-solo.target`), and start. To run Raft replicas, continue with
+`controller.*` and `aggregator.*` in the same `tls/` directory (the CA stays), switch the units or
+the compose overlay back (leave out `compose.solo-control.yml`; on systemd use
+`wayhouse-solo.target`), and start. On systemd that is all: the split units reach everything on
+loopback. In compose the split UI dials `https://aggregator:9902`, a name `control.pem` does not
+carry, and there is no command yet to issue a leaf (the same gap as certificate renewal), so run
+`init --san aggregator` into a new `tls/` directory before the first start if you expect to split
+later. To run Raft replicas, continue with
 [Upgrading a single controller to HA](#upgrading-a-single-controller-to-ha); that is a controller-binary
 feature, and `wayhouse-control` runs one node only. Kubernetes keeps separate Deployments, as before.
 
