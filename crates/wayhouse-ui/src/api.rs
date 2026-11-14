@@ -323,12 +323,16 @@ async fn login(
     // No peer address (a test harness without a real socket) shares one key.
     let peer = peer.map_or(IpAddr::from([0, 0, 0, 0]), |p| (p.0).0 .0.ip());
     // Behind a configured reverse proxy the client is the forwarded address; otherwise the peer.
-    let forwarded = headers
-        .get_all("x-forwarded-for")
-        .iter()
-        .filter_map(|v| v.to_str().ok())
-        .collect::<Vec<_>>()
-        .join(",");
+    let forwarded = if state.trusted_proxies.is_empty() {
+        String::new()
+    } else {
+        headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
     let ip = crate::login_limit::client_ip(peer, Some(&forwarded), &state.trusted_proxies);
     // Throttle before any password work. In legacy/open mode there is no
     // username, so only the per-address bucket applies.

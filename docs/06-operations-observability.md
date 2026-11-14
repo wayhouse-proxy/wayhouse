@@ -674,7 +674,7 @@ does not help. Behind a reverse proxy every client has the proxy's
 address, so pass `--trusted-proxy <proxy address>` (repeat or comma-separate for several):
 requests from those addresses are throttled under the client in the right-most
 `X-Forwarded-For` entry that is not itself a trusted proxy. Without the flag the header is
-ignored, because any client could spoof it. The delay
+ignored, because any client could spoof it. Proxies are trusted by exact address (no CIDR ranges), and an `X-Forwarded-For` entry written as `ip:port` is not understood, so such a request is throttled under the proxy's address. The delay
 is kept in memory on each controller replica (a restart or another replica
 starts fresh), and names share a fixed set of 1024 slots, so it neither leaks
 which accounts exist nor grows with attacker-chosen names.

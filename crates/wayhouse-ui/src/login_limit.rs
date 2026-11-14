@@ -259,7 +259,13 @@ fn source_key(ip: IpAddr) -> IpAddr {
 /// that does not parse stops the walk and falls back to the peer, so a malformed header can only
 /// make the delay coarser, never let a client pick its own key.
 pub fn client_ip(peer: IpAddr, forwarded: Option<&str>, trusted: &[IpAddr]) -> IpAddr {
-    let is_trusted = |ip: IpAddr| trusted.iter().any(|t| source_key(*t) == source_key(ip));
+    // Exact addresses: trusting one proxy must not trust its whole /64 (`source_key` is for the
+    // throttle's key, not for trust). Only an IPv4-mapped IPv6 address is read as its IPv4.
+    let exact = |ip: IpAddr| match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    };
+    let is_trusted = |ip: IpAddr| trusted.iter().any(|t| exact(*t) == exact(ip));
     if !is_trusted(peer) {
         return peer;
     }
@@ -537,6 +543,19 @@ mod tests {
         assert_eq!(client_ip(proxy, None, &trusted), proxy);
         assert_eq!(client_ip(proxy, Some("1.2.3.4, junk"), &trusted), proxy);
         assert_eq!(client_ip(proxy, Some("10.0.0.5"), &trusted), proxy);
+        // Trust is for the exact address, not its /64: a neighbour of the proxy gets no say.
+        assert_eq!(
+            client_ip(
+                ip("2001:db8::99"),
+                Some("203.0.113.9"),
+                &[ip("2001:db8::5")]
+            ),
+            ip("2001:db8::99")
+        );
+        assert_eq!(
+            client_ip(ip("2001:db8::5"), Some("203.0.113.9"), &[ip("2001:db8::5")]),
+            ip("203.0.113.9")
+        );
         // No trusted proxies configured: always the peer.
         assert_eq!(client_ip(proxy, Some("203.0.113.9"), &[]), proxy);
         // An IPv4-mapped peer matches its IPv4 proxy.
