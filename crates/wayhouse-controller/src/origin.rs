@@ -7,7 +7,8 @@
 //! controller. [`crate::scoped_auth`] turns the token into a [`Caller::Origin`]; the guard on
 //! `POST /peers` then holds it to its own name, and refuses the shared agent token for any
 //! origin that has one. A re-enroll replaces the token, which revokes the old one; deleting the origin
-//! (`DELETE /peers/{name}`) revokes its token and every tunnel key generation.
+//! (`DELETE /peers/{name}`) or revoking its spent code revokes its token and every tunnel key
+//! generation.
 //!
 //! **Key generations.** An origin's tunnel key is a sealed cluster secret, one per generation
 //! (`wayhouse_enroll::psk_secret_name_gen`); the registration names the generation proxies use,
@@ -170,7 +171,7 @@ struct Head {
 pub async fn guard(State(ui): State<UiState>, req: Request, next: Next) -> Response {
     let store = ui.store.clone();
     if req.method() == Method::DELETE {
-        return revoke_after_delete(&ui, req, next).await;
+        return revoke_before_delete(&ui, req, next).await;
     }
     if req.method() != Method::POST || req.uri().path() != "/peers" {
         return next.run(req).await;
@@ -230,10 +231,11 @@ pub async fn guard(State(ui): State<UiState>, req: Request, next: Next) -> Respo
         .await
 }
 
-/// `DELETE /peers/{name}`: once the registration is gone (or was already: 404 still revokes), so are the origin's token and every
-/// tunnel key generation, or a compromised or decommissioned host could register again with
-/// them. Idempotent, so a retried delete finishes a half-done revoke.
-async fn revoke_after_delete(ui: &UiState, req: Request, next: Next) -> Response {
+/// `DELETE /peers/{name}`: the origin's token and every tunnel key generation go first, then the
+/// registration. The other order would let a host that keeps re-registering in a loop come back
+/// between the two steps and keep a registration with no key. A 404 still revokes (a retried
+/// delete finishes a half-done one), and a failed revoke stops the delete, so the admin retries.
+async fn revoke_before_delete(ui: &UiState, req: Request, next: Next) -> Response {
     let name = req
         .uri()
         .path()
@@ -241,20 +243,16 @@ async fn revoke_after_delete(ui: &UiState, req: Request, next: Next) -> Response
         .filter(|n| !n.contains('/'))
         .and_then(|n| percent_encoding::percent_decode_str(n).decode_utf8().ok())
         .map(std::borrow::Cow::into_owned);
-    let resp = next.run(req).await;
-    match name {
-        Some(name) if resp.status().is_success() || resp.status() == StatusCode::NOT_FOUND => {
-            match revoke(ui, &name).await {
-                Ok(()) => resp,
-                Err(r) => r,
-            }
+    if let Some(name) = name {
+        if let Err(r) = revoke(ui, &name).await {
+            return r;
         }
-        _ => resp,
     }
+    next.run(req).await
 }
 
 #[allow(clippy::result_large_err)]
-async fn revoke(ui: &UiState, origin: &str) -> Result<(), Response> {
+pub(crate) async fn revoke(ui: &UiState, origin: &str) -> Result<(), Response> {
     // `u64::MAX` is no generation, so every key goes; the token is replaced by none.
     forget_generations_except(ui, origin, u64::MAX).await?;
     forget_tokens(ui, origin).await
@@ -838,6 +836,39 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{path}");
         }
         assert!(t.ui.store.list(Kind::OriginToken).unwrap().is_empty());
+        assert!(t.ui.store.list(Kind::ClusterSecret).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_old_token_is_refused_after_a_delete_and_a_retried_delete_still_revokes() {
+        let t = setup();
+        t.enrolled("home").await;
+        let token = issue_token(&t.ui, "home").await.unwrap();
+        let find = lookup(t.ui.store.clone());
+        assert_eq!(find(&token).as_deref(), Some("home"));
+        let app = crate::peers::api::router(t.peers.clone())
+            .route_layer(axum::middleware::from_fn_with_state(t.ui.clone(), guard));
+        let delete = |app: Router| async move {
+            let req = Request::delete("/peers/home")
+                .header(wayhouse_http::protocol::HEADER, "1.0")
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(req).await.unwrap().status()
+        };
+        assert_eq!(delete(app.clone()).await, StatusCode::OK);
+        assert_eq!(find(&token), None, "the old token no longer resolves");
+        // A half-finished delete (registration gone, credentials back) is finished by a retry,
+        // which answers 404 for the registration but still revokes.
+        let again = issue_token(&t.ui, "home").await.unwrap();
+        store_psk_as(
+            &t.ui,
+            wayhouse_enroll::psk_secret_name("home"),
+            &wayhouse_enroll::generate_psk(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(delete(app).await, StatusCode::NOT_FOUND);
+        assert_eq!(find(&again), None);
         assert!(t.ui.store.list(Kind::ClusterSecret).unwrap().is_empty());
     }
 }
