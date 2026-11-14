@@ -485,6 +485,7 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                     "join_hash",
                     "join_until",
                     "joined",
+                    "redeemed_at",
                 ],
             )?;
             let role = obj.get("role").and_then(Value::as_str);
@@ -763,6 +764,9 @@ impl UiStore {
                     return Ok(Err(Applied::Refused));
                 }
                 rec["uses_left"] = (rec["uses_left"].as_u64().unwrap_or(1) - 1).into();
+                // When the code was last spent: revoking an old code must not cut off a host
+                // that has since enrolled again with a newer one.
+                rec["redeemed_at"] = (*now).into();
                 let mut writes = vec![];
                 let mut allocated = None;
                 if let Some(child) = pool {
