@@ -156,7 +156,7 @@ export function AddNodePage() {
     if ((role === "proxy" || role === "ui") && aggregatorUrl && !validUrl(aggregatorUrl)) e.aggregatorUrl = "An http(s) URL.";
     if (role === "aggregator" && parentUrl && !validUrl(parentUrl)) e.parentUrl = "An http(s) URL without credentials.";
     if (containerTarget && !validTag(prefs.imageTag)) e.imageTag = "A valid image tag.";
-    if (target === "k8s" && !validNamespace(prefs.namespace)) e.namespace = "A Kubernetes namespace name.";
+    if (target === "k8s" && !pool && !validNamespace(prefs.namespace)) e.namespace = "A Kubernetes namespace name.";
     if (stepUpRole && stepUp.length === 0) e.stepUp = "Required for this role.";
     if (!Number.isInteger(effectiveUses) || effectiveUses < (pool ? 2 : 1) || effectiveUses > (pool ? 16 : 1000)) e.uses = pool ? "2 to 16." : "1 to 1000.";
     return e;
@@ -199,7 +199,8 @@ export function AddNodePage() {
         controllerUrl: prefs.controllerUrl,
         pin: prefs.pin,
         imageTag: prefs.imageTag,
-        namespace: prefs.namespace,
+        // The ha-enrolled overlay is fixed to this namespace.
+        namespace: pool ? "wayhouse" : prefs.namespace,
         pool,
       });
       setTried(false);
@@ -342,24 +343,28 @@ export function AddNodePage() {
               </Select>
             )}
           />
-          {!pool && <FieldRow
-            label="Controller URL"
-            required
-            help="Where the new node reaches the controller."
-            error={shown("controllerUrl")}
-            render={(a) => (
-              <Input {...a} value={prefs.controllerUrl} onChange={(e) => setPrefs({ ...prefs, controllerUrl: e.target.value.trim() })} mono placeholder="https://controller.example:9901" className="w-full max-w-xl" />
-            )}
-          />}
-          {!pool && <FieldRow
-            label="Certificate fingerprint"
-            required
-            help="The node checks the controller's certificate against this before it sends the code. `wayhouse-controller init` printed it."
-            error={shown("pin")}
-            render={(a) => (
-              <Input {...a} value={prefs.pin} onChange={(e) => setPrefs({ ...prefs, pin: e.target.value.trim() })} mono placeholder="sha256:…" className="w-full max-w-xl" />
-            )}
-          />}
+          {!pool && (
+            <FieldRow
+              label="Controller URL"
+              required
+              help="Where the new node reaches the controller."
+              error={shown("controllerUrl")}
+              render={(a) => (
+                <Input {...a} value={prefs.controllerUrl} onChange={(e) => setPrefs({ ...prefs, controllerUrl: e.target.value.trim() })} mono placeholder="https://controller.example:9901" className="w-full max-w-xl" />
+              )}
+            />
+          )}
+          {!pool && (
+            <FieldRow
+              label="Certificate fingerprint"
+              required
+              help="The node checks the controller's certificate against this before it sends the code. `wayhouse-controller init` printed it."
+              error={shown("pin")}
+              render={(a) => (
+                <Input {...a} value={prefs.pin} onChange={(e) => setPrefs({ ...prefs, pin: e.target.value.trim() })} mono placeholder="sha256:…" className="w-full max-w-xl" />
+              )}
+            />
+          )}
           {role === "agent" && (
             <FieldRow
               label="Game server addresses"
@@ -402,7 +407,7 @@ export function AddNodePage() {
               render={(a) => <Input {...a} value={prefs.imageTag} onChange={(e) => setPrefs({ ...prefs, imageTag: e.target.value.trim() })} mono />}
             />
           )}
-          {target === "k8s" && (
+          {target === "k8s" && !pool && (
             <FieldRow
               label="Namespace"
               error={shown("namespace")}

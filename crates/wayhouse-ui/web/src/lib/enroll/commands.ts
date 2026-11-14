@@ -372,7 +372,7 @@ function k8sControllerPool(s: Spec): Step[] {
       language: "sh",
       holdsCode: false,
       text: `kubectl -n ${ns} create secret generic wayhouse-enroll-step-up --from-file=step-up=./step-up`,
-      note: "Skip it if the Secret exists. It must hold the same step-up secret you typed above, in a file named step-up; the bootstrap controller and every replica read it.",
+      note: "The overlay also needs the wayhouse-tls, wayhouse-tokens and wayhouse-keyring Secrets that `wayhouse-controller init --target k8s-secret` makes; create them first. Skip this step if the step-up Secret exists. It must hold the same step-up secret you typed above, in a file named step-up; the bootstrap controller and every replica read it.",
     },
     {
       title: "Store the pool code as a Secret",
@@ -382,7 +382,7 @@ function k8sControllerPool(s: Spec): Step[] {
         ? `printf '%s' ${sh(s.code)} | kubectl -n ${ns} create secret generic wayhouse-enroll-code --from-file=code=/dev/stdin`
         : `kubectl -n ${ns} create secret generic wayhouse-enroll-code --from-file=code=/dev/stdin`,
       note: s.code
-        ? "Every replica pod reads this one code. Delete the Secret once the pods have joined."
+        ? "Every replica pod reads this one code. This line puts the code in your shell history; tick \"Keep the code out of the command\" to paste it at a prompt instead. Delete the Secret once the pods have joined."
         : "Paste the code, press Enter, then Ctrl-D. It never appears in the shell history.",
     },
     {
@@ -391,7 +391,7 @@ function k8sControllerPool(s: Spec): Step[] {
       holdsCode: false,
       text: `kubectl apply -k deploy/k8s/overlays/ha-enrolled
 kubectl -n ${ns} scale statefulset/wayhouse-controller-replica --replicas=${s.uses ?? 2}`,
-      note: `The overlay installs into the wayhouse namespace. Each new pod spends one of the code's ${s.uses ?? 2} uses, so never scale past that; a pod that keeps its volume spends none when it restarts.`,
+      note: `The overlay installs into the wayhouse namespace. The overlay starts with replicas: 2 and applying it again resets the count to 2, so scale after every apply. Each new pod spends one of the code's ${s.uses ?? 2} uses, so never scale past that; a pod that keeps its volume spends none when it restarts.`,
     },
   ];
 }
