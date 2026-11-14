@@ -17,9 +17,9 @@ default = ["client"]
 # The ACME client (`AcmeCa`) and its HTTP/TLS stack. Without it the crate keeps only the
 # certificate model, renewal arithmetic and the `DnsSolver` trait, which the controller needs
 # to store and replicate certificates even when its build leaves issuance out.
-client = ["dep:instant-acme", "dep:rcgen", "dep:x509-parser", "dep:hyper-util", "dep:hyper-rustls", "dep:rustls", "dep:bytes", "dep:http", "dep:httpdate"]
+client = ["dep:instant-acme", "dep:rcgen", "dep:x509-parser", "dep:hyper-util", "dep:hyper-rustls", "dep:rustls", "dep:bytes", "dep:http", "dep:httpdate", "dep:rustls-pki-types", "dep:rustls-platform-verifier"]
 # The in-process fake CA and fake DNS records; used by this crate's and the controller's tests.
-test-support = ["client", "dep:axum", "dep:ring", "dep:sha2", "dep:http-body-util", "dep:time", "dep:rustls-pki-types", "dep:rand", "rcgen/x509-parser"]
+test-support = ["client", "dep:axum", "dep:ring", "dep:sha2", "dep:http-body-util", "dep:time", "dep:rand", "rcgen/x509-parser"]
 
 [lints]
 workspace = true
@@ -48,6 +48,7 @@ httpdate = { version = "1", optional = true }
 http-body-util = { version = "0.1", optional = true }
 time = { version = "0.3", optional = true }
 rustls-pki-types = { version = "1", optional = true }
+rustls-platform-verifier = { version = "0.7", optional = true }
 rand = { workspace = true, optional = true }
 
 [dev-dependencies]

@@ -88,14 +88,24 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
     Some(at.duration_since(SystemTime::now()).unwrap_or_default())
 }
 
-/// The default client: HTTPS only, the platform's certificate verifier.
-fn default_client() -> Result<Box<dyn HttpClient>, IssueError> {
+/// The default client: HTTPS only, the platform's certificate verifier plus `extra_roots`.
+fn default_client(
+    extra_roots: &[rustls_pki_types::CertificateDer<'static>],
+) -> Result<Box<dyn HttpClient>, IssueError> {
     // ring is also compiled in (reqwest's fallback), so rustls cannot pick a process
     // default on its own; an earlier install, e.g. by wayhouse-http, stays.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let verifier = rustls_platform_verifier::Verifier::new_with_extra_roots(
+        extra_roots.iter().cloned(),
+        Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+    )
+    .map_err(|e| IssueError::Account(e.to_string()))?;
+    let tls = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
     let connector = hyper_rustls::HttpsConnectorBuilder::new()
-        .try_with_platform_verifier()
-        .map_err(|e| IssueError::Account(e.to_string()))?
+        .with_tls_config(tls)
         .https_only()
         .enable_http1()
         .enable_http2()
@@ -124,7 +134,16 @@ pub struct AcmeCa {
     /// Pause between publishing an HTTP-01 answer and telling the CA to look, so a replicated
     /// answer reaches the node the gateways ask.
     http_settle: Duration,
+    /// Pause between tries of a failed challenge cleanup.
+    cleanup_pause: Duration,
+    /// Challenge records the last order could not remove, as `name: reason`.
+    cleanup_failures: Arc<Mutex<Vec<String>>>,
+    /// Roots trusted on top of the platform's (`--ca-file`), for a private ACME CA.
+    extra_roots: Vec<rustls_pki_types::CertificateDer<'static>>,
 }
+
+/// Tries per challenge cleanup before the record is reported as left behind.
+const CLEANUP_TRIES: u32 = 3;
 
 /// Which challenge an order answers, and with what.
 #[derive(Clone, Copy)]
@@ -166,6 +185,9 @@ impl AcmeCa {
             retry_after: Arc::default(),
             eab: None,
             http_settle: Duration::from_secs(2),
+            cleanup_pause: Duration::from_secs(5),
+            cleanup_failures: Arc::default(),
+            extra_roots: Vec::new(),
         }
     }
 
@@ -204,6 +226,36 @@ impl AcmeCa {
         self
     }
 
+    /// Trusts the certificates in `pem` (an operator's own CA bundle) on top of the platform's
+    /// roots when talking to the ACME CA.
+    ///
+    /// # Errors
+    /// [`IssueError::Account`] if `pem` holds no certificate or an unreadable one.
+    pub fn with_extra_roots_pem(mut self, pem: &[u8]) -> Result<Self, IssueError> {
+        use rustls_pki_types::pem::PemObject;
+        let roots = rustls_pki_types::CertificateDer::pem_slice_iter(pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| IssueError::Account(format!("the extra CA roots: {e}")))?;
+        if roots.is_empty() {
+            return Err(IssueError::Account(
+                "the extra CA roots hold no certificate".into(),
+            ));
+        }
+        self.extra_roots = roots;
+        Ok(self)
+    }
+
+    /// The challenge records the last orders could not remove (`name: reason`), cleared by the
+    /// call. A record left behind is harmless to issuance but should be removed by hand.
+    pub fn take_cleanup_failures(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .cleanup_failures
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     /// How long the solver may take to make a record visible.
     #[must_use]
     pub fn propagation_timeout(mut self, d: Duration) -> Self {
@@ -231,6 +283,7 @@ impl AcmeCa {
             .timeout(Duration::from_secs(20));
         self.order_margin = Duration::from_secs(60);
         self.http_settle = Duration::ZERO;
+        self.cleanup_pause = Duration::from_millis(5);
         self
     }
 
@@ -243,7 +296,7 @@ impl AcmeCa {
             .take();
         let inner = match &self.http {
             Some(f) => f(),
-            None => default_client()?,
+            None => default_client(&self.extra_roots)?,
         };
         Ok(Account::builder_with_http(Box::new(RetryAfterSlot {
             inner,
@@ -392,8 +445,21 @@ impl AcmeCa {
         for p in &presented {
             match (p, solver) {
                 (Presented::Dns { fqdn, value }, Solver::Dns(s)) => {
-                    if let Err(e) = s.cleanup(fqdn, value).await {
+                    let mut tried = 0;
+                    let failed = loop {
+                        tried += 1;
+                        match s.cleanup(fqdn, value).await {
+                            Ok(()) => break None,
+                            Err(e) if tried == CLEANUP_TRIES => break Some(e),
+                            Err(_) => tokio::time::sleep(self.cleanup_pause * tried).await,
+                        }
+                    };
+                    if let Some(e) = failed {
                         tracing::warn!(%fqdn, error = %e, "acme: dns cleanup failed");
+                        self.cleanup_failures
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("{fqdn}: {e}"));
                     }
                 }
                 (Presented::Http { token }, Solver::Http(s)) => {
@@ -535,6 +601,21 @@ pub fn leaf_info(chain_pem: &str) -> Result<(u64, String), IssueError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extra_roots_must_be_pem_certificates_and_build_a_client() {
+        let ca = || AcmeCa::new("https://ca.example/dir", true);
+        assert!(ca().with_extra_roots_pem(b"").is_err());
+        assert!(ca().with_extra_roots_pem(b"not a pem").is_err());
+        let key = rcgen::KeyPair::generate().unwrap();
+        let pem = rcgen::CertificateParams::new(vec!["ca.example".into()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap()
+            .pem();
+        let ca = ca().with_extra_roots_pem(pem.as_bytes()).unwrap();
+        assert!(default_client(&ca.extra_roots).is_ok());
+    }
 
     #[test]
     fn a_new_account_call_forgets_a_stale_retry_after() {

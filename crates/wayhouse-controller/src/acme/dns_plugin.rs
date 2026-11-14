@@ -2,6 +2,7 @@
 //! and remove the TXT record, and looks the record up itself before the CA is told to
 //! validate. The plugin never sees an ACME key.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,10 +14,21 @@ use super::runner::SolverSource;
 use crate::plugins::runner::{HookError, Runner as PluginRunner};
 use crate::plugins::PluginStore;
 
-/// How long one `present` or `cleanup` call may take, queue wait included.
-const CALL_LIMIT: Duration = Duration::from_secs(120);
+/// The least one `present` or `cleanup` call may take, queue wait included; a site with a longer
+/// `propagation_timeout` allows its provider that long (see [`call_limit`]).
+const CALL_FLOOR: Duration = Duration::from_secs(30);
 /// Pause between two lookups while waiting for a record to appear.
 const POLL: Duration = Duration::from_secs(5);
+/// How long to leave the provider before the first lookup. Asked in the instant before the
+/// provider serves the record, a caching resolver remembers "does not exist" for the zone's
+/// negative TTL (30 minutes at Cloudflare), so the first lookup waits longer than a poll.
+const FIRST_WAIT: Duration = Duration::from_secs(20);
+/// How long one query to an authoritative nameserver may take.
+const NS_TIMEOUT: Duration = Duration::from_secs(3);
+
+fn call_limit(propagation: Duration) -> Duration {
+    propagation.max(CALL_FLOOR)
+}
 
 /// Reads TXT records the way the CA's resolver will see them.
 #[async_trait]
@@ -25,45 +37,142 @@ pub trait TxtLookup: Send + Sync {
     async fn txt(&self, fqdn: &str) -> Vec<String>;
 }
 
-/// The host's own resolver (`/etc/resolv.conf`). Caching is off here, which only covers this
-/// process: a caching resolver upstream (Unbound, systemd-resolved) can still hold a negative
-/// answer for the zone's negative TTL, which is why [`PluginDnsSolver::wait_visible`] does
-/// not look up before the first poll interval.
+/// Looks a record up at the zone's own nameservers (no recursion, so no cache can hold an
+/// early "does not exist"), and through the host's resolver (`/etc/resolv.conf`) as well:
+/// a network that redirects port-53 traffic to a local resolver, or a CNAME-delegated name,
+/// only shows up there. A record is visible when either way shows it; an authoritative answer
+/// counts only for what *every* answering server has.
 pub struct SystemTxt {
     resolver: hickory_resolver::TokioResolver,
+    /// The nameservers' port; 53 outside tests.
+    ns_port: u16,
 }
 
 impl SystemTxt {
-    pub fn new() -> Result<Self, String> {
-        let mut builder = hickory_resolver::TokioResolver::builder_tokio()
-            .map_err(|e| format!("no usable DNS resolver configuration: {e}"))?;
+    /// Uses the host resolver config; without one (no `/etc/resolv.conf`) a default public
+    /// resolver, so a missing file does not stop the controller (the `dns_srv` source does the same).
+    pub fn new() -> Self {
+        let mut builder = hickory_resolver::TokioResolver::builder_tokio().unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "acme: system resolver config unavailable; using defaults");
+            hickory_resolver::TokioResolver::builder_with_config(
+                hickory_resolver::config::ResolverConfig::default(),
+                hickory_resolver::net::runtime::TokioRuntimeProvider::default(),
+            )
+        });
+        // Only this process's cache: a caching resolver upstream can still hold a negative answer.
         builder.options_mut().cache_size = 0;
-        let resolver = builder
-            .build()
-            .map_err(|e| format!("could not build the DNS resolver: {e}"))?;
-        Ok(Self { resolver })
+        Self {
+            resolver: builder
+                .build()
+                .expect("building a resolver from a config never fails"),
+            ns_port: 53,
+        }
     }
+
+    /// The addresses of the nameservers of the zone that holds `fqdn`, found by walking up
+    /// from the name to the first label set that has `NS` records.
+    async fn zone_servers(&self, fqdn: &str) -> Vec<IpAddr> {
+        let labels: Vec<&str> = fqdn.trim_end_matches('.').split('.').collect();
+        for start in 1..labels.len().saturating_sub(1) {
+            let Ok(ns) = self
+                .resolver
+                .ns_lookup(format!("{}.", labels[start..].join(".")))
+                .await
+            else {
+                continue;
+            };
+            let mut ips = Vec::new();
+            for r in ns.answers() {
+                if let hickory_resolver::proto::rr::RData::NS(host) = &r.data {
+                    if let Ok(found) = self.resolver.lookup_ip(host.0.clone()).await {
+                        ips.extend(found.iter());
+                    }
+                }
+            }
+            return ips;
+        }
+        Vec::new()
+    }
+
+    /// The TXT strings every answering server of `servers` shows at `fqdn`; empty when none
+    /// answered or they disagree.
+    async fn ask(&self, servers: &[IpAddr], fqdn: &str) -> Vec<String> {
+        let mut asked = tokio::task::JoinSet::new();
+        for ip in servers {
+            asked.spawn(ask_one(*ip, self.ns_port, fqdn.to_string()));
+        }
+        let mut shared: Option<Vec<String>> = None;
+        while let Some(done) = asked.join_next().await {
+            let Ok(Some(found)) = done else { continue };
+            shared = Some(match shared {
+                None => found,
+                Some(have) => have.into_iter().filter(|t| found.contains(t)).collect(),
+            });
+        }
+        shared.unwrap_or_default()
+    }
+
+    async fn host(&self, fqdn: &str) -> Vec<String> {
+        self.resolver
+            .txt_lookup(format!("{fqdn}."))
+            .await
+            .map_or_else(|_| Vec::new(), |found| txt_strings(&found))
+    }
+}
+
+impl Default for SystemTxt {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One non-recursive TXT query to `ip`. `None` when the server did not answer.
+async fn ask_one(ip: IpAddr, port: u16, fqdn: String) -> Option<Vec<String>> {
+    use hickory_resolver::config::{ConnectionConfig, NameServerConfig, ResolverConfig};
+    use hickory_resolver::net::runtime::TokioRuntimeProvider;
+    let mut udp = ConnectionConfig::udp();
+    udp.port = port;
+    let config =
+        ResolverConfig::from_name_servers(vec![NameServerConfig::new(ip, true, vec![udp])]);
+    let mut builder = hickory_resolver::TokioResolver::builder_with_config(
+        config,
+        TokioRuntimeProvider::default(),
+    );
+    let opts = builder.options_mut();
+    opts.recursion_desired = false;
+    opts.cache_size = 0;
+    opts.attempts = 1;
+    opts.timeout = NS_TIMEOUT;
+    match builder.build().ok()?.txt_lookup(format!("{fqdn}.")).await {
+        Ok(found) => Some(txt_strings(&found)),
+        Err(e) if e.is_no_records_found() => Some(Vec::new()),
+        Err(_) => None,
+    }
+}
+
+fn txt_strings(found: &hickory_resolver::lookup::Lookup) -> Vec<String> {
+    found
+        .answers()
+        .iter()
+        .filter_map(|r| match &r.data {
+            hickory_resolver::proto::rr::RData::TXT(t) => Some(
+                t.txt_data
+                    .iter()
+                    .map(|part| String::from_utf8_lossy(part).into_owned())
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .collect()
 }
 
 #[async_trait]
 impl TxtLookup for SystemTxt {
     async fn txt(&self, fqdn: &str) -> Vec<String> {
-        let Ok(found) = self.resolver.txt_lookup(format!("{fqdn}.")).await else {
-            return Vec::new();
-        };
+        let servers = self.zone_servers(fqdn).await;
+        let mut found = self.ask(&servers, fqdn).await;
+        found.extend(self.host(fqdn).await);
         found
-            .answers()
-            .iter()
-            .filter_map(|r| match &r.data {
-                hickory_resolver::proto::rr::RData::TXT(t) => Some(
-                    t.txt_data
-                        .iter()
-                        .map(|part| String::from_utf8_lossy(part).into_owned())
-                        .collect::<String>(),
-                ),
-                _ => None,
-            })
-            .collect()
     }
 }
 
@@ -76,7 +185,11 @@ pub struct PluginSolvers {
 }
 
 impl SolverSource for PluginSolvers {
-    fn solver_for(&self, dns_plugin: &str) -> Option<Arc<dyn DnsSolver>> {
+    fn solver_for(
+        &self,
+        dns_plugin: &str,
+        propagation_timeout: Duration,
+    ) -> Option<Arc<dyn DnsSolver>> {
         let rec = self.store.get(dns_plugin).ok().flatten()?;
         (rec.enabled && rec.approved.triggers.on_acme_dns).then(|| {
             Arc::new(PluginDnsSolver {
@@ -84,7 +197,8 @@ impl SolverSource for PluginSolvers {
                 runner: self.runner.clone(),
                 lookup: self.lookup.clone(),
                 poll: POLL,
-                call_limit: CALL_LIMIT,
+                first_wait: FIRST_WAIT,
+                call_limit: call_limit(propagation_timeout),
             }) as Arc<dyn DnsSolver>
         })
     }
@@ -95,6 +209,7 @@ pub struct PluginDnsSolver {
     runner: Arc<PluginRunner>,
     lookup: Arc<dyn TxtLookup>,
     poll: Duration,
+    first_wait: Duration,
     call_limit: Duration,
 }
 
@@ -102,6 +217,7 @@ impl PluginDnsSolver {
     #[cfg(test)]
     fn fast(mut self) -> Self {
         self.poll = Duration::from_millis(20);
+        self.first_wait = Duration::from_millis(20);
         self
     }
 
@@ -170,15 +286,15 @@ impl DnsSolver for PluginDnsSolver {
         value: &str,
         timeout: Duration,
     ) -> Result<(), SolverError> {
-        // The first lookup waits one interval: asked in the instant before the provider serves
-        // the record, a caching resolver would remember "does not exist" for the zone's
-        // negative TTL (30 minutes at Cloudflare) and every later poll and retry would get it.
+        // The first lookup waits (see FIRST_WAIT), but never more than a quarter of the time
+        // allowed, so a short `propagation_timeout` still gets a few lookups.
         let poll = async {
+            tokio::time::sleep(self.first_wait.min(timeout / 4)).await;
             loop {
-                tokio::time::sleep(self.poll).await;
                 if self.lookup.txt(fqdn).await.iter().any(|t| t == value) {
                     return;
                 }
+                tokio::time::sleep(self.poll).await;
             }
         };
         tokio::time::timeout(timeout, poll).await.map_err(|_| {
@@ -302,13 +418,14 @@ mod tests {
     fn solver(f: &Fixture) -> PluginDnsSolver {
         // The trait object hides the concrete type; rebuild it for the fast poll.
         let rec = f.store.get("dns").unwrap().unwrap();
-        assert!(f.solvers.solver_for(&rec.id).is_some());
+        assert!(f.solvers.solver_for(&rec.id, CALL_FLOOR).is_some());
         PluginDnsSolver {
             install: rec.id,
             runner: f.solvers.runner.clone(),
             lookup: f.solvers.lookup.clone(),
             poll: POLL,
-            call_limit: CALL_LIMIT,
+            first_wait: FIRST_WAIT,
+            call_limit: CALL_FLOOR,
         }
         .fast()
     }
@@ -365,8 +482,8 @@ mod tests {
     #[tokio::test]
     async fn only_an_enabled_install_that_approved_the_trigger_gets_a_solver() {
         let f = fixture(&module(CAPS, ACCEPT), false);
-        assert!(f.solvers.solver_for("dns").is_none());
-        assert!(f.solvers.solver_for("missing").is_none());
+        assert!(f.solvers.solver_for("dns", CALL_FLOOR).is_none());
+        assert!(f.solvers.solver_for("missing", CALL_FLOOR).is_none());
         let g = fixture(
             &module(
                 r#"{"triggers":{"on_timer":true},"tick_interval_secs":30}"#,
@@ -374,7 +491,7 @@ mod tests {
             ),
             true,
         );
-        assert!(g.solvers.solver_for("dns").is_none());
+        assert!(g.solvers.solver_for("dns", CALL_FLOOR).is_none());
     }
 
     #[tokio::test]
@@ -395,7 +512,7 @@ mod tests {
         let f = fixture(&module(CAPS, ACCEPT), true);
         f.lookup.after.store(0, Ordering::SeqCst);
         let s = PluginDnsSolver {
-            poll: Duration::from_millis(150),
+            first_wait: Duration::from_millis(150),
             ..solver(&f)
         };
         let start = std::time::Instant::now();
@@ -419,5 +536,103 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.0.contains("not visible"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_short_propagation_timeout_shortens_the_first_wait_so_it_can_still_succeed() {
+        let f = fixture(&module(CAPS, ACCEPT), true);
+        f.lookup.after.store(0, Ordering::SeqCst);
+        let s = PluginDnsSolver {
+            first_wait: Duration::from_secs(60),
+            ..solver(&f)
+        };
+        s.wait_visible(FQDN, "the-value", Duration::from_millis(800))
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn a_plugin_call_may_take_the_sites_propagation_timeout_but_never_less_than_the_floor() {
+        assert_eq!(call_limit(Duration::from_secs(10)), CALL_FLOOR);
+        assert_eq!(
+            call_limit(Duration::from_secs(900)),
+            Duration::from_secs(900)
+        );
+    }
+
+    /// A nameserver on loopback that answers every TXT query with `values` (none: NXDOMAIN).
+    async fn fake_ns(ip: &str, port: u16, values: &[&str]) -> std::net::SocketAddr {
+        use hickory_resolver::proto::op::{Message, MessageType, OpCode, ResponseCode};
+        use hickory_resolver::proto::rr::{rdata::TXT, RData, Record};
+        let sock = tokio::net::UdpSocket::bind((ip, port)).await.unwrap();
+        let addr = sock.local_addr().unwrap();
+        let values: Vec<String> = values.iter().map(ToString::to_string).collect();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                let Ok((n, from)) = sock.recv_from(&mut buf).await else {
+                    return;
+                };
+                let Ok(q) = Message::from_vec(&buf[..n]) else {
+                    continue;
+                };
+                let mut r = Message::new(q.metadata.id, MessageType::Response, OpCode::Query);
+                r.metadata.authoritative = true;
+                r.add_queries(q.queries.clone());
+                if values.is_empty() {
+                    r.metadata.response_code = ResponseCode::NXDomain;
+                }
+                for v in &values {
+                    let name = q.queries[0].name().clone();
+                    r.add_answer(Record::from_rdata(
+                        name,
+                        60,
+                        RData::TXT(TXT::new(vec![v.clone()])),
+                    ));
+                }
+                let _ = sock.send_to(&r.to_vec().unwrap(), from).await;
+            }
+        });
+        addr
+    }
+
+    fn txt_at(port: u16) -> SystemTxt {
+        SystemTxt {
+            ns_port: port,
+            ..SystemTxt::new()
+        }
+    }
+
+    #[tokio::test]
+    async fn the_authoritative_servers_show_a_record_a_caching_resolver_does_not() {
+        let ns = fake_ns("127.0.0.1", 0, &["other", "the-value"]).await;
+        let found = txt_at(ns.port()).ask(&[ns.ip()], FQDN).await;
+        assert!(found.iter().any(|t| t == "the-value"), "{found:?}");
+    }
+
+    #[tokio::test]
+    async fn a_value_counts_only_when_every_answering_server_has_it() {
+        // Two loopback addresses, one port: the same lookup asks both.
+        let has = fake_ns("127.0.0.1", 0, &["the-value"]).await;
+        let lacks = fake_ns("127.0.0.2", has.port(), &[]).await;
+        let t = txt_at(has.port());
+        assert!(t
+            .ask(&[has.ip()], FQDN)
+            .await
+            .contains(&"the-value".to_string()));
+        assert!(t.ask(&[has.ip(), lacks.ip()], FQDN).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_server_that_does_not_answer_is_ignored() {
+        let dead = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let t = txt_at(dead.local_addr().unwrap().port());
+        let found = tokio::time::timeout(
+            Duration::from_secs(15),
+            t.ask(&[dead.local_addr().unwrap().ip()], FQDN),
+        )
+        .await
+        .unwrap();
+        assert!(found.is_empty());
     }
 }

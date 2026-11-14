@@ -389,3 +389,72 @@ async fn a_failing_http_solver_fails_the_order_and_still_cleans_up() {
     );
     assert!(http.is_empty());
 }
+
+/// A solver whose `cleanup` fails `fail` times, then removes the record.
+struct FlakyCleanup {
+    inner: MemDns,
+    fail: usize,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl wayhouse_acme::DnsSolver for FlakyCleanup {
+    async fn present(&self, f: &str, v: &str) -> Result<(), wayhouse_acme::SolverError> {
+        self.inner.present(f, v).await
+    }
+    async fn cleanup(&self, f: &str, v: &str) -> Result<(), wayhouse_acme::SolverError> {
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n < self.fail {
+            return Err(wayhouse_acme::SolverError("provider busy".into()));
+        }
+        self.inner.cleanup(f, v).await
+    }
+    async fn wait_visible(
+        &self,
+        f: &str,
+        v: &str,
+        t: std::time::Duration,
+    ) -> Result<(), wayhouse_acme::SolverError> {
+        self.inner.wait_visible(f, v, t).await
+    }
+}
+
+#[tokio::test]
+async fn a_failed_cleanup_is_retried_until_the_record_is_gone() {
+    let dns = MemDns::default();
+    let fake = FakeCa::start(dns.clone()).await;
+    let solver = FlakyCleanup {
+        inner: dns.clone(),
+        fail: 2,
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let ca = ca(&fake, true);
+    ca.issue(None, &names(&["a.example.com"]), &solver, 1)
+        .await
+        .unwrap();
+    assert!(dns.is_empty(), "the third try removed the record");
+    assert!(ca.take_cleanup_failures().is_empty());
+}
+
+#[tokio::test]
+async fn a_cleanup_that_keeps_failing_is_reported_for_the_site_status() {
+    let dns = MemDns::default();
+    let fake = FakeCa::start(dns.clone()).await;
+    let solver = FlakyCleanup {
+        inner: dns.clone(),
+        fail: usize::MAX,
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let ca = ca(&fake, true);
+    ca.issue(None, &names(&["a.example.com"]), &solver, 1)
+        .await
+        .expect("the certificate is still issued");
+    let left = ca.take_cleanup_failures();
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert!(
+        left[0].contains("_acme-challenge.a.example.com"),
+        "{left:?}"
+    );
+    assert!(left[0].contains("provider busy"), "{left:?}");
+    assert!(ca.take_cleanup_failures().is_empty(), "taking clears them");
+}
