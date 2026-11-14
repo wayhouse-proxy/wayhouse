@@ -603,7 +603,10 @@ proxy pod that is recreated); each pod then redeems it under its own name, which
 prefix and is at most 64 characters (longer is refused as "name too long"). An agent gets its own
 token and tunnel key; proxies share the proxy and ingest tokens and the keyring, so the name only
 tells them apart in the registry. A code without `name_prefix` refuses a name, and a prefix code
-refuses a missing one or one outside the prefix, before a use is spent. Refused redeems still count
+refuses a missing one or one outside the prefix, before a use is spent. A prefix code also refuses
+(409) a name that already holds a token or tunnel key, so anyone who can read the code cannot take
+over an enrolled origin; an agent that lost its files must be deleted from the controller (the UI's
+"Tunnel addresses", or `DELETE /peers/{name}`) before it enrolls under that name again. Refused redeems still count
 against the limit of 5 attempts a minute per code (10 per address), so a wrong name in a
 DaemonSet that restarts in a loop locks the code out for a minute at a time.
 
