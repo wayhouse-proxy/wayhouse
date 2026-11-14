@@ -820,12 +820,14 @@ async fn redeem(
             .store
             .list(Kind::OriginToken)
             .is_ok_and(|l| l.iter().any(|(_, v)| v["origin"] == name.as_str()));
-    let claimed_name = claimed.is_some();
+    // Only a prefix code's redeem is a claim on a name; any other agent redeem replaced the key of
+    // an origin that exists, and removing it would not restore the old one.
+    let claimed_name = claimed.is_some() && prefixed;
     let mut files = match grant_files(&st, role, &name, claimed.map(|(psk, _)| psk)).await {
         Ok(f) => f,
         Err(r) => {
-            // The redeem claimed the name by storing its key; a failure past that point would
-            // otherwise leave the name locked against the pod's own retry.
+            // A prefix redeem claimed the name by storing its key; a failure past that point
+            // would otherwise leave the name locked against the pod's own retry.
             if claimed_name {
                 release_claim(&st.ui, &name).await;
             }
