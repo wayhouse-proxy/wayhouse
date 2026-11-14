@@ -1,4 +1,4 @@
-//! Generate or check a sniffer registry `index.json`. Used by the sniffers repo CI.
+//! Generate or check a sniffer registry `index.json` (`verify-plugin` checks a plugin index). Used by the sniffers repo CI.
 //!
 //! `generate` reads one directory per sniffer version (`manifest.toml`, `<name>.wasm`,
 //! optionally `<name>.wasm.minisig`), merges them into the previous index and writes
@@ -9,8 +9,8 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use wayhouse_registry::catalog::parse_categories;
 use wayhouse_registry::{
-    generate, parse_detail, parse_index, parse_manifest, to_json, upgrade_v1, Artifact,
-    GenerateOptions, Index, IndexError,
+    generate, parse_detail, parse_index, parse_manifest, parse_plugin_detail, parse_plugin_index,
+    to_json, upgrade_v1, Artifact, GenerateOptions, Index, IndexError, PluginIndex,
 };
 
 #[derive(Parser)]
@@ -57,6 +57,13 @@ enum Command {
     },
     /// Parse an index with the real validator and print a summary.
     Verify {
+        index: PathBuf,
+        /// Also check the detail files of a catalog index (`<dir>/<name>.json`).
+        #[arg(long)]
+        details_dir: Option<PathBuf>,
+    },
+    /// Parse a plugin index (`kind: plugin`) with the real client validator and print a summary.
+    VerifyPlugin {
         index: PathBuf,
         /// Also check the detail files of a catalog index (`<dir>/<name>.json`).
         #[arg(long)]
@@ -157,8 +164,32 @@ fn main() -> Result<()> {
                 parsed.sniffers.len()
             );
         }
+        Command::VerifyPlugin { index, details_dir } => {
+            let bytes =
+                std::fs::read(&index).with_context(|| format!("reading {}", index.display()))?;
+            let parsed = parse_plugin_index(&bytes)
+                .with_context(|| format!("{} is invalid", index.display()))?;
+            let parsed = resolve_plugin_details(parsed, details_dir.as_deref())?;
+            let versions: usize = parsed.plugins.iter().map(|p| p.versions.len()).sum();
+            println!("ok: {} plugins, {versions} versions", parsed.plugins.len());
+        }
     }
     Ok(())
+}
+
+/// Plugin counterpart of `resolve_details`.
+fn resolve_plugin_details(mut index: PluginIndex, dir: Option<&Path>) -> Result<PluginIndex> {
+    for entry in &mut index.plugins {
+        if entry.detail_url.is_none() {
+            continue;
+        }
+        let dir = dir.context("the index points at detail files; pass --details-dir")?;
+        let path = dir.join(format!("{}.json", entry.name));
+        let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+        *entry =
+            parse_plugin_detail(&bytes, entry).with_context(|| format!("{}", path.display()))?;
+    }
+    Ok(index)
 }
 
 /// Fill in the versions of every catalog entry from `<dir>/<name>.json`, checked the way a

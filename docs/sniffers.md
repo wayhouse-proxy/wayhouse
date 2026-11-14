@@ -146,6 +146,9 @@ wayhouse-registry-gen generate --name "my registry" --base-url https://example.c
 wayhouse-registry-gen verify index.json
 ```
 
+`wayhouse-registry-gen verify-plugin index.json` checks a plugin index (`kind: plugin`)
+with the same validator the UI uses, for the plugins repository's CI and release.
+
 Each directory holds `manifest.toml` and `<name>.wasm` (and optionally
 `<name>.wasm.minisig`). Artifacts are expected at
 `<base-url>/<name>-v<version>/<name>.wasm`. Output is deterministic (sorted, fixed field

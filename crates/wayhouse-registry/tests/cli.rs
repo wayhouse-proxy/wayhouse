@@ -265,3 +265,41 @@ fn a_schema_1_index_is_upgraded_and_keeps_its_published_versions() {
     assert!(!r.status.success());
     assert!(String::from_utf8_lossy(&r.stderr).contains("immutable"));
 }
+
+fn plugin_index(url: &str) -> String {
+    format!(
+        r#"{{"schema":2,"kind":"plugin","name":"p","plugins":[{{"name":"demo","description":"d","license":"MIT","categories":["integration"],"tags":[],"latest":"0.1.0","abi":"0.2","signed":false,"updated":"2026-11-12","versions":[{{"version":"0.1.0","abi":"0.2","url":"{url}","sha256":"{}","size":10}}]}}]}}"#,
+        "a".repeat(64)
+    )
+}
+
+#[test]
+fn verify_plugin_runs_the_client_validator() {
+    let t = tempfile::tempdir().unwrap();
+    let good = t.path().join("good.json");
+    std::fs::write(&good, plugin_index("https://example.com/p.wasm")).unwrap();
+    let r = run(&["verify-plugin".as_ref(), good.as_os_str()]);
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    assert!(String::from_utf8_lossy(&r.stdout).contains("1 plugins, 1 versions"));
+    for bad_url in [
+        "https://@example.com/p",
+        "http://example.com/p",
+        "https://x.test:99999/p",
+    ] {
+        let bad = t.path().join("bad.json");
+        std::fs::write(&bad, plugin_index(bad_url)).unwrap();
+        assert!(
+            !run(&["verify-plugin".as_ref(), bad.as_os_str()])
+                .status
+                .success(),
+            "{bad_url}"
+        );
+    }
+    // A sniffer index is not a plugin index.
+    let sniffer = t.path().join("sniffer.json");
+    let d = sniffer_dir(t.path(), "a2s", "0.1.0", "x", false);
+    assert!(run(&gen_args(&sniffer, None, &[&d])).status.success());
+    assert!(!run(&["verify-plugin".as_ref(), sniffer.as_os_str()])
+        .status
+        .success());
+}
