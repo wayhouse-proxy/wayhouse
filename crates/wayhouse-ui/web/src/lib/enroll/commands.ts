@@ -29,8 +29,8 @@ export const needsStepUp = (role: EnrollRole) => role === "proxy" || role === "u
 
 /** Why `role` cannot go to `target` yet, or null. */
 export function unsupported(role: EnrollRole, target: Target): string | null {
-  if (role === "controller" && target !== "systemd") {
-    return "A controller replica is installed with systemd. A Kubernetes StatefulSet joins through the per-pod init container, which is not shipped yet.";
+  if (role === "controller" && target !== "systemd" && target !== "k8s") {
+    return "A controller replica is installed with systemd, or on Kubernetes as a StatefulSet that shares one pool code.";
   }
   if (role === "agent" && target === "k8s") {
     return "An agent on Kubernetes needs the per-pod init container, which is not shipped yet. Use systemd, docker run or Compose on the origin host.";
@@ -66,6 +66,8 @@ export interface Spec {
   /** Controller replica: how the other replicas reach it, `https://host:port`. */
   advertise: string;
   namespace: string;
+  /** Kubernetes controller pool: how many replicas the code covers. */
+  uses?: number;
 }
 
 export interface Step {
@@ -85,6 +87,8 @@ export const validTag = (s: string) => /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.tes
 /** Like the enroll CLI's check, plus what a replica needs: https and an explicit port. */
 // shortcut: mirrors the CLI check (no whitespace, control, quote, backslash, % or $; 256 bytes max) by hand.
 export const validAdvertise = (s: string) => s.length <= 256 && !/[\x00-\x1f\x7f]/.test(s) && validUrl(s, { httpsOnly: true }) && /^https:\/\/[^/]+:\d{1,5}\/?$/.test(s) && !s.includes("%");
+/** The pod name prefix of the `ha-enrolled` overlay's replica StatefulSet; a pool code is minted with it. */
+export const POOL_PREFIX = "wayhouse-controller-replica-";
 export const validNamespace = (s: string) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(s);
 
 export function validUrl(s: string, opts: { httpsOnly?: boolean } = {}): boolean {
@@ -359,7 +363,41 @@ function compose(s: Spec): Step[] {
   return steps;
 }
 
+/** The `ha-enrolled` overlay: replica pods each redeem one pool code from the `wayhouse-enroll-code` Secret. */
+function k8sControllerPool(s: Spec): Step[] {
+  const ns = sh(s.namespace);
+  return [
+    {
+      title: "Create the step-up Secret (once, by hand)",
+      language: "sh",
+      holdsCode: false,
+      text: `kubectl -n ${ns} create secret generic wayhouse-enroll-step-up --from-file=step-up=./step-up`,
+      note: "The overlay also needs the wayhouse-tls, wayhouse-tokens and wayhouse-keyring Secrets that `wayhouse-controller init --target k8s-secret` makes; create them first. Skip this step if the step-up Secret exists. It must hold the same step-up secret you typed above, in a file named step-up; the bootstrap controller and every replica read it.",
+    },
+    {
+      title: "Store the pool code as a Secret",
+      language: "sh",
+      holdsCode: s.code !== null,
+      text: s.code
+        ? `printf '%s' ${sh(s.code)} | kubectl -n ${ns} create secret generic wayhouse-enroll-code --from-file=code=/dev/stdin`
+        : `kubectl -n ${ns} create secret generic wayhouse-enroll-code --from-file=code=/dev/stdin`,
+      note: s.code
+        ? "Every replica pod reads this one code. This line puts the code in your shell history; tick \"Keep the code out of the command\" to paste it at a prompt instead. Delete the Secret once the pods have joined."
+        : "Paste the code, press Enter, then Ctrl-D. It never appears in the shell history.",
+    },
+    {
+      title: "Apply the overlay and start the replicas",
+      language: "sh",
+      holdsCode: false,
+      text: `kubectl apply -k deploy/k8s/overlays/ha-enrolled
+kubectl -n ${ns} scale statefulset/wayhouse-controller-replica --replicas=${s.uses ?? 2}`,
+      note: `The overlay installs into the wayhouse namespace. The overlay starts with replicas: 2 and applying it again resets the count to 2, so scale after every apply. Each new pod spends one of the code's ${s.uses ?? 2} uses, so never scale past that; a pod that keeps its volume spends none when it restarts.`,
+    },
+  ];
+}
+
 function k8s(s: Spec): Step[] {
+  if (s.role === "controller") return k8sControllerPool(s);
   const secret = `wayhouse-${s.name}`;
   const ns = sh(s.namespace);
   const dir = dirFor(s.name);

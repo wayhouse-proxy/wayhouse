@@ -135,6 +135,11 @@ struct Args {
     #[arg(long)]
     ha_node_id: Option<HaNodeId>,
 
+    /// Reads the node id from a file (`ha-node-id`, which `enroll` writes), for a pod that
+    /// learns its id when it enrolls. Instead of `--ha-node-id`.
+    #[arg(long, value_name = "PATH", conflicts_with = "ha_node_id")]
+    ha_node_id_file: Option<std::path::PathBuf>,
+
     /// The tier's full replica set, `id=host:port` pairs separated by
     /// commas (e.g. `1=127.0.0.1:9901,2=127.0.0.1:9911,3=127.0.0.1:9921`),
     /// identical on every replica. `host:port` is plain HTTP; an entry may
@@ -374,6 +379,9 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
             args.allow_insecure_controller,
         )
         .map_err(anyhow::Error::msg)?;
+    }
+    if let Some(p) = &args.ha_node_id_file {
+        args.ha_node_id = Some(ha::read_node_id_file(p).map_err(anyhow::Error::msg)?);
     }
     ha::check_flags(!args.ha_peers.is_empty(), args.ha_join, args.ha_node_id)
         .map_err(|e| anyhow::anyhow!(e))?;
