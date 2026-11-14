@@ -142,7 +142,7 @@ impl AdminUrlPolicy {
             return Err("admin_url must not have a query or fragment".into());
         }
         if self.refuse_plain_http {
-            wayhouse_http::bearer::check_bearer_transport("admin_url", admin_url, true, false)?;
+            wayhouse_http::bearer::check_bearer_transport("admin_url", url.as_str(), true, false)?;
         }
         if self.allow.is_empty() {
             let loopback = match &host {
@@ -200,6 +200,10 @@ mod tests {
         let e = p.check("http://10.0.0.4:9900", ip("10.0.0.4")).unwrap_err();
         assert!(e.contains("--allow-insecure-controller"), "{e}");
         assert!(p.check("https://10.0.0.4:9900", ip("10.0.0.4")).is_ok());
+        // Spellings `Url` accepts as plain http to the pusher must not slip past the guard.
+        for odd in ["http:10.0.0.4:9900", "http://10.0.0.4\\@127.0.0.1:9900"] {
+            assert!(p.check(odd, ip("10.0.0.4")).is_err(), "{odd}");
+        }
         let allowed = AdminUrlPolicy::new(&["127.0.0.0/8"])
             .unwrap()
             .refuse_plain_http(true);
