@@ -236,6 +236,26 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "{e}");
     }
 
+    #[tokio::test]
+    async fn an_answer_over_the_body_cap_is_refused() {
+        let big = "a".repeat(MAX_SEALED_BODY + 1);
+        let app = axum::Router::new().route(
+            "/secrets/{name}/sealed",
+            axum::routing::get(move || {
+                let big = big.clone();
+                async move { big }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let e = fetch_sealed(&url, None, "x")
+            .await
+            .err()
+            .expect("an oversized answer must fail");
+        assert!(matches!(e, SecretError::Unreadable { .. }), "{e}");
+    }
+
     #[test]
     fn a_secret_sealed_under_the_proxys_key_opens_and_resolves() {
         let sealed = ring(KEY_A)
