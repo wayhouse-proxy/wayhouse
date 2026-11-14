@@ -609,7 +609,7 @@ refuses a missing one or one outside the prefix, before a use is spent. A prefix
 (409) a name that already holds a token or tunnel key, so anyone who can read the code cannot take
 over an enrolled origin; an agent that lost its files must be deleted from the controller (the UI's
 "Tunnel addresses", or `DELETE /peers/{name}`) before it enrolls under that name again. The check runs
-in the same step that spends the use, and that step also stores the pod's tunnel key, so two pods racing for one name cannot both get it. Refused
+in the same step that spends the use, and that step also stores the pod's tunnel key, so two pods racing for one name cannot both get it. If the controller then fails to finish the grant (a store error), it removes that key again and the pod's retry can claim the name; if the answer is lost after a successful grant, the name stays claimed and the origin must be deleted first. Refused
 redeems count against the limit of 5 attempts a minute per code (10 per address), except two that
 need a valid code: a valid code for another role, and the 409 for a taken name, count only against
 the address. A wrong name or secret in a DaemonSet that restarts in a loop still locks the code out

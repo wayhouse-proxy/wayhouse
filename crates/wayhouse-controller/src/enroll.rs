@@ -795,9 +795,17 @@ async fn redeem(
             .store
             .list(Kind::OriginToken)
             .is_ok_and(|l| l.iter().any(|(_, v)| v["origin"] == name.as_str()));
+    let claimed_name = claimed.is_some();
     let mut files = match grant_files(&st, role, &name, claimed.map(|(psk, _)| psk)).await {
         Ok(f) => f,
-        Err(r) => return r,
+        Err(r) => {
+            // The redeem claimed the name by storing its key; a failure past that point would
+            // otherwise leave the name locked against the pod's own retry.
+            if claimed_name {
+                release_claim(&st.ui, &name).await;
+            }
+            return r;
+        }
     };
     if let Some((proof, _, _)) = &join {
         files.insert(
@@ -1015,6 +1023,20 @@ pub(crate) async fn store_psk_as(
             "storing the tunnel key answered {other:?}"
         ))),
         Err(r) => Err(r),
+    }
+}
+
+/// Gives back a name claimed by a prefix redeem whose grant then failed: removes the key the
+/// redeem stored, so the pod's retry can claim the name again. Best effort (a failure here is
+/// logged; an admin can still delete the origin). Not reached if the response is lost after a
+/// successful grant: the name stays claimed until the origin is deleted.
+async fn release_claim(ui: &UiState, name: &str) {
+    let op = UiOp::Delete {
+        kind: Kind::ClusterSecret,
+        name: wayhouse_enroll::psk_secret_name(name),
+    };
+    if let Err(r) = apply(ui, op).await {
+        tracing::warn!(name, status = %r.status(), "could not release a name claimed by a failed enrollment");
     }
 }
 
@@ -1414,6 +1436,26 @@ mod tests {
         // The refusal spent no use: 3 uses, 2 spent.
         let rec = t.store.list(Kind::Enrollment).unwrap();
         assert_eq!(rec[0].1["uses_left"], 1);
+    }
+
+    #[tokio::test]
+    async fn a_released_claim_frees_the_name_for_the_pods_retry() {
+        let t = setup(Some(KEY));
+        let ui = UiState {
+            store: t.store.clone(),
+            auth_token: Some(Arc::from(ADMIN)),
+            ha: None,
+            keyring: t.keyring.clone(),
+        };
+        // The key a prefix redeem stores to claim "k8s-a"; the grant then fails.
+        let psk = wayhouse_enroll::generate_psk();
+        store_psk(&ui, "k8s-a", &psk).await.unwrap();
+        let key = wayhouse_enroll::psk_secret_name("k8s-a");
+        assert!(t.store.get(Kind::ClusterSecret, &key).unwrap().is_some());
+        release_claim(&ui, "k8s-a").await;
+        assert!(t.store.get(Kind::ClusterSecret, &key).unwrap().is_none());
+        // Releasing a claim that is already gone is harmless.
+        release_claim(&ui, "k8s-a").await;
     }
 
     #[tokio::test]
