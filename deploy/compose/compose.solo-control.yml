@@ -5,11 +5,13 @@
 #   docker compose -f docker-compose.yml -f compose.solo.yml -f compose.solo-control.yml up -d --build
 # Same listeners (9901 controller, 9902 aggregator, 9903 UI), same tokens, same volumes as the
 # split solo bundle, on the host's loopback only. What differs:
-#   - one container, one certificate (control.pem, valid for `controller`, `aggregator` and
-#     loopback); the split `aggregator` and `ui` services are switched off (profile `split`)
+#   - one container, one certificate (control.pem, valid for `controller` and loopback; the UI
+#     and the proxy dial the aggregator on loopback); the split `aggregator` and `ui` services
+#     are switched off (profile `split`)
 #   - the UI serves https from that certificate (it listens on the container's 0.0.0.0, and
 #     wayhouse-control refuses a login page over plain http off loopback): open
-#     https://127.0.0.1:9903 and trust tls/ca.pem, or accept the warning
+#     https://127.0.0.1:9903 and accept the warning (the init CA has no name constraints, so do
+#     not add it to a browser or system trust store; keep ca.key out of backups)
 #   - the three programs are one process: if one stops, the process exits and compose restarts
 #     all three; a fleet keeps the split services
 # Single node only. The controller binary stays the way to run Raft replicas.

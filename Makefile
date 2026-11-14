@@ -159,7 +159,7 @@ deploy-smoke:
 deploy-solo-smoke:
 	rc=0; \
 	initbin=deploy/prebuilt/wayhouse-controller; if [ -f "$$initbin" ]; then chmod +x "$$initbin"; else initbin="cargo run -q -p wayhouse-controller --"; fi; \
-	dir=$$(mktemp -d); envf="$$dir/solo.env"; WAYHOUSE_CONTROLLER_BIN="$$initbin" sh deploy/solo/init.sh "$$envf" >/dev/null || exit 1; \
+	dir=$$(mktemp -d); trap 'rm -rf "$$dir"' EXIT; envf="$$dir/solo.env"; WAYHOUSE_CONTROLLER_BIN="$$initbin" sh deploy/solo/init.sh "$$envf" >/dev/null || exit 1; \
 	solo="docker compose -p wayhouse-solo-smoke --env-file $$envf -f deploy/compose/docker-compose.yml -f deploy/compose/compose.solo.yml"; \
 	sha="$${WAYHOUSE_GIT_SHA:-$$(git rev-parse HEAD 2>/dev/null)}"; export WAYHOUSE_GIT_SHA=$$(printf %.12s "$$sha"); \
 	$$solo up -d --build || rc=$$?; \
@@ -173,7 +173,7 @@ deploy-solo-smoke:
 deploy-solo-control-smoke:
 	rc=0; \
 	initbin=deploy/prebuilt/wayhouse-controller; if [ -f "$$initbin" ]; then chmod +x "$$initbin"; else initbin="cargo run -q -p wayhouse-controller --"; fi; \
-	dir=$$(mktemp -d); envf="$$dir/solo.env"; $$initbin init --target compose --control --dir "$$dir" --env-file "$$envf" >/dev/null || exit 1; \
+	dir=$$(mktemp -d); trap 'rm -rf "$$dir"' EXIT; envf="$$dir/solo.env"; $$initbin init --target compose --control --dir "$$dir" --env-file "$$envf" >/dev/null || exit 1; \
 	solo="docker compose -p wayhouse-solo-control-smoke --env-file $$envf -f deploy/compose/docker-compose.yml -f deploy/compose/compose.solo.yml -f deploy/compose/compose.solo-control.yml"; \
 	sha="$${WAYHOUSE_GIT_SHA:-$$(git rev-parse HEAD 2>/dev/null)}"; export WAYHOUSE_GIT_SHA=$$(printf %.12s "$$sha"); \
 	$$solo up -d --build || rc=$$?; \

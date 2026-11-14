@@ -513,17 +513,10 @@ fn compose(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
     // the compose file, not against this env file, so record an absolute one.
     let abs_tls = std::path::absolute(&tls_dir).map_err(io(&tls_dir))?;
     let s = Secrets::generate();
-    // `--control`: the one process answers to both service names with the one certificate.
-    let own: &[&str] = if args.control {
-        &["controller", "aggregator"]
-    } else {
-        &["controller"]
-    };
+    // `--control`: the one certificate serves the `controller` service name (the seed step dials it);
+    // the aggregator is dialled on loopback, which the certificate covers, so its own leaf is not written.
     let tls = Tls::generate(
-        &names(
-            &own.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>(),
-            &args.sans,
-        ),
+        &names(&["controller".to_owned()], &args.sans),
         &names(&["aggregator".to_owned()], &args.sans),
     )?;
     let env = Zeroizing::new(format!(
@@ -539,10 +532,11 @@ fn compose(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
         abs_tls.display()
     ));
     let mut files = vec![plan(env_file.clone(), 0o600, env.as_bytes())];
-    files.extend(tls_files(&tls_dir, &tls, !args.control));
+    let mut tls_planned = tls_files(&tls_dir, &tls, !args.control);
     if args.control {
-        rename_to_control(&mut files);
+        rename_to_control(&mut tls_planned);
     }
+    files.extend(tls_planned);
     let env_dir = env_file
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -570,7 +564,7 @@ fn compose(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
         env_file.display(),
         if args.control { " -f compose.solo-control.yml" } else { "" },
         if args.control { "https" } else { "http" },
-        if args.control { " It serves the init certificate: trust ca.pem in your browser, or accept the warning." } else { "" }
+        if args.control { " It serves the init certificate, which a browser does not know: accept the warning (the CA has no name constraints, so do not add ca.pem to a trust store, and keep ca.key out of backups)." } else { "" }
     )
     .map_err(io_err)
 }
@@ -855,7 +849,7 @@ mod tests {
     }
 
     #[test]
-    fn control_compose_writes_one_certificate_for_both_service_names() {
+    fn control_compose_writes_one_certificate_and_keeps_the_env_file_name() {
         let dir = tempfile::tempdir().unwrap();
         let mut a = args(Target::Compose, dir.path());
         a.control = true;
@@ -873,6 +867,14 @@ mod tests {
         }
         assert!(summary.contains("compose.solo-control.yml"));
         assert!(summary.contains("https://127.0.0.1:9903"));
+        // The env file keeps the name the operator gave it, even if it starts with `controller.`.
+        let other = tempfile::tempdir().unwrap();
+        let mut b = args(Target::Compose, other.path());
+        b.control = true;
+        b.env_file = Some(other.path().join("controller.env"));
+        let (_, summary) = run_to_strings(&b).unwrap();
+        assert!(other.path().join("controller.env").is_file());
+        assert!(summary.contains("controller.env"));
     }
 
     #[test]
