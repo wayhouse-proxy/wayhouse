@@ -34,19 +34,28 @@ services:
         chown 65532:65532 /settings
         chmod 0700 /settings
         [ -f /tls-src/ca.pem ] || { echo "no certificates in WAYHOUSE_TLS_DIR: run wayhouse-controller init --target compose first" >&2; exit 1; }
-        mkdir -p /tls
-        want="ca.pem $${TLS_FILES:-controller.pem controller.key aggregator.pem aggregator.key}"
-        for f in $$want; do cp "/tls-src/$$f" "/tls/$$f"; done
-        # a layout switch (split <-> all-in-one) must not leave the other layout's keys in the volume
-        for f in /tls/*; do case " $$want " in *" $$(basename "$$f") "*) ;; *) rm -f "$$f" ;; esac; done
-        chown -R 65532:65532 /tls
-        chmod 0755 /tls
-        chmod 0644 /tls/*.pem
-        chmod 0600 /tls/*.key
+        # One volume per holder of a private key, so a client (the proxy, the UI, the seed step)
+        # mounts only the CA: a compromised data-plane process cannot read the controller's or the
+        # aggregator's server key. Each volume holds ca.pem plus exactly the files it is given, so a
+        # layout switch (split <-> all-in-one) cannot leave the other layout's keys behind.
+        install_tls() {
+          dir=$$1; shift
+          mkdir -p "$$dir"
+          for f in ca.pem "$$@"; do cp "/tls-src/$$f" "$$dir/$$f"; done
+          for f in "$$dir"/*; do case " ca.pem $$* " in *" $$(basename "$$f") "*) ;; *) rm -f "$$f" ;; esac; done
+          chown -R 65532:65532 "$$dir"
+          chmod 0755 "$$dir"
+          for f in "$$dir"/*; do case "$$f" in *.key) chmod 0600 "$$f" ;; *) chmod 0644 "$$f" ;; esac; done
+        }
+        install_tls /tls
+        install_tls /tls-controller $${TLS_FILES:-controller.pem controller.key}
+        install_tls /tls-aggregator $${AGG_TLS_FILES-aggregator.pem aggregator.key}
     volumes:
       - solo-keys:/keys
       - solo-settings:/settings
       - solo-tls:/tls
+      - solo-tls-controller:/tls-controller
+      - solo-tls-aggregator:/tls-aggregator
       - ${WAYHOUSE_TLS_DIR:-./tls}:/tls-src:ro
     restart: "no"
 
@@ -66,7 +75,7 @@ services:
       - controller-data:/data
       - solo-keys:/keys:ro
       - solo-settings:/settings
-      - solo-tls:/tls:ro
+      - solo-tls-controller:/tls:ro
     depends_on:
       keys: { condition: service_completed_successfully }
 
@@ -96,7 +105,7 @@ services:
       - --tls-cert=/tls/aggregator.pem
       - --tls-key=/tls/aggregator.key
       - --settings-dir=/settings
-    volumes: ["solo-settings:/settings", "solo-tls:/tls:ro"]
+    volumes: ["solo-settings:/settings", "solo-tls-aggregator:/tls:ro"]
     depends_on:
       keys: { condition: service_completed_successfully }
 
@@ -114,25 +123,14 @@ services:
     depends_on:
       keys: { condition: service_completed_successfully }
 
-  # The base file's one-shot that writes revision 1; it has to speak https here and trust the CA
-  # (curl 8.11.1 rejects `--opt=value`, so values are separate arguments, as in the base).
+  # The base file's one-shot that writes revision 1; it has to speak https here and trust the CA.
+  # The token still comes from its secret file (see the base file), never from the command.
   seed:
     command:
-      - -fsS
-      - --cacert
-      - /tls/ca.pem
-      - --retry
-      - "30"
-      - --retry-delay
-      - "1"
-      - --retry-all-errors
-      - -X
-      - POST
-      - -H
-      - "Authorization: Bearer ${WAYHOUSE_CONTROLLER_TOKEN}"
-      - --data-binary
-      - "@/wayhouse.yaml"
-      - https://controller:9901/config
+      - |
+        exec curl -fsS --cacert /tls/ca.pem --retry 30 --retry-delay 1 --retry-all-errors -X POST \
+          -H "Authorization: Bearer $$(cat /run/secrets/controller-token)" \
+          --data-binary @/wayhouse.yaml https://controller:9901/config
     volumes: ["./wayhouse.yaml:/wayhouse.yaml:ro", "solo-tls:/tls:ro"]
     depends_on:
       keys: { condition: service_completed_successfully }
@@ -140,4 +138,6 @@ services:
 volumes:
   solo-keys:
   solo-settings:
-  solo-tls:
+  solo-tls: # the CA only: what a client needs
+  solo-tls-controller: # the CA, controller.pem and controller.key (control.* in the all-in-one layout)
+  solo-tls-aggregator: # the CA, aggregator.pem and aggregator.key

@@ -201,7 +201,17 @@ A file's trailing newline is dropped, and an empty value is an error. The `-file
 read from a settings file, like the other credentials. To migrate, write each value to a file (mode
 0400, readable by the service user) and replace `--auth-token=$X` with `--auth-token-file=/path`.
 Docker secrets (`/run/secrets/<name>`), Kubernetes secret volumes and `LoadCredential=` all produce
-such files. `wayhouse-web-sync` already read its tokens from the environment and is unchanged.
+such files. `wayhouse-web-sync` used to take `--wayhouse-token` and `--metrics-token`; both flags are
+gone. Use `--admin-token-file` and `--metrics-token-file` (or `$CREDENTIALS_DIRECTORY/admin-token`
+and `web-sync-metrics-token`); the environment variables `WAYHOUSE_ADMIN_TOKEN` and
+`WAYHOUSE_WEB_SYNC_METRICS_TOKEN` still work. `wayhouse-control` now refuses to start when its
+credentials directory holds a token or password file that no program takes: name each one
+`<program>-<flag>` (for example `ui-ui-password`).
+
+The solo compose bundle also changes: the controller's and the aggregator's TLS keys now sit in
+their own volumes (`solo-tls-controller`, `solo-tls-aggregator`), `solo-tls` holds only the CA, and
+the `seed` step reads its token from the secret file. Recreate the stack after pulling (the old
+`solo-tls` volume is cleaned up by the `keys` step).
 
 ## A token over plain http to a remote host is refused (breaking)
 

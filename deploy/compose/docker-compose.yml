@@ -67,21 +67,15 @@ services:
   # (it exits at startup against an empty controller).
   seed:
     image: curlimages/curl:8.11.1
+    # The token is read from its secret file inside the container, so it is in no `command` that
+    # `docker inspect` shows for the exited container.
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - -fsS
-      # curl 8.11.1 rejects `--opt=value`: values are separate arguments.
-      - --retry
-      - "30"
-      - --retry-delay
-      - "1"
-      - --retry-all-errors
-      - -X
-      - POST
-      - -H
-      - "Authorization: Bearer ${WAYHOUSE_CONTROLLER_TOKEN}"
-      - --data-binary
-      - "@/wayhouse.yaml"
-      - http://controller:9901/config
+      - |
+        exec curl -fsS --retry 30 --retry-delay 1 --retry-all-errors -X POST \
+          -H "Authorization: Bearer $$(cat /run/secrets/controller-token)" \
+          --data-binary @/wayhouse.yaml http://controller:9901/config
+    secrets: [controller-token]
     volumes: ["./wayhouse.yaml:/wayhouse.yaml:ro"]
     depends_on: [controller]
     restart: "no"

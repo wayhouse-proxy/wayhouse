@@ -52,10 +52,17 @@ retry "controller serves the plugin API" curl -fsS -H "$auth" "$CTRL/plugins"
 # The keyring exists, is owner-only and belongs to the controller's user.
 keys_vol="${SOLO_PROJECT}_solo-keys"
 tls_vol="${SOLO_PROJECT}_solo-tls"
-tls_paths=$(for k in $SOLO_KEYS ca.pem; do printf '/tls/%s ' "$k"; done)
-tls_modes=$(docker run --rm -v "$tls_vol":/tls:ro busybox:1.37.0 sh -c "stat -c '%a %u %n' $tls_paths" | tr '\n' ';')
-want=$(for k in $SOLO_KEYS; do printf '600 65532 /tls/%s;' "$k"; done)"644 65532 /tls/ca.pem;"
-[ "$tls_modes" = "$want" ] || fail "tls volume modes: $tls_modes (want $want)"
+# Each private key sits only in its holder's volume (controller or aggregator); the volume the
+# proxy, the UI and the seed step mount holds the CA and nothing else.
+for k in $SOLO_KEYS; do
+  case "$k" in aggregator.key) v=solo-tls-aggregator ;; *) v=solo-tls-controller ;; esac
+  got=$(docker run --rm -v "${SOLO_PROJECT}_$v":/tls:ro busybox:1.37.0 stat -c '%a %u' "/tls/$k")
+  [ "$got" = "600 65532" ] || fail "$v/$k is $got (want 600 65532)"
+done
+ca_mode=$(docker run --rm -v "$tls_vol":/tls:ro busybox:1.37.0 stat -c '%a %u' /tls/ca.pem)
+[ "$ca_mode" = "644 65532" ] || fail "solo-tls/ca.pem is $ca_mode (want 644 65532)"
+ca_files=$(docker run --rm -v "$tls_vol":/tls:ro busybox:1.37.0 ls /tls)
+[ "$ca_files" = "ca.pem" ] || fail "the client TLS volume holds more than the CA: $ca_files"
 echo "ok: the keys are 0600 and owned by 65532 inside the stack"
 inspect_keys() {
   docker run --rm -v "$keys_vol":/keys:ro busybox:1.37.0 sh -c 'stat -c "%a %u" /keys/secret.keys; sha256sum /keys/secret.keys'

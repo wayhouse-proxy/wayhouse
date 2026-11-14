@@ -3,6 +3,9 @@ Description=wayhouse proxy (solo box, config from the local controller)
 Wants=wayhouse-controller.service wayhouse-aggregator.service
 After=wayhouse-controller.service wayhouse-aggregator.service
 PartOf=wayhouse-solo.target
+# The proxy exits until the first config is pushed; with the default start limit (5 starts in 10 s,
+# one every 2 s) systemd would give up before that. Keep retrying.
+StartLimitIntervalSec=0
 
 [Service]
 User=wayhouse

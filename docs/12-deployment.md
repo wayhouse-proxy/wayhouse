@@ -114,9 +114,11 @@ volume with the controller's data**: without the key every stored secret is unre
 
 **https from the first start.** `init` makes a private CA and two certificates under `tls/`: the
 controller's (valid for `localhost`, `127.0.0.1`, `::1` and the service name `controller`) and the
-aggregator's. The `keys` step copies them into the `solo-tls` volume (keys `0600` for uid 65532,
-certificates public), the controller and aggregator serve TLS from them, and the UI and the proxy
-trust only that CA (`--ca-file=/tls/ca.pem`). So neither plain-http guard has to be switched off:
+aggregator's. The `keys` step copies them into volumes (keys `0600` for uid 65532, certificates public):
+`solo-tls-controller` and `solo-tls-aggregator` each hold the CA and that service's own key pair, and
+`solo-tls` holds the CA only. The controller and aggregator serve TLS from their own volume, and the
+UI, the proxy and the seed step mount only `solo-tls` and trust only that CA (`--ca-file=/tls/ca.pem`),
+so a compromised data-plane process cannot read a server key. So neither plain-http guard has to be switched off:
 the overlay sets no `--allow-insecure-controller` and no `--allow-insecure-secrets`. The published
 ports are loopback only. The UI itself stays on plain http on the host loopback; put a TLS front
 door (`compose.web.yml`) in front of it to expose it. To reach the controller from another host,
