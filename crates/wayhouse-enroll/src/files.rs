@@ -76,9 +76,20 @@ fn private_dir(dir: &Path) -> Result<(), FileError> {
     if m.file_type().is_symlink() {
         return Err(refuse("is a symbolic link; use the real directory"));
     }
-    if m.uid() != nix::unistd::geteuid().as_raw() {
+    let me = nix::unistd::geteuid().as_raw();
+    if m.uid() != me {
         return Err(refuse(
             "is owned by another user; pick a directory of your own",
+        ));
+    }
+    // Whoever owns the parent can swap the directory for another; only we and root may.
+    let parent = match dir.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    if !trusted_owner(std::fs::metadata(parent).map_err(io(parent))?.uid(), me) {
+        return Err(refuse(
+            "sits in a directory owned by another user; pick a place you or root own",
         ));
     }
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(io(dir))
