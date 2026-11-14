@@ -17,6 +17,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now wayhouse-solo.target
 ```
 
+**One process instead of three:** `sudo wayhouse-controller init --target systemd --control`, install
+`wayhouse-control.service`, `wayhouse-solo-control.target` and `wayhouse.service.d/control.conf`, and
+enable `wayhouse-solo-control.target` (it conflicts with `wayhouse-solo.target`). One certificate,
+`control.pem`, serves the controller and the aggregator; the binary is `wayhouse-control`. See
+[`docs/12-deployment.md`](../../docs/12-deployment.md#all-in-one-process-wayhouse-control).
+
 The UI is at <http://127.0.0.1:9903>; the password is in
 `/etc/wayhouse/credentials/ui-password`. The first proxy config goes in through the UI (Settings) or
 `curl --cacert /etc/wayhouse/tls/ca.pem --data-binary @wayhouse.yaml -H "Authorization: Bearer $TOKEN" https://127.0.0.1:9901/config`.

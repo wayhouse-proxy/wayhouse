@@ -6,7 +6,7 @@ rules for any upgrade (compatibility window, order of operations, draining a pro
 
 Every change is additive or opt-in except the plugin ABI (rebuild your plugins), the quoting rule
 for tokens (see Secrets), the controller tokens (see below) and the aggregator's loopback rule (see Aggregator). On a single box, the [solo bundle](12-deployment.md#one-box-the-solo-bundle)
-runs all of it with one command.
+runs all of it with one command, and `wayhouse-control` runs its controller, aggregator and UI as one process ([how](12-deployment.md#all-in-one-process-wayhouse-control)).
 
 Opt-in: `--settings-dir` on each program lets the UI's Process flags page change their command-line
 flags with a trial that goes back by itself ([how](12-deployment.md#process-flags-from-a-settings-file---settings-dir)).

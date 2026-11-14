@@ -442,6 +442,10 @@ A **new, optional service**, deployed as one tier per the topology above (root
 other through it — it is the Tier-1 writer for its subtree, and (transitively)
 the GUI's route to any fact in the fleet.
 
+For a single box, `wayhouse-control` runs the controller, the aggregator and the UI as three
+listeners in one process (single node, no Raft); the tiers, tokens and routes are unchanged and a
+fleet keeps the separate binaries ([12](12-deployment.md#all-in-one-process-wayhouse-control)).
+
 - **Owns its tier's Tier-1 store** — embedded (Raft in the controller), or
   backed by etcd / a SQL DB / a git repo. This is an ADR-level choice,
   deferred (see Open questions). A `slave` tier's store is a materialized

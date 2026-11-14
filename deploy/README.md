@@ -9,18 +9,19 @@ background: [`docs/12-deployment.md`](../docs/12-deployment.md).
 
 ## What's here
 
-| Path                       | Purpose                                                                                                                                                                                           |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Dockerfile`               | one file, seven targets: `wayhouse`, `wayhouse-minimal`, `wayhouse-controller`, `wayhouse-aggregator`, `wayhouse-ui`, `wayhouse-agent`, `wayhouse-caddy`                                          |
-| `build-images.sh`          | builds all seven, checks each (`--version`; `check-caddy-image.sh` for Caddy), prints sizes                                                                                                       |
-| `compose/`                 | runnable control-plane demo (+ `compose.tunnel.yml` WireGuard override, `compose.web.yml` Caddy web front door)                                                                                   |
-| `compose/compose.solo.yml` | the single-box bundle: the demo plus plugins, a sealed secret store and https (`wayhouse-controller init --target compose` writes the tokens and certificates; `compose.solo-acme.yml` adds ACME) |
-| `solo/init.sh`             | thin wrapper over `wayhouse-controller init` (`WAYHOUSE_CONTROLLER_BIN` names the binary)                                                                                                         |
-| `systemd/`                 | the same bundle as units (`wayhouse-solo.target`)                                                                                                                                                 |
-| `solo-smoke.sh`            | what CI adds to `smoke.sh` for the solo bundle (`make deploy-solo-smoke`)                                                                                                                         |
-| `smoke.sh`                 | the HTTP smoke test CI runs against the compose demo                                                                                                                                              |
-| `k8s/`                     | plain manifests (namespace, secrets example, controller, aggregator, ui, wayhouse RBAC, wayhouse DaemonSet, `60-web-gateway.yaml` Caddy sidecars)                                                 |
-| `observability/`           | reference Grafana dashboard and Prometheus alert rules (`make deploy-lint` checks every metric name they use)                                                                                     |
+| Path                               | Purpose                                                                                                                                                                                           |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Dockerfile`                       | one file, seven targets: `wayhouse`, `wayhouse-minimal`, `wayhouse-controller`, `wayhouse-aggregator`, `wayhouse-ui`, `wayhouse-agent`, `wayhouse-caddy`                                          |
+| `build-images.sh`                  | builds all seven, checks each (`--version`; `check-caddy-image.sh` for Caddy), prints sizes                                                                                                       |
+| `compose/`                         | runnable control-plane demo (+ `compose.tunnel.yml` WireGuard override, `compose.web.yml` Caddy web front door)                                                                                   |
+| `compose/compose.solo.yml`         | the single-box bundle: the demo plus plugins, a sealed secret store and https (`wayhouse-controller init --target compose` writes the tokens and certificates; `compose.solo-acme.yml` adds ACME) |
+| `compose/compose.solo-control.yml` | a third overlay: controller, aggregator and UI as one `wayhouse-control` process in the `controller` service (`init --target compose --control`; the UI serves https)                             |
+| `solo/init.sh`                     | thin wrapper over `wayhouse-controller init` (`WAYHOUSE_CONTROLLER_BIN` names the binary)                                                                                                         |
+| `systemd/`                         | the same bundle as units (`wayhouse-solo.target`)                                                                                                                                                 |
+| `solo-smoke.sh`                    | what CI adds to `smoke.sh` for the solo bundle (`make deploy-solo-smoke`, and `deploy-solo-control-smoke` for the all-in-one overlay)                                                             |
+| `smoke.sh`                         | the HTTP smoke test CI runs against the compose demo                                                                                                                                              |
+| `k8s/`                             | plain manifests (namespace, secrets example, controller, aggregator, ui, wayhouse RBAC, wayhouse DaemonSet, `60-web-gateway.yaml` Caddy sidecars)                                                 |
+| `observability/`                   | reference Grafana dashboard and Prometheus alert rules (`make deploy-lint` checks every metric name they use)                                                                                     |
 
 To move a running deployment to a newer image set one component at a time, follow
 [`docs/upgrading.md`](../docs/upgrading.md).
