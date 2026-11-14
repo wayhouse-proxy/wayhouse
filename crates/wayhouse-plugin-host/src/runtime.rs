@@ -106,12 +106,25 @@ pub struct Effects {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CallError {
-    #[error("the call ran past its time limit")]
-    Timeout,
+    /// The payload is the log lines written before the limit hit (empty when none).
+    #[error("the call ran past its time limit{0}")]
+    Timeout(String),
     #[error("the call used the `{0}` capability, which was not approved")]
     CapabilityDenied(&'static str),
     #[error("the call trapped: {0}")]
     Trap(String),
+}
+
+/// The lines a failed call logged, for its error text (state puts stay discarded).
+fn partial_logs(logs: &[LogLine], scrubber: &crate::secret::Scrubber) -> String {
+    if logs.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = logs
+        .iter()
+        .map(|l| format!("{:?}: {}", l.level, scrubber.scrub_str(&l.msg)))
+        .collect();
+    format!(" (log before it failed: {})", lines.join(" | "))
 }
 
 struct CallState {
@@ -507,10 +520,12 @@ impl Plugin {
             if let Some(cap) = st.denied {
                 return Err(CallError::CapabilityDenied(cap));
             }
+            // The plugin's own lines are what the operator needs when a call fails.
+            let partial = partial_logs(&st.logs, &st.http_call.scrubber);
             if e.downcast_ref::<Trap>() == Some(&Trap::Interrupt) {
-                return Err(CallError::Timeout);
+                return Err(CallError::Timeout(partial));
             }
-            return Err(CallError::Trap(format!("{e:#}")));
+            return Err(CallError::Trap(format!("{e:#}{partial}")));
         }
         // Log lines get the same scrub as responses: whatever secret the call expanded.
         let mut logs = st.logs;
