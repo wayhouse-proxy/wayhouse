@@ -72,6 +72,11 @@ pub enum UiOp {
         /// replica this use is for. Applying it allocates the node id and writes the child.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pool: Option<PoolChild>,
+        /// Set for a prefix code: the name this redeem claims. Refused (`NameTaken`) in the same
+        /// atomic step when the name already holds a token or a tunnel key, so the check cannot
+        /// race another redeem or a lagging follower.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
 }
 
@@ -111,6 +116,8 @@ pub enum Applied {
     Refused,
     /// A controller code asked for a node id another code already holds.
     Taken,
+    /// A prefix-code redeem named an origin that already holds a token or a tunnel key.
+    NameTaken,
     /// A pool-code redeem spent a use and made a child record holding this node id.
     Allocated(u64),
 }
@@ -747,6 +754,7 @@ impl UiStore {
                 now,
                 join_hash,
                 pool,
+                name,
             } => {
                 let Some(raw) = self.records.get(key(Kind::Enrollment, id))? else {
                     return Ok(Err(Applied::Refused));
@@ -762,6 +770,18 @@ impl UiStore {
                 let is_pool = rec["role"] == "controller" && rec["uses"].as_u64() > Some(1);
                 if !live || is_pool != pool.is_some() {
                     return Ok(Err(Applied::Refused));
+                }
+                if let Some(name) = name {
+                    let token = self
+                        .list(Kind::OriginToken)?
+                        .iter()
+                        .any(|(_, v)| v["origin"] == name.as_str());
+                    let key = self
+                        .get(Kind::ClusterSecret, &wayhouse_enroll::psk_secret_name(name))?
+                        .is_some();
+                    if token || key {
+                        return Ok(Err(Applied::NameTaken));
+                    }
                 }
                 rec["uses_left"] = (rec["uses_left"].as_u64().unwrap_or(1) - 1).into();
                 // When the code was last spent: revoking an old code must not cut off a host
@@ -1108,7 +1128,42 @@ mod tests {
             now,
             join_hash: None,
             pool: None,
+            name: None,
         }
+    }
+
+    #[test]
+    fn a_redeem_for_a_name_that_holds_credentials_is_refused_and_spends_nothing() {
+        let (store, _d) = store();
+        let rec = json!({"role": "agent", "origin": "pods", "hash": H1, "created_at": 100,
+            "expires_at": 1000, "uses": 3, "uses_left": 3, "name_prefix": "k8s-"});
+        store
+            .apply_local(&UiOp::Put {
+                kind: Kind::Enrollment,
+                name: "abcd1234".into(),
+                value: rec,
+            })
+            .unwrap();
+        store
+            .apply_local(&UiOp::Put {
+                kind: Kind::OriginToken,
+                name: "a".repeat(64),
+                value: json!({"origin": "k8s-a", "created_at": 1}),
+            })
+            .unwrap();
+        let mut op = redeem("abcd1234", H1, 200);
+        let UiOp::Redeem { name, .. } = &mut op else {
+            unreachable!()
+        };
+        *name = Some("k8s-a".into());
+        assert_eq!(store.apply_local(&op).unwrap(), Applied::NameTaken);
+        let rec = store.get(Kind::Enrollment, "abcd1234").unwrap().unwrap();
+        assert_eq!(rec["uses_left"], 3, "no use spent");
+        let UiOp::Redeem { name, .. } = &mut op else {
+            unreachable!()
+        };
+        *name = Some("k8s-b".into());
+        assert_eq!(store.apply_local(&op).unwrap(), Applied::Done);
     }
 
     fn pool_record(uses: u64) -> Value {
@@ -1123,6 +1178,7 @@ mod tests {
             hash: H1.into(),
             now: 200,
             join_hash: None,
+            name: None,
             pool: Some(PoolChild {
                 id: child,
                 name: name.into(),

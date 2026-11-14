@@ -476,7 +476,11 @@ async fn list(State(st): State<EnrollState>) -> Response {
     Json(json!({ "items": items })).into_response()
 }
 
-/// Whether `name` already holds an origin token or a tunnel key.
+const NAME_TAKEN: &str =
+    "this name is already enrolled; delete the origin first to enroll it again";
+
+/// Whether `name` already holds an origin token or a tunnel key. The redeem op checks again in
+/// the atomic step that spends the use; this early check only saves a round trip.
 fn name_holds_credentials(st: &EnrollState, name: &str) -> bool {
     let token = st
         .ui
@@ -705,10 +709,8 @@ async fn redeem(
     // shortcut: only names with a token or tunnel key count, a hand-registered one with neither
     // is not seen here; upgrade if prefix codes need to protect those too.
     if prefixed && name_holds_credentials(&st, &name) {
-        return err(
-            StatusCode::CONFLICT,
-            "this name is already enrolled; delete the origin first to enroll it again",
-        );
+        st.limiter.refund(&id_key);
+        return err(StatusCode::CONFLICT, NAME_TAKEN);
     }
     if role == Role::Agent {
         if let Some(why) = origin_stores_full(&st, &name) {
@@ -754,11 +756,17 @@ async fn redeem(
         now: now(),
         join_hash: join.as_ref().filter(|_| !pool).map(|(_, h, _)| h.clone()),
         pool: child,
+        name: prefixed.then(|| name.clone()),
     };
     match apply(&st.ui, op).await {
         Ok(Applied::Done) => {}
         Ok(Applied::Allocated(id)) => node_id = Some(id),
         Ok(Applied::Refused) => return refused(),
+        Ok(Applied::NameTaken) => {
+            // The code was valid: this is not a guess, so it does not count against the code.
+            st.limiter.refund(&id_key);
+            return err(StatusCode::CONFLICT, NAME_TAKEN);
+        }
         Ok(Applied::Full(max)) => {
             return err(
                 StatusCode::CONFLICT,
@@ -1379,6 +1387,54 @@ mod tests {
         // The refusal spent no use: 3 uses, 2 spent.
         let rec = t.store.list(Kind::Enrollment).unwrap();
         assert_eq!(rec[0].1["uses_left"], 1);
+    }
+
+    #[tokio::test]
+    async fn a_taken_name_does_not_use_up_the_codes_attempts_for_the_other_pods() {
+        let t = setup(Some(KEY));
+        let (st, v) = call(
+            &t.app,
+            "POST",
+            "/enrollments",
+            json!({"role": "agent", "name": "pods", "name_prefix": "k8s-", "uses": 5}),
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let code = v["code"].as_str().unwrap().to_owned();
+        let enroll = |name: String, ip: String| {
+            let (app, code) = (t.app.clone(), code.clone());
+            async move {
+                call(
+                    &app,
+                    "POST",
+                    "/enroll",
+                    json!({"code": code, "role": "agent", "name": name}),
+                    None,
+                    &ip,
+                )
+                .await
+                .0
+            }
+        };
+        assert_eq!(
+            enroll("k8s-a".into(), "10.0.1.1".into()).await,
+            StatusCode::OK
+        );
+        // A crash-looping pod retries its taken name from many addresses.
+        for i in 0..PER_ID + 3 {
+            assert_eq!(
+                enroll("k8s-a".into(), format!("10.0.2.{i}")).await,
+                StatusCode::CONFLICT,
+                "attempt {i}"
+            );
+        }
+        assert_eq!(
+            enroll("k8s-b".into(), "10.0.3.1".into()).await,
+            StatusCode::OK,
+            "the code still works for the other pods"
+        );
     }
 
     #[tokio::test]

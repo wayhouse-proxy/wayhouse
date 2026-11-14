@@ -608,9 +608,12 @@ tells them apart in the registry. A code without `name_prefix` refuses a name, a
 refuses a missing one or one outside the prefix, before a use is spent. A prefix code also refuses
 (409) a name that already holds a token or tunnel key, so anyone who can read the code cannot take
 over an enrolled origin; an agent that lost its files must be deleted from the controller (the UI's
-"Tunnel addresses", or `DELETE /peers/{name}`) before it enrolls under that name again. Refused redeems still count
-against the limit of 5 attempts a minute per code (10 per address), so a wrong name in a
-DaemonSet that restarts in a loop locks the code out for a minute at a time.
+"Tunnel addresses", or `DELETE /peers/{name}`) before it enrolls under that name again. The check runs
+in the same step that spends the use, so two pods racing for one name cannot both get it. Refused
+redeems count against the limit of 5 attempts a minute per code (10 per address), except two that
+need a valid code: a valid code for another role, and the 409 for a taken name, count only against
+the address. A wrong name or secret in a DaemonSet that restarts in a loop still locks the code out
+for a minute at a time.
 
 ```sh
 curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
@@ -620,6 +623,10 @@ curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin
 kubectl -n wayhouse create secret generic wayhouse-enroll-code-agent --from-file=code=code && rm code
 # The proxy DaemonSet needs its own code (role proxy, prefix k8s-, step-up secret, at most 24 hours),
 # in its own Secret: a code has one role, so one Secret cannot serve both DaemonSets.
+curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
+  -H 'Content-Type: application/json' \
+  -d '{"role":"proxy","name":"k8s-proxies","name_prefix":"k8s-","uses":20,"ttl_secs":86400,"step_up":"'"$(cat step-up)"'"}' \
+  | jq -r .code > proxy-code
 kubectl -n wayhouse create secret generic wayhouse-enroll-code-proxy --from-file=code=proxy-code && rm proxy-code
 kubectl apply -k deploy/k8s/overlays/enrolled
 ```
