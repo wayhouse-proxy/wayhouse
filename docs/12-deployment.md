@@ -138,6 +138,77 @@ flags. CI runs `make deploy-solo-smoke` (the certificates and key modes, https-o
 keyring mode and owner, a sealed secret that is listed but never shown, a config pushed through the
 UI, a clean restart, no token in any log).
 
+### All in one process (`wayhouse-control`)
+
+A solo box can run the controller, the aggregator and the UI as **one process**, `wayhouse-control`,
+instead of three. It links the three programs as they are (no logic moved), so every route, token and
+flag behaves as in the split layout. The split binaries and images stay the way to run a fleet:
+aggregators are stateless replicas, controllers are Raft nodes, and neither scales inside one process.
+
+```sh
+# compose (from deploy/compose)
+wayhouse-controller init --target compose --control      # one certificate, tls/control.pem
+docker compose -f docker-compose.yml -f compose.solo.yml -f compose.solo-control.yml up -d --build
+
+# systemd
+sudo wayhouse-controller init --target systemd --control # control.pem/control.key under /etc/wayhouse/tls
+sudo systemctl enable --now wayhouse-solo-control.target
+```
+
+What stays the same: three listeners (controller `9901`, aggregator `9902`, UI `9903`), three tokens
+and the UI password, the same keyring, data volume and settings volume, and a proxy that enrolls or is
+configured against `https://127.0.0.1:9901` unchanged. No enroll role was added: the control plane is
+single-node, so nothing joins it as a replica.
+
+What differs:
+
+- **One certificate.** `control.pem` is valid for `localhost`, `127.0.0.1`, `::1` and the names the
+  one process answers to (`controller` in compose, plus any `--san`). The UI dials the other two
+  over loopback with their own tokens, so the code path equals the split layout.
+- **The UI serves https in compose.** It listens on the container's `0.0.0.0`, and `wayhouse-control`
+  refuses a non-loopback UI without its own certificate (a login over plain http would send the
+  password in the clear). Open <https://127.0.0.1:9903> and accept the browser warning. Do not add
+  `tls/ca.pem` to a browser or system trust store: the init CA has no name constraints, so it could
+  vouch for any name. Keep `ca.key` out of backups. On systemd the UI stays on loopback http.
+- **Flags are namespaced.** `--controller-X`, `--aggregator-X` and `--ui-X` reach program `X` (a UI
+  flag that already starts with `ui-` keeps it: `--ui-ui-password-file`). `--settings-dir`,
+  `--tls-cert`, `--tls-key` and `--ca-file` are shared; the UI's own TLS is `--ui-tls-cert` and
+  `--ui-tls-key`. A flag a program derives from the others (`--ui-controller-url`, the UI's tokens,
+  every `--listen`) is refused or pinned, so a settings file cannot move a listener the UI depends
+  on. `wayhouse-control --help` lists the rules. Each program keeps its own settings file
+  (`controller.json`, `aggregator.json`, `ui.json`).
+- **Secrets are per program.** The three programs name their secrets alike (`auth-token`), so under
+  systemd each credential is `<program>-<flag>` (`controller-auth-token`, `aggregator-ingest-token`,
+  `ui-ui-password`; see `deploy/systemd/wayhouse-control.service`), and compose gives each its own
+  `--<program>-…-file`. `wayhouse-control` clears `CREDENTIALS_DIRECTORY` before it starts and refuses
+  `WAYHOUSE_*` secret variables.
+- **The token split is nominal inside the process.** Each listener still checks its own token, but one
+  compromised process holds the controller's state (revision logs, ACME keys, sealed secrets) and the
+  fleet instance token together. That is acceptable with one operator on one box, and it is why a
+  fleet keeps the split binaries. The units keep the systemd hardening of the split ones.
+- **Crash coupling.** Release builds abort on a panic, so one component cannot restart alone. If any
+  of the three stops, the process exits non-zero and systemd (or `restart: unless-stopped`) restarts
+  all three.
+- **`/metrics` lists every component.** The three share one recorder, so each listener's `/metrics`
+  carries the series of all three.
+
+**Moving on to the split layout or to HA** (nothing is lost; the data directory, keyring, tokens and
+settings are the same files). Stop the process, then copy `control.pem` and `control.key` to
+`controller.*` and `aggregator.*` in the same `tls/` directory (the CA stays), switch the units or
+the compose overlay back (leave out `compose.solo-control.yml`; on systemd use
+`wayhouse-solo.target`), and start. On systemd that is all: the split units reach everything on
+loopback. In compose the split UI dials `https://aggregator:9902`, a name `control.pem` does not
+carry, and there is no command yet to issue a leaf (the same gap as certificate renewal), so run
+`init --san aggregator` into a new `tls/` directory before the first start if you expect to split
+later. To run Raft replicas, continue with
+[Upgrading a single controller to HA](#upgrading-a-single-controller-to-ha); that is a controller-binary
+feature, and `wayhouse-control` runs one node only. Kubernetes keeps separate Deployments, as before.
+
+CI runs `make deploy-solo-control-smoke` against the compose overlay: the same checks as the split
+solo smoke, against one container. The systemd unit is checked with `systemd-analyze verify` and a
+unit test that feeds its `ExecStart` and credential names through the plan; a real `systemctl start`
+is on the pre-release manual list.
+
 `wayhouse-controller init --target k8s-secret | kubectl apply -f -` prints three Secret manifests
 (`wayhouse-tokens` with every key the example Secret has, `wayhouse-keyring`, `wayhouse-tls` with
 the CA certificate and the two leaves, not the CA key) for the `wayhouse` namespace (`--namespace`).
