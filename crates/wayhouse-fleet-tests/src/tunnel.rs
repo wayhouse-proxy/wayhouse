@@ -58,12 +58,15 @@ impl Default for LabOptions {
 /// own network.
 /// The one admin token the lab controller runs with and every lab process presents to it.
 const LAB_TOKEN: &str = "lab-tunnel-token-0123456789";
+/// The scoped tokens the controller needs beside the admin one (all three must differ).
+const LAB_PROXY_TOKEN: &str = "lab-tunnel-proxy-token-0123";
+const LAB_AGENT_TOKEN: &str = "lab-tunnel-agent-token-0123";
 
 /// The lab reaches its controller over plain http on a non-loopback lab address, which the
 /// bearer-token guard refuses unless told the network is private (it is a namespace).
 const LAB_CLIENT_ARGS: [&str; 3] = [
     "--controller-token",
-    LAB_TOKEN,
+    LAB_AGENT_TOKEN,
     "--allow-insecure-controller",
 ];
 
@@ -80,7 +83,16 @@ fn controller_args(network: &str, extra: &[&str]) -> Vec<String> {
     // The lab controller binds the wildcard address, so it runs with a token (the psk route and
     // every other secret route refuse to answer an unauthenticated caller); the lab proxies and
     // agents are given the same token (`LAB_ARGS`).
-    let mut args = vec!["--auth-token".to_string(), LAB_TOKEN.to_string()];
+    let mut args: Vec<String> = [
+        "--auth-token",
+        LAB_TOKEN,
+        "--proxy-token",
+        LAB_PROXY_TOKEN,
+        "--agent-token",
+        LAB_AGENT_TOKEN,
+    ]
+    .map(String::from)
+    .to_vec();
     if !extra.contains(&"--tunnel-network") {
         args.extend(["--tunnel-network".to_string(), network.to_string()]);
     }
@@ -544,7 +556,7 @@ impl TunnelLab {
         args.push("--insecure-no-auth".to_string());
         args.extend([
             "--tunnel-controller-token".to_string(),
-            LAB_TOKEN.to_string(),
+            LAB_PROXY_TOKEN.to_string(),
             "--allow-insecure-controller".to_string(),
         ]);
         if self.opts.psk {
