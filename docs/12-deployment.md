@@ -481,12 +481,19 @@ sudo wayhouse install --systemd --controller-url https://controller.example:9901
   mint an `aggregator` code and to give proxies their aggregator token. An aggregator tier's
   `parent_url` can be set at mint time and is written to `enrollment.json`.
 - A code redeems only as the role it was minted for. `enroll` refuses a `--data-dir` that is
-  already enrolled.
+  already enrolled, that is a symbolic link, or that another user owns, or that sits in a parent directory owned by neither the caller nor
+  root (a pre-created directory in a shared place such as `/tmp`), and it proves the directory is writable before the code is
+  spent. An `https://` URL needs `--pin` or `--controller-ca` however it is spelled; the URL is stored
+  and written into units in its parsed form (lowercase, no trailing `/`), and one with a user
+  name or password is refused. Plain `http://` to loopback bypasses `HTTP_PROXY`.
 - `enroll` (any binary) writes the files and prints how to run the node. `install --systemd`
   (needs root) enrolls into `/etc/wayhouse/<role>` (the agent: `/var/lib/wayhouse-agent`), then
   writes `wayhouse*.service` with `LoadCredential=` for every secret file and enables it. It
   refuses to replace an existing unit or enrollment. Flags after `--` go to the binary;
-  `--credential NAME=PATH` loads a further secret (the UI's `ui-password`).
+  `--credential NAME=PATH` loads a further secret (the UI's `ui-password`). Everything that can
+  be checked about the unit (the flags after `--`, the agent's fixed `--data-dir`, a UI without
+  `--credential ui-password=` or `--users-file`, which would have no login) is checked before
+  the code is spent.
 - The UI also needs `--aggregator-token` and `--ui-password`, and the aggregator needs
   `--instance-token`: enrollment does not deliver them (the controller does not hold them).
 - Running without systemd: `CREDENTIALS_DIRECTORY=<data-dir> wayhouse --secret-key-file <data-dir>/secret.keys ...`
