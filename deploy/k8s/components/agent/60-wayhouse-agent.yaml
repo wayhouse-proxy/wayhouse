@@ -68,6 +68,6 @@ spec:
             items: [{ key: ca.crt, path: ca.crt }]
         - name: enroll-code
           secret:
-            secretName: wayhouse-enroll-code   # key `code`; you create it, it holds the multi-use code
+            secretName: wayhouse-enroll-code-agent   # key `code`; you create it, it holds the multi-use code
             defaultMode: 0440
             items: [{ key: code, path: code }]
