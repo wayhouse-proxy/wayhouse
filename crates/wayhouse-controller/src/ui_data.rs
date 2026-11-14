@@ -242,7 +242,7 @@ impl Kind {
     }
 
     /// Most named records of this kind; `None` for the single records.
-    fn max_records(self) -> Option<usize> {
+    pub(crate) fn max_records(self) -> Option<usize> {
         match self {
             Kind::Dashboard => Some(100),
             Kind::Theme => Some(50),
