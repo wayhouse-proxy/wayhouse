@@ -328,7 +328,19 @@ impl TunnelLab {
         .map(std::string::ToString::to_string)
         .collect();
         args.extend(self.backend.agent_flag().map(str::to_string));
-        args.extend(LAB_CLIENT_ARGS.map(str::to_string));
+        let enrolled = self
+            .dir
+            .path()
+            .join("agent")
+            .join(wayhouse_enroll::files::TOKEN_FILE)
+            .exists();
+        if enrolled {
+            // An enrolled origin holds its own token (it is in the data dir); the shared agent
+            // token is refused for it.
+            args.push("--allow-insecure-controller".to_string());
+        } else {
+            args.extend(LAB_CLIENT_ARGS.map(str::to_string));
+        }
         let agent = Proc::spawn_in(Some(&ns), "wayhouse-agent", &args)?;
 
         let url = format!(
