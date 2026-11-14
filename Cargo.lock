@@ -4879,6 +4879,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayhouse-control"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wayhouse-aggregator",
+ "wayhouse-controller",
+ "wayhouse-http",
+ "wayhouse-ui",
+]
+
+[[package]]
 name = "wayhouse-controller"
 version = "0.3.0"
 dependencies = [

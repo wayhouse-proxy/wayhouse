@@ -8,6 +8,7 @@ members = [
     "crates/wayhouse-controller",
     "crates/wayhouse-aggregator",
     "crates/wayhouse-ui",
+    "crates/wayhouse-control",
     "crates/wayhouse-agent",
     "crates/wayhouse-fleet-tests",
     "crates/wayhouse-http",

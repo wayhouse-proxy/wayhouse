@@ -44,5 +44,6 @@ pub mod registry;
 pub mod relay;
 pub mod role;
 pub mod scoped_auth;
+pub mod serve;
 pub mod store;
 pub mod ui_data;

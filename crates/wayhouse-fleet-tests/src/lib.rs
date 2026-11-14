@@ -205,6 +205,7 @@ pub fn build_fleet_bins() -> Result<()> {
         "wayhouse-aggregator",
         "wayhouse-ui",
         "wayhouse-agent",
+        "wayhouse-control",
     ])
 }
 
