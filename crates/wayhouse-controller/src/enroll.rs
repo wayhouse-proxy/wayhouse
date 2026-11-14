@@ -476,6 +476,21 @@ async fn list(State(st): State<EnrollState>) -> Response {
     Json(json!({ "items": items })).into_response()
 }
 
+/// Whether `name` already holds an origin token or a tunnel key.
+fn name_holds_credentials(st: &EnrollState, name: &str) -> bool {
+    let token = st
+        .ui
+        .store
+        .list(Kind::OriginToken)
+        .map_or(true, |l| l.iter().any(|(_, v)| v["origin"] == name));
+    let key = st
+        .ui
+        .store
+        .get(Kind::ClusterSecret, &wayhouse_enroll::psk_secret_name(name))
+        .map_or(true, |k| k.is_some());
+    token || key
+}
+
 /// Deletes the enrollment records that can no longer do anything: spent or expired, and not a
 /// controller code (those carry node ids and the join proof, which later steps still read).
 #[allow(clippy::result_large_err)]
@@ -624,6 +639,7 @@ async fn redeem(
             Err(e) => return internal(e),
         };
     let role = req.role;
+    let prefixed = prefix.is_some();
     // A prefix code is for many pods: each names itself, inside the prefix. Checked before the
     // use is spent, and only for the holder of a valid code.
     let name = match (prefix, req.name) {
@@ -657,6 +673,16 @@ async fn redeem(
             )
         }
     };
+    // A prefix code is shared by every pod, so whoever can read it must not be able to take
+    // over a name that already holds credentials. The admin deletes the origin to free the name.
+    // shortcut: only names with a token or tunnel key count, a hand-registered one with neither
+    // is not seen here; upgrade if prefix codes need to protect those too.
+    if prefixed && name_holds_credentials(&st, &name) {
+        return err(
+            StatusCode::CONFLICT,
+            "this name is already enrolled; delete the origin first to enroll it again",
+        );
+    }
     if role == Role::Agent {
         if let Some(why) = origin_stores_full(&st, &name) {
             return err(StatusCode::INSUFFICIENT_STORAGE, why);
@@ -1227,6 +1253,43 @@ mod tests {
         let id = code.split('.').next().unwrap();
         let rec = t.store.get(Kind::Enrollment, id).unwrap().unwrap();
         assert_eq!(rec["uses_left"], 1, "the code is still good");
+    }
+
+    #[tokio::test]
+    async fn a_prefix_code_cannot_take_over_a_name_that_already_holds_credentials() {
+        let t = setup(Some(KEY));
+        let (st, v) = call(
+            &t.app,
+            "POST",
+            "/enrollments",
+            json!({"role": "agent", "name": "pods", "name_prefix": "k8s-", "uses": 3}),
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let code = v["code"].as_str().unwrap().to_owned();
+        let enroll = |name: &'static str| {
+            call(
+                &t.app,
+                "POST",
+                "/enroll",
+                json!({"code": code, "role": "agent", "name": name}),
+                None,
+                "10.0.0.2",
+            )
+        };
+        assert_eq!(enroll("k8s-a").await.0, StatusCode::OK);
+        let (st, v) = enroll("k8s-a").await;
+        assert_eq!(st, StatusCode::CONFLICT, "{v}");
+        assert_eq!(
+            enroll("k8s-b").await.0,
+            StatusCode::OK,
+            "other names still enroll"
+        );
+        // The refusal spent no use: 3 uses, 2 spent.
+        let rec = t.store.list(Kind::Enrollment).unwrap();
+        assert_eq!(rec[0].1["uses_left"], 1);
     }
 
     #[tokio::test]
