@@ -58,28 +58,63 @@ fn io(path: &Path) -> impl FnOnce(std::io::Error) -> FileError + '_ {
     }
 }
 
-/// Creates `dir` (mode 0700) if missing; an existing directory is tightened to 0700.
+/// Creates `dir` (mode 0700) if missing; an existing directory is tightened to 0700. A
+/// directory that is a symbolic link, or that another user owns, is refused: its owner could
+/// read what is written into it (a shared `/tmp` with a pre-created directory).
 fn private_dir(dir: &Path) -> Result<(), FileError> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)
         .map_err(io(dir))?;
+    let m = std::fs::symlink_metadata(dir).map_err(io(dir))?;
+    let refuse = |why: &str| FileError::Io {
+        path: dir.to_owned(),
+        source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, why.to_owned()),
+    };
+    if m.file_type().is_symlink() {
+        return Err(refuse("is a symbolic link; use the real directory"));
+    }
+    if m.uid() != nix::unistd::geteuid().as_raw() {
+        return Err(refuse(
+            "is owned by another user; pick a directory of your own",
+        ));
+    }
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(io(dir))
 }
 
-/// Writes `data` to `path` with mode 0600 from the first byte (no window at the umask).
+/// Makes `dir` ready (see [`private_dir`]) and proves a file can be written there, so a
+/// problem shows before the one-time code is spent.
+pub fn prepare(dir: &Path) -> Result<(), FileError> {
+    private_dir(dir)?;
+    let probe = dir.join(".enroll-probe");
+    write_private(&probe, b"")?;
+    std::fs::remove_file(&probe).map_err(io(&probe))
+}
+
+/// Writes `data` to `path` with mode 0600 from the first byte (no window at the umask). The
+/// bytes go to a new file beside it (never following a link) that then replaces `path`, so a
+/// symbolic link or a loose file planted at `path` is replaced, not written through or reused.
 fn write_private(path: &Path, data: &[u8]) -> Result<(), FileError> {
     use std::os::unix::fs::OpenOptionsExt;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    // A leftover from an earlier run; `remove_file` removes a link, not what it points at.
+    match std::fs::remove_file(&tmp) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(io(&tmp)(e)),
+        _ => {}
+    }
     let mut f = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
+        .custom_flags(nix::libc::O_NOFOLLOW)
         .mode(0o600)
-        .open(path)
-        .map_err(io(path))?;
-    f.write_all(data).map_err(io(path))
+        .open(&tmp)
+        .map_err(io(&tmp))?;
+    f.write_all(data).map_err(io(&tmp))?;
+    std::fs::rename(&tmp, path).map_err(io(path))
 }
 
 /// Refuses a directory that already holds an enrollment: a second `enroll` would overwrite its
@@ -353,5 +388,83 @@ mod tests {
             read_psk(&t.path().join(PSK_FILE)),
             Err(FileError::BadPsk { .. })
         ));
+    }
+
+    fn meta() -> Meta {
+        Meta {
+            controller_url: "https://c".into(),
+            name: "n".into(),
+            role: Role::Agent,
+            parent_url: None,
+            node_id: None,
+            tunnel_network: None,
+            advertise: None,
+        }
+    }
+
+    #[test]
+    fn a_planted_symlink_or_loose_file_is_replaced_not_followed_or_reused() {
+        let t = tempfile::tempdir().unwrap();
+        let victim = t.path().join("victim");
+        std::fs::write(&victim, "keep me").unwrap();
+        let dir = t.path().join("data");
+        std::fs::create_dir(&dir).unwrap();
+        std::os::unix::fs::symlink(&victim, dir.join("secret.keys")).unwrap();
+        std::fs::write(dir.join("auth-token"), "old").unwrap();
+        std::fs::set_permissions(
+            dir.join("auth-token"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let granted = [
+            ("secret.keys".to_owned(), "k".to_owned()),
+            ("auth-token".to_owned(), "t".to_owned()),
+        ]
+        .into();
+        write(&dir, &meta(), &granted).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        for f in ["secret.keys", "auth-token"] {
+            let m = std::fs::symlink_metadata(dir.join(f)).unwrap();
+            assert!(m.file_type().is_file(), "{f} is a regular file again");
+            assert_eq!(m.permissions().mode() & 0o777, 0o600, "{f}");
+        }
+    }
+
+    #[test]
+    fn a_data_directory_that_is_a_symlink_is_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let real = t.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = t.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let e = write(&link, &meta(), &std::collections::BTreeMap::new()).unwrap_err();
+        assert!(e.to_string().contains("symbolic link"), "{e}");
+        assert!(!real.join(META_FILE).exists());
+    }
+
+    #[test]
+    fn a_data_directory_owned_by_someone_else_is_refused() {
+        if !nix::unistd::geteuid().is_root() {
+            return; // chown to another user needs root
+        }
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("data");
+        std::fs::create_dir(&dir).unwrap();
+        nix::unistd::chown(&dir, Some(nix::unistd::Uid::from_raw(54321)), None).unwrap();
+        let e = write(&dir, &meta(), &std::collections::BTreeMap::new()).unwrap_err();
+        assert!(e.to_string().contains("owned by"), "{e}");
+    }
+
+    #[test]
+    fn prepare_proves_the_directory_is_writable_before_a_code_is_spent() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("fresh");
+        prepare(&dir).unwrap();
+        assert!(dir.is_dir());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "probe removed");
+        // A file where the directory should be cannot be enrolled into.
+        let file = t.path().join("file");
+        std::fs::write(&file, "x").unwrap();
+        assert!(prepare(&file.join("sub")).is_err());
     }
 }

@@ -151,6 +151,9 @@ pub async fn enroll(
     advertise: Option<&str>,
     name: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    // The directory is made and proven writable before the code is spent: afterwards, a failure
+    // would cost the use (and, for an agent re-enroll, the old token and key).
+    files::prepare(dir)?;
     let r = client::redeem(controller_url, pin, code, role, name).await?;
     let mut granted = r.files;
     if role == Role::Aggregator {

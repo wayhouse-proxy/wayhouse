@@ -184,6 +184,12 @@ pub async fn run(role: Role, bin: &'static str, argv: Vec<OsString>) -> Result<(
             let dir = i.enroll.data_dir.clone().unwrap_or_else(|| spec.data_dir());
             // Check before spending the code: a unit that already exists is never replaced.
             spec.check_free(&dir)?;
+            spec.preflight(
+                i.enroll.data_dir.as_deref(),
+                &i.enroll.controller_url,
+                i.enroll.advertise.as_deref(),
+                &i.extra,
+            )?;
             // Everything the unit needs is checked before the one-time code is spent.
             if role == Role::Controller
                 && !i
@@ -226,5 +232,63 @@ mod tests {
         };
         assert!(run(Role::Agent, "x", argv(true)).await.is_ok());
         assert!(run(Role::Agent, "x", argv(false)).await.is_err());
+    }
+
+    /// An `install` argv whose unit could never work; a controller nobody listens on proves the
+    /// refusal came before the code was spent (a spent code would be a connection error).
+    fn install_argv(role: &str, extra: &[&str]) -> Vec<OsString> {
+        let t = tempfile::tempdir().unwrap().keep();
+        let mut a: Vec<OsString> = [
+            "x",
+            "install",
+            "--systemd",
+            "--no-start",
+            "--controller-url=http://127.0.0.1:1",
+            "--code=aaaaaaaa.bbbb",
+            "--bin-path=/usr/bin/x",
+        ]
+        .map(Into::into)
+        .into();
+        a.push(format!("--unit-dir={}", t.display()).into());
+        a.push(format!("--data-dir={}", t.join(role).display()).into());
+        a.extend(extra.iter().map(OsString::from));
+        a
+    }
+
+    async fn refusal(role: Role, argv: Vec<OsString>) -> String {
+        run(role, "x", argv).await.unwrap_err().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_ui_unit_without_a_login_is_refused_before_the_code_is_spent() {
+        let e = refusal(Role::Ui, install_argv("ui", &[])).await;
+        assert!(e.contains("login"), "{e}");
+        // A login by credential or users file passes the check (and then fails to connect).
+        for ok in [
+            vec!["--credential=ui-password=/etc/ui-pw"],
+            vec!["--", "--users-file=/etc/users.json"],
+        ] {
+            let e = refusal(Role::Ui, install_argv("ui", &ok)).await;
+            assert!(!e.contains("login"), "{ok:?}: {e}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_agent_unit_cannot_move_its_data_dir() {
+        let e = refusal(Role::Agent, install_argv("agent", &[])).await;
+        assert!(
+            e.contains("--data-dir") && e.contains("/var/lib/wayhouse-agent"),
+            "{e}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_flag_the_unit_cannot_hold_is_refused_before_the_code_is_spent() {
+        let e = refusal(
+            Role::Proxy,
+            install_argv("proxy", &["--", "--backends=a b"]),
+        )
+        .await;
+        assert!(e.contains("cannot be written into a systemd unit"), "{e}");
     }
 }
