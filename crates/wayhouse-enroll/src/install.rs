@@ -167,6 +167,17 @@ pub fn render_unit(
                 format!("--ha-join-via={url}"),
                 "--secret-key-file=%d/secret.keys".into(),
             ];
+            // The key goes in as a credential: the unit runs as a dynamic user, which could only
+            // read a world-readable key file. A hand-written --tls-key would be a second source.
+            if spec.extra_creds.iter().any(|(n, _)| n == "tls-key") {
+                if extra
+                    .iter()
+                    .any(|a| a == "--tls-key" || a.starts_with("--tls-key="))
+                {
+                    return Err("--credential tls-key=PATH already sets --tls-key; drop --tls-key after `--`".into());
+                }
+                flags.push("--tls-key=%d/tls-key".into());
+            }
             // A replica with another network than the cluster's refuses tunnel writes.
             if let Some(n) = &meta.tunnel_network {
                 flags.push(format!("--tunnel-network={}", unit_arg(n)?));
@@ -517,6 +528,35 @@ mod tests {
         );
         // Not one secret value is in the unit, only names.
         assert!(!u.contains("Bearer") && !u.contains("--ha-token"));
+    }
+
+    #[test]
+    fn a_tls_key_credential_reaches_the_replica_as_a_flag_not_a_world_readable_path() {
+        let mut m = meta(Role::Controller, None);
+        m.node_id = Some(4);
+        m.advertise = Some("https://ctl-4.example:9901".into());
+        let s = spec(
+            Role::Controller,
+            "wayhouse-controller",
+            &["tls-key=/etc/wayhouse/ctl-4.key".into()],
+        );
+        let listen = ["--listen=0.0.0.0:9901".to_owned()];
+        let u = render_unit(&s, Path::new("/d"), &m, &[], &listen).unwrap();
+        assert!(
+            u.contains("LoadCredential=tls-key:/etc/wayhouse/ctl-4.key\n"),
+            "{u}"
+        );
+        assert!(u.contains("--tls-key=%d/tls-key"), "{u}");
+        // The same flag by hand would point at a path the dynamic user cannot read.
+        let both = [
+            "--listen=0.0.0.0:9901".to_owned(),
+            "--tls-key=/k".to_owned(),
+        ];
+        assert!(render_unit(&s, Path::new("/d"), &m, &[], &both).is_err());
+        // Without the credential nothing is added.
+        let plain = spec(Role::Controller, "wayhouse-controller", &[]);
+        let u = render_unit(&plain, Path::new("/d"), &m, &[], &listen).unwrap();
+        assert!(!u.contains("%d/tls-key"), "{u}");
     }
 
     #[test]

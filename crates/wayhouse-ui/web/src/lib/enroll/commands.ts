@@ -167,7 +167,6 @@ function controllerFlags(s: Spec): string[] {
   return [
     `--listen=0.0.0.0:${port}`,
     `--tls-cert=/etc/wayhouse/${s.name}.pem`,
-    `--tls-key=/etc/wayhouse/${s.name}.key`,
     `--ca-file=/etc/wayhouse/ca.pem`,
   ];
 }
@@ -178,7 +177,12 @@ function systemd(s: Spec): Step[] {
   const bin = BIN[s.role];
   const lines = [`sudo ${s.code ? `env WAYHOUSE_ENROLL_CODE=${sh(s.code)} ` : ""}${bin} install --systemd`];
   lines.push(...enrollFlags(s).map((f) => sh(f)));
-  if (s.role === "controller") lines.push(`--advertise=${sh(s.advertise)}`);
+  if (s.role === "controller") {
+    lines.push(`--advertise=${sh(s.advertise)}`);
+    // A credential, not a path flag: the service runs as a dynamic user, so a root-only key file
+    // is handed to it by systemd instead of being made world-readable.
+    lines.push(`--credential tls-key=/etc/wayhouse/${s.name}.key`);
+  }
   if (s.role === "ui") lines.push(`--credential ui-password=/etc/wayhouse/ui/ui-password`);
   const extra = s.role === "controller" ? controllerFlags(s) : runFlags(s);
   if (extra.length) lines.push("--", ...extra.map(sh));
@@ -199,7 +203,7 @@ function systemd(s: Spec): Step[] {
     text: lines.join(" \\\n  "),
     note:
       (s.role === "controller"
-        ? `Put this replica's certificate and key at /etc/wayhouse/${s.name}.pem and .key and the cluster CA at /etc/wayhouse/ca.pem first, or change the paths. The service runs as a dynamic user, so the key must be readable by it (a root-only 0600 key is not). `
+        ? `Put this replica's certificate and key at /etc/wayhouse/${s.name}.pem and .key and the cluster CA at /etc/wayhouse/ca.pem first, or change the paths. The key stays root-only: systemd hands it to the service as a credential. `
         : "") +
       (s.code
         ? "The code is not on the node binary's command line, but it is in this command, so it is in your shell history and briefly in the process list. Tick \"Keep the code out of the command\" to avoid that."

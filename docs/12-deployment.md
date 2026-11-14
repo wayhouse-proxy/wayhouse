@@ -508,8 +508,10 @@ curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin
 # On the new host (root; the cluster needs its own TLS certificate here, see "HA replicas over TLS"):
 sudo wayhouse-controller install --systemd --controller-url https://ctl-1.internal:9901 \
   --pin sha256:<leaf fingerprint> --code-file ./code --advertise https://ctl-4.internal:9901 \
-  -- --listen 0.0.0.0:9901 --tls-cert /etc/wayhouse/ctl-4.pem --tls-key /etc/wayhouse/ctl-4.key \
-     --ca-file /etc/wayhouse/ca.pem
+  --credential tls-key=/etc/wayhouse/ctl-4.key \
+  -- --listen 0.0.0.0:9901 --tls-cert /etc/wayhouse/ctl-4.pem --ca-file /etc/wayhouse/ca.pem
+# The unit runs as a dynamic user. `--credential tls-key=PATH` has systemd hand it the key (kept
+# root-only) and adds `--tls-key=%d/tls-key` itself; do not also pass --tls-key after `--`.
 ```
 
 What happens, in order:
