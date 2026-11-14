@@ -278,16 +278,19 @@ asks the plugin to remove it afterwards, also when the order failed (a failed re
 three times; a record that stays is named in the site's `last_error`, which then reads
 "issued, but the TXT record could not be removed", with no backoff, and the next issuance
 clears it). One call to the plugin may take the site's `propagation_timeout_secs`, at least 30
-seconds. The whole order may take `propagation_timeout_secs` per name plus five minutes, and
-never more than two hours. A plugin that does not answer, traps, refuses or is
+seconds, and all removals of an order share that much time in total. The whole order may take
+twice `propagation_timeout_secs` per name (setting the record and waiting for it) plus five
+minutes, and never more than two hours. A plugin that does not answer, traps, refuses or is
 disabled mid-order fails that order; the reason is the site's `last_error` and the usual
 backoff applies. If you disable the plugin or revoke the approval, orders fail with "not
 available" until you restore it.
 
-The controller asks the zone's own nameservers first (found through the host's resolver, no
-recursion, so no cache sits between), and counts the record as visible when every nameserver
-that answers has it. The host's resolver is asked as well, which covers networks that redirect
-port-53 traffic to a local resolver and names that are CNAMEd into another zone. The first
+The controller asks the zone's own nameservers (found through the host's resolver, at most
+eight addresses, no recursion, so no cache sits between), and counts the record as visible when
+every nameserver that answers has it; the host's resolver cannot overrule them. The host's
+resolver decides only when no nameserver answers (a network that redirects port-53 traffic to a
+local resolver) or the name is a CNAME into another zone. Without an `/etc/resolv.conf` the
+controller uses a default resolver, which may be a public one. The first
 lookup comes 20 seconds after the plugin answered (a quarter of `propagation_timeout_secs` for a
 shorter timeout), so a caching resolver is not asked before the provider serves the record.
 

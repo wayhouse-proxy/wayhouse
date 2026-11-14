@@ -38,20 +38,54 @@ pub trait TxtLookup: Send + Sync {
 }
 
 /// Looks a record up at the zone's own nameservers (no recursion, so no cache can hold an
-/// early "does not exist"), and through the host's resolver (`/etc/resolv.conf`) as well:
-/// a network that redirects port-53 traffic to a local resolver, or a CNAME-delegated name,
-/// only shows up there. A record is visible when either way shows it; an authoritative answer
-/// counts only for what *every* answering server has.
+/// early "does not exist"). What those servers answer is final: a record counts only when
+/// *every* answering server has it, and the host's resolver (`/etc/resolv.conf`) cannot
+/// overrule them. The host resolver decides only when no server answered (a firewall that
+/// redirects port-53 traffic to a local resolver, as on many home networks) or the name is a
+/// CNAME into another zone, which the direct query cannot follow.
 pub struct SystemTxt {
     resolver: hickory_resolver::TokioResolver,
     /// The nameservers' port; 53 outside tests.
     ns_port: u16,
 }
 
+/// Nameserver addresses asked per lookup; a zone with more is asked its first few.
+const MAX_NS: usize = 8;
+
+fn capped(servers: &[IpAddr]) -> &[IpAddr] {
+    &servers[..servers.len().min(MAX_NS)]
+}
+
+/// What the zone's nameservers said about one name.
+#[derive(Debug, PartialEq, Eq)]
+enum Answer {
+    /// The strings every answering server has (empty: some have none, or they disagree).
+    Txt(Vec<String>),
+    /// At least one server answered with a CNAME.
+    Cname,
+    /// No server answered.
+    None,
+}
+
+/// The authoritative answer if there is a conclusive one, else the host resolver's.
+async fn combine(
+    auth: Answer,
+    host: impl std::future::Future<Output = Vec<String>>,
+) -> Vec<String> {
+    match auth {
+        Answer::Txt(found) => found,
+        Answer::Cname | Answer::None => host.await,
+    }
+}
+
 impl SystemTxt {
-    /// Uses the host resolver config; without one (no `/etc/resolv.conf`) a default public
-    /// resolver, so a missing file does not stop the controller (the `dns_srv` source does the same).
-    pub fn new() -> Self {
+    /// Uses the host resolver config; without one (no `/etc/resolv.conf`) a default resolver,
+    /// which may be a public one, so a missing file does not stop the controller (the
+    /// `dns_srv` source does the same).
+    ///
+    /// # Errors
+    /// The resolver could not be built.
+    pub fn new() -> Result<Self, String> {
         let mut builder = hickory_resolver::TokioResolver::builder_tokio().unwrap_or_else(|e| {
             tracing::warn!(error = %e, "acme: system resolver config unavailable; using defaults");
             hickory_resolver::TokioResolver::builder_with_config(
@@ -61,16 +95,17 @@ impl SystemTxt {
         });
         // Only this process's cache: a caching resolver upstream can still hold a negative answer.
         builder.options_mut().cache_size = 0;
-        Self {
-            resolver: builder
-                .build()
-                .expect("building a resolver from a config never fails"),
+        let resolver = builder
+            .build()
+            .map_err(|e| format!("could not build the DNS resolver: {e}"))?;
+        Ok(Self {
+            resolver,
             ns_port: 53,
-        }
+        })
     }
 
     /// The addresses of the nameservers of the zone that holds `fqdn`, found by walking up
-    /// from the name to the first label set that has `NS` records.
+    /// from the name to the first label set that has `NS` records. At most [`MAX_NS`].
     async fn zone_servers(&self, fqdn: &str) -> Vec<IpAddr> {
         let labels: Vec<&str> = fqdn.trim_end_matches('.').split('.').collect();
         for start in 1..labels.len().saturating_sub(1) {
@@ -82,77 +117,110 @@ impl SystemTxt {
                 continue;
             };
             let mut ips = Vec::new();
-            for r in ns.answers() {
+            for r in ns.answers().iter().take(MAX_NS) {
                 if let hickory_resolver::proto::rr::RData::NS(host) = &r.data {
                     if let Ok(found) = self.resolver.lookup_ip(host.0.clone()).await {
                         ips.extend(found.iter());
                     }
                 }
+                if ips.len() >= MAX_NS {
+                    break;
+                }
             }
-            return ips;
+            return capped(&ips).to_vec();
         }
         Vec::new()
     }
 
-    /// The TXT strings every answering server of `servers` shows at `fqdn`; empty when none
-    /// answered or they disagree.
-    async fn ask(&self, servers: &[IpAddr], fqdn: &str) -> Vec<String> {
+    /// What `servers` say about `fqdn`.
+    async fn ask(&self, servers: &[IpAddr], fqdn: &str) -> Answer {
         let mut asked = tokio::task::JoinSet::new();
-        for ip in servers {
+        for ip in capped(servers) {
             asked.spawn(ask_one(*ip, self.ns_port, fqdn.to_string()));
         }
         let mut shared: Option<Vec<String>> = None;
+        let mut cname = false;
         while let Some(done) = asked.join_next().await {
-            let Ok(Some(found)) = done else { continue };
-            shared = Some(match shared {
-                None => found,
-                Some(have) => have.into_iter().filter(|t| found.contains(t)).collect(),
-            });
+            match done {
+                Ok(Some(One::Cname)) => cname = true,
+                Ok(Some(One::Txt(found))) => {
+                    shared = Some(match shared {
+                        None => found,
+                        Some(have) => have.into_iter().filter(|t| found.contains(t)).collect(),
+                    });
+                }
+                _ => {}
+            }
         }
-        shared.unwrap_or_default()
+        match (cname, shared) {
+            (true, _) => Answer::Cname,
+            (false, Some(found)) => Answer::Txt(found),
+            (false, None) => Answer::None,
+        }
     }
 
     async fn host(&self, fqdn: &str) -> Vec<String> {
         self.resolver
             .txt_lookup(format!("{fqdn}."))
             .await
-            .map_or_else(|_| Vec::new(), |found| txt_strings(&found))
+            .map_or_else(|_| Vec::new(), |found| txt_strings(found.answers()))
     }
 }
 
-impl Default for SystemTxt {
-    fn default() -> Self {
-        Self::new()
-    }
+enum One {
+    Txt(Vec<String>),
+    Cname,
 }
 
-/// One non-recursive TXT query to `ip`. `None` when the server did not answer.
-async fn ask_one(ip: IpAddr, port: u16, fqdn: String) -> Option<Vec<String>> {
-    use hickory_resolver::config::{ConnectionConfig, NameServerConfig, ResolverConfig};
-    use hickory_resolver::net::runtime::TokioRuntimeProvider;
-    let mut udp = ConnectionConfig::udp();
-    udp.port = port;
-    let config =
-        ResolverConfig::from_name_servers(vec![NameServerConfig::new(ip, true, vec![udp])]);
-    let mut builder = hickory_resolver::TokioResolver::builder_with_config(
-        config,
-        TokioRuntimeProvider::default(),
-    );
-    let opts = builder.options_mut();
-    opts.recursion_desired = false;
-    opts.cache_size = 0;
-    opts.attempts = 1;
-    opts.timeout = NS_TIMEOUT;
-    match builder.build().ok()?.txt_lookup(format!("{fqdn}.")).await {
-        Ok(found) => Some(txt_strings(&found)),
-        Err(e) if e.is_no_records_found() => Some(Vec::new()),
-        Err(_) => None,
+/// One non-recursive TXT query to `ip`, sent by hand because a resolver follows a CNAME on
+/// its own and would hide it. `None` when the server did not answer usefully.
+async fn ask_one(ip: IpAddr, port: u16, fqdn: String) -> Option<One> {
+    use hickory_resolver::proto::op::{Message, Query, ResponseCode};
+    use hickory_resolver::proto::rr::{Name, RData, RecordType};
+    let mut query = Message::query();
+    query.metadata.recursion_desired = false;
+    query.add_query(Query::query(
+        Name::from_ascii(format!("{fqdn}.")).ok()?,
+        RecordType::TXT,
+    ));
+    let id = query.metadata.id;
+    let sock = tokio::net::UdpSocket::bind(if ip.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })
+        .await
+        .ok()?;
+    sock.send_to(&query.to_vec().ok()?, (ip, port)).await.ok()?;
+    let mut buf = [0u8; 4096];
+    let reply = tokio::time::timeout(NS_TIMEOUT, async {
+        loop {
+            let (n, from) = sock.recv_from(&mut buf).await.ok()?;
+            // Only the server asked, answering this query.
+            match Message::from_vec(&buf[..n]) {
+                Ok(m) if from.ip() == ip && m.metadata.id == id => return Some(m),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .ok()??;
+    if reply.metadata.truncation
+        || !matches!(
+            reply.metadata.response_code,
+            ResponseCode::NoError | ResponseCode::NXDomain
+        )
+    {
+        return None;
     }
+    if reply
+        .answers
+        .iter()
+        .any(|r| matches!(r.data, RData::CNAME(_)))
+    {
+        return Some(One::Cname);
+    }
+    Some(One::Txt(txt_strings(&reply.answers)))
 }
 
-fn txt_strings(found: &hickory_resolver::lookup::Lookup) -> Vec<String> {
-    found
-        .answers()
+fn txt_strings(answers: &[hickory_resolver::proto::rr::Record]) -> Vec<String> {
+    answers
         .iter()
         .filter_map(|r| match &r.data {
             hickory_resolver::proto::rr::RData::TXT(t) => Some(
@@ -170,9 +238,7 @@ fn txt_strings(found: &hickory_resolver::lookup::Lookup) -> Vec<String> {
 impl TxtLookup for SystemTxt {
     async fn txt(&self, fqdn: &str) -> Vec<String> {
         let servers = self.zone_servers(fqdn).await;
-        let mut found = self.ask(&servers, fqdn).await;
-        found.extend(self.host(fqdn).await);
-        found
+        combine(self.ask(&servers, fqdn).await, self.host(fqdn)).await
     }
 }
 
@@ -596,10 +662,41 @@ mod tests {
         addr
     }
 
+    /// A nameserver whose every TXT answer is a CNAME to `target` (a delegated challenge name).
+    async fn fake_cname_ns(ip: &str, port: u16, target: &str) -> std::net::SocketAddr {
+        use hickory_resolver::proto::op::{Message, MessageType, OpCode};
+        use hickory_resolver::proto::rr::{rdata::CNAME, Name, RData, Record};
+        let sock = tokio::net::UdpSocket::bind((ip, port)).await.unwrap();
+        let addr = sock.local_addr().unwrap();
+        let target = Name::from_ascii(target).unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            loop {
+                let Ok((n, from)) = sock.recv_from(&mut buf).await else {
+                    return;
+                };
+                let Ok(q) = Message::from_vec(&buf[..n]) else {
+                    continue;
+                };
+                let mut r = Message::new(q.metadata.id, MessageType::Response, OpCode::Query);
+                r.metadata.authoritative = true;
+                r.add_queries(q.queries.clone());
+                let name = q.queries[0].name().clone();
+                r.add_answer(Record::from_rdata(
+                    name,
+                    60,
+                    RData::CNAME(CNAME(target.clone())),
+                ));
+                let _ = sock.send_to(&r.to_vec().unwrap(), from).await;
+            }
+        });
+        addr
+    }
+
     fn txt_at(port: u16) -> SystemTxt {
         SystemTxt {
             ns_port: port,
-            ..SystemTxt::new()
+            ..SystemTxt::new().unwrap()
         }
     }
 
@@ -607,7 +704,7 @@ mod tests {
     async fn the_authoritative_servers_show_a_record_a_caching_resolver_does_not() {
         let ns = fake_ns("127.0.0.1", 0, &["other", "the-value"]).await;
         let found = txt_at(ns.port()).ask(&[ns.ip()], FQDN).await;
-        assert!(found.iter().any(|t| t == "the-value"), "{found:?}");
+        assert_eq!(found, Answer::Txt(vec!["other".into(), "the-value".into()]));
     }
 
     #[tokio::test]
@@ -616,11 +713,14 @@ mod tests {
         let has = fake_ns("127.0.0.1", 0, &["the-value"]).await;
         let lacks = fake_ns("127.0.0.2", has.port(), &[]).await;
         let t = txt_at(has.port());
-        assert!(t
-            .ask(&[has.ip()], FQDN)
-            .await
-            .contains(&"the-value".to_string()));
-        assert!(t.ask(&[has.ip(), lacks.ip()], FQDN).await.is_empty());
+        assert_eq!(
+            t.ask(&[has.ip()], FQDN).await,
+            Answer::Txt(vec!["the-value".into()])
+        );
+        assert_eq!(
+            t.ask(&[has.ip(), lacks.ip()], FQDN).await,
+            Answer::Txt(vec![])
+        );
     }
 
     #[tokio::test]
@@ -633,6 +733,29 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(found.is_empty());
+        assert_eq!(found, Answer::None);
+    }
+
+    #[tokio::test]
+    async fn a_cname_answer_is_reported_as_one_so_the_host_resolver_can_follow_it() {
+        let ns = fake_cname_ns("127.0.0.1", 0, "_acme-challenge.panel.example.net.").await;
+        let found = txt_at(ns.port()).ask(&[ns.ip()], FQDN).await;
+        assert_eq!(found, Answer::Cname);
+    }
+
+    #[tokio::test]
+    async fn the_host_resolver_never_overrules_nameservers_that_answered() {
+        let host = || async { vec!["the-value".to_string()] };
+        // They answered and lack the value: the host resolver's (maybe stale) yes is not used.
+        assert!(combine(Answer::Txt(vec![]), host()).await.is_empty());
+        // Nothing answered, or the name is a CNAME: the host resolver decides.
+        assert_eq!(combine(Answer::None, host()).await, ["the-value"]);
+        assert_eq!(combine(Answer::Cname, host()).await, ["the-value"]);
+    }
+
+    #[test]
+    fn no_more_than_eight_nameserver_addresses_are_asked() {
+        let ips: Vec<IpAddr> = (1..=20).map(|n| IpAddr::from([127, 0, 0, n])).collect();
+        assert_eq!(capped(&ips), &ips[..8]);
     }
 }

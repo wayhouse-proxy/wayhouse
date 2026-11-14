@@ -136,6 +136,8 @@ pub struct AcmeCa {
     http_settle: Duration,
     /// Pause between tries of a failed challenge cleanup.
     cleanup_pause: Duration,
+    /// The least the whole cleanup phase of an order may take (it gets `propagation` if longer).
+    cleanup_floor: Duration,
     /// Challenge records the last order could not remove, as `name: reason`.
     cleanup_failures: Arc<Mutex<Vec<String>>>,
     /// Roots trusted on top of the platform's (`--ca-file`), for a private ACME CA.
@@ -158,13 +160,13 @@ enum Presented {
     Http { token: String },
 }
 
-/// The time one order may take: every name is solved one after another and may wait up to
-/// `propagation`, so the allowance grows with the name count; the margin covers the CA round trips.
+/// The time one order may take: every name is solved one after another and may spend up to
+/// `propagation` in `present` and as much again waiting for the record, so the allowance grows with the name count; the margin covers the CA round trips.
 /// At most [`MAX_ORDER`], so a stalled CA or plugin cannot hold an order for days.
 fn order_limit(propagation: Duration, names: usize, margin: Duration) -> Duration {
     let names = u32::try_from(names.max(1)).unwrap_or(u32::MAX);
     propagation
-        .saturating_mul(names)
+        .saturating_mul(2 * names)
         .saturating_add(margin)
         .min(MAX_ORDER)
 }
@@ -186,6 +188,7 @@ impl AcmeCa {
             eab: None,
             http_settle: Duration::from_secs(2),
             cleanup_pause: Duration::from_secs(5),
+            cleanup_floor: Duration::from_secs(30),
             cleanup_failures: Arc::default(),
             extra_roots: Vec::new(),
         }
@@ -284,6 +287,7 @@ impl AcmeCa {
         self.order_margin = Duration::from_secs(60);
         self.http_settle = Duration::ZERO;
         self.cleanup_pause = Duration::from_millis(5);
+        self.cleanup_floor = Duration::from_millis(50);
         self
     }
 
@@ -442,18 +446,27 @@ impl AcmeCa {
                 limit.as_secs()
             ))),
         };
+        // One budget for the whole phase: it runs after the order's own limit, and a hung
+        // plugin must not hold every later site for hours.
+        let deadline = tokio::time::Instant::now() + propagation.max(self.cleanup_floor);
         for p in &presented {
             match (p, solver) {
                 (Presented::Dns { fqdn, value }, Solver::Dns(s)) => {
-                    let mut tried = 0;
-                    let failed = loop {
-                        tried += 1;
-                        match s.cleanup(fqdn, value).await {
-                            Ok(()) => break None,
-                            Err(e) if tried == CLEANUP_TRIES => break Some(e),
-                            Err(_) => tokio::time::sleep(self.cleanup_pause * tried).await,
+                    let retried = tokio::time::timeout_at(deadline, async {
+                        let mut tried = 0;
+                        loop {
+                            tried += 1;
+                            match s.cleanup(fqdn, value).await {
+                                Ok(()) => return None,
+                                Err(e) if tried == CLEANUP_TRIES => return Some(e.to_string()),
+                                Err(_) => tokio::time::sleep(self.cleanup_pause * tried).await,
+                            }
                         }
-                    };
+                    })
+                    .await;
+                    let failed = retried.unwrap_or_else(|_| {
+                        Some("the cleanup did not finish within its time budget".into())
+                    });
                     if let Some(e) = failed {
                         tracing::warn!(%fqdn, error = %e, "acme: dns cleanup failed");
                         self.cleanup_failures
@@ -628,9 +641,10 @@ mod tests {
     #[test]
     fn the_order_limit_grows_with_the_number_of_names() {
         let (wait, margin) = (Duration::from_secs(120), Duration::from_secs(300));
-        assert_eq!(order_limit(wait, 1, margin), Duration::from_secs(420));
-        assert_eq!(order_limit(wait, 0, margin), Duration::from_secs(420));
-        assert_eq!(order_limit(wait, 10, margin), Duration::from_secs(1500));
+        // Each name may take a propagation wait in `wait_visible` and as much again in `present`.
+        assert_eq!(order_limit(wait, 1, margin), Duration::from_secs(540));
+        assert_eq!(order_limit(wait, 0, margin), Duration::from_secs(540));
+        assert_eq!(order_limit(wait, 10, margin), Duration::from_secs(2700));
         assert_eq!(
             order_limit(Duration::from_secs(3600), 100, margin),
             MAX_ORDER

@@ -239,7 +239,12 @@ impl Runner {
                 }
                 Err(mut why) => {
                     if !left.is_empty() {
-                        why.why = format!("{}; {}", why.why, leftovers_note(&left));
+                        // Both parts are cut first, so the note is never the part that is lost.
+                        why.why = format!(
+                            "{}; {}",
+                            one_line(&why.why, 280),
+                            one_line(&leftovers_note(&left), 200)
+                        );
                     }
                     metrics::counter!("wayhouse_acme_issue_total", "result" => "error")
                         .increment(1);
@@ -415,7 +420,10 @@ impl Runner {
     /// (a notice, not a failure: no backoff) until the next issuance clears it.
     async fn record_leftovers(&self, site: &Site, left: &[String]) {
         let attempt = Attempt {
-            last_error: Some(one_line(&format!("issued, but {}", leftovers_note(left)))),
+            last_error: Some(one_line(
+                &format!("issued, but {}", leftovers_note(left)),
+                500,
+            )),
             ..Attempt::default()
         };
         if let Err(e) = self
@@ -451,7 +459,7 @@ impl Runner {
         let attempt = Attempt {
             failures: prev.failures + 1,
             next_attempt_at: now + wait,
-            last_error: Some(one_line(&failure.why)),
+            last_error: Some(one_line(&failure.why, 500)),
             window_start,
             window_failures,
         };
@@ -526,8 +534,8 @@ fn leftovers_note(left: &[String]) -> String {
 }
 
 /// An error text for the site status: control characters (a CA or plugin message is not
-/// trusted text) and runs of blanks collapse to one space, at most 500 characters.
-fn one_line(why: &str) -> String {
+/// trusted text) and runs of blanks collapse to one space, at most `max` characters.
+fn one_line(why: &str, max: usize) -> String {
     let cleaned: String = why
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -537,7 +545,7 @@ fn one_line(why: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .chars()
-        .take(500)
+        .take(max)
         .collect()
 }
 
@@ -1021,6 +1029,21 @@ mod tests {
         let err = f.store.attempt("web").unwrap().unwrap().last_error.unwrap();
         assert!(!err.chars().any(char::is_control), "{err:?}");
         assert!(err.contains("line one [31mred end"), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_long_error_does_not_push_the_leftover_note_out_of_last_error() {
+        let f = fixture_using(KeyringHandle::new(Keyring::parse(KEY).unwrap()), true).await;
+        put(&f, site("web", "a.example.com"));
+        f.dns.fail_next_present(&"x".repeat(900));
+        f.runner.run_once().await;
+        let err = f.store.attempt("web").unwrap().unwrap().last_error.unwrap();
+        assert!(err.len() <= 500, "{}", err.len());
+        assert!(err.contains("could not be removed"), "{err}");
+        assert!(
+            err.contains("xxxxxxxx"),
+            "the order's own error is kept too: {err}"
+        );
     }
 
     #[tokio::test]

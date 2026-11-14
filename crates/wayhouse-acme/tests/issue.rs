@@ -458,3 +458,49 @@ async fn a_cleanup_that_keeps_failing_is_reported_for_the_site_status() {
     assert!(left[0].contains("provider busy"), "{left:?}");
     assert!(ca.take_cleanup_failures().is_empty(), "taking clears them");
 }
+
+#[tokio::test]
+async fn the_whole_cleanup_phase_shares_one_budget() {
+    struct HangsOnCleanup(MemDns);
+    #[async_trait::async_trait]
+    impl wayhouse_acme::DnsSolver for HangsOnCleanup {
+        async fn present(&self, f: &str, v: &str) -> Result<(), wayhouse_acme::SolverError> {
+            self.0.present(f, v).await
+        }
+        async fn cleanup(&self, _: &str, _: &str) -> Result<(), wayhouse_acme::SolverError> {
+            std::future::pending().await
+        }
+        async fn wait_visible(
+            &self,
+            f: &str,
+            v: &str,
+            t: std::time::Duration,
+        ) -> Result<(), wayhouse_acme::SolverError> {
+            self.0.wait_visible(f, v, t).await
+        }
+    }
+    let dns = MemDns::default();
+    let fake = FakeCa::start(dns.clone()).await;
+    let ca = ca(&fake, true);
+    let start = std::time::Instant::now();
+    ca.issue_within(
+        None,
+        &names(&["a.example.com", "b.example.com"]),
+        &HangsOnCleanup(dns),
+        1,
+        std::time::Duration::from_millis(100),
+    )
+    .await
+    .expect("the certificate is still issued");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(3),
+        "{:?}: two hung cleanups must not each get a full budget",
+        start.elapsed()
+    );
+    let left = ca.take_cleanup_failures();
+    assert_eq!(left.len(), 2, "{left:?}");
+    assert!(
+        left.iter().all(|l| l.contains("did not finish")),
+        "{left:?}"
+    );
+}

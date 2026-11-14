@@ -1028,9 +1028,13 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
             let mut ca = wayhouse_acme::AcmeCa::new(&directory_url, args.acme_accept_tos);
             // The CA client has its own TLS stack: a private ACME CA needs `--ca-file` here too.
             if let Some(path) = &args.ca_file {
-                ca = ca
-                    .with_extra_roots_pem(&std::fs::read(path)?)
-                    .map_err(|e| anyhow::anyhow!("--ca-file for the ACME CA: {e}"))?;
+                // `init_ca_file` above already read and validated this file; the ACME client
+                // needs the PEM itself.
+                let pem = std::fs::read(path)
+                    .map_err(|e| anyhow::anyhow!("--ca-file {}: {e}", path.display()))?;
+                ca = ca.with_extra_roots_pem(&pem).map_err(|e| {
+                    anyhow::anyhow!("--ca-file {} for the ACME CA: {e}", path.display())
+                })?;
             }
             if let (Some(kid), Some(file)) = (&args.acme_eab_kid, &args.acme_eab_hmac_key_file) {
                 let hmac = crate::acme::read_eab_key(file)
@@ -1047,7 +1051,10 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
                     Arc::new(crate::acme::dns_plugin::PluginSolvers {
                         store: plugin_store.clone(),
                         runner: plugin_runner.clone(),
-                        lookup: Arc::new(crate::acme::dns_plugin::SystemTxt::new()),
+                        lookup: Arc::new(
+                            crate::acme::dns_plugin::SystemTxt::new()
+                                .map_err(|e| anyhow::anyhow!(e))?,
+                        ),
                     })
                 }
                 None => Arc::new(crate::acme::runner::NoSolvers),
