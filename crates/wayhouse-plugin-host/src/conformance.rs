@@ -15,6 +15,8 @@ pub struct Report {
     /// What the module asks for under the config given to the check.
     pub effective: Option<Capabilities>,
     pub problems: Vec<String>,
+    /// Not failures: a declared capability no checked call used (excess privilege).
+    pub warnings: Vec<String>,
     pub init: Option<Effects>,
     pub on_timer: Option<Effects>,
 }
@@ -46,6 +48,7 @@ pub fn check_with_config(bytes: &[u8], config: &serde_json::Value) -> Report {
         info: None,
         effective: None,
         problems: Vec::new(),
+        warnings: Vec::new(),
         init: None,
         on_timer: None,
     };
@@ -93,6 +96,24 @@ pub fn check_with_config(bytes: &[u8], config: &serde_json::Value) -> Report {
         match plugin.on_timer(&state) {
             Ok(fx) => report.on_timer = Some(fx),
             Err(e) => report.problems.push(describe("on_timer", &e)),
+        }
+    }
+    if report.problems.is_empty() {
+        let used = |f: fn(&Effects) -> bool| {
+            [&report.init, &report.on_timer]
+                .into_iter()
+                .flatten()
+                .any(f)
+        };
+        if effective.log && !used(|fx| fx.used_log) {
+            report
+                .warnings
+                .push("declares `log` but no checked call used it".into());
+        }
+        if effective.state.is_some() && !used(|fx| fx.used_state) {
+            report
+                .warnings
+                .push("declares `state` but no checked call used it".into());
         }
     }
     report
@@ -207,5 +228,17 @@ mod tests {
         );
         let r = check_with_config(&m, &serde_json::json!({"pat":"*"}));
         assert!(!r.ok());
+    }
+
+    #[test]
+    fn a_declared_but_unused_capability_is_a_warning() {
+        let m = guest(
+            TIMER,
+            r#"(func (export "init") (param i32 i32))
+               (func (export "on_timer"))"#,
+        );
+        let r = check(&m);
+        assert!(r.ok(), "{:?}", r.problems);
+        assert_eq!(r.warnings, ["declares `log` but no checked call used it"]);
     }
 }

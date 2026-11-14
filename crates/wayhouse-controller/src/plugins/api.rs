@@ -322,6 +322,10 @@ pub(super) fn actor(headers: &HeaderMap) -> Option<String> {
 fn pool_error(e: PoolError) -> ApiError {
     match e {
         PoolError::Module(m) => err(StatusCode::UNPROCESSABLE_ENTITY, m),
+        PoolError::WorkerGone => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "a plugin compile worker died; check the controller log",
+        ),
         PoolError::Busy | PoolError::TimedOut => err(
             StatusCode::SERVICE_UNAVAILABLE,
             "the plugin compiler is busy, retry shortly",
