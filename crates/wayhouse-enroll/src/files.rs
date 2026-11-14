@@ -84,6 +84,11 @@ fn private_dir(dir: &Path) -> Result<(), FileError> {
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(io(dir))
 }
 
+/// A directory may be trusted when we own it or root does.
+fn trusted_owner(owner: u32, me: u32) -> bool {
+    owner == me || owner == 0
+}
+
 /// Makes `dir` ready (see [`private_dir`]) and proves a file can be written there, so a
 /// problem shows before the one-time code is spent.
 pub fn prepare(dir: &Path) -> Result<(), FileError> {
@@ -113,8 +118,17 @@ fn write_private(path: &Path, data: &[u8]) -> Result<(), FileError> {
         .mode(0o600)
         .open(&tmp)
         .map_err(io(&tmp))?;
-    f.write_all(data).map_err(io(&tmp))?;
-    std::fs::rename(&tmp, path).map_err(io(path))
+    // Written, flushed to disk and renamed, or not there at all: a crash or an error leaves no
+    // half-written secret under the final name, and no leftover under the temporary one.
+    let done = f
+        .write_all(data)
+        .and_then(|()| f.sync_all())
+        .map_err(io(&tmp))
+        .and_then(|()| std::fs::rename(&tmp, path).map_err(io(path)));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    done
 }
 
 /// Refuses a directory that already holds an enrollment: a second `enroll` would overwrite its
@@ -453,6 +467,36 @@ mod tests {
         nix::unistd::chown(&dir, Some(nix::unistd::Uid::from_raw(54321)), None).unwrap();
         let e = write(&dir, &meta(), &std::collections::BTreeMap::new()).unwrap_err();
         assert!(e.to_string().contains("owned by"), "{e}");
+    }
+
+    #[test]
+    fn a_directory_owned_by_someone_else_is_refused_without_root_too() {
+        if nix::unistd::geteuid().is_root() {
+            return; // as root `/usr` is ours; the chown test above covers that case
+        }
+        let e = write(
+            Path::new("/usr"),
+            &meta(),
+            &std::collections::BTreeMap::new(),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("owned by"), "{e}");
+    }
+
+    #[test]
+    fn only_we_and_root_may_own_the_parent() {
+        assert!(trusted_owner(1000, 1000));
+        assert!(trusted_owner(0, 1000));
+        assert!(!trusted_owner(54321, 1000));
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_temporary_file() {
+        let t = tempfile::tempdir().unwrap();
+        // A directory where the file belongs: the rename fails after the bytes were written.
+        std::fs::create_dir(t.path().join("secret.keys")).unwrap();
+        assert!(write_private(&t.path().join("secret.keys"), b"k").is_err());
+        assert!(!t.path().join("secret.keys.tmp").exists());
     }
 
     #[test]

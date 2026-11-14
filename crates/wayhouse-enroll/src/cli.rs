@@ -158,7 +158,16 @@ pub async fn run(role: Role, bin: &'static str, argv: Vec<OsString>) -> Result<(
     if let Some(a0) = argv.first_mut() {
         *a0 = bin.into();
     }
-    match NodeCli::parse_from(argv).cmd {
+    let mut cmd = NodeCli::parse_from(argv).cmd;
+    // The typed URL is replaced by its parsed form: the pin check, the files and the unit all
+    // see one URL (`HTTPS://x` or user info would pass one check and fail another).
+    match &mut cmd {
+        Cmd::Enroll(e) => e.controller_url = crate::client::normalize_url(&e.controller_url)?,
+        Cmd::Install(i) => {
+            i.enroll.controller_url = crate::client::normalize_url(&i.enroll.controller_url)?;
+        }
+    }
+    match cmd {
         Cmd::Enroll(e) => {
             let dir = e.data_dir.clone().unwrap_or_else(|| default_dir(role));
             // Only "already enrolled" skips; any other problem with the directory is an error.
@@ -244,11 +253,11 @@ mod tests {
             "--systemd",
             "--no-start",
             "--controller-url=http://127.0.0.1:1",
-            "--code=aaaaaaaa.bbbb",
             "--bin-path=/usr/bin/x",
         ]
         .map(Into::into)
         .into();
+        a.push(format!("--code={}", crate::code::Code::generate().expose().as_str()).into());
         a.push(format!("--unit-dir={}", t.display()).into());
         a.push(format!("--data-dir={}", t.join(role).display()).into());
         a.extend(extra.iter().map(OsString::from));
@@ -271,6 +280,20 @@ mod tests {
             let e = refusal(Role::Ui, install_argv("ui", &ok)).await;
             assert!(!e.contains("login"), "{ok:?}: {e}");
         }
+    }
+
+    #[tokio::test]
+    async fn an_https_url_with_user_info_or_capitals_is_judged_as_its_parsed_self() {
+        let with = |url: &str| {
+            let mut a = install_argv("proxy", &[]);
+            a[4] = format!("--controller-url={url}").into();
+            a
+        };
+        let e = refusal(Role::Proxy, with("https://user:pw@c.example")).await;
+        assert!(e.contains("user name or password"), "{e}");
+        // Capitals pass the pin check as https (and so ask for a pin) instead of slipping by.
+        let e = refusal(Role::Proxy, with("HTTPS://c.example")).await;
+        assert!(e.contains("--pin"), "{e}");
     }
 
     #[tokio::test]

@@ -153,6 +153,7 @@ pub async fn enroll(
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     // The directory is made and proven writable before the code is spent: afterwards, a failure
     // would cost the use (and, for an agent re-enroll, the old token and key).
+    let controller_url = &client::normalize_url(controller_url)?;
     files::prepare(dir)?;
     let r = client::redeem(controller_url, pin, code, role, name).await?;
     let mut granted = r.files;

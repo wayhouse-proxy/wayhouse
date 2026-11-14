@@ -36,6 +36,8 @@ pub enum EnrollError {
     NoPin,
     #[error("not a valid controller URL")]
     BadUrl,
+    #[error("the controller URL must not contain a user name or password")]
+    UrlUserInfo,
     #[error("not a SHA-256 fingerprint: expected 64 hex digits, optionally colon-separated")]
     BadFingerprint,
     #[error("--controller-ca: {0}")]
@@ -78,12 +80,22 @@ fn is_loopback(host: &str) -> bool {
 /// on the text the operator typed.
 fn check_url(url: &str) -> Result<reqwest::Url, EnrollError> {
     let u = reqwest::Url::parse(url).map_err(|_| EnrollError::BadUrl)?;
+    if !u.username().is_empty() || u.password().is_some() {
+        return Err(EnrollError::UrlUserInfo);
+    }
     match (u.scheme(), u.host_str()) {
         ("https", Some(_)) => Ok(u),
         ("http", Some(h)) if is_loopback(h) => Ok(u),
         ("http", Some(_)) => Err(EnrollError::PlainHttp),
         _ => Err(EnrollError::BadUrl),
     }
+}
+
+/// The controller URL as it is used and stored: parsed (lowercase scheme and host, no
+/// surrounding blanks, no trailing `/`) and checked like [`redeem`] checks it. What `enroll`
+/// writes into the node's files, and so into a unit, is this form, never the typed text.
+pub fn normalize_url(url: &str) -> Result<String, EnrollError> {
+    Ok(check_url(url)?.as_str().trim_end_matches('/').to_owned())
 }
 
 /// Accepts exactly one certificate, whatever its names or chain; handshake signatures are still
@@ -143,7 +155,8 @@ impl ServerCertVerifier for PinVerifier {
 fn http_client(pin: Option<&Pin>, https: bool) -> Result<reqwest::Client, EnrollError> {
     let b = match pin {
         // Loopback http needs no pin; anything else was already refused by `check_url`.
-        None if !https => reqwest::Client::builder(),
+        // The one-time code is sent in the clear to loopback; no `HTTP_PROXY` may see it.
+        None if !https => reqwest::Client::builder().no_proxy(),
         None => return Err(EnrollError::NoPin),
         Some(Pin::Fingerprint(fp)) => {
             let provider = Arc::new(tokio_rustls::rustls::crypto::aws_lc_rs::default_provider());
@@ -234,6 +247,24 @@ mod tests {
             "nonsense",
         ] {
             assert!(check_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_url_that_is_used_and_stored_is_the_parsed_one() {
+        for (typed, parsed) in [
+            ("HTTPS://C.Example", "https://c.example"),
+            (" https://c.example:9901/ ", "https://c.example:9901"),
+            ("http://127.0.0.1:1/", "http://127.0.0.1:1"),
+        ] {
+            assert_eq!(normalize_url(typed).unwrap(), parsed, "{typed:?}");
+        }
+        // User info would end up in a 0644 unit and in `ps`.
+        for bad in ["https://user:pw@c.example", "https://user@c.example"] {
+            assert!(
+                matches!(normalize_url(bad), Err(EnrollError::UrlUserInfo)),
+                "{bad}"
+            );
         }
     }
 
