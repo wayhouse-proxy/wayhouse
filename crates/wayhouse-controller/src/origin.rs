@@ -6,7 +6,8 @@
 //! store (kind `OriginToken`), so the token is found by one read and no copy of it exists on the
 //! controller. [`crate::scoped_auth`] turns the token into a [`Caller::Origin`]; the guard on
 //! `POST /peers` then holds it to its own name, and refuses the shared agent token for any
-//! origin that has one. A re-enroll replaces the token, which revokes the old one.
+//! origin that has one. A re-enroll replaces the token, which revokes the old one; deleting the origin
+//! (`DELETE /peers/{name}`) revokes its token and every tunnel key generation.
 //!
 //! **Key generations.** An origin's tunnel key is a sealed cluster secret, one per generation
 //! (`wayhouse_enroll::psk_secret_name_gen`); the registration names the generation proxies use,
@@ -70,6 +71,24 @@ fn has_token(store: &UiStore, origin: &str) -> Result<bool, Response> {
 /// safer than leaving a token that may be the reason for the re-enroll.
 #[allow(clippy::result_large_err)]
 pub(crate) async fn issue_token(ui: &UiState, origin: &str) -> Result<Zeroizing<String>, Response> {
+    forget_tokens(ui, origin).await?;
+    let token = Zeroizing::new(wayhouse_enroll::generate_token());
+    done(
+        apply(
+            ui,
+            UiOp::Put {
+                kind: Kind::OriginToken,
+                name: token_hash(&token),
+                value: json!({ "origin": origin, "created_at": now() }),
+            },
+        )
+        .await?,
+    )?;
+    Ok(token)
+}
+
+#[allow(clippy::result_large_err)]
+async fn forget_tokens(ui: &UiState, origin: &str) -> Result<(), Response> {
     let old: Vec<String> = ui
         .store
         .list(Kind::OriginToken)
@@ -90,19 +109,7 @@ pub(crate) async fn issue_token(ui: &UiState, origin: &str) -> Result<Zeroizing<
             .await?,
         )?;
     }
-    let token = Zeroizing::new(wayhouse_enroll::generate_token());
-    done(
-        apply(
-            ui,
-            UiOp::Put {
-                kind: Kind::OriginToken,
-                name: token_hash(&token),
-                value: json!({ "origin": origin, "created_at": now() }),
-            },
-        )
-        .await?,
-    )?;
-    Ok(token)
+    Ok(())
 }
 
 #[allow(clippy::result_large_err)]
@@ -160,7 +167,11 @@ struct Head {
 /// an origin that holds its own token, and a registration may only name a tunnel key that
 /// exists, so a typo or a stale generation is refused here instead of silently leaving every
 /// proxy without the peer.
-pub async fn guard(State(store): State<UiStore>, req: Request, next: Next) -> Response {
+pub async fn guard(State(ui): State<UiState>, req: Request, next: Next) -> Response {
+    let store = ui.store.clone();
+    if req.method() == Method::DELETE {
+        return revoke_after_delete(&ui, req, next).await;
+    }
     if req.method() != Method::POST || req.uri().path() != "/peers" {
         return next.run(req).await;
     }
@@ -217,6 +228,36 @@ pub async fn guard(State(store): State<UiStore>, req: Request, next: Next) -> Re
     }
     next.run(Request::from_parts(parts, Body::from(bytes)))
         .await
+}
+
+/// `DELETE /peers/{name}`: once the registration is gone (or was already: 404 still revokes), so are the origin's token and every
+/// tunnel key generation, or a compromised or decommissioned host could register again with
+/// them. Idempotent, so a retried delete finishes a half-done revoke.
+async fn revoke_after_delete(ui: &UiState, req: Request, next: Next) -> Response {
+    let name = req
+        .uri()
+        .path()
+        .strip_prefix("/peers/")
+        .filter(|n| !n.contains('/'))
+        .and_then(|n| percent_encoding::percent_decode_str(n).decode_utf8().ok())
+        .map(std::borrow::Cow::into_owned);
+    let resp = next.run(req).await;
+    match name {
+        Some(name) if resp.status().is_success() || resp.status() == StatusCode::NOT_FOUND => {
+            match revoke(ui, &name).await {
+                Ok(()) => resp,
+                Err(r) => r,
+            }
+        }
+        _ => resp,
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn revoke(ui: &UiState, origin: &str) -> Result<(), Response> {
+    // `u64::MAX` is no generation, so every key goes; the token is replaced by none.
+    forget_generations_except(ui, origin, u64::MAX).await?;
+    forget_tokens(ui, origin).await
 }
 
 #[derive(Clone)]
@@ -688,9 +729,8 @@ mod tests {
 
     // The guard, with the real peers router behind it.
     async fn register_as(t: &T, caller: Option<Caller>, body: Value) -> (StatusCode, Value) {
-        let app = crate::peers::api::router(t.peers.clone()).route_layer(
-            axum::middleware::from_fn_with_state(t.ui.store.clone(), guard),
-        );
+        let app = crate::peers::api::router(t.peers.clone())
+            .route_layer(axum::middleware::from_fn_with_state(t.ui.clone(), guard));
         let mut req = Request::post("/peers")
             .header(wayhouse_http::protocol::HEADER, "1.0")
             .body(Body::from(body.to_string()))
@@ -776,5 +816,28 @@ mod tests {
         let big = json!({"name": "home", "pad": "x".repeat(MAX_REGISTRATION_BODY)});
         let (st, _) = register_as(&t, origin("home"), big).await;
         assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn deleting_an_origin_revokes_its_token_and_every_key_generation() {
+        let t = setup();
+        for o in ["home", "other"] {
+            t.enrolled(o).await;
+            issue_token(&t.ui, o).await.unwrap();
+        }
+        t.call("POST", "/peers/home/psk/rotate", None).await;
+        let app = crate::peers::api::router(t.peers.clone())
+            .route_layer(axum::middleware::from_fn_with_state(t.ui.clone(), guard));
+        // A percent-encoded spelling reaches the same handler, so it must revoke the same origin.
+        for path in ["/peers/home", "/peers/%6Fther"] {
+            let req = Request::delete(path)
+                .header(wayhouse_http::protocol::HEADER, "1.0")
+                .body(Body::empty())
+                .unwrap();
+            let status = app.clone().oneshot(req).await.unwrap().status();
+            assert_eq!(status, StatusCode::OK, "{path}");
+        }
+        assert!(t.ui.store.list(Kind::OriginToken).unwrap().is_empty());
+        assert!(t.ui.store.list(Kind::ClusterSecret).unwrap().is_empty());
     }
 }

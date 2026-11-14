@@ -859,6 +859,12 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
         Some((handle, _, _, _, store)) => (store.clone(), Some(handle.clone())),
         None => (crate::ui_data::UiStore::open(state.store.db())?, None),
     };
+    let ui_state = crate::ui_data::api::UiState {
+        store: ui_store.clone(),
+        auth_token: admin_token.clone(),
+        ha: ui_ha,
+        keyring: plugin_keys.clone(),
+    };
     let mut app = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .merge(wayhouse_http::metrics::router(
@@ -873,7 +879,7 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
         .merge(
             crate::peers::api::router(peers_state.clone())
                 .route_layer(axum::middleware::from_fn_with_state(
-                    ui_store.clone(),
+                    ui_state.clone(),
                     crate::origin::guard,
                 ))
                 .route_layer(axum::middleware::from_fn_with_state(
@@ -1085,12 +1091,6 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
         )
     });
     tokio::spawn(publish_features(ui_store.clone()));
-    let ui_state = crate::ui_data::api::UiState {
-        store: ui_store.clone(),
-        auth_token: admin_token.clone(),
-        ha: ui_ha,
-        keyring: plugin_keys.clone(),
-    };
     app = app
         .merge(crate::enroll::router(
             ui_state.clone(),
