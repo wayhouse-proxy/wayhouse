@@ -1,0 +1,9 @@
+[Unit]
+Description=wayhouse solo box with the all-in-one control plane (wayhouse-control, proxy)
+# Use this instead of wayhouse-solo.target, with wayhouse.service.d/control.conf next to
+# wayhouse.service (docs/12-deployment.md, "One box"); not both targets.
+Wants=wayhouse-control.service wayhouse.service
+Conflicts=wayhouse-solo.target
+
+[Install]
+WantedBy=multi-user.target

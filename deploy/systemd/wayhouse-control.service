@@ -1,0 +1,46 @@
+[Unit]
+Description=wayhouse control plane (controller, aggregator and UI in one process, solo box)
+Documentation=https://github.com/wayhouse-proxy/wayhouse/blob/main/docs/12-deployment.md
+Wants=wayhouse-keygen.service
+After=wayhouse-keygen.service network.target
+PartOf=wayhouse-solo-control.target
+
+[Service]
+User=wayhouse
+StateDirectory=wayhouse
+# One process, three loopback listeners (controller 9901 and aggregator 9902 over https with the
+# one certificate `wayhouse-controller init --target systemd --control` made, the UI 9903 plain).
+# Each program gets its own credential, named <program>-<flag>: the three programs share secret
+# names (`auth-token`), so `wayhouse-control` reads only these. The private key arrives as a
+# credential too (%d is its directory); the certificate is public.
+LoadCredential=controller-auth-token:/etc/wayhouse/credentials/controller-token
+LoadCredential=controller-proxy-token:/etc/wayhouse/credentials/proxy-token
+LoadCredential=controller-agent-token:/etc/wayhouse/credentials/agent-token
+LoadCredential=aggregator-auth-token:/etc/wayhouse/credentials/aggregator-token
+LoadCredential=aggregator-ingest-token:/etc/wayhouse/credentials/ingest-token
+LoadCredential=ui-ui-password:/etc/wayhouse/credentials/ui-password
+LoadCredential=tls-key:/etc/wayhouse/tls/control.key
+ExecStart=/usr/local/bin/wayhouse-control \
+  --tls-cert=/etc/wayhouse/tls/control.pem \
+  --tls-key=%d/tls-key \
+  --ca-file=/etc/wayhouse/tls/ca.pem \
+  --controller-data-dir=/var/lib/wayhouse/controller \
+  --controller-plugins \
+  --controller-secret-key-file=/var/lib/wayhouse/secret.keys \
+  --aggregator-instance-url-allow=127.0.0.0/8
+# If any of the three stops the process exits and all three start again.
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+MemoryDenyWriteExecute=no
+
+[Install]
+WantedBy=wayhouse-solo-control.target

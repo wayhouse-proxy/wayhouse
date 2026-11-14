@@ -2,7 +2,7 @@
 //! process exits non-zero so the supervisor (systemd, compose) restarts all of them together.
 
 use tracing_subscriber::EnvFilter;
-use wayhouse_control::{plan, Programs};
+use wayhouse_control::{plan, refuse_shared_secret_env, Programs};
 
 const USAGE: &str = "\
 wayhouse-control: controller, aggregator and UI in one process (single node).
@@ -12,8 +12,7 @@ Everything else is namespaced: --controller-<flag>, --aggregator-<flag>, --ui-<f
 <flag> of that program (see `wayhouse-controller --help` and so on). The UI is pointed at the
 controller and aggregator automatically.";
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let argv: Vec<_> = std::env::args_os().collect();
     if argv.iter().skip(1).any(|a| a == "--help" || a == "-h") {
         println!("{USAGE}");
@@ -26,21 +25,10 @@ async fn main() -> anyhow::Result<()> {
     let credentials = std::env::var_os("CREDENTIALS_DIRECTORY").map(std::path::PathBuf::from);
     let plan =
         plan(&argv, &Programs::linked(), credentials.as_deref()).map_err(anyhow::Error::msg)?;
-    // The three programs would each read `$CREDENTIALS_DIRECTORY/auth-token` and
-    // `WAYHOUSE_AUTH_TOKEN` for the same secret name, so those never apply here: per-program
-    // credential files were mapped above, and an environment secret is refused instead of
-    // handing one value to all three.
-    if let Some((k, _)) = std::env::vars().find(|(k, _)| {
-        k.starts_with("WAYHOUSE_")
-            && ["TOKEN", "PASSWORD", "STEP_UP", "PROOF"]
-                .iter()
-                .any(|w| k.contains(w))
-    }) {
-        anyhow::bail!(
-            "{k} is set, but its name is shared by all three programs; give the secret as \
-             --<program>-<name>-file or a credential named <program>-<name>"
-        );
-    }
+    // The three programs would each read `$CREDENTIALS_DIRECTORY/auth-token` for the same secret
+    // name, so it never applies here: per-program credential files were mapped by the plan. Done
+    // before the runtime starts, while this is still the only thread.
+    refuse_shared_secret_env(std::env::vars()).map_err(anyhow::Error::msg)?;
     std::env::remove_var("CREDENTIALS_DIRECTORY");
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -51,6 +39,13 @@ async fn main() -> anyhow::Result<()> {
         let certs = wayhouse_http::init_ca_file(path)?;
         tracing::info!(certs, path = %path.display(), "trusting extra CAs from --ca-file");
     }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(serve(plan))
+}
+
+async fn serve(plan: wayhouse_control::Plan) -> anyhow::Result<()> {
     // Controller first: the UI and aggregator retry their connections to it, so order is only
     // for the log. Each `run` serves until it fails.
     let (name, result) = tokio::select! {
