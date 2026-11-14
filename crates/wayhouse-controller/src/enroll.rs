@@ -528,6 +528,9 @@ async fn sweep_finished_codes(ui: &UiState) -> Result<(), Response> {
     Ok(())
 }
 
+const SECRETS_FULL: &str =
+    "the secret store is full; delete origins or secrets that are no longer used";
+
 /// An agent redeem writes one token and one tunnel key. When either store is full (and `name`
 /// does not already own a slot), say so before the use is spent: the code stays good, and
 /// deleting unused origins frees room.
@@ -549,7 +552,7 @@ fn origin_stores_full(st: &EnrollState, name: &str) -> Option<&'static str> {
             .max_records_for(&key)
             .is_some_and(|max| st.ui.store.count_class(Kind::ClusterSecret, &key) >= max)
     {
-        return Some("the secret store is full; delete origins or secrets that are no longer used");
+        return Some(SECRETS_FULL);
     }
     if st.ui.auth_token.is_some()
         && full(Kind::OriginToken, &|(_, v)| v["origin"] == name).is_some()
@@ -796,6 +799,10 @@ async fn redeem(
             // The code was valid: this is not a guess, so it does not count against the code.
             st.limiter.refund(&id_key);
             return err(StatusCode::CONFLICT, NAME_TAKEN);
+        }
+        // An agent redeem writes a tunnel key: the key store filled up since the early check.
+        Ok(Applied::Full(_)) if claimed.is_some() => {
+            return err(StatusCode::INSUFFICIENT_STORAGE, SECRETS_FULL);
         }
         Ok(Applied::Full(max)) => {
             return err(
