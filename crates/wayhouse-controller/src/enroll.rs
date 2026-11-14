@@ -478,6 +478,7 @@ async fn list(State(st): State<EnrollState>) -> Response {
 
 /// Deletes the enrollment records that can no longer do anything: spent or expired, and not a
 /// controller code (those carry node ids and the join proof, which later steps still read).
+#[allow(clippy::result_large_err)]
 async fn sweep_finished_codes(ui: &UiState) -> Result<(), Response> {
     let t = now();
     let finished: Vec<String> = ui
