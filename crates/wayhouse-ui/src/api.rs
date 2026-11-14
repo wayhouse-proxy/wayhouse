@@ -357,7 +357,7 @@ async fn login(
             Some((role, username)) => {
                 // A correct password clears the username's delay, so a
                 // legitimate user is not slowed by their own logins.
-                state.login_limiter.forgive_username(&username);
+                state.login_limiter.forgive_username(ip, &username);
                 issue_session(
                     &state,
                     Session {
@@ -1045,6 +1045,10 @@ mod tests {
                 base: user_delay,
                 cap: user_delay,
                 forget: slow,
+            },
+            per_username_total: Bucket {
+                burst: 1_000_000,
+                refill: std::time::Duration::from_secs(1),
             },
             max_keys: 100,
         }
