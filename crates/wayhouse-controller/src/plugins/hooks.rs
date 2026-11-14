@@ -295,7 +295,11 @@ async fn serve(
     };
     let presented = hash_token(token);
     let stored = if valid_id(&id) {
-        st.store.get(&id).ok().flatten()
+        let (store, id) = (st.store.clone(), id.clone());
+        tokio::task::spawn_blocking(move || store.get(&id).ok().flatten())
+            .await
+            .ok()
+            .flatten()
     } else {
         None
     };

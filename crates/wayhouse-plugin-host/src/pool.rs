@@ -26,6 +26,8 @@ pub enum PoolError {
     Busy,
     #[error("compiling took longer than the timeout")]
     TimedOut,
+    #[error("the compile worker died before it answered")]
+    WorkerGone,
 }
 
 pub struct CompilePool {
@@ -125,10 +127,11 @@ impl CompilePool {
         }
         match rx.recv_timeout(timeout) {
             Ok(v) => Ok(v),
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
+            Err(RecvTimeoutError::Timeout) => {
                 abandoned.store(true, Ordering::SeqCst);
                 Err(PoolError::TimedOut)
             }
+            Err(RecvTimeoutError::Disconnected) => Err(PoolError::WorkerGone),
         }
     }
 }
@@ -251,5 +254,12 @@ mod tests {
         drop(gate_tx);
         // The worker finishes the abandoned job and serves the next one.
         assert_eq!(p.run(|| 7).unwrap(), 7);
+    }
+
+    #[test]
+    fn a_job_that_kills_its_worker_is_not_reported_as_a_timeout() {
+        let p = pool(2, 2, Duration::from_secs(30));
+        let r = p.run(|| -> () { panic!("a hostile module") });
+        assert!(matches!(r, Err(PoolError::WorkerGone)), "{r:?}");
     }
 }
