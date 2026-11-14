@@ -45,7 +45,7 @@ describe("controller replica", () => {
   it("is installed by systemd with its advertise address and the flags that make it reachable", () => {
     const [step] = generate(ctl());
     expect(step.text).toBe(
-      `sudo env WAYHOUSE_ENROLL_CODE=${CODE} wayhouse-controller install --systemd \\\n  --controller-url=https://ctl.example:9901 \\\n  --pin=${PIN} \\\n  --advertise=https://ctl-4.example:9901 \\\n  -- \\\n  --listen=0.0.0.0:9901 \\\n  --tls-cert=/etc/wayhouse/ctl-4.pem \\\n  --tls-key=/etc/wayhouse/ctl-4.key \\\n  --ca-file=/etc/wayhouse/ca.pem`,
+      `sudo env WAYHOUSE_ENROLL_CODE=${CODE} wayhouse-controller install --systemd \\\n  --controller-url=https://ctl.example:9901 \\\n  --pin=${PIN} \\\n  --advertise=https://ctl-4.example:9901 \\\n  --credential tls-key=/etc/wayhouse/ctl-4.key \\\n  -- \\\n  --listen=0.0.0.0:9901 \\\n  --tls-cert=/etc/wayhouse/ctl-4.pem \\\n  --ca-file=/etc/wayhouse/ca.pem`,
     );
   });
 
