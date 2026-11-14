@@ -50,8 +50,9 @@ pub struct LoginLimits {
     pub per_username: Backoff,
     /// Attempts at one username from all clients together.
     pub per_username_total: Bucket,
-    /// Most tracked keys per map; at the cap new keys are refused (fail
-    /// closed) once idle ones have been pruned.
+    /// Most tracked keys per map. At the cap idle ones are pruned; then an address bucket
+    /// gives way to the least recently used one, while a (name, address) delay is refused
+    /// (fail closed) so a guesser cannot shed its own backoff.
     pub max_keys: usize,
 }
 
@@ -165,8 +166,18 @@ impl<K: std::hash::Hash + Eq + Clone> Buckets<K> {
             // Full buckets are indistinguishable from unseen keys; drop them.
             self.map
                 .retain(|_, s| Self::level(s, rate, b, now) < f64::from(b.burst));
+            // Still full: every key is a live partial bucket. Failing closed would turn a spread
+            // of requests into a lockout for every new client (#680), so the one idle the longest
+            // makes room. It loses a little memory of a quiet client, never a refusal.
             if self.map.len() >= max_keys {
-                return Err(b.refill);
+                let oldest = self
+                    .map
+                    .iter()
+                    .min_by_key(|(_, s)| s.at)
+                    .map(|(k, _)| k.clone());
+                if let Some(k) = oldest {
+                    self.map.remove(&k);
+                }
             }
         }
         let s = self.map.entry(key.clone()).or_insert(State {
@@ -594,15 +605,16 @@ mod tests {
     }
 
     #[test]
-    fn tracked_keys_are_capped_and_idle_ones_pruned() {
+    fn a_full_address_table_evicts_the_least_recently_used_instead_of_locking_clients_out() {
         let l = limiter(5, no_backoff(), 2);
         let t0 = Instant::now();
         assert!(l.check_at(ip("192.0.2.1"), None, t0).is_ok());
-        assert!(l.check_at(ip("192.0.2.2"), None, t0).is_ok());
-        // Map full of keys still below burst: a new key is refused.
-        assert!(l.check_at(ip("192.0.2.3"), None, t0).is_err());
-        // Once the old buckets have refilled they are pruned to make room.
-        let later = t0 + Duration::from_secs(60);
-        assert!(l.check_at(ip("192.0.2.3"), None, later).is_ok());
+        assert!(l.check_at(ip("192.0.2.2"), None, t0 + ms(1)).is_ok());
+        // Map full of keys still below burst: a new client is served, the oldest one dropped.
+        assert!(l.check_at(ip("192.0.2.3"), None, t0 + ms(2)).is_ok());
+        assert!(l.check_at(ip("192.0.2.4"), None, t0 + ms(3)).is_ok());
+        let g = l.inner.lock().unwrap();
+        assert_eq!(g.ips.map.len(), 2);
+        assert!(!g.ips.map.contains_key(&ip("192.0.2.1")));
     }
 }
