@@ -380,11 +380,15 @@ async fn psk_for(
     if let Some(why) = fetch_failed {
         return Err(why.clone());
     }
-    let fetched = crate::secrets::fetch_sealed(base_url, token, name)
+    let fetched = crate::secrets::fetch_sealed_classified(base_url, token, name)
         .await
-        .map_err(|e| {
+        .map_err(|(e, outage)| {
             let why = e.to_string();
-            *fetch_failed = Some(why.clone());
+            // Only an outage stops later fetches on this stream; a problem with this one
+            // origin's secret must not hold back the other origins.
+            if outage {
+                *fetch_failed = Some(why.clone());
+            }
             why
         })?;
     open_psk(
@@ -449,12 +453,17 @@ fn apply_event(
         }
         Action::Reconcile(reg) => {
             // Never configure the peer without the key its origin holds: that would silently
-            // drop the PSK protection. The installed peer, if any, stays as it is and keeps its
-            // record, so a later removal still finds it; the retry reconciles it again.
+            // drop the PSK protection. An origin that rotated its public key is cut off at once
+            // (the old key must stop working); any other change keeps the installed peer and its
+            // record, so a later removal still finds it, and the retry reconciles it again.
             let psk = match psk {
                 Ok(k) => k,
                 Err(why) => {
                     tracing::warn!(origin = %reg.name, "not configuring the peer: {why}");
+                    if let Some(old) = replaced_pubkey(last_applied, reg) {
+                        remove_peer(wg, &reg.name, old);
+                        last_applied.remove(&reg.name);
+                    }
                     return true;
                 }
             };
@@ -808,15 +817,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_failed_key_fetch_for_a_rotated_key_keeps_the_installed_peer_and_its_record() {
-        use crate::live_interface::testing::Fake;
-        let wg = Fake {
+    fn fake_wg() -> crate::live_interface::testing::Fake {
+        crate::live_interface::testing::Fake {
             log: std::sync::Arc::default(),
             fail_assign: vec![],
             fail_remove: false,
             fail_configure: std::sync::Mutex::new(0),
-        };
+        }
+    }
+
+    #[test]
+    fn a_failed_key_fetch_keeps_the_installed_peer_when_only_other_fields_changed() {
+        let wg = fake_wg();
         let reg = origin("home", None);
         let mut applied = HashMap::new();
         apply_event(
@@ -827,22 +839,17 @@ mod tests {
             Ok(None),
         );
         let installed = wg.log.lock().unwrap().len();
-        // The origin rotated its key and changed its address; the new key cannot be fetched.
-        let mut rotated = reg.clone();
-        rotated.pubkey = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into();
         let mut changed = reg.clone();
         changed.tunnel_address = Some("10.60.0.9".into());
-        for next in [rotated, changed] {
-            assert!(apply_event(
-                &wg,
-                &mut applied,
-                &mut HashSet::new(),
-                &Event::Registered(next),
-                Err("controller down".into()),
-            ));
-            assert_eq!(applied.get("home"), Some(&reg), "the record stays");
-            assert_eq!(wg.log.lock().unwrap().len(), installed, "device untouched");
-        }
+        assert!(apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &Event::Registered(changed),
+            Err("controller down".into()),
+        ));
+        assert_eq!(applied.get("home"), Some(&reg), "the record stays");
+        assert_eq!(wg.log.lock().unwrap().len(), installed, "device untouched");
         // A later removal still finds the peer.
         apply_event(
             &wg,
@@ -852,6 +859,39 @@ mod tests {
             Ok(None),
         );
         assert!(applied.is_empty());
+        assert!(
+            wg.log.lock().unwrap().len() > installed,
+            "the peer was removed"
+        );
+    }
+
+    #[test]
+    fn a_failed_key_fetch_for_a_rotated_public_key_cuts_the_old_peer_off() {
+        let wg = fake_wg();
+        let reg = origin("home", None);
+        let mut applied = HashMap::new();
+        apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &Event::Registered(reg.clone()),
+            Ok(None),
+        );
+        let installed = wg.log.lock().unwrap().len();
+        let mut rotated = reg.clone();
+        rotated.pubkey = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".into();
+        assert!(apply_event(
+            &wg,
+            &mut applied,
+            &mut HashSet::new(),
+            &Event::Registered(rotated),
+            Err("controller down".into()),
+        ));
+        assert!(applied.is_empty(), "no record of a peer that is gone");
+        assert!(
+            wg.log.lock().unwrap().len() > installed,
+            "the old key's peer was removed"
+        );
     }
 
     /// A malformed update leaves the device alone, so the installed peer keeps
