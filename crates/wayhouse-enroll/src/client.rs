@@ -155,8 +155,7 @@ impl ServerCertVerifier for PinVerifier {
 fn http_client(pin: Option<&Pin>, https: bool) -> Result<reqwest::Client, EnrollError> {
     let b = match pin {
         // Loopback http needs no pin; anything else was already refused by `check_url`.
-        // The one-time code is sent in the clear to loopback; no `HTTP_PROXY` may see it.
-        None if !https => reqwest::Client::builder().no_proxy(),
+        None if !https => reqwest::Client::builder(),
         None => return Err(EnrollError::NoPin),
         Some(Pin::Fingerprint(fp)) => {
             let provider = Arc::new(tokio_rustls::rustls::crypto::aws_lc_rs::default_provider());
@@ -178,6 +177,9 @@ fn http_client(pin: Option<&Pin>, https: bool) -> Result<reqwest::Client, Enroll
             )
         }
     };
+    // Plain http only ever goes to loopback, in the clear, with the one-time code: no
+    // `HTTP_PROXY` may see it, pinned or not.
+    let b = if https { b } else { b.no_proxy() };
     b.timeout(std::time::Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -266,6 +268,29 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn loopback_http_ignores_the_proxy_environment_pinned_or_not() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut c, _) = l.accept().await.unwrap();
+            let _ = c.read(&mut [0u8; 1024]).await;
+            let _ = c
+                .write_all(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n")
+                .await;
+        });
+        // A proxy nobody listens on: a client that used it could not reach the server.
+        std::env::set_var("HTTP_PROXY", "http://127.0.0.1:1");
+        std::env::set_var("http_proxy", "http://127.0.0.1:1");
+        let pin = Pin::Fingerprint([0; 32]);
+        let e = redeem(&url, Some(&pin), &Code::generate(), Role::Agent, None)
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(e, EnrollError::Refused), "{e}");
     }
 
     #[tokio::test]
