@@ -483,12 +483,25 @@ fn name_holds_credentials(st: &EnrollState, name: &str) -> bool {
     token || key
 }
 
-/// `DELETE /enrollments/{id}`: revokes a code, spent or not.
+/// `DELETE /enrollments/{id}`: revokes a code, spent or not. A spent single-name agent code
+/// also revokes what it issued (the origin's token and tunnel keys), so revoking it cuts the
+/// host off. A name-prefix code does not record which names it issued; delete those origins.
 async fn revoke(
     State(st): State<EnrollState>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    let issued = match st.ui.store.get(Kind::Enrollment, &id) {
+        Ok(Some(rec))
+            if rec["role"] == "agent"
+                && rec.get("name_prefix").is_none()
+                && rec["uses_left"].as_u64() < rec["uses"].as_u64() =>
+        {
+            rec["origin"].as_str().map(str::to_owned)
+        }
+        Ok(_) => None,
+        Err(e) => return internal(e),
+    };
     let op = UiOp::Delete {
         kind: Kind::Enrollment,
         name: id.clone(),
@@ -496,6 +509,11 @@ async fn revoke(
     match apply(&st.ui, op).await {
         Ok(Applied::Done) => {
             tracing::warn!(enrollment = %id, actor = actor(&headers).as_deref().unwrap_or("-"), "enrollment code revoked");
+            if let Some(origin) = issued {
+                if let Err(r) = crate::origin::revoke(&st.ui, &origin).await {
+                    return r;
+                }
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(Applied::NotFound) => err(StatusCode::NOT_FOUND, "no such code"),
@@ -1089,6 +1107,29 @@ mod tests {
         assert_ne!(newer, own);
         assert_eq!(find(own), None);
         assert_eq!(find(newer).as_deref(), Some("home-nas"));
+    }
+
+    #[tokio::test]
+    async fn revoking_a_spent_agent_code_revokes_its_token_and_tunnel_key() {
+        let t = setup(Some(KEY));
+        let code = mint(&t, "home-nas").await;
+        let (_, v) = redeem(&t, &code, "10.0.0.2").await;
+        let token = v["files"]["agent-token"].as_str().unwrap().to_owned();
+        let find = crate::origin::lookup(t.store.clone());
+        assert_eq!(find(&token).as_deref(), Some("home-nas"));
+        let id = code.split('.').next().unwrap();
+        let (st, _) = call(
+            &t.app,
+            "DELETE",
+            &format!("/enrollments/{id}"),
+            Value::Null,
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(st, StatusCode::NO_CONTENT);
+        assert_eq!(find(&token), None);
+        assert!(t.store.list(Kind::ClusterSecret).unwrap().is_empty());
     }
 
     #[tokio::test]
