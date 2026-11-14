@@ -112,13 +112,43 @@ describe("AddNodePage form", () => {
     expect(screen.getByText(/node id 4/)).toBeInTheDocument();
   });
 
-  it("refuses a controller replica for anything but systemd", async () => {
+  it("refuses a controller replica for docker and Compose", async () => {
     render();
     await userEvent.selectOptions(screen.getByLabelText(/^Role/), "controller");
     await userEvent.selectOptions(screen.getByLabelText(/^Set up with/), "compose");
     expect(screen.getByText(/installed with systemd/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Create code" }));
     expect(api.mintEnrollment).not.toHaveBeenCalled();
+  });
+
+  it("mints a Kubernetes controller pool code: prefix, 2 to 16 uses, no URL, pin or advertise address", async () => {
+    render();
+    await userEvent.selectOptions(screen.getByLabelText(/^Role/), "controller");
+    await userEvent.selectOptions(screen.getByLabelText(/^Set up with/), "k8s");
+    expect(screen.queryByLabelText(/^Controller URL/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Certificate fingerprint/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Advertise address/)).not.toBeInTheDocument();
+    const uses = screen.getByLabelText(/^Uses/);
+    expect(uses).toBeEnabled();
+    expect(uses).toHaveValue(2);
+
+    await userEvent.type(screen.getByLabelText(/^Name(?!space)/), "ctl-pool");
+    await userEvent.type(screen.getByLabelText(/^Step-up secret/), "a long enough step-up secret");
+    await userEvent.clear(uses);
+    await userEvent.type(uses, "17");
+    await userEvent.click(screen.getByRole("button", { name: "Create code" }));
+    expect(await screen.findByText("2 to 16.")).toBeInTheDocument();
+    expect(api.mintEnrollment).not.toHaveBeenCalled();
+
+    await userEvent.clear(uses);
+    await userEvent.type(uses, "3");
+    await userEvent.click(screen.getByRole("button", { name: "Create code" }));
+    expect(api.mintEnrollment).toHaveBeenCalledWith({
+      role: "controller", name: "ctl-pool", ttl_secs: 900, uses: 3, name_prefix: "wayhouse-controller-replica-", step_up: "a long enough step-up secret",
+    });
+    const secret = await screen.findByLabelText("Step 2 text");
+    expect(secret.textContent).toContain("create secret generic wayhouse-enroll-code");
+    expect(screen.getByLabelText("Step 3 text").textContent).toContain("--replicas=3");
   });
 
   it("explains that an agent cannot go to Kubernetes yet and refuses to mint it", async () => {
