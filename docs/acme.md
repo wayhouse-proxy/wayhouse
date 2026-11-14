@@ -21,7 +21,7 @@ Issuance sits behind the `acme` cargo feature of `wayhouse-controller`, **on by 
 build with `--no-default-features` leaves out the ACME client, the runner and the DNS plugin
 solver (and their dependencies: `instant-acme`, `rcgen`, `x509-parser`, `hickory-resolver`).
 It still decodes, stores and replicates ACME state, so a mixed cluster stays consistent, but
-`--acme` refuses to start and the `/acme` routes answer that ACME is not enabled.
+`--acme` refuses to start and the `/acme` routes answer `501 Not Implemented` with that reason.
 
 ## What it does
 
@@ -42,7 +42,8 @@ wayhouse-controller --plugins --secret-key-file /etc/wayhouse/secret.keys \
 ```
 
 - `--acme-ca` is required and has no default: `letsencrypt`, `letsencrypt-staging` or an
-  `https://` ACME directory URL. Try `letsencrypt-staging` first; its certificates are not
+  `https://` ACME directory URL (no `user:pw@`). A private CA's certificate chain is trusted
+  through `--ca-file`, which the ACME client honours too. Try `letsencrypt-staging` first; its certificates are not
   trusted by browsers but its rate limits are generous. When you switch `--acme-ca` later (staging to
   production), the controller creates a new account at the new CA and replaces the
   `untrusted` rehearsal certificates at once; certificates already trusted are left alone.
@@ -271,26 +272,34 @@ A site's `dns_plugin` is the id of a plugin install that is **enabled** and **ap
 `on_acme_dns` trigger** ([`plugins.md`](plugins.md#acme-dns-01-on_acme_dns)); anything else is
 refused with `400`, and so is any site while the controller runs without `--plugins`. For each
 name of an order the leader asks the plugin to set the TXT record, then looks the record up
-itself (the host's resolver, every 5 seconds, up to the site's `propagation_timeout_secs`,
-default 120) before it tells the CA to validate, and always asks the plugin to remove it
-afterwards, also when the order failed. The whole order may take `propagation_timeout_secs` per
-name plus five minutes, and never more than two hours. A plugin that does not answer, traps, refuses or is
+itself (the zone's authoritative nameservers and the host's resolver, every 5 seconds, up to the
+site's `propagation_timeout_secs`, default 120) before it tells the CA to validate, and always
+asks the plugin to remove it afterwards, also when the order failed (a failed removal is tried
+three times; a record that stays is named in the site's `last_error`, which then reads
+"issued, but the TXT record could not be removed", with no backoff, and the next issuance
+clears it). One call to the plugin may take the site's `propagation_timeout_secs`, at least 30
+seconds, and all removals of an order share that much time in total. The whole order may take
+twice `propagation_timeout_secs` per name (setting the record and waiting for it) plus five
+minutes, and never more than two hours. A plugin that does not answer, traps, refuses or is
 disabled mid-order fails that order; the reason is the site's `last_error` and the usual
 backoff applies. If you disable the plugin or revoke the approval, orders fail with "not
 available" until you restore it.
 
-The first lookup comes 5 seconds after the plugin answered, so a caching resolver is not asked
-before the provider serves the record. If an order still fails with "not visible to the
-resolver", a caching resolver (Unbound, systemd-resolved) may be holding the answer "does not
-exist" for the zone's negative TTL, up to 30 minutes at Cloudflare, and retries within that time
-get the same answer. Flush that resolver's cache for the name, or point the controller host's
-`/etc/resolv.conf` at a resolver that does not cache. Using a site name nobody has queried
-yet also works, because there is nothing negative to cache for it.
+The controller asks the zone's own nameservers (found through the host's resolver, at most
+eight addresses, no recursion, so no cache sits between), and counts the record as visible when
+every nameserver that answers has it; the host's resolver cannot overrule them. The host's
+resolver decides only when no nameserver answers (a network that redirects port-53 traffic to a
+local resolver) or the name is a CNAME into another zone. Without an `/etc/resolv.conf` the
+controller uses a default resolver, which may be a public one. The first
+lookup comes 20 seconds after the plugin answered (a quarter of `propagation_timeout_secs` for a
+shorter timeout), so a caching resolver is not asked before the provider serves the record.
 
-Known limitation: the 5 second delay makes this unlikely but does not remove it. A provider
-that needs longer than that to serve the record can still prime the cache of a caching
-resolver. Checking the zone's authoritative nameservers instead is tracked in
-[#408](https://github.com/wayhouse-proxy/wayhouse/issues/408), scheduled after 0.3.0.
+If an order still fails with "not visible to the resolver", a caching resolver (Unbound,
+systemd-resolved) may be holding the answer "does not exist" for the zone's negative TTL, up to
+30 minutes at Cloudflare, and the authoritative servers could not be reached (a firewall that
+redirects DNS to a local resolver, as on many home networks, defeats the direct query).
+Flush that resolver's cache for the name, or use a site name nobody has queried yet, because
+there is nothing negative to cache for it.
 
 The plugin only ever sees the record name and value. ACME keys stay in the controller.
 
