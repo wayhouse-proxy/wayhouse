@@ -96,6 +96,23 @@ fn version_verifiable(reg: &RegistryRef, v: &PluginVersion) -> bool {
     reg.official && v.signature_url.is_some() && crate::registry_keys::official_key().is_some()
 }
 
+/// The official registry with a configured key must list a signature for what it serves: the
+/// index is unauthenticated, so an index host must not be able to drop `signature_url` and
+/// have the module accepted after one confirm click (#680). Same rule as the sniffer fetch.
+fn require_signature(
+    reg: &RegistryRef,
+    key_configured: bool,
+    version: &PluginVersion,
+) -> Result<(), String> {
+    if reg.official && key_configured && version.signature_url.is_none() {
+        return Err(format!(
+            "version {} of this official plugin lists no signature; refusing to fetch it unsigned",
+            version.version
+        ));
+    }
+    Ok(())
+}
+
 async fn list_plugins(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let Some(reg) = plugin_registry(&state, &id) else {
         return error(StatusCode::NOT_FOUND, "no such plugin registry");
@@ -241,6 +258,14 @@ async fn fetch(
         Err(refused) => return refused,
     };
 
+    // Before the download, and whatever `allow_unsigned` says.
+    if let Err(why) = require_signature(
+        &reg,
+        crate::registry_keys::official_key().is_some(),
+        version,
+    ) {
+        return error(StatusCode::UNPROCESSABLE_ENTITY, why);
+    }
     let cap = version.size.min(MAX_MODULE_BYTES);
     let bytes = match state
         .registry_client
@@ -327,6 +352,30 @@ async fn fetch(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_official_registry_with_a_key_never_serves_an_unsigned_plugin() {
+        let version = |sig: Option<&str>| -> PluginVersion {
+            serde_json::from_value(json!({
+                "version": "1.0.0", "abi": "1.0", "min_proxy": "0.1.0", "url": "https://x/a.wasm",
+                "size": 1, "sha256": "00", "signature_url": sig,
+                "limits": { "max_memory_bytes": 1, "call_timeout_ms": 1 },
+            }))
+            .unwrap()
+        };
+        let reg = |official| RegistryRef {
+            id: "r".into(),
+            name: "r".into(),
+            url: "https://x/i.json".into(),
+            official,
+            kind: RegistryKind::Plugin,
+        };
+        assert!(require_signature(&reg(true), true, &version(None)).is_err());
+        assert!(require_signature(&reg(true), true, &version(Some("https://x/a.minisig"))).is_ok());
+        // No key yet, or an external registry: unchanged.
+        assert!(require_signature(&reg(true), false, &version(None)).is_ok());
+        assert!(require_signature(&reg(false), true, &version(None)).is_ok());
+    }
+
     use super::*;
     use crate::registries::Registries;
     use crate::registry_client::RegistryClient;

@@ -452,7 +452,9 @@ async fn list(State(st): State<EnrollState>) -> Response {
     let items: Vec<Value> = items
         .into_iter()
         .map(|(id, mut v)| {
-            let status = if v["joined"] == true {
+            let status = if v["revoked"] == true {
+                "revoked"
+            } else if v["joined"] == true {
                 "joined"
             } else if v["uses_left"] == 0 && v["role"] == "controller" && v["uses"] == 1 {
                 // Redeemed; the node has not been added to the Raft group yet.
@@ -596,6 +598,36 @@ async fn revoke(
         Ok(_) => None,
         Err(e) => return internal(e),
     };
+    // A single-use controller code holds a Raft node id. Deleting it would let `next_node_id`
+    // hand the id out again, so the record stays as a spent tombstone (#680): no uses, no join
+    // proof, node id kept.
+    if let Ok(Some(rec)) = st.ui.store.get(Kind::Enrollment, &id) {
+        if rec["role"] == "controller" && rec["node_id"].is_u64() {
+            if rec["revoked"] == true {
+                return StatusCode::NO_CONTENT.into_response();
+            }
+            let mut dead = rec;
+            if let Some(o) = dead.as_object_mut() {
+                o.remove("join_hash");
+                o.remove("join_until");
+                o.insert("uses_left".into(), 0.into());
+                o.insert("revoked".into(), true.into());
+            }
+            let op = UiOp::Put {
+                kind: Kind::Enrollment,
+                name: id.clone(),
+                value: dead,
+            };
+            return match apply(&st.ui, op).await {
+                Ok(Applied::Done) => {
+                    tracing::warn!(enrollment = %id, actor = actor(&headers).as_deref().unwrap_or("-"), "controller enrollment code revoked; its node id stays reserved");
+                    StatusCode::NO_CONTENT.into_response()
+                }
+                Ok(_) => internal("unexpected answer to a revoke"),
+                Err(r) => r,
+            };
+        }
+    }
     // Revoke first: if it fails the code is still there and the revoke can be retried.
     if let Some(origin) = &issued {
         if let Err(r) = crate::origin::revoke(&st.ui, origin).await {
@@ -2343,6 +2375,53 @@ mod tests {
         unique.dedup();
         assert_eq!(unique.len(), ids.len(), "{ids:?}");
         assert!(ids.iter().all(|i| *i >= 2));
+    }
+
+    #[tokio::test]
+    async fn revoking_a_controller_code_keeps_its_node_id_reserved() {
+        let t = setup_ha().await;
+        let (_, m) = mint_controller(&t, "c2").await;
+        let id = m["id"].as_str().unwrap().to_owned();
+        assert_eq!(m["node_id"], 2);
+        let path = format!("/enrollments/{id}");
+        let revoke = || {
+            call(
+                &t.app,
+                "DELETE",
+                &path,
+                Value::Null,
+                Some(ADMIN),
+                "10.0.0.1",
+            )
+        };
+        assert_eq!(revoke().await.0, StatusCode::NO_CONTENT);
+        assert_eq!(
+            revoke().await.0,
+            StatusCode::NO_CONTENT,
+            "revoke twice is fine"
+        );
+        let (_, m) = mint_controller(&t, "c3").await;
+        assert_eq!(
+            m["node_id"], 3,
+            "the revoked code's id 2 is not handed out again"
+        );
+        let (_, list) = call(
+            &t.app,
+            "GET",
+            "/enrollments",
+            Value::Null,
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        let old = list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == id.as_str())
+            .unwrap();
+        assert_eq!(old["status"], "revoked");
+        assert!(old.get("join_hash").is_none());
     }
 
     #[tokio::test]

@@ -521,6 +521,7 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                     "join_until",
                     "joined",
                     "redeemed_at",
+                    "revoked",
                 ],
             )?;
             let role = obj.get("role").and_then(Value::as_str);
@@ -566,6 +567,9 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
             }
             if obj.get("joined").is_some_and(|j| !j.is_boolean()) {
                 return Err("joined must be true or false".into());
+            }
+            if obj.get("revoked").is_some_and(|j| !j.is_boolean()) {
+                return Err("revoked must be true or false".into());
             }
             if let Some(u) = obj.get("parent_url") {
                 string_max(u, "parent_url", 512)?;
