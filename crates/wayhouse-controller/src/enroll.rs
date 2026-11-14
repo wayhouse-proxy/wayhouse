@@ -360,6 +360,7 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
     let first_id = (b.role == Role::Controller && !pool).then(|| next_node_id(&st));
     let mut node_id = first_id;
     let mut attempts = 0;
+    let mut swept = false;
     loop {
         if let Some(id) = node_id {
             record["node_id"] = id.into();
@@ -379,6 +380,13 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
                 return err(StatusCode::CONFLICT, "could not find a free node id; retry")
             }
             Ok(Applied::Invalid(why)) => return err(StatusCode::UNPROCESSABLE_ENTITY, why),
+            // Spent and expired single-node codes are history; drop them once to make room.
+            Ok(Applied::Full(_)) if !swept => {
+                swept = true;
+                if let Err(r) = sweep_finished_codes(&st.ui).await {
+                    return r;
+                }
+            }
             Ok(Applied::Full(max)) => {
                 return err(
                     StatusCode::CONFLICT,
@@ -466,6 +474,54 @@ async fn list(State(st): State<EnrollState>) -> Response {
         })
         .collect();
     Json(json!({ "items": items })).into_response()
+}
+
+/// Deletes the enrollment records that can no longer do anything: spent or expired, and not a
+/// controller code (those carry node ids and the join proof, which later steps still read).
+#[allow(clippy::result_large_err)]
+async fn sweep_finished_codes(ui: &UiState) -> Result<(), Response> {
+    let t = now();
+    let finished: Vec<String> = ui
+        .store
+        .list(Kind::Enrollment)
+        .map_err(internal)?
+        .into_iter()
+        .filter(|(_, v)| {
+            v["role"] != "controller"
+                && (v["uses_left"] == 0 || v["expires_at"].as_u64().is_some_and(|e| t >= e))
+        })
+        .map(|(id, _)| id)
+        .collect();
+    for name in finished {
+        apply(
+            ui,
+            UiOp::Delete {
+                kind: Kind::Enrollment,
+                name,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// An agent redeem writes one token and one tunnel key. When either store is full (and `name`
+/// does not already own a slot), say so before the use is spent: the code stays good, and
+/// deleting unused origins frees room.
+fn origin_stores_full(st: &EnrollState, name: &str) -> Option<&'static str> {
+    let full = |kind: Kind, owned: &dyn Fn(&(String, Value)) -> bool| {
+        let max = kind.max_records()?;
+        let all = st.ui.store.list(kind).ok()?;
+        (all.len() >= max && !all.iter().any(owned)).then_some(())
+    };
+    if st.ui.auth_token.is_some()
+        && full(Kind::OriginToken, &|(_, v)| v["origin"] == name).is_some()
+    {
+        return Some("the origin token store is full; delete origins that are no longer used");
+    }
+    let key = wayhouse_enroll::psk_secret_name(name);
+    full(Kind::ClusterSecret, &|(n, _)| *n == key)
+        .map(|()| "the secret store is full; delete origins or secrets that are no longer used")
 }
 
 /// `DELETE /enrollments/{id}`: revokes a code, spent or not. A spent single-name agent code
@@ -601,6 +657,11 @@ async fn redeem(
             )
         }
     };
+    if role == Role::Agent {
+        if let Some(why) = origin_stores_full(&st, &name) {
+            return err(StatusCode::INSUFFICIENT_STORAGE, why);
+        }
+    }
     if let Some(why) = not_ready(&st, role) {
         // Before the use is spent: an operator can fix this and retry with the same code.
         return err(StatusCode::SERVICE_UNAVAILABLE, why);
@@ -1104,6 +1165,68 @@ mod tests {
         assert_eq!(st, StatusCode::NO_CONTENT);
         assert_eq!(find(&token), None);
         assert!(t.store.list(Kind::ClusterSecret).unwrap().is_empty());
+    }
+
+    fn put(t: &T, kind: Kind, name: String, value: Value) {
+        let a = t
+            .store
+            .apply_local(&UiOp::Put { kind, name, value })
+            .unwrap();
+        assert_eq!(a, Applied::Done);
+    }
+
+    #[tokio::test]
+    async fn minting_at_the_cap_sweeps_spent_and_expired_codes_but_keeps_live_ones() {
+        let t = setup(Some(KEY));
+        let cap = Kind::Enrollment.max_records().unwrap();
+        for i in 0..cap - 1 {
+            let spent = i % 2 == 0;
+            put(
+                &t,
+                Kind::Enrollment,
+                format!("{i:08x}"),
+                json!({"role": "agent", "origin": "x", "hash": "a".repeat(64), "uses": 1, "created_at": 1,
+                       "uses_left": u8::from(!spent), "expires_at": if spent { u64::MAX } else { 2 }}),
+            );
+        }
+        put(
+            &t,
+            Kind::Enrollment,
+            "ffffff00".into(),
+            json!({"role": "agent", "origin": "live", "hash": "a".repeat(64), "uses": 1,
+                   "created_at": 1, "uses_left": 1, "expires_at": u64::MAX}),
+        );
+        let (st, v) = call(
+            &t.app,
+            "POST",
+            "/enrollments",
+            json!({"origin": "new"}),
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        let left = t.store.list(Kind::Enrollment).unwrap();
+        assert_eq!(left.len(), 2, "the live code and the new one");
+    }
+
+    #[tokio::test]
+    async fn a_full_token_store_refuses_a_redeem_before_the_use_is_spent() {
+        let t = setup(Some(KEY));
+        let code = mint(&t, "home-nas").await;
+        for i in 0..Kind::OriginToken.max_records().unwrap() {
+            put(
+                &t,
+                Kind::OriginToken,
+                format!("{i:064x}"),
+                json!({"origin": format!("o{i}"), "created_at": 1}),
+            );
+        }
+        let (st, v) = redeem(&t, &code, "10.0.0.2").await;
+        assert_eq!(st, StatusCode::INSUFFICIENT_STORAGE, "{v}");
+        let id = code.split('.').next().unwrap();
+        let rec = t.store.get(Kind::Enrollment, id).unwrap().unwrap();
+        assert_eq!(rec["uses_left"], 1, "the code is still good");
     }
 
     #[tokio::test]
