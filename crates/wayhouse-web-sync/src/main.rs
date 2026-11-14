@@ -25,8 +25,13 @@ struct Args {
     #[arg(long, default_value = "http://127.0.0.1:9900")]
     wayhouse_admin: String,
 
-    /// Bearer token for `wayhouse`'s admin API (`settings.admin.auth_token`).
-    #[arg(long, env = "WAYHOUSE_ADMIN_TOKEN", hide_env_values = true)]
+    /// File holding the bearer token for `wayhouse`'s admin API (`settings.admin.auth_token`).
+    #[arg(long, value_name = "PATH")]
+    admin_token_file: Option<PathBuf>,
+
+    /// Resolved from `--admin-token-file`, `$CREDENTIALS_DIRECTORY/admin-token` or
+    /// `$WAYHOUSE_ADMIN_TOKEN`; never a command-line value, so it stays out of `ps`.
+    #[arg(skip)]
     wayhouse_token: Option<String>,
 
     /// Caddy's admin API: a loopback `ip:port` or a unix socket (`/run/caddy/admin.sock`,
@@ -53,8 +58,14 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:9904")]
     metrics_listen: SocketAddr,
 
-    /// Bearer token `GET /metrics` requires; mandatory for a non-loopback `--metrics-listen`.
-    #[arg(long, env = "WAYHOUSE_WEB_SYNC_METRICS_TOKEN", hide_env_values = true)]
+    /// File holding the bearer token `GET /metrics` requires; mandatory for a non-loopback
+    /// `--metrics-listen`.
+    #[arg(long, value_name = "PATH")]
+    metrics_token_file: Option<PathBuf>,
+
+    /// Resolved from `--metrics-token-file`, `$CREDENTIALS_DIRECTORY/web-sync-metrics-token` or
+    /// `$WAYHOUSE_WEB_SYNC_METRICS_TOKEN`; never a command-line value.
+    #[arg(skip)]
     metrics_token: Option<String>,
 
     /// Controller nodes that answer ACME HTTP-01 challenges, comma-separated
@@ -78,7 +89,15 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    args.wayhouse_token =
+        wayhouse_http::secret_arg::resolve("admin-token", args.admin_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
+    args.metrics_token = wayhouse_http::secret_arg::resolve(
+        "web-sync-metrics-token",
+        args.metrics_token_file.as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("WAYHOUSE_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
@@ -151,5 +170,31 @@ async fn main() -> anyhow::Result<()> {
             Outcome::Loaded | Outcome::Unchanged if force => last_send = Instant::now(),
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokens_are_never_command_line_values() {
+        for flag in ["--wayhouse-token=t", "--admin-token=t", "--metrics-token=t"] {
+            assert!(
+                Args::try_parse_from(["wayhouse-web-sync", flag]).is_err(),
+                "{flag}"
+            );
+        }
+        let a = Args::try_parse_from([
+            "wayhouse-web-sync",
+            "--admin-token-file=/run/a",
+            "--metrics-token-file=/run/m",
+        ])
+        .unwrap();
+        assert_eq!(
+            a.admin_token_file.as_deref(),
+            Some(std::path::Path::new("/run/a"))
+        );
+        assert!(a.wayhouse_token.is_none() && a.metrics_token.is_none());
     }
 }
