@@ -90,8 +90,9 @@ pub struct InitArgs {
     #[arg(long, default_value = "wayhouse")]
     pub namespace: String,
 
-    /// systemd: the layout for `wayhouse-control` (controller, aggregator and UI in one process):
-    /// one certificate, `control.pem`, valid for all three, instead of `controller.pem`.
+    /// systemd, compose: the layout for `wayhouse-control` (controller, aggregator and UI in one
+    /// process): one certificate, `control.pem`, valid for all three, instead of `controller.pem`
+    /// (and, for compose, `aggregator.pem`).
     #[arg(long)]
     pub control: bool,
 
@@ -353,6 +354,17 @@ fn write_all(files: &[Planned], dir_modes: &[(&Path, u32)]) -> Result<(), InitEr
     Ok(())
 }
 
+/// One process serves all three listeners with one certificate: `controller.*` becomes `control.*`.
+fn rename_to_control(files: &mut [Planned]) {
+    for f in files {
+        if let Some(n) = f.path.file_name().and_then(|n| n.to_str()) {
+            if let Some(rest) = n.strip_prefix("controller.") {
+                f.path.set_file_name(format!("control.{rest}"));
+            }
+        }
+    }
+}
+
 fn tls_files(dir: &Path, tls: &Tls, with_aggregator: bool) -> Vec<Planned> {
     let mut files = vec![
         plan(dir.join("ca.pem"), 0o644, &tls.ca_pem),
@@ -406,8 +418,8 @@ pub fn run(
     if args.target != Target::K8sSecret && args.output.is_some() {
         return Err(InitError::WrongTarget("--output", "k8s-secret"));
     }
-    if args.target != Target::Systemd && args.control {
-        return Err(InitError::WrongTarget("--control", "systemd"));
+    if args.target == Target::K8sSecret && args.control {
+        return Err(InitError::WrongTarget("--control", "systemd or compose"));
     }
     if args.target != Target::Compose && args.env_file.is_some() {
         return Err(InitError::WrongTarget("--env-file", "compose"));
@@ -455,14 +467,7 @@ fn systemd(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
     ];
     let mut tls_planned = tls_files(&tls_dir, &tls, false);
     if args.control {
-        // One process serves all three listeners with one certificate.
-        for f in &mut tls_planned {
-            if let Some(n) = f.path.file_name().and_then(|n| n.to_str()) {
-                if let Some(rest) = n.strip_prefix("controller.") {
-                    f.path.set_file_name(format!("control.{rest}"));
-                }
-            }
-        }
+        rename_to_control(&mut tls_planned);
     }
     files.extend(tls_planned);
     write_all(&files, &[(&creds, 0o700), (&tls_dir, 0o755)])?;
@@ -508,8 +513,17 @@ fn compose(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
     // the compose file, not against this env file, so record an absolute one.
     let abs_tls = std::path::absolute(&tls_dir).map_err(io(&tls_dir))?;
     let s = Secrets::generate();
+    // `--control`: the one process answers to both service names with the one certificate.
+    let own: &[&str] = if args.control {
+        &["controller", "aggregator"]
+    } else {
+        &["controller"]
+    };
     let tls = Tls::generate(
-        &names(&["controller".to_owned()], &args.sans),
+        &names(
+            &own.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>(),
+            &args.sans,
+        ),
         &names(&["aggregator".to_owned()], &args.sans),
     )?;
     let env = Zeroizing::new(format!(
@@ -525,7 +539,10 @@ fn compose(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
         abs_tls.display()
     ));
     let mut files = vec![plan(env_file.clone(), 0o600, env.as_bytes())];
-    files.extend(tls_files(&tls_dir, &tls, true));
+    files.extend(tls_files(&tls_dir, &tls, !args.control));
+    if args.control {
+        rename_to_control(&mut files);
+    }
     let env_dir = env_file
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -548,9 +565,12 @@ fn compose(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
     summary_tls(summary, &tls_dir, &tls).map_err(io_err)?;
     writeln!(
         summary,
-        "Next: docker compose --env-file {} -f docker-compose.yml -f compose.solo.yml up -d --build\n\
-         The UI is at http://127.0.0.1:9903.",
-        env_file.display()
+        "Next: docker compose --env-file {} -f docker-compose.yml -f compose.solo.yml{} up -d --build\n\
+         The UI is at {}://127.0.0.1:9903.{}",
+        env_file.display(),
+        if args.control { " -f compose.solo-control.yml" } else { "" },
+        if args.control { "https" } else { "http" },
+        if args.control { " It serves the init certificate: trust ca.pem in your browser, or accept the warning." } else { "" }
     )
     .map_err(io_err)
 }
@@ -824,14 +844,35 @@ mod tests {
     }
 
     #[test]
-    fn control_is_a_systemd_option_only() {
+    fn control_is_not_a_k8s_option() {
         let dir = tempfile::tempdir().unwrap();
-        let mut a = args(Target::Compose, dir.path());
+        let mut a = args(Target::K8sSecret, dir.path());
         a.control = true;
         assert!(matches!(
             run_to_strings(&a).unwrap_err(),
             InitError::WrongTarget("--control", _)
         ));
+    }
+
+    #[test]
+    fn control_compose_writes_one_certificate_for_both_service_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = args(Target::Compose, dir.path());
+        a.control = true;
+        let (_, summary) = run_to_strings(&a).unwrap();
+        let tls = dir.path().join("tls");
+        assert!(tls.join("control.pem").is_file());
+        assert_eq!(mode(&tls.join("control.key")), 0o600);
+        for gone in [
+            "controller.pem",
+            "controller.key",
+            "aggregator.pem",
+            "aggregator.key",
+        ] {
+            assert!(!tls.join(gone).exists(), "{gone}");
+        }
+        assert!(summary.contains("compose.solo-control.yml"));
+        assert!(summary.contains("https://127.0.0.1:9903"));
     }
 
     #[test]

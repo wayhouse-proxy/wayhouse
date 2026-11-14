@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 sha=${WAYHOUSE_GIT_SHA:-$(git rev-parse --short=12 HEAD 2>/dev/null || true)}
 sha=$(printf %.12s "$sha")   # the short form the binary reports (a full SHA is fine to pass)
 src=${BIN_SOURCE:-builder}
-for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent; do
+for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-control wayhouse-agent; do
   img="wayhouse-deploy/$t:local"
   docker build -f deploy/Dockerfile --build-arg BIN_SOURCE="$src" --build-arg WAYHOUSE_GIT_SHA="$sha" --target "$t" -t "$img" .
   docker run --rm "$img" --version

@@ -90,11 +90,11 @@ jobs:
       contents: read
     env:
       REGISTRY: ghcr.io
-      IMAGES: wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent wayhouse-caddy
+      IMAGES: wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-control wayhouse-agent wayhouse-caddy
       ARCH: ${{ matrix.arch }}
       # The images whose `--version` is the wayhouse version; wayhouse-caddy is checked
       # against the Caddy pinned in deploy/Dockerfile by build-images.sh instead.
-      WAYHOUSE_IMAGES: wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent
+      WAYHOUSE_IMAGES: wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-control wayhouse-agent
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -153,7 +153,7 @@ jobs:
       packages: write   # push to ghcr.io/<owner>/<image>
     env:
       REGISTRY: ghcr.io
-      IMAGES: wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent wayhouse-caddy
+      IMAGES: wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-control wayhouse-agent wayhouse-caddy
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:

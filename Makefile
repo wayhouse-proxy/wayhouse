@@ -1,7 +1,7 @@
 # Convenience wrapper around the cargo commands CI runs.
 # Requires `cargo` on PATH (rustup: `source "$HOME/.cargo/env"`).
 
-.PHONY: check fmt lint test test-minimal audit build run fuzz bench bench-udp-batch sniffers-fetch ui ui-test ui-e2e tunnel-ns-check tunnel-e2e tunnel-e2e-ci deploy-images deploy-scan deploy-lint deploy-smoke deploy-solo-smoke docs-fmt docs-fmt-check docs-links help
+.PHONY: check fmt lint test test-minimal audit build run fuzz bench bench-udp-batch sniffers-fetch ui ui-test ui-e2e tunnel-ns-check tunnel-e2e tunnel-e2e-ci deploy-images deploy-scan deploy-lint deploy-smoke deploy-solo-smoke deploy-solo-control-smoke docs-fmt docs-fmt-check docs-links help
 
 ## check: everything CI runs — format check, clippy (deny warnings), tests
 check: fmt-check lint test test-minimal
@@ -164,6 +164,20 @@ deploy-solo-smoke:
 	sha="$${WAYHOUSE_GIT_SHA:-$$(git rev-parse HEAD 2>/dev/null)}"; export WAYHOUSE_GIT_SHA=$$(printf %.12s "$$sha"); \
 	$$solo up -d --build || rc=$$?; \
 	[ $$rc -ne 0 ] || { COMPOSE_ENV_FILE="$$envf" sh deploy/smoke.sh && COMPOSE_ENV_FILE="$$envf" COMPOSE="$$solo" SOLO_PROJECT=wayhouse-solo-smoke WAYHOUSE_CONTROLLER_BIN="$$initbin" sh deploy/solo-smoke.sh; } || rc=$$?; \
+	[ $$rc -eq 0 ] || $$solo logs; \
+	$$solo down -v; \
+	exit $$rc
+
+## deploy-solo-control-smoke: the all-in-one solo bundle (compose.solo.yml + compose.solo-control.yml): the same smoke
+## against one wayhouse-control container (init --control, one certificate, https UI)
+deploy-solo-control-smoke:
+	rc=0; \
+	initbin=deploy/prebuilt/wayhouse-controller; if [ -f "$$initbin" ]; then chmod +x "$$initbin"; else initbin="cargo run -q -p wayhouse-controller --"; fi; \
+	dir=$$(mktemp -d); envf="$$dir/solo.env"; $$initbin init --target compose --control --dir "$$dir" --env-file "$$envf" >/dev/null || exit 1; \
+	solo="docker compose -p wayhouse-solo-control-smoke --env-file $$envf -f deploy/compose/docker-compose.yml -f deploy/compose/compose.solo.yml -f deploy/compose/compose.solo-control.yml"; \
+	sha="$${WAYHOUSE_GIT_SHA:-$$(git rev-parse HEAD 2>/dev/null)}"; export WAYHOUSE_GIT_SHA=$$(printf %.12s "$$sha"); \
+	$$solo up -d --build || rc=$$?; \
+	[ $$rc -ne 0 ] || { UI_URL=https://127.0.0.1:9903 COMPOSE_ENV_FILE="$$envf" sh deploy/smoke.sh && UI_URL=https://127.0.0.1:9903 SOLO_KEYS=control.key COMPOSE_ENV_FILE="$$envf" COMPOSE="$$solo" SOLO_PROJECT=wayhouse-solo-control-smoke WAYHOUSE_CONTROLLER_BIN="$$initbin" sh deploy/solo-smoke.sh; } || rc=$$?; \
 	[ $$rc -eq 0 ] || $$solo logs; \
 	$$solo down -v; \
 	exit $$rc

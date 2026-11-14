@@ -22,6 +22,7 @@ tunnel=$(docker compose -f $C/docker-compose.yml -f $C/compose.tunnel.yml \
 web=$(docker compose -f $C/docker-compose.yml -f $C/compose.web.yml config --format json)
 solo=$(docker compose -f $C/docker-compose.yml -f $C/compose.solo.yml config --format json)
 solo_acme=$(docker compose -f $C/docker-compose.yml -f $C/compose.solo.yml -f $C/compose.solo-acme.yml config --format json)
+solo_control=$(docker compose -f $C/docker-compose.yml -f $C/compose.solo.yml -f $C/compose.solo-control.yml config --format json)
 smoke_plan=$(make -n deploy-smoke)
 # Every overlay must build; the Ruby below checks the rendered DaemonSets, not the source files.
 if command -v kubectl >/dev/null 2>&1; then kz="kubectl kustomize"; else kz="kustomize build"; fi
@@ -30,13 +31,14 @@ for o in single ha web-gateway enrolled ha-enrolled; do
 done
 export K8S_RENDERED="${TMPDIR:-/tmp}/wayhouse-k8s"
 
-BASE="$base" TUNNEL="$tunnel" WEB="$web" SOLO="$solo" SOLO_ACME="$solo_acme" SMOKE_PLAN="$smoke_plan" ruby -rjson -ryaml -e '
+BASE="$base" TUNNEL="$tunnel" WEB="$web" SOLO="$solo" SOLO_ACME="$solo_acme" SOLO_CONTROL="$solo_control" SMOKE_PLAN="$smoke_plan" ruby -rjson -ryaml -e '
 errs = []
 base   = JSON.parse(ENV["BASE"])["services"]
 tunnel = JSON.parse(ENV["TUNNEL"])["services"]
 web    = JSON.parse(ENV["WEB"])["services"]
 solo   = JSON.parse(ENV["SOLO"])["services"]
 solo_acme = JSON.parse(ENV["SOLO_ACME"])["services"]
+solo_control = JSON.parse(ENV["SOLO_CONTROL"])["services"]
 
 # curl 8.11.1 (the pinned seed image) rejects `--opt=value`; values must be
 # separate arguments or `seed` exits 2 and wayhouse never starts.
@@ -249,6 +251,24 @@ errs << "solo: keys step must never overwrite an existing keyring, and writes it
 errs << "solo: ports must stay on the host loopback" unless solo.values.flat_map { |x| x["ports"] || [] }.all? { |pt| pt["host_ip"] == "127.0.0.1" }
 errs << "solo: tokens must be required (${VAR:?}), not defaulted" if sc.grep(/\A--auth-token-file=/).empty?
 errs << "solo-acme: must keep every solo flag and add --acme with a staging default" unless (sc - solo_acme["controller"]["command"]).empty? && solo_acme["controller"]["command"].include?("--acme") && solo_acme["controller"]["command"].include?("--acme-ca=letsencrypt-staging") && solo_acme["controller"]["command"].include?("--acme-accept-tos")
+# All-in-one (compose.solo-control.yml): one wayhouse-control container replaces the split controller,
+# aggregator and UI; same https posture, same loopback-only ports, every secret reaches its program.
+errs << "solo-control: services must be keys, controller (wayhouse-control), seed and wayhouse, got #{solo_control.keys.sort}" unless solo_control.keys.sort == %w[controller keys seed wayhouse]
+cc = solo_control["controller"]["command"]
+errs << "solo-control: the controller service must run the wayhouse-control image" unless solo_control["controller"]["image"].end_with?("/wayhouse-control:local") && solo_control["controller"]["build"]["target"] == "wayhouse-control"
+%w[--tls-cert=/tls/control.pem --tls-key=/tls/control.key --ui-tls-cert=/tls/control.pem --ui-tls-key=/tls/control.key --ca-file=/tls/ca.pem --settings-dir=/settings --controller-plugins --controller-secret-key-file=/keys/secret.keys].each do |f|
+  errs << "solo-control: the process needs #{f}" unless cc.include?(f)
+end
+cc.each { |a| errs << "solo-control: switches off a plain-http guard (#{a})" if a =~ /allow-insecure/ }
+secrets = solo_control["controller"]["secrets"].map { |x| x["target"].sub(%r{\A/run/secrets/}, "") }
+cc.grep(/-file=\/run\/secrets\//).each do |a|
+  name = a.split("/run/secrets/").last
+  errs << "solo-control: #{a} names a secret the service does not get (#{secrets.sort})" unless secrets.include?(name)
+end
+errs << "solo-control: the keys step must install control.pem/control.key" unless solo_control["keys"]["environment"]["TLS_FILES"] == "control.pem control.key"
+errs << "solo-control: ports must stay on the host loopback" unless solo_control.values.flat_map { |x| x["ports"] || [] }.all? { |pt| pt["host_ip"] == "127.0.0.1" }
+errs << "solo-control: the controller must publish 9901, 9902 and 9903" unless solo_control["controller"]["ports"].map { |pt| pt["published"].to_s }.sort == %w[9901 9902 9903]
+errs << "solo-control: the proxy must not wait for a service that is not there" if solo_control["wayhouse"]["depends_on"].key?("aggregator") && solo_control["wayhouse"]["depends_on"]["aggregator"]["required"] != false
 # Process flags (G1): every program shares one settings volume, and the base flags stay.
 %w[controller aggregator ui wayhouse].each do |svc|
   errs << "solo: #{svc} needs --settings-dir=/settings and the solo-settings volume" unless solo[svc]["command"].include?("--settings-dir=/settings") && solo[svc]["volumes"].any? { |v| v["target"] == "/settings" && v["source"] == "solo-settings" }

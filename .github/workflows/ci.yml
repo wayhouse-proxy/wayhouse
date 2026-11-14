@@ -205,7 +205,7 @@ jobs:
           cargo auditable build --release --locked -p wayhouse --no-default-features
           cp target/release/wayhouse target/release/wayhouse-minimal
       - name: Build the release binaries
-        run: cargo auditable build --release --locked -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-agent -p wayhouse-web-sync -p wayhouse-certsync
+        run: cargo auditable build --release --locked -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-control -p wayhouse-agent -p wayhouse-web-sync -p wayhouse-certsync
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-binaries
@@ -215,6 +215,7 @@ jobs:
             target/release/wayhouse-controller
             target/release/wayhouse-aggregator
             target/release/wayhouse-ui
+            target/release/wayhouse-control
             target/release/wayhouse-agent
             target/release/wayhouse-web-sync
             target/release/wayhouse-certsync
@@ -244,7 +245,7 @@ jobs:
           cargo auditable build --release --locked -p wayhouse --no-default-features
           cp target/release/wayhouse target/release/wayhouse-minimal
       - name: Build the release binaries
-        run: cargo auditable build --release --locked -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-agent -p wayhouse-web-sync -p wayhouse-certsync
+        run: cargo auditable build --release --locked -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-control -p wayhouse-agent -p wayhouse-web-sync -p wayhouse-certsync
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-binaries-arm64
@@ -254,6 +255,7 @@ jobs:
             target/release/wayhouse-controller
             target/release/wayhouse-aggregator
             target/release/wayhouse-ui
+            target/release/wayhouse-control
             target/release/wayhouse-agent
             target/release/wayhouse-web-sync
             target/release/wayhouse-certsync
@@ -465,13 +467,13 @@ jobs:
           path: deploy/prebuilt
       - name: Static checks (compose render, k8s wiring)
         run: make deploy-lint
-      - name: Build all seven images and check each
+      - name: Build all eight images and check each
         run: make deploy-images
       # For the trivy job, which has no access to this runner's Docker daemon.
       - name: Save the images for the trivy job
         run: |
           mkdir -p "$RUNNER_TEMP/images"
-          for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent wayhouse-caddy; do
+          for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-control wayhouse-agent wayhouse-caddy; do
             docker save -o "$RUNNER_TEMP/images/$t.tar" "wayhouse-deploy/$t:local"
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -483,6 +485,8 @@ jobs:
         run: make deploy-smoke
       - name: Solo bundle smoke test
         run: make deploy-solo-smoke
+      - name: Solo bundle smoke test (all-in-one)
+        run: make deploy-solo-control-smoke
       - name: Validate Kubernetes manifests (schema only)
         run: |
           curl -fsSL -o kubeconform.tgz https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
@@ -514,13 +518,13 @@ jobs:
         with:
           name: release-binaries-arm64
           path: deploy/prebuilt
-      - name: Build all seven images and check each
+      - name: Build all eight images and check each
         run: make deploy-images
       # For the trivy-arm64 job, which has no access to this runner's Docker daemon.
       - name: Save the images for the trivy-arm64 job
         run: |
           mkdir -p "$RUNNER_TEMP/images"
-          for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-agent wayhouse-caddy; do
+          for t in wayhouse wayhouse-minimal wayhouse-controller wayhouse-aggregator wayhouse-ui wayhouse-control wayhouse-agent wayhouse-caddy; do
             docker save -o "$RUNNER_TEMP/images/$t.tar" "wayhouse-deploy/$t:local"
           done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

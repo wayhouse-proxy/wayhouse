@@ -35,7 +35,7 @@ services:
         chmod 0700 /settings
         [ -f /tls-src/ca.pem ] || { echo "no certificates in WAYHOUSE_TLS_DIR: run wayhouse-controller init --target compose first" >&2; exit 1; }
         mkdir -p /tls
-        for f in ca.pem controller.pem controller.key aggregator.pem aggregator.key; do cp "/tls-src/$$f" "/tls/$$f"; done
+        for f in ca.pem $${TLS_FILES:-controller.pem controller.key aggregator.pem aggregator.key}; do cp "/tls-src/$$f" "/tls/$$f"; done
         chown -R 65532:65532 /tls
         chmod 0755 /tls
         chmod 0644 /tls/*.pem

@@ -46,10 +46,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cargo auditable build --release --locked -p wayhouse --no-default-features \
  && cp target/release/wayhouse /out/wayhouse-minimal \
  && cargo auditable build --release --locked \
-      -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-agent \
-      -p wayhouse-web-sync -p wayhouse-certsync \
+      -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-control \
+      -p wayhouse-agent -p wayhouse-web-sync -p wayhouse-certsync \
  && cp target/release/wayhouse target/release/wayhouse-controller \
-       target/release/wayhouse-aggregator target/release/wayhouse-ui \
+       target/release/wayhouse-aggregator target/release/wayhouse-ui target/release/wayhouse-control \
        target/release/wayhouse-agent target/release/wayhouse-web-sync \
        target/release/wayhouse-certsync /out/ \
  && chown 65532:65532 /out/data
@@ -104,6 +104,16 @@ COPY --from=bins /out/wayhouse-ui /usr/local/bin/wayhouse-ui
 COPY --from=web /web/dist /web
 ENTRYPOINT ["/usr/local/bin/wayhouse-ui", "--static-dir", "/web"]
 CMD ["--listen", "0.0.0.0:9903"]
+
+# Controller + aggregator + UI in one process (docs/12-deployment.md, "One box"): the solo
+# bundle's `compose.solo-control.yml` and the systemd unit run this. The three standalone images
+# above stay the fleet layout.
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab AS wayhouse-control
+COPY --from=bins /out/wayhouse-control /usr/local/bin/wayhouse-control
+COPY --from=web /web/dist /web
+COPY --from=bins --chown=65532:65532 /out/data /data
+ENTRYPOINT ["/usr/local/bin/wayhouse-control", "--ui-static-dir", "/web"]
+CMD ["--controller-data-dir", "/data"]
 
 FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab AS wayhouse-agent
 COPY --from=bins /out/wayhouse-agent /usr/local/bin/wayhouse-agent
