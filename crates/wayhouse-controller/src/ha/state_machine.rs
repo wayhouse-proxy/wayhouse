@@ -2652,6 +2652,7 @@ mod tests {
             pool: None,
             name: None,
             psk: None,
+            exclusive: false,
         });
         let (mut a, _a) = test_sm();
         let (mut b, _b) = test_sm();
@@ -2701,6 +2702,7 @@ mod tests {
                 join_hash: None,
                 name: None,
                 psk: None,
+                exclusive: false,
                 pool: Some(PoolChild {
                     id: child.into(),
                     name: name.into(),
