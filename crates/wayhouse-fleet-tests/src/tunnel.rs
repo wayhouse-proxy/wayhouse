@@ -56,9 +56,31 @@ impl Default for LabOptions {
 
 /// `--tunnel-network <network>` followed by `extra`, unless `extra` names its
 /// own network.
+/// The one admin token the lab controller runs with and every lab process presents to it.
+const LAB_TOKEN: &str = "lab-tunnel-token-0123456789";
+
+/// The lab reaches its controller over plain http on a non-loopback lab address, which the
+/// bearer-token guard refuses unless told the network is private (it is a namespace).
+const LAB_CLIENT_ARGS: [&str; 3] = [
+    "--controller-token",
+    LAB_TOKEN,
+    "--allow-insecure-controller",
+];
+
+/// `GET url` on the lab controller with the lab token.
+async fn lab_get(url: impl reqwest::IntoUrl) -> reqwest::Result<reqwest::Response> {
+    wayhouse_http::client()
+        .get(url)
+        .bearer_auth(LAB_TOKEN)
+        .send()
+        .await
+}
+
 fn controller_args(network: &str, extra: &[&str]) -> Vec<String> {
-    // The lab controller binds the wildcard address and the lab agents carry no token.
-    let mut args = vec!["--insecure-no-auth".to_string()];
+    // The lab controller binds the wildcard address, so it runs with a token (the psk route and
+    // every other secret route refuse to answer an unauthenticated caller); the lab proxies and
+    // agents are given the same token (`LAB_ARGS`).
+    let mut args = vec!["--auth-token".to_string(), LAB_TOKEN.to_string()];
     if !extra.contains(&"--tunnel-network") {
         args.extend(["--tunnel-network".to_string(), network.to_string()]);
     }
@@ -294,6 +316,7 @@ impl TunnelLab {
         .map(std::string::ToString::to_string)
         .collect();
         args.extend(self.backend.agent_flag().map(str::to_string));
+        args.extend(LAB_CLIENT_ARGS.map(str::to_string));
         let agent = Proc::spawn_in(Some(&ns), "wayhouse-agent", &args)?;
 
         let url = format!(
@@ -303,13 +326,13 @@ impl TunnelLab {
         wait_until(
             || {
                 let url = url.clone();
-                async move { Ok(crate::http_get(&url).await?.status().is_success()) }
+                async move { Ok(lab_get(&url).await?.status().is_success()) }
             },
             Duration::from_secs(20),
             "the origin to register with the controller",
         )
         .await?;
-        let body: serde_json::Value = crate::http_get(&url).await?.json().await?;
+        let body: serde_json::Value = lab_get(&url).await?.json().await?;
         let pubkey = body["pubkey"]
             .as_str()
             .context("registry entry has no pubkey")?
@@ -344,6 +367,7 @@ impl TunnelLab {
         let base = self.registry_url("");
         let minted: serde_json::Value = wayhouse_http::client()
             .post(format!("{base}/enrollments"))
+            .bearer_auth(LAB_TOKEN)
             .json(&serde_json::json!({ "origin": ORIGIN_NAME }))
             .send()
             .await?
@@ -386,11 +410,8 @@ impl TunnelLab {
     /// removed first, as in [`TunnelLab::restart_edge`].
     pub async fn restart_origin(&mut self) -> Result<()> {
         let url = self.registry_url(&format!("/peers/{ORIGIN_NAME}"));
-        let before = crate::http_get(&url)
-            .await?
-            .json::<serde_json::Value>()
-            .await?["tunnel_address"]
-            .clone();
+        let before =
+            lab_get(&url).await?.json::<serde_json::Value>().await?["tunnel_address"].clone();
         let origin = self.origin.as_mut().context("start_origin first")?;
         origin.agent = None; // dropping the `Proc` reaps it
         let _ = origin.ns.run(&["ip", "link", "del", "wayhouse-agent0"]);
@@ -419,7 +440,7 @@ impl TunnelLab {
             );
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        let body: serde_json::Value = crate::http_get(&url).await?.json().await?;
+        let body: serde_json::Value = lab_get(&url).await?.json().await?;
         let ip: IpAddr = body["tunnel_address"]
             .as_str()
             .context("registry entry has no tunnel_address")?
@@ -518,8 +539,14 @@ impl TunnelLab {
         .map(std::string::ToString::to_string)
         .collect();
         args.extend(self.backend.wayhouse_flag().map(str::to_string));
-        // The lab edge's admin API binds the wildcard address with no token.
+        // The lab edge's admin API binds the wildcard address with no token; what it presents to
+        // the controller is the lab token.
         args.push("--insecure-no-auth".to_string());
+        args.extend([
+            "--tunnel-controller-token".to_string(),
+            LAB_TOKEN.to_string(),
+            "--allow-insecure-controller".to_string(),
+        ]);
         if self.opts.psk {
             args.extend([
                 "--secret-key-file".to_string(),
@@ -607,6 +634,7 @@ impl TunnelLab {
     pub async fn rotate_origin_psk(&self) -> Result<u64> {
         let resp = wayhouse_http::client()
             .post(self.registry_url(&format!("/peers/{ORIGIN_NAME}/psk/rotate")))
+            .bearer_auth(LAB_TOKEN)
             .send()
             .await?
             .error_for_status()?;
@@ -619,7 +647,7 @@ impl TunnelLab {
             || {
                 let (url, want) = (url.clone(), want.clone());
                 async move {
-                    let reg: serde_json::Value = crate::http_get(url).await?.json().await?;
+                    let reg: serde_json::Value = lab_get(url).await?.json().await?;
                     Ok(reg["psk_secret"].as_str() == Some(want.as_str()))
                 }
             },
@@ -641,21 +669,18 @@ impl TunnelLab {
 
     /// A proxy's stored registration, as `GET /proxy-peers/{name}` returns it.
     pub async fn proxy_registration(&self, name: &str) -> Result<serde_json::Value> {
-        Ok(
-            crate::http_get(self.registry_url(&format!("/proxy-peers/{name}")))
-                .await?
-                .json()
-                .await?,
-        )
+        Ok(lab_get(self.registry_url(&format!("/proxy-peers/{name}")))
+            .await?
+            .json()
+            .await?)
     }
 
     /// The tunnel address the controller assigned to a registered proxy.
     pub async fn proxy_address(&self, name: &str) -> Result<String> {
-        let body: serde_json::Value =
-            crate::http_get(self.registry_url(&format!("/proxy-peers/{name}")))
-                .await?
-                .json()
-                .await?;
+        let body: serde_json::Value = lab_get(self.registry_url(&format!("/proxy-peers/{name}")))
+            .await?
+            .json()
+            .await?;
         Ok(body["tunnel_address"]
             .as_str()
             .context("no tunnel_address in the proxy's registration")?
@@ -674,7 +699,13 @@ impl TunnelLab {
         let client = wayhouse_http::client();
         let entry = self.registry_url(&format!("/{kind}/{name}"));
         let old = {
-            let body: serde_json::Value = client.get(&entry).send().await?.json().await?;
+            let body: serde_json::Value = client
+                .get(&entry)
+                .bearer_auth(LAB_TOKEN)
+                .send()
+                .await?
+                .json()
+                .await?;
             body["tunnel_address"]
                 .as_str()
                 .context("no tunnel_address in the registration")?
@@ -684,7 +715,7 @@ impl TunnelLab {
         for attempt in 0..10 {
             // A retry finds it already released (404) until the registrant
             // re-registers.
-            let del = client.delete(&entry).send().await?;
+            let del = client.delete(&entry).bearer_auth(LAB_TOKEN).send().await?;
             if !del.status().is_success() && del.status() != reqwest::StatusCode::NOT_FOUND {
                 anyhow::bail!("releasing {name}: {}", del.status());
             }
@@ -712,6 +743,7 @@ impl TunnelLab {
             };
             let resp = client
                 .post(self.registry_url(&format!("/{kind}")))
+                .bearer_auth(LAB_TOKEN)
                 .json(&body)
                 .send()
                 .await?;
@@ -739,7 +771,7 @@ impl TunnelLab {
             let found = &found;
             wait_until(
                 || async move {
-                    let Ok(resp) = client.get(entry).send().await else {
+                    let Ok(resp) = client.get(entry).bearer_auth(LAB_TOKEN).send().await else {
                         return Ok(false);
                     };
                     let body: serde_json::Value = resp.json().await.unwrap_or_default();
@@ -782,7 +814,7 @@ impl TunnelLab {
     /// When the controller last heard from a proxy (unix seconds), from the
     /// address table.
     pub async fn proxy_last_seen(&self, name: &str) -> Result<u64> {
-        let table: serde_json::Value = crate::http_get(self.registry_url("/tunnel/addresses"))
+        let table: serde_json::Value = lab_get(self.registry_url("/tunnel/addresses"))
             .await?
             .json()
             .await?;
@@ -933,6 +965,7 @@ impl TunnelLab {
         .map(std::string::ToString::to_string)
         .collect();
         args.extend(self.backend.agent_flag().map(str::to_string));
+        args.extend(LAB_CLIENT_ARGS.map(str::to_string));
         let mut agent = Proc::spawn_in(Some(&ns), "wayhouse-agent", &args)?;
         let exited = wait_until(
             || {
