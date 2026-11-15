@@ -2096,6 +2096,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_backend_health_report_is_taken_and_a_bad_one_refused() {
+        let (st, _d) = state(None);
+        let app = router(st);
+        let post = |body: &'static [u8]| {
+            let mut req = Request::builder()
+                .method("POST")
+                .uri("/backend-health")
+                .header(
+                    wayhouse_http::protocol::HEADER,
+                    wayhouse_http::protocol::ProtocolVersion::current().to_string(),
+                )
+                .body(Body::from(body))
+                .unwrap();
+            req.extensions_mut()
+                .insert(axum::extract::ConnectInfo(wayhouse_http::tls::PeerAddr(
+                    "203.0.113.9:4000".parse().unwrap(),
+                )));
+            let app = app.clone();
+            async move { app.oneshot(req).await.unwrap().status() }
+        };
+        let ok = br#"{"proxy":"p1","full":true,"backends":[{"addr":"10.0.0.5:25565","up":false}]}"#;
+        assert_eq!(post(ok).await, StatusCode::NO_CONTENT);
+        assert_eq!(post(b"nope").await, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            post(br#"{"proxy":"","backends":[]}"#).await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
     async fn a_webhook_is_enabled_with_a_token_shown_once_and_guarded_by_it() {
         let (st, _d) = state(None);
         let app = router(st.clone());
