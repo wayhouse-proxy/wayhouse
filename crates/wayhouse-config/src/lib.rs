@@ -105,3 +105,27 @@ pub fn parse_str(text: &str) -> Result<Config, ConfigError> {
     };
     validate(raw, doc.as_ref())
 }
+
+#[cfg(test)]
+mod alias_tests {
+    /// E4-controller-api-1: a document that expands one anchor into billions of nodes is refused
+    /// by the YAML parser's repetition limit, quickly and without exhausting memory.
+    #[test]
+    fn an_alias_bomb_is_refused_fast() {
+        let mut doc = String::from(
+            "schema_version: 1\nl0: &l0 [\"x\",\"x\",\"x\",\"x\",\"x\",\"x\",\"x\",\"x\",\"x\"]\n",
+        );
+        for i in 1..9 {
+            let prev = format!("*l{}", i - 1);
+            let row = [prev.as_str(); 9].join(",");
+            doc.push_str(&format!("l{i}: &l{i} [{row}]\n"));
+        }
+        let start = std::time::Instant::now();
+        assert!(super::parse_str(&doc).is_err());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "took {:?}",
+            start.elapsed()
+        );
+    }
+}

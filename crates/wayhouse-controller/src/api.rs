@@ -55,7 +55,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::StreamExt;
 
 use crate::confirm::{self, Pending, Trial, Window, PENDING_KEY};
 use crate::role::{Role, RoleHandle};
@@ -164,7 +164,16 @@ pub struct AppState {
     /// `POST /config` refuses a document above it, so a mixed fleet never
     /// receives one it must reject.
     schema_floor: Option<SchemaFloor>,
+    /// One permit per live `GET /config/subscribe` stream ([`MAX_SUBSCRIBERS`]); a stream past
+    /// the cap is refused with `503` instead of piling up workers.
+    subscribers: Arc<tokio::sync::Semaphore>,
 }
+
+/// Most concurrent `GET /config/subscribe` streams. A fleet has one per proxy and tier, far
+/// below this.
+const MAX_SUBSCRIBERS: usize = 1024;
+/// Revisions read from the store per catch-up page.
+const CATCH_UP_PAGE: usize = 256;
 
 /// See [`AppState::with_schema_floor`].
 pub type SchemaFloor = Arc<dyn Fn() -> Result<Option<u32>, String> + Send + Sync>;
@@ -194,6 +203,7 @@ impl AppState {
             ha: None,
             relay: RelayCursor::open(&store_db)?,
             schema_floor: None,
+            subscribers: Arc::new(tokio::sync::Semaphore::new(MAX_SUBSCRIBERS)),
         })
     }
 
@@ -1608,25 +1618,45 @@ struct SubscribeParams {
 async fn subscribe(
     State(state): State<AppState>,
     Query(params): Query<SubscribeParams>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+) -> Response {
+    let Ok(permit) = state.subscribers.clone().try_acquire_owned() else {
+        tracing::warn!(
+            max = MAX_SUBSCRIBERS,
+            "config subscriber cap reached; refusing a stream"
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(axum::http::header::RETRY_AFTER, "5")],
+            Json(ErrorResponse {
+                error: "too many config subscribers; retry shortly".into(),
+            }),
+        )
+            .into_response();
+    };
     let (tx, rx) = mpsc::channel(16);
     let updates = state.updates.subscribe();
-    tokio::spawn(subscribe_worker(
-        state.store,
-        state.stage,
-        params.group,
-        params.max_schema.unwrap_or(1),
-        updates,
-        params.since.unwrap_or(0),
-        tx,
-    ));
+    tokio::spawn(async move {
+        let _permit = permit;
+        subscribe_worker(
+            state.store,
+            state.stage,
+            params.group,
+            params.max_schema.unwrap_or(1),
+            updates,
+            params.since.unwrap_or(0),
+            tx,
+        )
+        .await;
+    });
 
     let events = ReceiverStream::new(rx).map(|(revision, bytes)| {
         let config = String::from_utf8_lossy(&bytes).into_owned();
         let payload = serde_json::json!({ "revision": revision, "config": config });
-        Ok(Event::default().data(payload.to_string()))
+        Ok::<_, Infallible>(Event::default().data(payload.to_string()))
     });
-    Sse::new(events).keep_alive(KeepAlive::default())
+    Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 /// Sends the catch-up range for `since`, then tails `updates` for whatever
@@ -1673,7 +1703,13 @@ async fn subscribe_worker(
     }
 
     loop {
-        match updates.recv().await {
+        // An idle subscriber that disconnected ends here too, not at the next revision, so its
+        // slot (and worker) does not wait for a write that may never come.
+        let received = tokio::select! {
+            () = tx.closed() => return,
+            r = updates.recv() => r,
+        };
+        match received {
             Ok(revision) if revision <= last_sent => {} // already sent by catch-up
             Ok(revision) if !is_visible(&stage, revision, group) => {} // not (yet) ours to see
             // Replay from the cursor rather than fetching just `revision`: a
@@ -1731,40 +1767,46 @@ async fn catch_up(
     // `scanned` is the highest revision the subscriber will never be sent (too new a schema)
     // with nothing still-undecided before it, so the next pass starts after it instead of
     // rescanning those revisions.
-    let from = (*last_sent).max(*scanned);
-    let revisions = match store.revisions_after(from) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(error = %e, "store error building the catch-up range");
-            return false;
-        }
-    };
+    let mut from = (*last_sent).max(*scanned);
     let mut settled = true;
-    for (revision, bytes) in revisions {
-        if !is_visible(stage, revision, group) {
-            settled = false;
-            continue;
-        }
-        let needed =
-            wayhouse_config::version::declared_schema_version(&String::from_utf8_lossy(&bytes));
-        if needed > max_schema {
-            tracing::debug!(
-                revision,
-                needed,
-                max_schema,
-                "not sending a revision newer than the subscriber's config schema"
-            );
-            if settled {
-                *scanned = revision;
+    loop {
+        let revisions = match store.revisions_page(from, CATCH_UP_PAGE) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, "store error building the catch-up range");
+                return false;
             }
-            continue;
+        };
+        let page_len = revisions.len();
+        for (revision, bytes) in revisions {
+            from = revision;
+            if !is_visible(stage, revision, group) {
+                settled = false;
+                continue;
+            }
+            let needed =
+                wayhouse_config::version::declared_schema_version(&String::from_utf8_lossy(&bytes));
+            if needed > max_schema {
+                tracing::debug!(
+                    revision,
+                    needed,
+                    max_schema,
+                    "not sending a revision newer than the subscriber's config schema"
+                );
+                if settled {
+                    *scanned = revision;
+                }
+                continue;
+            }
+            if tx.send((revision, bytes)).await.is_err() {
+                return false;
+            }
+            *last_sent = revision;
         }
-        if tx.send((revision, bytes)).await.is_err() {
-            return false;
+        if page_len < CATCH_UP_PAGE {
+            return true;
         }
-        *last_sent = revision;
     }
-    true
 }
 
 /// Free-function form of [`AppState::is_visible`] — `subscribe_worker`
@@ -1952,6 +1994,105 @@ listeners:
 
         assert_eq!(rx.recv().await.unwrap(), (rev1, b"one".to_vec()));
         assert_eq!(rx.recv().await.unwrap(), (rev2, b"two".to_vec()));
+    }
+
+    /// E4-controller-api-4: a catch-up longer than one page arrives complete and in order.
+    #[tokio::test]
+    async fn catch_up_pages_through_a_long_log_without_losing_or_reordering_revisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let total = CATCH_UP_PAGE * 2 + 5;
+        let revs: Vec<u64> = (0..total)
+            .map(|i| put_promoted(&store, format!("rev {i}").as_bytes()))
+            .collect();
+        let (_updates_tx, updates_rx) = broadcast::channel(8);
+        let (tx, mut rx) = mpsc::channel(8);
+        tokio::spawn(subscribe_worker(
+            store.clone(),
+            test_stage_tree(&store),
+            None,
+            1,
+            updates_rx,
+            0,
+            tx,
+        ));
+        for (i, rev) in revs.iter().enumerate() {
+            assert_eq!(
+                rx.recv().await.unwrap(),
+                (*rev, format!("rev {i}").into_bytes())
+            );
+        }
+    }
+
+    /// E4-controller-api-4: streams past the cap are refused with 503 and a retry hint, and a
+    /// stream that ends gives its slot back.
+    #[tokio::test]
+    async fn subscribers_past_the_cap_are_refused_and_a_closed_stream_frees_its_slot() {
+        let (state, _dir) = test_state();
+        let held: Vec<_> = (0..MAX_SUBSCRIBERS)
+            .map(|_| state.subscribers.clone().try_acquire_owned().unwrap())
+            .collect();
+        let app = router(state.clone());
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/config/subscribe")
+                    .header(
+                        wayhouse_http::protocol::HEADER,
+                        wayhouse_http::protocol::ProtocolVersion::CURRENT.to_string(),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(resp.headers()[axum::http::header::RETRY_AFTER], "5");
+        drop(held);
+        let resp = app
+            .oneshot(
+                Request::get("/config/subscribe")
+                    .header(
+                        wayhouse_http::protocol::HEADER,
+                        wayhouse_http::protocol::ProtocolVersion::CURRENT.to_string(),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// An idle subscriber that disconnects gives its slot back at once, not at the next
+    /// revision: 1024 dead connections must not lock real proxies out.
+    #[tokio::test]
+    async fn an_idle_subscriber_that_disconnects_releases_its_slot() {
+        let (state, _dir) = test_state();
+        let app = router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::get("/config/subscribe")
+                    .header(
+                        wayhouse_http::protocol::HEADER,
+                        wayhouse_http::protocol::ProtocolVersion::CURRENT.to_string(),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(state.subscribers.available_permits(), MAX_SUBSCRIBERS - 1);
+        // The client goes away without a single revision having been written.
+        drop(resp);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while state.subscribers.available_permits() != MAX_SUBSCRIBERS {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the permit came back");
     }
 
     #[tokio::test]
