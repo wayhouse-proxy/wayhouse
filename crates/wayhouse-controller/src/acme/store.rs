@@ -403,15 +403,19 @@ impl AcmeStore {
                             Ok(Applied::Done)
                         }
                         AcmeOp::GatewayDelete { name } => {
-                            if gateways.remove(name.as_bytes())?.is_none() {
-                                return Ok(Applied::NoSuchGateway);
-                            }
+                            let existed = gateways.remove(name.as_bytes())?.is_some();
+                            // Also for a name that is already gone: a stale reference must
+                            // not survive to be picked up by a later registration.
                             for held in &holding {
                                 let mut site = held.clone();
                                 site.gateways.retain(|g| g != name);
                                 sites.insert(site.name.as_bytes(), json(&site)?)?;
                             }
-                            Ok(Applied::Done)
+                            Ok(if existed {
+                                Applied::Done
+                            } else {
+                                Applied::NoSuchGateway
+                            })
                         }
                         AcmeOp::Rewrap {
                             account: new_account,
@@ -1022,6 +1026,16 @@ mod tests {
             Applied::Done
         );
         assert!(store.site("web").unwrap().unwrap().gateways.is_empty());
+        // A name already gone is still scrubbed from a site that lists it.
+        let mut again = site("web", &["a.example.com"]);
+        again.gateways = vec![];
+        store.apply_local(&AcmeOp::SiteSet(again)).unwrap();
+        assert_eq!(
+            store
+                .apply_local(&AcmeOp::GatewayDelete { name: "gw1".into() })
+                .unwrap(),
+            Applied::NoSuchGateway
+        );
     }
 
     #[test]

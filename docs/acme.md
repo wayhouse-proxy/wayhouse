@@ -184,11 +184,10 @@ its own **token**; a token reads only the sites that list that gateway's name in
 | `GET /acme/bundles`            | gateway token | The sites this gateway may read that have a certificate: `{site, version, not_after}`.                |
 | `GET /acme/bundles/{site}`     | gateway token | `{version, chain_pem, key_pem, not_after, serial, untrusted}`.                                        |
 
-A site's `gateways` list is not checked against the registered gateways. A name that is not
-registered (yet) fetches nothing, and a site with an empty list is issued and renewed but no
-gateway can read it. Deleting a gateway leaves its name in the sites that list it: whoever
-registers that name later can read those sites, so remove the name from the sites too unless
-you mean to re-register the same gateway.
+A site's `gateways` must all be registered: `PUT /acme/sites/{name}` answers `400` for a name
+nobody registered. Deleting a gateway removes its name from every site that lists it, so
+registering the same name later does not give the new holder the old sites; list the name in the
+sites again to grant it. A site with an empty list is issued and renewed but no gateway can read it.
 
 The controller stores only the SHA-256 of a token and replicates only that. To rotate a
 token, delete the gateway and register it again (a second `POST` of a taken name is `409`).
