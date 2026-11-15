@@ -89,7 +89,7 @@ pub const CONFIRM_SUPPORT: u32 = 2;
 /// be shut out of that while the fleet upgrades.
 pub const CONFIRM_DECODE_SUPPORT: u32 = 1;
 
-/// The UI data replication level this build speaks (`10` adds dashboard revisions and `RenameDashboard`, `8` adds controller codes (node id, join proof), `7` adds per-origin tokens (`Kind::OriginToken`), `6` adds enrollment codes and `Redeem`, `5` adds the cluster secret rewrap, `4` adds cluster secrets, `3` adds operator node tags, `2` adds
+/// The UI data replication level this build speaks (`10` adds dashboard revisions and `RenameDashboard`, `9` adds pool controller codes, `8` adds controller codes (node id, join proof), `7` adds per-origin tokens (`Kind::OriginToken`), `6` adds enrollment codes and `Redeem`, `5` adds the cluster secret rewrap, `4` adds cluster secrets, `3` adds operator node tags, `2` adds
 /// feature-flag overrides; `1`: dashboards, themes, saved filters, the
 /// form layout override and the deployment defaults).
 pub const UI_SUPPORT: u32 = 10;

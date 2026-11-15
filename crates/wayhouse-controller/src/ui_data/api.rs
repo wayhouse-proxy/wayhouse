@@ -666,10 +666,15 @@ fn answer(applied: &Applied, ok: impl FnOnce() -> Response) -> Response {
             StatusCode::CONFLICT,
             format!("already {max} records of this kind; delete one first"),
         ),
-        Applied::Stale => err(
+        // `code` lets the UI tell "someone saved since" from the other 409s without reading prose.
+        Applied::Stale => (
             StatusCode::CONFLICT,
-            "the record changed since it was read; reload it and try again",
-        ),
+            Json(json!({
+                "error": "the record changed since it was read; reload it and try again",
+                "code": "stale",
+            })),
+        )
+            .into_response(),
         Applied::Refused => err(StatusCode::UNAUTHORIZED, "invalid or expired code"),
         Applied::Exists => err(
             StatusCode::CONFLICT,
@@ -1055,8 +1060,11 @@ mod tests {
         );
         // The same edit again, from the revision already replaced.
         let (st, body) = call(&app, "PUT", "/ui/dashboards/ops", mine, None).await;
-        assert_eq!(st, StatusCode::CONFLICT, "{body}");
-        let (st, _) = call(
+        assert_eq!(
+            (st, body["code"].as_str()),
+            (StatusCode::CONFLICT, Some("stale"))
+        );
+        let (st, body) = call(
             &app,
             "POST",
             "/ui/dashboards/ops/rename",
@@ -1064,7 +1072,10 @@ mod tests {
             None,
         )
         .await;
-        assert_eq!(st, StatusCode::CONFLICT);
+        assert_eq!(
+            (st, body["code"].as_str()),
+            (StatusCode::CONFLICT, Some("stale"))
+        );
         let (st, body) = call(
             &app,
             "POST",

@@ -1217,6 +1217,8 @@ mod tests {
             ui_support,
         };
         assert!(check_support_answers(&[(2, Ok(who(UI_SUPPORT)))]).is_ok());
+        // One level below this build's: the 9 to 10 bump (dashboard revisions) keeps it out.
+        assert!(check_support_answers(&[(2, Ok(who(UI_SUPPORT - 1)))]).is_err());
         // Level 5 predates enrollment codes and cannot decode the redeem entry.
         assert!(check_support_answers(&[(2, Ok(who(5)))]).is_err());
         assert!(

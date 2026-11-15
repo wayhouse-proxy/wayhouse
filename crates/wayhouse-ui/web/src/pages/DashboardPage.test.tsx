@@ -142,7 +142,7 @@ describe("DashboardPage", () => {
 
   it("a save that lost to someone else's save says so and offers theirs or an overwrite", async () => {
     store.list.mockResolvedValue([{ ...board, revision: 3 }]);
-    store.save.mockRejectedValueOnce(new ApiError(409, "the record changed since it was read"));
+    store.save.mockRejectedValueOnce(new ApiError(409, "changed meanwhile", { code: "stale" }));
     show("operator");
     await screen.findByRole("region", { name: "Nodes" });
     await userEvent.click(screen.getByRole("button", { name: "Customize" }));
@@ -176,6 +176,35 @@ describe("DashboardPage", () => {
     expect(await screen.findByRole("region", { name: "Needs attention" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Nodes" })).toBeNull();
     expect(screen.getByLabelText("Dashboard")).toHaveValue("NOC");
+  });
+
+  it("Save anyway after a stale rename repeats the rename without a revision and does not save the old copy", async () => {
+    store.list.mockResolvedValue([{ ...board, revision: 3 }]);
+    store.rename.mockRejectedValueOnce(new ApiError(409, "changed meanwhile", { code: "stale" }));
+    show("operator");
+    await screen.findByRole("region", { name: "Nodes" });
+    await userEvent.click(screen.getByRole("button", { name: "Rename" }));
+    const name = screen.getByLabelText("New name");
+    await userEvent.clear(name);
+    await userEvent.type(name, "NOC{enter}");
+    expect(await screen.findByText(/Someone else saved this dashboard/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Save anyway" }));
+    await waitFor(() => expect(store.rename).toHaveBeenCalledTimes(2));
+    expect(store.rename.mock.calls[1]).toEqual(["Ops", "NOC", undefined]);
+    expect(store.save).not.toHaveBeenCalled();
+  });
+
+  it("a 409 that is not a stale save (the name is taken) is an ordinary error", async () => {
+    store.list.mockResolvedValue([{ ...board, revision: 3 }]);
+    store.rename.mockRejectedValueOnce(new ApiError(409, "a record with that name already exists", { error: "x" }));
+    show("operator");
+    await screen.findByRole("region", { name: "Nodes" });
+    await userEvent.click(screen.getByRole("button", { name: "Rename" }));
+    const name = screen.getByLabelText("New name");
+    await userEvent.clear(name);
+    await userEvent.type(name, "NOC{enter}");
+    expect(await screen.findByText(/already exists/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save anyway" })).toBeNull();
   });
 
   it("a viewer cannot customize", async () => {
