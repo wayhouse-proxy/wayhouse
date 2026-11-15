@@ -89,6 +89,24 @@ impl AcmeStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Registers a gateway so a test site may name it (a site cannot name an unknown one).
+    #[cfg(test)]
+    pub(crate) fn seed_gateway(&self, name: &str) {
+        self.overwrite_gateway(&Gateway {
+            name: name.into(),
+            token_hash: format!("seed-{name}"),
+            created_at: 1,
+        });
+    }
+
+    /// Replaces a gateway row directly (a test that registers it after its sites).
+    #[cfg(test)]
+    pub(crate) fn overwrite_gateway(&self, gw: &Gateway) {
+        self.gateways
+            .insert(gw.name.as_bytes(), serde_json::to_vec(gw).unwrap())
+            .unwrap();
+    }
+
     pub fn applied_index(&self) -> Result<Option<u64>, AcmeStoreError> {
         Ok(self
             .meta
@@ -216,6 +234,15 @@ impl AcmeStore {
                 .collect(),
             _ => Vec::new(),
         };
+        // Sites that still name a gateway about to be deleted (they lose the name).
+        let holding: Vec<Site> = match op {
+            AcmeOp::GatewayDelete { name } => self
+                .sites()?
+                .into_iter()
+                .filter(|s| s.gateways.contains(name))
+                .collect(),
+            _ => Vec::new(),
+        };
         let wipe_certs: Vec<crate::kv::IVec> = match op {
             AcmeOp::SiteDelete { name } => self
                 .certs
@@ -284,6 +311,13 @@ impl AcmeStore {
                             if let Err(why) = site.validate() {
                                 return Ok(Applied::Invalid(why));
                             }
+                            // A gateway name nobody registered would hand the site's keys to
+                            // whoever registers it later (#411).
+                            for g in &site.gateways {
+                                if gateways.get(g.as_bytes())?.is_none() {
+                                    return Ok(Applied::Invalid(format!("no gateway named {g}")));
+                                }
+                            }
                             let taken: HashSet<&str> = other_sites
                                 .iter()
                                 .flat_map(|o| o.names.iter().map(String::as_str))
@@ -294,7 +328,7 @@ impl AcmeStore {
                             }
                             // A changed site (new names, plugin, gateways) may fix what failed:
                             // try it now, not after the old backoff.
-                            if get_site(&site.name)?.is_some_and(|old| old != *site) {
+                            if get_site(&site.name)?.is_some_and(|old| !same_site(&old, site)) {
                                 attempts.remove(site.name.as_bytes())?;
                             }
                             sites.insert(site.name.as_bytes(), json(site)?)?;
@@ -371,6 +405,11 @@ impl AcmeStore {
                         AcmeOp::GatewayDelete { name } => {
                             if gateways.remove(name.as_bytes())?.is_none() {
                                 return Ok(Applied::NoSuchGateway);
+                            }
+                            for held in &holding {
+                                let mut site = held.clone();
+                                site.gateways.retain(|g| g != name);
+                                sites.insert(site.name.as_bytes(), json(&site)?)?;
                             }
                             Ok(Applied::Done)
                         }
@@ -592,6 +631,25 @@ mod erased {
     }
 }
 
+/// Whether two versions of a site ask for the same thing: the order of `names` and
+/// `gateways` is not a change, so reordering them must not clear the backoff.
+fn same_site(a: &Site, b: &Site) -> bool {
+    let sorted = |v: &[String]| {
+        let mut v = v.to_vec();
+        v.sort();
+        v
+    };
+    Site {
+        names: sorted(&a.names),
+        gateways: sorted(&a.gateways),
+        ..a.clone()
+    } == Site {
+        names: sorted(&b.names),
+        gateways: sorted(&b.gateways),
+        ..b.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,7 +658,9 @@ mod tests {
     fn store() -> (AcmeStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::kv::Db::open(dir.path()).unwrap();
-        (AcmeStore::open(&db).unwrap(), dir)
+        let store = AcmeStore::open(&db).unwrap();
+        store.seed_gateway("gw1");
+        (store, dir)
     }
 
     #[test]
@@ -829,9 +889,22 @@ mod tests {
         s.apply_local(&AcmeOp::SiteSet(site("a", &["a.example.com"])))
             .unwrap();
         assert_eq!(s.attempt("a").unwrap().unwrap().failures, 3, "unchanged");
+        // The same names in another order are not a change either.
         s.apply_local(&AcmeOp::SiteSet(site(
             "a",
             &["a.example.com", "b.example.com"],
+        )))
+        .unwrap();
+        s.apply_local(&fail()).unwrap();
+        s.apply_local(&AcmeOp::SiteSet(site(
+            "a",
+            &["b.example.com", "a.example.com"],
+        )))
+        .unwrap();
+        assert_eq!(s.attempt("a").unwrap().unwrap().failures, 3, "reordered");
+        s.apply_local(&AcmeOp::SiteSet(site(
+            "a",
+            &["a.example.com", "c.example.com"],
         )))
         .unwrap();
         assert!(
@@ -927,6 +1000,31 @@ mod tests {
     }
 
     #[test]
+    fn a_site_cannot_name_a_gateway_nobody_registered_and_a_deleted_gateway_leaves_its_sites() {
+        let (store, _dir) = store();
+        let mut s = site("web", &["a.example.com"]);
+        s.gateways = vec!["gw1".into(), "ghost".into()];
+        match store.apply_local(&AcmeOp::SiteSet(s.clone())).unwrap() {
+            Applied::Invalid(why) => assert!(why.contains("ghost"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(store.site("web").unwrap().is_none());
+        s.gateways = vec!["gw1".into()];
+        assert_eq!(
+            store.apply_local(&AcmeOp::SiteSet(s)).unwrap(),
+            Applied::Done
+        );
+        // Registering the name again later must not give the new holder the site's keys.
+        assert_eq!(
+            store
+                .apply_local(&AcmeOp::GatewayDelete { name: "gw1".into() })
+                .unwrap(),
+            Applied::Done
+        );
+        assert!(store.site("web").unwrap().unwrap().gateways.is_empty());
+    }
+
+    #[test]
     fn gateways_are_registered_once_deleted_and_carried_by_a_snapshot() {
         let (store, _dir) = store();
         let gw = |name: &str, hash: &str| Gateway {
@@ -945,7 +1043,7 @@ mod tests {
         assert!(matches!(set(gw("Bad_Name", "cc")), Applied::Invalid(_)));
         assert_eq!(set(gw("edge-2", "dd")), Applied::Done);
         let snap = store.snapshot().unwrap();
-        assert_eq!(snap.gateways.len(), 2);
+        assert_eq!(snap.gateways.len(), 3, "edge, edge-2 and the seeded gw1");
 
         let (other, _d2) = self::store();
         other.replace(&snap).unwrap();

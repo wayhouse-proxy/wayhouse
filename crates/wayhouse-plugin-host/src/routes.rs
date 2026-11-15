@@ -63,6 +63,14 @@ impl Net {
                 .ok_or_else(|| format!("{s:?} has an invalid prefix length"))?,
             None => max,
         };
+        // A network that spans most of the address space grants nothing useful and would
+        // let a typo (`/0`, `/1`) allow every backend (#486).
+        let widest = if base.is_ipv4() { 8 } else { 16 };
+        if prefix < widest {
+            return Err(format!(
+                "{s:?} is wider than /{widest}; name the network the backends live in"
+            ));
+        }
         Ok(Self { base, prefix })
     }
 
@@ -338,6 +346,14 @@ mod tests {
             },
             RouteCap {
                 backends: vec!["10.0.0.0/33".into()],
+                ..cap()
+            },
+            RouteCap {
+                backends: vec!["0.0.0.0/0".into()],
+                ..cap()
+            },
+            RouteCap {
+                backends: vec!["::/3".into()],
                 ..cap()
             },
             RouteCap {

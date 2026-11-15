@@ -7,6 +7,10 @@ img=$1
 cd "$(dirname "$0")/.."
 want=$(sed -n 's/^FROM caddy:\([0-9][0-9.]*\)@sha256:[0-9a-f]* AS wayhouse-caddy$/\1/p' deploy/Dockerfile)
 [ -n "$want" ] || { echo "check-caddy-image: no pinned 'FROM caddy:<ver>@sha256:… AS wayhouse-caddy' in deploy/Dockerfile" >&2; exit 1; }
+# The build stage compiles CADDY_VERSION; the final stage is the base image of the same tag.
+# A bump of one without the other would ship a binary the base image does not match (#418).
+built=$(sed -n 's/^ARG CADDY_VERSION=\([0-9][0-9.]*\)$/\1/p' deploy/Dockerfile)
+[ "$built" = "$want" ] || { echo "check-caddy-image: Dockerfile builds Caddy '$built' but its base image is $want" >&2; exit 1; }
 got=$(docker run --rm --cap-drop ALL --user 65532:65532 "$img" version)
 case "$got" in
   v$want\ *|v$want) ;;

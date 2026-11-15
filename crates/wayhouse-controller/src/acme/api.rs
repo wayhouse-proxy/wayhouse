@@ -559,6 +559,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = AcmeStore::open(&db).unwrap();
+        store.seed_gateway("gw1");
         let plugins = crate::plugins::PluginStore::open(&db).unwrap();
         plugins.put_blob(&"0".repeat(64), b"module").unwrap();
         plugins
@@ -610,9 +611,12 @@ mod tests {
     #[tokio::test]
     async fn gateways_are_created_once_listed_without_secrets_and_revoked() {
         let (app, store, _d) = app(None);
-        call(&app, "PUT", "/acme/sites/web", SITE, None).await;
+        store
+            .apply_local(&AcmeOp::GatewayDelete { name: "gw1".into() })
+            .unwrap();
         let (st, made) = call(&app, "POST", "/acme/gateways", r#"{"name":"gw1"}"#, None).await;
         assert_eq!(st, StatusCode::CREATED);
+        call(&app, "PUT", "/acme/sites/web", SITE, None).await;
         let token = made["token"].as_str().unwrap().to_string();
         assert!(token.starts_with("gwt_"));
         // Only the hash is stored.
@@ -650,7 +654,9 @@ mod tests {
 
     #[tokio::test]
     async fn gateway_routes_need_the_admin_token_and_the_gateway_token_is_not_one() {
-        let (app, _s, _d) = app(Some("admin"));
+        let (app, s, _d) = app(Some("admin"));
+        s.apply_local(&AcmeOp::GatewayDelete { name: "gw1".into() })
+            .unwrap();
         assert_eq!(
             call(&app, "POST", "/acme/gateways", r#"{"name":"gw1"}"#, None)
                 .await

@@ -628,6 +628,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = AcmeStore::open(&db).unwrap();
+        store.seed_gateway("gw1");
         let dns = MemDns::default();
         let now = Arc::new(AtomicU64::new(1_800_000_000));
         let clock: Clock = {
@@ -1226,6 +1227,16 @@ mod tests {
             Some(ha.clone()),
             clock,
         );
+        ha.raft
+            .client_write(WriteRequest::Acme(AcmeOp::GatewaySet(
+                crate::acme::Gateway {
+                    name: "gw1".into(),
+                    token_hash: "seed".into(),
+                    created_at: 1,
+                },
+            )))
+            .await
+            .unwrap();
         let applied = ha
             .raft
             .client_write(WriteRequest::Acme(AcmeOp::SiteSet(site(
