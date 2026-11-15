@@ -116,9 +116,11 @@ describe("SecretsPage", () => {
     expect(screen.getByRole("button", { name: "Re-encrypt plugin secrets" })).toHaveAttribute("aria-disabled", "true");
   });
 
-  it("an operator cannot re-encrypt", async () => {
+  it("an operator neither sees the key rotation nor triggers the admin-only key request", async () => {
     page("operator");
     await screen.findByText("gossip-psk");
+    expect(screen.queryByRole("region", { name: "Key rotation" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Re-encrypt plugin secrets" })).toBeNull();
+    expect(api.getPluginSecretKeys).not.toHaveBeenCalled();
   });
 });

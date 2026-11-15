@@ -100,7 +100,7 @@ export function SecretsPage() {
       <p className="mt-2 text-sm text-ink-muted">
         Values are write-only: once saved they cannot be read back, here or anywhere. A change applies to a proxy at its next restart.
       </p>
-      <KeyRotation canWrite={canWrite} />
+      {canWrite && <KeyRotation />}
       {adding && (
         <AddDialog
           taken={new Set((items ?? []).map((s) => s.name))}
@@ -166,7 +166,7 @@ function AddDialog({ taken, onClose }: { taken: Set<string>; onClose: (saved: bo
 }
 
 /** Key rotation for the plugin secrets: which key ids each controller holds, and the re-encrypt step once all hold the active one. */
-function KeyRotation({ canWrite }: { canWrite: boolean }) {
+function KeyRotation() {
   const [keys, setKeys] = useState<PluginSecretKeys | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -236,11 +236,9 @@ function KeyRotation({ canWrite }: { canWrite: boolean }) {
           {done}
         </p>
       )}
-      {canWrite && (
-        <Button className="mt-2" loading={busy} disabled={!keys || lacking.length > 0} onClick={rewrap}>
-          Re-encrypt plugin secrets
-        </Button>
-      )}
+      <Button className="mt-2" loading={busy} disabled={!keys || lacking.length > 0} onClick={rewrap}>
+        Re-encrypt plugin secrets
+      </Button>
     </section>
   );
 }
