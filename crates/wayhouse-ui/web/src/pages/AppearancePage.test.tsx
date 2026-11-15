@@ -10,6 +10,8 @@ const api = vi.hoisted(() => ({
   saveUiDefaults: vi.fn(),
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
+const boards = vi.hoisted(() => ({ list: vi.fn() }));
+vi.mock("../lib/dashboard/model", async (orig) => ({ ...(await orig<typeof import("../lib/dashboard/model")>()), listDashboards: boards.list }));
 
 import { QueryProvider } from "../lib/query";
 import { SessionProvider, type Role } from "../lib/session";
@@ -32,6 +34,7 @@ function show(role: Role) {
 
 beforeEach(() => {
   localStorage.clear();
+  boards.list.mockReset().mockResolvedValue([{ name: "Ops", widgets: [] }, { name: "NOC", widgets: [] }]);
   api.listThemes.mockReset().mockResolvedValue([night]);
   api.getUiDefaults.mockReset().mockResolvedValue({});
   api.saveTheme.mockReset().mockResolvedValue(night);
@@ -59,6 +62,21 @@ describe("AppearancePage", () => {
     await userEvent.selectOptions(screen.getByLabelText("Deployment default"), "Night");
     await waitFor(() => expect(api.saveUiDefaults).toHaveBeenCalled());
     expect(api.saveUiDefaults.mock.calls[0][0]).toEqual({ theme: "Night" });
+  });
+
+  it("an admin picks the default dashboard and keeps the default theme", async () => {
+    api.getUiDefaults.mockResolvedValue({ theme: "Night" });
+    show("admin");
+    await screen.findByRole("cell", { name: "Night" });
+    await userEvent.selectOptions(await screen.findByRole("combobox", { name: "Default dashboard" }), "NOC");
+    await waitFor(() => expect(api.saveUiDefaults).toHaveBeenCalled());
+    expect(api.saveUiDefaults.mock.calls[0][0]).toEqual({ theme: "Night", dashboard: "NOC" });
+  });
+
+  it("a viewer cannot change the default dashboard", async () => {
+    show("viewer");
+    await screen.findByRole("cell", { name: "Night" });
+    expect(await screen.findByRole("combobox", { name: "Default dashboard" })).toBeDisabled();
   });
 
   it("renaming the default theme moves the default before the old name is deleted", async () => {

@@ -50,6 +50,15 @@ pub enum UiOp {
         kind: Kind,
         name: String,
     },
+    /// Renames a dashboard in one step (a failed second write cannot leave both), and moves
+    /// `defaults.dashboard` along. With `revision`, refused as `Stale` unless the dashboard still
+    /// has it.
+    RenameDashboard {
+        from: String,
+        to: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision: Option<u64>,
+    },
     /// Re-encrypts one cluster secret under a newer key: applied only if the secret still holds
     /// the ciphertext whose nonce is `from_nonce`, so a `PUT` that landed meanwhile wins.
     RewrapSecret {
@@ -136,6 +145,8 @@ pub enum Applied {
     Taken,
     /// A prefix-code redeem named an origin that already holds a token or a tunnel key.
     NameTaken,
+    /// A rename's target name already holds a record.
+    Exists,
     /// A pool-code redeem spent a use and made a child record holding this node id.
     Allocated(u64),
 }
@@ -370,11 +381,14 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
     match kind {
         Kind::SavedFilter => Ok(()),
         Kind::Dashboard => {
-            only_keys(obj, "", &["name", "version", "widgets"])?;
+            only_keys(obj, "", &["name", "version", "widgets", "revision"])?;
             let widgets = obj
                 .get("widgets")
                 .and_then(Value::as_array)
                 .ok_or("widgets must be an array")?;
+            if obj.get("revision").is_some_and(|v| !v.is_u64()) {
+                return Err("revision must be a whole number".into());
+            }
             if obj.get("version").is_some_and(|v| !v.is_u64()) {
                 return Err("version must be a whole number".into());
             }
@@ -677,6 +691,14 @@ impl UiStore {
             .map_err(Into::into)
     }
 
+    /// The saves a dashboard has had; 0 when it is new or predates revisions.
+    fn dashboard_revision(&self, name: &str) -> Result<u64, UiStoreError> {
+        Ok(self
+            .get(Kind::Dashboard, name)?
+            .and_then(|d| d["revision"].as_u64())
+            .unwrap_or(0))
+    }
+
     /// How many records of `kind` there are, without parsing them.
     fn count(&self, kind: Kind) -> usize {
         self.records.scan_prefix(key(kind, "")).count()
@@ -739,6 +761,23 @@ impl UiStore {
                     return Ok(Err(Applied::Invalid(why)));
                 }
                 let k = key(*kind, name);
+                let mut stamped;
+                let value = if *kind == Kind::Dashboard {
+                    // The revision counts saves; a save that names the one it edited from is
+                    // refused when someone saved since. One without it (an import) overwrites.
+                    let current = self.dashboard_revision(name)?;
+                    if value
+                        .get("revision")
+                        .is_some_and(|r| r.as_u64() != Some(current))
+                    {
+                        return Ok(Err(Applied::Stale));
+                    }
+                    stamped = value.clone();
+                    stamped["revision"] = (current + 1).into();
+                    &stamped
+                } else {
+                    value
+                };
                 // A node id belongs to one controller code: checked here, in the atomic step, so
                 // two admins minting at once on different replicas cannot both get it.
                 if *kind == Kind::Enrollment && value["role"] == "controller" {
@@ -776,6 +815,41 @@ impl UiStore {
                     }
                 }
                 Ok(Ok(vec![Write::Insert(k, serde_json::to_vec(value)?)]))
+            }
+            UiOp::RenameDashboard { from, to, revision } => {
+                if let Err(why) = check_name(Kind::Dashboard, to) {
+                    return Ok(Err(Applied::Invalid(format!("name: {why}"))));
+                }
+                let Some(mut rec) = self.get(Kind::Dashboard, from)? else {
+                    return Ok(Err(Applied::NotFound));
+                };
+                if from != to && self.get(Kind::Dashboard, to)?.is_some() {
+                    return Ok(Err(Applied::Exists));
+                }
+                let current = rec["revision"].as_u64().unwrap_or(0);
+                if revision.is_some_and(|r| r != current) {
+                    return Ok(Err(Applied::Stale));
+                }
+                rec["name"] = to.as_str().into();
+                rec["revision"] = (current + 1).into();
+                let mut writes = vec![];
+                if from != to {
+                    writes.push(Write::Remove(key(Kind::Dashboard, from)));
+                }
+                writes.push(Write::Insert(
+                    key(Kind::Dashboard, to),
+                    serde_json::to_vec(&rec)?,
+                ));
+                if let Some(Value::Object(mut d)) = self.get(Kind::Defaults, "")? {
+                    if d.get("dashboard").and_then(Value::as_str) == Some(from) {
+                        d.insert("dashboard".into(), to.as_str().into());
+                        writes.push(Write::Insert(
+                            key(Kind::Defaults, ""),
+                            serde_json::to_vec(&d)?,
+                        ));
+                    }
+                }
+                Ok(Ok(writes))
             }
             UiOp::RewrapSecret {
                 name,
@@ -1700,10 +1774,110 @@ mod tests {
             s.apply_local(&put(Kind::Dashboard, "ops", dash())).unwrap(),
             Applied::Done
         );
-        assert_eq!(s.get(Kind::Dashboard, "ops").unwrap(), Some(dash()));
+        let mut want = dash();
+        want["revision"] = json!(1);
+        assert_eq!(s.get(Kind::Dashboard, "ops").unwrap(), Some(want.clone()));
         assert_eq!(
             s.list(Kind::Dashboard).unwrap(),
-            vec![("ops".to_string(), dash())]
+            vec![("ops".to_string(), want)]
+        );
+    }
+
+    fn dash_at(revision: u64) -> Value {
+        let mut d = dash();
+        d["revision"] = json!(revision);
+        d
+    }
+
+    fn rename(from: &str, to: &str, revision: Option<u64>) -> UiOp {
+        UiOp::RenameDashboard {
+            from: from.into(),
+            to: to.into(),
+            revision,
+        }
+    }
+
+    #[test]
+    fn a_dashboard_save_counts_up_and_refuses_a_stale_revision() {
+        let (s, _d) = store();
+        let rev = |s: &UiStore| s.get(Kind::Dashboard, "ops").unwrap().unwrap()["revision"].clone();
+        s.apply_local(&put(Kind::Dashboard, "ops", dash())).unwrap();
+        assert_eq!(rev(&s), 1);
+        // Saved from revision 1: fine, and the stored one moves on.
+        assert_eq!(
+            s.apply_local(&put(Kind::Dashboard, "ops", dash_at(1)))
+                .unwrap(),
+            Applied::Done
+        );
+        assert_eq!(rev(&s), 2);
+        // A second editor still holds revision 1: refused, nothing changes.
+        assert_eq!(
+            s.apply_local(&put(Kind::Dashboard, "ops", dash_at(1)))
+                .unwrap(),
+            Applied::Stale
+        );
+        assert_eq!(rev(&s), 2);
+        // Revision 0 means "I saw no such dashboard": stale against an existing one.
+        assert_eq!(
+            s.apply_local(&put(Kind::Dashboard, "ops", dash_at(0)))
+                .unwrap(),
+            Applied::Stale
+        );
+        // A save without a revision (an import) overwrites.
+        assert_eq!(
+            s.apply_local(&put(Kind::Dashboard, "ops", dash())).unwrap(),
+            Applied::Done
+        );
+        assert_eq!(rev(&s), 3);
+    }
+
+    #[test]
+    fn renaming_a_dashboard_is_one_step_and_moves_the_default() {
+        let (s, _d) = store();
+        s.apply_local(&put(Kind::Dashboard, "ops", dash())).unwrap();
+        s.apply_local(&put(
+            Kind::Defaults,
+            "",
+            json!({"dashboard": "ops", "theme": "dark"}),
+        ))
+        .unwrap();
+        assert_eq!(
+            s.apply_local(&rename("ops", "noc", Some(1))).unwrap(),
+            Applied::Done
+        );
+        assert_eq!(s.get(Kind::Dashboard, "ops").unwrap(), None);
+        let moved = s.get(Kind::Dashboard, "noc").unwrap().unwrap();
+        assert_eq!(moved["name"], "noc");
+        assert_eq!(moved["revision"], 2);
+        assert_eq!(
+            s.get(Kind::Defaults, "").unwrap(),
+            Some(json!({"dashboard": "noc", "theme": "dark"}))
+        );
+    }
+
+    #[test]
+    fn a_rename_refuses_a_missing_source_a_taken_target_and_a_stale_revision() {
+        let (s, _d) = store();
+        s.apply_local(&put(Kind::Dashboard, "ops", dash())).unwrap();
+        s.apply_local(&put(Kind::Dashboard, "noc", dash())).unwrap();
+        assert_eq!(
+            s.apply_local(&rename("ghost", "x", None)).unwrap(),
+            Applied::NotFound
+        );
+        assert_eq!(
+            s.apply_local(&rename("ops", "noc", None)).unwrap(),
+            Applied::Exists
+        );
+        assert_eq!(
+            s.apply_local(&rename("ops", "x", Some(9))).unwrap(),
+            Applied::Stale
+        );
+        assert!(invalid(s.apply_local(&rename("ops", "a/b", None)).unwrap()).contains("name"));
+        assert!(s.get(Kind::Dashboard, "ops").unwrap().is_some());
+        assert_eq!(
+            s.apply_local(&rename("ops", "x", None)).unwrap(),
+            Applied::Done,
+            "no revision: unconditional"
         );
     }
 

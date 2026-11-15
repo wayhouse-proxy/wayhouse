@@ -7,25 +7,28 @@ const api = vi.hoisted(() => ({
   getFleetStats: vi.fn(),
   listRevisions: vi.fn(),
   listAcmeSites: vi.fn(),
+  getUiDefaults: vi.fn(),
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
-const store = vi.hoisted(() => ({ list: vi.fn(), save: vi.fn(), del: vi.fn() }));
+const store = vi.hoisted(() => ({ list: vi.fn(), save: vi.fn(), del: vi.fn(), rename: vi.fn() }));
 vi.mock("../lib/dashboard/model", async (orig) => ({
   ...(await orig<typeof import("../lib/dashboard/model")>()),
   listDashboards: store.list,
   saveDashboard: store.save,
   deleteDashboard: store.del,
+  renameDashboard: store.rename,
 }));
 vi.mock("../useFleetSocket", () => ({
   useFleetSocket: () => ({
     connected: true,
     instances: [
-      { instance: "eu-1", last_seen_ms_ago: 1000, stale: false, pools: [{ name: "web", balancer: "rr", backends: [{ addr: "10.0.0.1:80", healthy: false, state: "enabled", active: 0 }] }], sessions: { tcp: 1, udp: 0 }, version: "0.4.0", skew: "none" },
-      { instance: "eu-2", last_seen_ms_ago: 90000, stale: true, pools: [], sessions: { tcp: 0, udp: 0 }, version: "0.3.0", skew: "outside-window" },
+      { instance: "eu-1", last_seen_ms_ago: 1000, stale: false, pools: [{ name: "web", balancer: "rr", backends: [{ addr: "10.0.0.1:80", healthy: false, state: "enabled", active: 0 }] }], sessions: { tcp: 1, udp: 0 }, version: "0.4.0", skew: "none", config_revision: 12 },
+      { instance: "eu-2", last_seen_ms_ago: 90000, stale: true, pools: [], sessions: { tcp: 0, udp: 0 }, version: "0.3.0", skew: "outside-window", config_revision: 11 },
     ],
   }),
 }));
 
+import { ApiError } from "../api";
 import { QueryProvider } from "../lib/query";
 import { SessionProvider, type Role } from "../lib/session";
 import { ToastProvider } from "../components/ui/Toast";
@@ -56,8 +59,10 @@ beforeEach(() => {
   store.list.mockReset().mockResolvedValue([board]);
   store.save.mockReset().mockImplementation(async (d) => d);
   store.del.mockReset().mockResolvedValue(undefined);
+  store.rename.mockReset().mockResolvedValue({ name: "NOC" });
   api.getFleetStats.mockReset().mockRejectedValue(new Error("aggregator not configured"));
   api.listRevisions.mockReset().mockResolvedValue([{ revision: 12, size_bytes: 1, current: true }]);
+  api.getUiDefaults.mockReset().mockResolvedValue({});
   api.listAcmeSites.mockReset().mockResolvedValue({ sites: [] });
 });
 
@@ -124,6 +129,53 @@ describe("DashboardPage", () => {
     expect(screen.queryByRole("region", { name: "Nodes" })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Reset" }));
     expect(screen.getByRole("region", { name: "Nodes" })).toBeInTheDocument();
+  });
+
+  it("the rollout widget counts the nodes on each applied revision", async () => {
+    store.list.mockResolvedValue([{ name: "Ops", widgets: [{ id: "rollout.v1", width: 6 }] }]);
+    show("operator");
+    const panel = await screen.findByRole("region", { name: "Config rollout" });
+    expect(await within(panel).findByText("1 of 2 nodes on r12")).toBeInTheDocument();
+    expect(within(panel).getByRole("list", { name: "Nodes by applied revision" })).toHaveTextContent("r11");
+    expect(within(panel).queryByText(/not reported yet/)).toBeNull();
+  });
+
+  it("a save that lost to someone else's save says so and offers theirs or an overwrite", async () => {
+    store.list.mockResolvedValue([{ ...board, revision: 3 }]);
+    store.save.mockRejectedValueOnce(new ApiError(409, "the record changed since it was read"));
+    show("operator");
+    await screen.findByRole("region", { name: "Nodes" });
+    await userEvent.click(screen.getByRole("button", { name: "Customize" }));
+    await userEvent.click(screen.getByRole("button", { name: "Remove Nodes" }));
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(await screen.findByText(/Someone else saved this dashboard/)).toBeInTheDocument();
+    expect(store.save.mock.calls[0][0].revision).toBe(3);
+    await userEvent.click(screen.getByRole("button", { name: "Save anyway" }));
+    await waitFor(() => expect(store.save).toHaveBeenCalledTimes(2));
+    expect(store.save.mock.calls[1][0].revision).toBeUndefined();
+    expect(await screen.findByText("Dashboard saved")).toBeInTheDocument();
+  });
+
+  it("renaming asks the controller for one rename, not a save and a delete", async () => {
+    store.list.mockResolvedValue([{ ...board, revision: 3 }]);
+    show("operator");
+    await screen.findByRole("region", { name: "Nodes" });
+    await userEvent.click(screen.getByRole("button", { name: "Rename" }));
+    const name = screen.getByLabelText("New name");
+    await userEvent.clear(name);
+    await userEvent.type(name, "NOC{enter}");
+    await waitFor(() => expect(store.rename).toHaveBeenCalledWith("Ops", "NOC", 3));
+    expect(store.save).not.toHaveBeenCalled();
+    expect(store.del).not.toHaveBeenCalled();
+  });
+
+  it("opens on the deployment default dashboard unless the address names another", async () => {
+    store.list.mockResolvedValue([board, { name: "NOC", widgets: [{ id: "attention.v1", width: 12 }] }]);
+    api.getUiDefaults.mockResolvedValue({ dashboard: "NOC" });
+    show("operator");
+    expect(await screen.findByRole("region", { name: "Needs attention" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Nodes" })).toBeNull();
+    expect(screen.getByLabelText("Dashboard")).toHaveValue("NOC");
   });
 
   it("a viewer cannot customize", async () => {

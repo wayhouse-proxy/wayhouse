@@ -95,6 +95,7 @@ const UI: Allowed = &[
     (&Method::GET, "/ui/*/*"),
     (&Method::PUT, "/ui/*/*"),
     (&Method::DELETE, "/ui/*/*"),
+    (&Method::POST, "/ui/dashboards/*/rename"),
 ];
 
 /// What an enrolled origin's own token may call: the agent's list plus its tunnel key, which
@@ -335,6 +336,7 @@ mod tests {
             ("GET", "/ui/dashboards"),
             ("PUT", "/ui/dashboards/ops"),
             ("DELETE", "/ui/dashboards/ops"),
+            ("POST", "/ui/dashboards/ops/rename"),
         ] {
             assert_eq!(status(m, p, UI_T).await, StatusCode::OK, "{m} {p}");
         }

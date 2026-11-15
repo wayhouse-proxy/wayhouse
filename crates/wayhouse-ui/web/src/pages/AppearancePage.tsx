@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { StoredTheme } from "../api";
 import { ThemeEditor } from "../components/appearance/ThemeEditor";
 import { ErrorState, Loading } from "../components/shell/States";
@@ -9,6 +10,7 @@ import { FieldRow } from "../components/ui/FieldRow";
 import { Select } from "../components/ui/Input";
 import { Section } from "../components/ui/Section";
 import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
+import { listDashboards } from "../lib/dashboard/model";
 import { useCan } from "../lib/session";
 import { BUILTIN, effective } from "../lib/theme/builtin";
 import { useTheme } from "../lib/theme/provider";
@@ -38,6 +40,7 @@ export function AppearancePage() {
   const canWrite = useCan("admin");
   const themes = useThemes();
   const defaults = useUiDefaults();
+  const dashboards = useQuery({ queryKey: ["ui", "dashboards"], queryFn: listDashboards });
   const save = useSaveTheme();
   const remove = useDeleteTheme();
   const saveDefaults = useSaveDefaults();
@@ -146,6 +149,29 @@ export function AppearancePage() {
                 ))}
               </Select>
             </div>
+          )}
+        />
+      </Section>
+
+      <Section title="Dashboard">
+        <FieldRow
+          label="Default dashboard"
+          help="What the Dashboard page opens on until somebody picks another."
+          render={(a) => (
+            <Select
+              {...a}
+              value={defaults.data?.dashboard ?? ""}
+              disabled={!canWrite || saveDefaults.isPending || dashboards.isPending}
+              title={canWrite ? undefined : "Changing the default needs the admin role"}
+              onChange={(e) => run(() => saveDefaults.mutateAsync({ ...defaults.data, dashboard: e.target.value || undefined }))}
+            >
+              <option value="">First in the list</option>
+              {(dashboards.data ?? []).map((d) => (
+                <option key={d.name} value={d.name}>
+                  {d.name}
+                </option>
+              ))}
+            </Select>
           )}
         />
       </Section>

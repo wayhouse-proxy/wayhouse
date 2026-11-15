@@ -369,6 +369,14 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
     if (method === "PUT") { try { layout = JSON.parse(await text()); } catch { return err(422, "The layout is not valid JSON."); } return ok(layout as object); }
     layout = null; return ok("");
   }
+  if ((r = m(/^\/api\/ui\/dashboards\/([^/]+)\/rename$/))) {
+    const b = await json();
+    const d = dashboards.find((x: any) => x.name === decodeURIComponent(r![1]));
+    if (!d) return err(404, "no such record");
+    if (dashboards.some((x: any) => x.name === b.to)) return err(409, "a record with that name already exists");
+    d.name = b.to;
+    return ok({ name: b.to });
+  }
   if ((r = m(/^\/api\/ui\/(filters|themes|dashboards)\/(.+)$/))) {
     const list = { filters, themes, dashboards }[r[1] as "filters"];
     const name = decodeURIComponent(r[2]);

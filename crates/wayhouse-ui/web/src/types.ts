@@ -33,6 +33,8 @@ export interface FleetInstanceView {
   version?: string;
   /** Component wire protocol `major.minor`; empty from an older build. */
   protocol?: string;
+  /** The controller revision the instance applied; absent for a proxy that reads a file or an older build. */
+  config_revision?: number | null;
   /** Against the newest version in the fleet (the aggregator computes it). */
   skew?: "none" | "within-window" | "outside-window";
 }
