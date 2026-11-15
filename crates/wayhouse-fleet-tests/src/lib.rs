@@ -367,6 +367,17 @@ impl Proc {
         name: &'static str,
         args: &[String],
     ) -> Result<Self> {
+        Self::spawn_in_env(ns, name, args, &[])
+    }
+
+    /// [`Proc::spawn_in`] with extra environment variables for the child (the
+    /// `WAYHOUSE_TEST_PROTOCOL_*` overrides of `tests/mixed_versions.rs`).
+    pub fn spawn_in_env(
+        ns: Option<&crate::netns::Ns>,
+        name: &'static str,
+        args: &[String],
+        envs: &[(&str, String)],
+    ) -> Result<Self> {
         let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
         let file2 = file.try_clone()?;
         let mut cmd = match ns {
@@ -381,6 +392,7 @@ impl Proc {
             None => Command::new(bin_path(name)),
         };
         let child = cmd
+            .envs(envs.iter().map(|(k, v)| (*k, v.as_str())))
             .args(secret_files(args))
             .stdout(Stdio::from(file))
             .stderr(Stdio::from(file2))
@@ -658,6 +670,16 @@ pub fn spawn_controller_on(data_dir: &Path, listen: &str) -> Result<Proc> {
 
 /// Like [`spawn_controller_on`] with extra command-line arguments.
 pub fn spawn_controller_with(data_dir: &Path, listen: &str, extra: &[String]) -> Result<Proc> {
+    spawn_controller_env(data_dir, listen, extra, &[])
+}
+
+/// [`spawn_controller_with`] with environment variables for the child.
+pub fn spawn_controller_env(
+    data_dir: &Path,
+    listen: &str,
+    extra: &[String],
+    envs: &[(&str, String)],
+) -> Result<Proc> {
     let mut args = vec![
         "--data-dir".to_string(),
         data_dir.display().to_string(),
@@ -670,7 +692,7 @@ pub fn spawn_controller_with(data_dir: &Path, listen: &str, extra: &[String]) ->
     if ha && !args.iter().any(|a| a == "--ha-token") {
         args.extend(["--ha-token".to_string(), "fleet-test-ha-token".to_string()]);
     }
-    Proc::spawn_in(None, "wayhouse-controller", &args)
+    Proc::spawn_in_env(None, "wayhouse-controller", &args, envs)
 }
 
 pub fn spawn_aggregator(listen_port: u16) -> Result<Proc> {

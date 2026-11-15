@@ -5,10 +5,13 @@
 //! `WAYHOUSE_TEST_PROTOCOL_*` (the `test-protocol-override` feature every fleet
 //! build enables, see `PROTOCOL_OVERRIDE_FEATURE`).
 
-use anyhow::Result;
+use std::time::Duration;
+
+use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use wayhouse_fleet_tests::{
-    build_fleet_bins, free_port, spawn_controller_with, wait_http_up, Proc,
+    build_fleet_bins, free_port, spawn_controller_env, spawn_controller_with, wait_http_up,
+    wait_until, Proc,
 };
 use wayhouse_http::protocol::{ProtocolVersion, HEADER};
 
@@ -104,5 +107,184 @@ async fn other_major_peer_is_refused_with_readable_message_and_counter() -> Resu
         metrics.contains("wayhouse_protocol_mismatch_total{route_group=\"controller\"} 1"),
         "{metrics}"
     );
+    Ok(())
+}
+
+const DOC: &str = "pools:\n  - name: mc\n    targets: [\"127.0.0.1:25566\"]\nlisteners:\n  - name: main\n    bind: \"0.0.0.0:25565\"\n    protocol: tcp\n    pool: mc\n";
+
+fn override_env(major: u16, minor: u16) -> Vec<(&'static str, String)> {
+    vec![
+        ("WAYHOUSE_TEST_PROTOCOL_MAJOR", major.to_string()),
+        ("WAYHOUSE_TEST_PROTOCOL_MINOR", minor.to_string()),
+    ]
+}
+
+/// The override works on a real spawned binary (#262): a controller started with an injected
+/// version announces it in its response header and its build-info metric, and one on another
+/// major refuses a peer on ours with the readable `426`.
+#[tokio::test]
+async fn a_spawned_binary_announces_its_injected_version_and_refuses_another_major() -> Result<()> {
+    build_fleet_bins()?;
+    let current = ProtocolVersion::CURRENT;
+    assert!(
+        current.minor >= 1,
+        "this test plays a node one minor behind"
+    );
+    let http = wayhouse_http::client();
+
+    // One minor behind: it announces that version, and still serves ours.
+    let dir = tempfile::tempdir()?;
+    let port = free_port()?;
+    let _older = spawn_controller_env(
+        dir.path(),
+        &format!("127.0.0.1:{port}"),
+        &[],
+        &override_env(current.major, current.minor - 1),
+    )?;
+    let base = format!("http://127.0.0.1:{port}");
+    wait_http_up(
+        &format!("{base}/healthz"),
+        wayhouse_fleet_tests::STARTUP_TIMEOUT,
+    )
+    .await?;
+    let resp = http.get(format!("{base}/config")).send().await?;
+    let announced = resp
+        .headers()
+        .get(HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    assert_eq!(
+        announced.as_deref(),
+        Some(format!("{}.{}", current.major, current.minor - 1).as_str())
+    );
+    let metrics = http
+        .get(format!("{base}/metrics"))
+        .send()
+        .await?
+        .text()
+        .await?;
+    assert!(
+        metrics.contains(&format!(
+            "protocol=\"{}.{}\"",
+            current.major,
+            current.minor - 1
+        )),
+        "{metrics}"
+    );
+
+    // Another major: our request is refused readably.
+    let dir = tempfile::tempdir()?;
+    let port = free_port()?;
+    let _future = spawn_controller_env(
+        dir.path(),
+        &format!("127.0.0.1:{port}"),
+        &[],
+        &override_env(current.major + 1, 0),
+    )?;
+    let base = format!("http://127.0.0.1:{port}");
+    wait_http_up(
+        &format!("{base}/healthz"),
+        wayhouse_fleet_tests::STARTUP_TIMEOUT,
+    )
+    .await?;
+    let resp = http.get(format!("{base}/config")).send().await?;
+    assert_eq!(resp.status().as_u16(), 426);
+    let text = resp.text().await?;
+    assert!(text.contains("upgrade the older side"), "{text}");
+    Ok(())
+}
+
+/// A `slave` tier one minor behind its parent relays the parent's config (#262, #263): the only
+/// protocol-gated field today is the registration `capabilities`, which tiers do not use, so the
+/// tier path's baseline rule comes down to the relay working across a minor difference. The
+/// relay cursor survives the child restarting upgraded, and the next revision arrives once.
+#[tokio::test]
+async fn a_slave_tier_one_minor_behind_relays_and_resumes_its_cursor_after_upgrading() -> Result<()>
+{
+    build_fleet_bins()?;
+    let current = ProtocolVersion::CURRENT;
+    assert!(current.minor >= 1);
+    let http = wayhouse_http::client();
+    let dir = tempfile::tempdir()?;
+    let (parent_port, child_port) = (free_port()?, free_port()?);
+    let (parent_dir, child_dir) = (dir.path().join("parent"), dir.path().join("child"));
+    std::fs::create_dir_all(&parent_dir)?;
+    std::fs::create_dir_all(&child_dir)?;
+    let parent_base = format!("http://127.0.0.1:{parent_port}");
+    let child_base = format!("http://127.0.0.1:{child_port}");
+    let _parent = spawn_controller_with(&parent_dir, &format!("127.0.0.1:{parent_port}"), &[])?;
+    wait_http_up(
+        &format!("{parent_base}/healthz"),
+        wayhouse_fleet_tests::STARTUP_TIMEOUT,
+    )
+    .await?;
+    let child_args = vec![
+        "--role".to_string(),
+        "slave".to_string(),
+        "--parent-url".to_string(),
+        parent_base.clone(),
+    ];
+
+    let submit = |doc: String| {
+        let (http, base) = (http.clone(), parent_base.clone());
+        async move {
+            let r = http.post(format!("{base}/config")).body(doc).send().await?;
+            ensure!(r.status().is_success(), "submit: {}", r.text().await?);
+            anyhow::Ok(())
+        }
+    };
+    let child_revision = |base: String| {
+        let http = http.clone();
+        async move {
+            let r = http.get(format!("{base}/config")).send().await.ok()?;
+            r.headers()
+                .get("X-Config-Revision")?
+                .to_str()
+                .ok()?
+                .parse::<u64>()
+                .ok()
+        }
+    };
+
+    submit(DOC.to_string()).await?;
+    // The child is one minor behind its parent.
+    let older = spawn_controller_env(
+        &child_dir,
+        &format!("127.0.0.1:{child_port}"),
+        &child_args,
+        &override_env(current.major, current.minor - 1),
+    )?;
+    wait_until(
+        || {
+            let (f, b) = (child_revision.clone(), child_base.clone());
+            async move { Ok(f(b).await == Some(1)) }
+        },
+        Duration::from_secs(30),
+        "the older child to relay the parent's first revision",
+    )
+    .await?;
+
+    // The child upgrades (restarts on the same data dir, no override); the parent moves on.
+    older.kill().await?;
+    submit(DOC.replace("25566", "25567")).await?;
+    let _upgraded = spawn_controller_env(
+        &child_dir,
+        &format!("127.0.0.1:{child_port}"),
+        &child_args,
+        &[],
+    )?;
+    wait_until(
+        || {
+            let (f, b) = (child_revision.clone(), child_base.clone());
+            async move { Ok(f(b).await == Some(2)) }
+        },
+        Duration::from_secs(30),
+        "the upgraded child to resume from its cursor and relay revision 2",
+    )
+    .await
+    .context("the child did not catch up")?;
+    // Exactly one new revision: the cursor kept it from replaying revision 1.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(child_revision(child_base).await, Some(2));
     Ok(())
 }
