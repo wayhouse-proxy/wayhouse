@@ -225,7 +225,7 @@ fn a_guest_looping_on_http_requests_still_times_out() {
         .with_http(engine);
     assert!(matches!(
         plugin.on_timer(&StateSnapshot::new()),
-        Err(CallError::Timeout)
+        Err(CallError::Timeout(_))
     ));
 }
 

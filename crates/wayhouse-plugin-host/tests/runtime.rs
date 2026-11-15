@@ -228,7 +228,7 @@ fn an_endless_loop_times_out() {
     let plugin = host.load(&m, &approved(&m)).unwrap();
     assert!(matches!(
         plugin.on_timer(&StateSnapshot::new()),
-        Err(CallError::Timeout)
+        Err(CallError::Timeout(_))
     ));
 }
 
@@ -487,4 +487,38 @@ fn a_suspended_capability_is_denied_until_it_is_resumed() {
         plugin.on_timer(&StateSnapshot::new()),
         Err(CallError::CapabilityDenied("state"))
     ));
+}
+
+#[test]
+fn a_trap_or_timeout_keeps_the_lines_logged_before_it() {
+    let trap = guest(
+        TIMER_LOG_STATE,
+        r#"(func (export "init") (param i32 i32))
+           (func (export "on_timer")
+             (call $log (i32.const 2) (i32.const 0) (i32.const 5))
+             unreachable)"#,
+    );
+    let plugin = host().load(&trap, &approved(&trap)).unwrap();
+    let Err(CallError::Trap(why)) = plugin.on_timer(&StateSnapshot::new()) else {
+        panic!("expected a trap");
+    };
+    assert!(why.contains("hello"), "{why}");
+
+    let spin = guest(
+        TIMER_LOG_STATE,
+        r#"(func (export "init") (param i32 i32))
+           (func (export "on_timer")
+             (call $log (i32.const 2) (i32.const 0) (i32.const 5))
+             (loop $l (br $l)))"#,
+    );
+    let quick = PluginHost::new(Limits {
+        call_timeout: Duration::from_millis(100),
+        ..Limits::default()
+    })
+    .unwrap();
+    let plugin = quick.load(&spin, &approved(&spin)).unwrap();
+    let Err(e @ CallError::Timeout(_)) = plugin.on_timer(&StateSnapshot::new()) else {
+        panic!("expected a timeout");
+    };
+    assert!(e.to_string().contains("hello"), "{e}");
 }

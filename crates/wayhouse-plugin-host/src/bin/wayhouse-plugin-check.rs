@@ -51,6 +51,9 @@ fn main() -> ExitCode {
             );
         }
     }
+    for w in &report.warnings {
+        eprintln!("warning: {w}");
+    }
     for p in &report.problems {
         eprintln!("problem: {p}");
     }
