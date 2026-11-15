@@ -161,6 +161,12 @@ struct Args {
     #[arg(long)]
     no_default_registry: bool,
 
+    /// Signed release feed that tells the console a newer wayhouse release exists (checked
+    /// once a day, report only; nothing is downloaded or installed). An empty value turns the
+    /// check off, for an air-gapped install.
+    #[arg(long, default_value = crate::release_watch::DEFAULT_FEED_URL)]
+    release_feed_url: String,
+
     #[command(flatten)]
     tls: wayhouse_http::tls::TlsArgs,
 }
@@ -286,6 +292,12 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
     let registries =
         crate::registries::Registries::load(args.registries_file, !args.no_default_registry)?;
     state = state.with_registries(std::sync::Arc::new(registries), persistent);
+    let release_watch = crate::release_watch::ReleaseWatch::new(
+        env!("CARGO_PKG_VERSION"),
+        Some(args.release_feed_url.clone()),
+    );
+    let _release_task = release_watch.spawn(state.registry_client.clone());
+    state = state.with_release_watch(release_watch);
     if let Some(dir) = &args.settings_dir {
         state = state.with_settings_dir(dir.clone());
     }
