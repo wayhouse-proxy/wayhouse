@@ -146,6 +146,8 @@ pub struct Runner {
     /// The install list and the store version it was read at: a scan re-lists only when
     /// the store's change counter moved.
     listed: Mutex<Option<(u64, Arc<Vec<InstallRecord>>)>>,
+    /// Backend health as the proxies report it (leader only; see `backend_health`).
+    board: super::backend_health::HealthBoard,
 }
 
 /// Releases a place in an install's hook queue.
@@ -234,6 +236,7 @@ impl Runner {
             locks: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             listed: Mutex::new(None),
+            board: super::backend_health::HealthBoard::default(),
         })
     }
 
@@ -275,9 +278,46 @@ impl Runner {
             loop {
                 every.tick().await;
                 while running.try_join_next().is_some() {}
+                self.announce(&self.board.sweep(Instant::now(), unix_now()));
                 self.scan(Instant::now(), &mut running).await;
             }
         })
+    }
+
+    /// Takes a proxy's backend-health report; plugins hear about every verdict that changed.
+    pub fn report_health(
+        self: &Arc<Self>,
+        proxy: &str,
+        full: bool,
+        items: &[(String, bool)],
+    ) -> Result<(), super::backend_health::Refused> {
+        let changed = self
+            .board
+            .report(proxy, full, items, Instant::now(), unix_now())?;
+        self.announce(&changed);
+        Ok(())
+    }
+
+    /// Sends a `backend_health` event for each change to the plugins whose approved networks
+    /// hold the backend. Only the leader holds a board, so only the leader delivers.
+    fn announce(self: &Arc<Self>, changed: &[wayhouse_plugin_host::BackendStatus]) {
+        for status in changed {
+            super::events::deliver_to(
+                self,
+                &self.store,
+                super::events::BACKEND_HEALTH,
+                &serde_json::json!({
+                    "backend": status.backend, "up": status.up, "since": status.since
+                }),
+                |rec| {
+                    rec.approved
+                        .backends
+                        .as_ref()
+                        .is_some_and(|c| c.covers(&status.backend))
+                        && !rec.suspended.contains("backends")
+                },
+            );
+        }
     }
 
     pub fn status(&self, id: &str) -> Option<PluginStatus> {
@@ -497,6 +537,9 @@ impl Runner {
             Ok(s) => s,
             Err(e) => return Outcome::Failed(e),
         };
+        if rec.approved.backends.is_some() {
+            plugin.set_backend_status(self.board.snapshot());
+        }
         if rec.approved.port_routes.is_some() {
             match self.store.port_routes(&rec.id) {
                 Ok(table) => plugin.set_port_assignments(Arc::new(
@@ -1573,6 +1616,58 @@ mod tests {
         );
         // Places are free again afterwards.
         assert!(r.run_hook(HID, Hook::Webhook(request())).await.is_ok());
+    }
+
+    const HEALTHY: &str = r#"{"triggers":{"on_timer":true,"on_event":["backend_health"]},"tick_interval_secs":30,"log":true,"state":{"max_bytes":64},"backends":{"networks":["10.0.0.0/16"],"max_entries":8}}"#;
+
+    #[tokio::test]
+    async fn a_backend_going_down_reaches_only_plugins_whose_networks_hold_it() {
+        let (r, store, _d) = fixture(1, 4);
+        let module = guest(
+            HEALTHY,
+            r#"(func (export "init") (param i32 i32))
+               (func (export "on_timer"))
+               (func (export "on_event") (param i32 i32 i32 i32)
+                 (drop (call $get (i32.const 16) (i32.const 1) (i32.const 100) (i32.const 1)))
+                 (i32.store8 (i32.const 100)
+                   (i32.add (i32.load8_u (i32.const 100)) (i32.const 1)))
+                 (drop (call $put (i32.const 16) (i32.const 1) (i32.const 100) (i32.const 1))))"#,
+        );
+        let sha = "c".repeat(64);
+        store.put_blob(&sha, &module).unwrap();
+        store
+            .create(&InstallRecord {
+                id: HID.into(),
+                name: "health".into(),
+                sha256: sha,
+                size: module.len(),
+                approved: inspect(&module).unwrap().caps,
+                config: serde_json::json!({}),
+                enabled: true,
+                created_at: 2,
+                created_by: None,
+                webhook: None,
+                suspended: std::collections::BTreeSet::default(),
+            })
+            .unwrap();
+        // Outside the plugin's networks: it hears nothing.
+        r.report_health("p1", true, &[("192.168.0.9:25565".into(), false)])
+            .unwrap();
+        // Inside: one event.
+        r.report_health("p1", false, &[("10.0.0.5:25565".into(), false)])
+            .unwrap();
+        for _ in 0..200 {
+            if counter_value(&store, HID).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(counter_value(&store, HID), Some(1));
+        // The same word again is not news.
+        r.report_health("p1", false, &[("10.0.0.5:25565".into(), false)])
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(counter_value(&store, HID), Some(1));
     }
 
     const EVENTED: &str = r#"{"triggers":{"on_timer":true,"on_event":["config_revision"]},"tick_interval_secs":30,"log":true,"state":{"max_bytes":64}}"#;

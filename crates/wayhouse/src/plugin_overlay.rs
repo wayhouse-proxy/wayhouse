@@ -24,13 +24,17 @@ use std::time::Duration;
 
 use anyhow::Context;
 use serde::Deserialize;
-use wayhouse_config::plugin_routes::{merge_text, PluginRoute, PortProto, RouteKey};
+use wayhouse_config::plugin_routes::{
+    merge_text, merge_web_text, PluginRoute, PortProto, RouteKey,
+};
 use wayhouse_core::RuntimeHandle;
 
 const RECONNECT_MIN: Duration = Duration::from_secs(1);
 const RECONNECT_MAX: Duration = Duration::from_secs(60);
 
 static OVERLAY: Mutex<Vec<PluginRoute>> = Mutex::new(Vec::new());
+/// `(host, backend)` of the overlay's `web` routes (ABI 0.3), for the `web:` front door.
+static WEB_OVERLAY: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 #[derive(Deserialize)]
 struct Doc {
@@ -38,6 +42,15 @@ struct Doc {
     /// Entry-port routes; absent from a controller that predates them.
     #[serde(default)]
     port_routes: Vec<PortEntry>,
+    /// Routes of kind `web`; absent from a controller that predates them.
+    #[serde(default)]
+    web_routes: Vec<WebEntry>,
+}
+
+#[derive(Deserialize)]
+struct WebEntry {
+    host: String,
+    backend: String,
 }
 
 #[derive(Deserialize)]
@@ -124,6 +137,29 @@ fn load_with(
 }
 
 fn merge_routes(text: &str, routes: &[PluginRoute]) -> String {
+    let web = WEB_OVERLAY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    merge_web(&merge_plain(text, routes), &web)
+}
+
+fn merge_web(text: &str, web: &[(String, String)]) -> String {
+    match merge_web_text(text, web) {
+        Ok(m) => {
+            for s in &m.skipped {
+                tracing::warn!("plugin route skipped: {s}");
+            }
+            m.text
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "could not merge plugin web routes; using the config as submitted");
+            text.to_string()
+        }
+    }
+}
+
+fn merge_plain(text: &str, routes: &[PluginRoute]) -> String {
     match merge_text(text, routes) {
         Ok(m) => {
             for s in &m.skipped {
@@ -159,6 +195,37 @@ fn parse_event(event: &str) -> Option<Vec<PluginRoute>> {
             .chain(ports)
             .collect(),
     )
+}
+
+/// The `web` routes of one SSE data block (empty for junk, or a controller without them).
+fn parse_web(event: &str) -> Vec<(String, String)> {
+    let Some(data) = event
+        .split('\n')
+        .find_map(|l| l.strip_prefix("data:"))
+        .map(str::trim_start)
+    else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Doc>(data)
+        .map(|d| {
+            d.web_routes
+                .into_iter()
+                .map(|w| (w.host, w.backend))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Replaces the web overlay; returns whether it changed.
+fn set_web(web: Vec<(String, String)>) -> bool {
+    let mut cur = WEB_OVERLAY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *cur == web {
+        return false;
+    }
+    *cur = web;
+    true
 }
 
 /// Replaces the overlay; returns whether it changed.
@@ -221,7 +288,7 @@ async fn subscribe_once(
         .with_context(|| format!("connecting to {url}"))?;
     if !resp.status().is_success() {
         // 501: plugins are off on this controller. Not an error worth shouting about.
-        if withdraws_routes(resp.status()) && set(Vec::new()) {
+        if withdraws_routes(resp.status()) && (set(Vec::new()) | set_web(Vec::new())) {
             tracing::info!("controller serves no plugin routes; withdrawing them");
             handle.request_reload();
         }
@@ -245,7 +312,8 @@ async fn subscribe_once(
             .map_err(|e| anyhow::anyhow!("stream from {url}: {e}"))?;
         while let Some(event) = buf.next_event() {
             if let Some(routes) = parse_event(&event) {
-                if set(routes) {
+                let web = parse_web(&event);
+                if set(routes) | set_web(web) {
                     tracing::info!("plugin routes changed; rebuilding the configuration");
                     handle.request_reload();
                 }
@@ -267,6 +335,17 @@ mod tests {
         assert_eq!(r[0], PluginRoute::host("a.example.com", "10.0.0.1:1"));
         assert!(parse_event(": keep-alive").is_none());
         assert!(parse_event("data: nope").is_none());
+    }
+
+    #[test]
+    fn web_routes_are_read_and_kept_out_of_the_tcp_routes() {
+        let ev = r#"data: {"routes":[],"web_routes":[{"host":"w.example.com","backend":"10.0.0.1:80","owner":"plugin:1","plugin":"p"}]}"#;
+        assert!(parse_event(ev).unwrap().is_empty());
+        assert_eq!(
+            parse_web(ev),
+            vec![("w.example.com".to_string(), "10.0.0.1:80".to_string())]
+        );
+        assert!(parse_web(r#"data: {"routes":[]}"#).is_empty());
     }
 
     #[test]

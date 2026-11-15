@@ -104,9 +104,9 @@ pub const ACME_SUPPORT: u32 = 5;
 /// member): `1` replicated installs and state, `2`
 /// adds module blob replication (`/raft/plugin-blob`), `3` adds webhooks
 /// (`PluginSetWebhook`, `/raft/plugin-hook`), `4` adds port routes (`PluginState.port_routes` and the clock that
-/// quarantine counts from), `5` adds the plugin manifest and capability bindings (ABI 0.2) and `PluginSetConfig`, `6` adds `PluginSetSuspended`. A leader proposes a new plugin install, a
+/// quarantine counts from), `5` adds the plugin manifest and capability bindings (ABI 0.2) and `PluginSetConfig`, `6` adds `PluginSetSuspended`, `7` adds ABI 0.3 (route `kind` in the replicated route sets and the `backends` capability in approvals; an older node would refuse them). A leader proposes a new plugin install, a
 /// config edit or a webhook change, only when every member reports at least this.
-pub const PLUGIN_SUPPORT: u32 = 6;
+pub const PLUGIN_SUPPORT: u32 = 7;
 
 async fn whoami(State(ha): State<Arc<HaHandle>>) -> impl IntoResponse {
     Json(Whoami {

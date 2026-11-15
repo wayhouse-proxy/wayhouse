@@ -134,7 +134,12 @@ impl PluginsState {
 pub fn router(state: PluginsState) -> Router {
     // Component-facing: the proxies' stream of plugin routes.
     let component = wayhouse_http::protocol::gate(
-        Router::new().route("/plugin-routes/subscribe", get(super::routes::subscribe)),
+        Router::new()
+            .route("/plugin-routes/subscribe", get(super::routes::subscribe))
+            .route(
+                "/backend-health",
+                post(backend_health).layer(DefaultBodyLimit::max(512 * 1024)),
+            ),
         "controller",
     );
     Router::new()
@@ -175,12 +180,55 @@ pub fn router(state: PluginsState) -> Router {
         .with_state(state)
 }
 
+#[derive(Deserialize)]
+struct HealthReport {
+    proxy: String,
+    #[serde(default)]
+    full: bool,
+    backends: Vec<HealthItem>,
+}
+
+#[derive(Deserialize)]
+struct HealthItem {
+    addr: String,
+    up: bool,
+}
+
+/// `POST /backend-health`: a proxy's view of its backends (ABI 0.3). The leader keeps the
+/// board, so a follower forwards.
+async fn backend_health(
+    State(st): State<PluginsState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Some(forwarded) = st
+        .to_leader(Method::POST, "/backend-health", &headers, body.clone())
+        .await
+    {
+        return forwarded;
+    }
+    let report: HealthReport = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::BAD_REQUEST, format!("bad report: {e}")),
+    };
+    let items: Vec<(String, bool)> = report
+        .backends
+        .into_iter()
+        .map(|i| (i.addr, i.up))
+        .collect();
+    match st.runner.report_health(&report.proxy, report.full, &items) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(why) => err(StatusCode::BAD_REQUEST, why.to_string()),
+    }
+}
+
 /// The `/plugins` routes of a controller that does not serve plugins: 501 with a reason.
 pub fn disabled_router(reason: &'static str) -> Router {
     let refuse = move || async move { err(StatusCode::NOT_IMPLEMENTED, reason) };
     Router::new()
         .route("/plugin-routes", axum::routing::any(refuse))
         .route("/plugin-routes/subscribe", axum::routing::any(refuse))
+        .route("/backend-health", axum::routing::any(refuse))
         .route("/plugins", axum::routing::any(refuse))
         .route("/plugins/{*rest}", axum::routing::any(refuse))
 }
