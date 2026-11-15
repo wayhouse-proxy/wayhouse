@@ -5226,6 +5226,7 @@ dependencies = [
  "wayhouse-registry",
  "wayhouse-settings",
  "wayhouse-sniffer-abi",
+ "zeroize",
 ]
 
 [[package]]

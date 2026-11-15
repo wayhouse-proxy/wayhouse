@@ -70,6 +70,17 @@ impl StepUpKey {
     }
 }
 
+/// The salt a controller publishes (`GET /enrollments/step-up`), decoded.
+pub fn decode_salt(b64: &str) -> Result<Vec<u8>, String> {
+    let salt = B64
+        .decode(b64)
+        .map_err(|_| "the controller's step-up salt is not base64".to_string())?;
+    if salt.len() != SALT_LEN {
+        return Err("the controller's step-up salt has the wrong length".into());
+    }
+    Ok(salt)
+}
+
 /// The signing key for `passphrase` and `salt` (argon2id, 19 MiB, 2 passes). The same inputs
 /// always give the same key.
 pub fn derive(passphrase: &str, salt: &[u8]) -> Result<SigningKey, String> {
