@@ -16,7 +16,31 @@ const ADMIN: &str = "admin-token-admin-token";
 const AGENT: &str = "agent-token-agent-token";
 const PROXY: &str = "proxy-token-proxy-token";
 const INGEST: &str = "ingest-token-ingest-token";
-const STEP_UP: &str = "step-up-step-up-step-up";
+const PASSPHRASE: &str = "a long enough step-up passphrase";
+const SALT: [u8; 16] = [5; 16];
+
+fn signing_key() -> wayhouse_enroll::step_up::SigningKey {
+    wayhouse_enroll::step_up::derive(PASSPHRASE, &SALT).unwrap()
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+fn assertion(role: &str, name: &str) -> serde_json::Value {
+    let req = wayhouse_enroll::step_up::Request {
+        role,
+        name,
+        ttl_secs: None,
+        uses: None,
+        name_prefix: None,
+        parent_url: None,
+    };
+    serde_json::to_value(wayhouse_enroll::step_up::sign(&signing_key(), &req, now())).unwrap()
+}
 
 #[derive(Clone, Default)]
 struct Log(Arc<Mutex<Vec<u8>>>);
@@ -81,18 +105,21 @@ async fn no_secret_reaches_the_log_even_at_trace() {
             ui_token: None,
             proxy_token: Some(Arc::from(PROXY)),
             ingest_token: Some(Arc::from(INGEST)),
-            step_up: Some(Arc::from(STEP_UP)),
+            step_up: Some(wayhouse_enroll::step_up::StepUpKey {
+                salt: SALT,
+                public: signing_key().verifying_key().to_bytes(),
+            }),
             tunnel_network: None,
         },
     );
     let mut secrets: Vec<String> = vec![AGENT.into(), ADMIN.into(), PROXY.into(), INGEST.into()];
-    secrets.push(STEP_UP.into());
+    secrets.push(PASSPHRASE.into());
     secrets.push(KEY.into());
     for role in ["agent", "proxy", "aggregator", "ui"] {
         let minted = call(
             &app,
             "/enrollments",
-            json!({"role": role, "name": "quiet", "step_up": STEP_UP}),
+            json!({"role": role, "name": "quiet", "step_up": assertion(role, "quiet")}),
             Some(ADMIN),
         )
         .await;
@@ -111,7 +138,7 @@ async fn no_secret_reaches_the_log_even_at_trace() {
     call(
         &app,
         "/enrollments",
-        json!({"role": "proxy", "name": "x", "step_up": "guess-guess-guess-guess"}),
+        json!({"role": "proxy", "name": "x", "step_up": {"sig": "guess-guess-guess-guess", "nonce": "0123456789abcdef", "exp": now() + 30}}),
         Some(ADMIN),
     )
     .await;

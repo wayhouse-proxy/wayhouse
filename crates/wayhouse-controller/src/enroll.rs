@@ -25,10 +25,13 @@
 //! proxies fetch it through `GET /secrets/{name}/sealed` with their own scoped token; the agent
 //! gets the plaintext once, in the redeem answer.
 //!
-//! The keyring and the admin token are the crown jewels, so minting a code for `proxy` or `ui`
-//! needs the admin token **and** the step-up secret (`--enroll-step-up-file`; the UI asks the
-//! operator for it again at every mint). Without a configured step-up secret those roles
-//! cannot be minted at all.
+//! The keyring and the admin token are the crown jewels, so minting a code for `proxy`, `ui` or
+//! `controller` needs the admin token **and** a signed step-up assertion
+//! ([`wayhouse_enroll::step_up`]): the operator's passphrase derives an Ed25519 key, the
+//! controller holds only its public half (`--enroll-step-up-pubkey-file`) and the UI (or
+//! `wayhouse-controller step-up sign`) signs the exact request with a 60 s expiry and a nonce.
+//! A mint made with the UI token needs one for every role, since the UI token is meant to be the
+//! weaker credential. Without a configured key those mints cannot be made at all.
 //!
 //! Codes live in the replicated [`UiStore`] (kind `Enrollment`) as a hash only. A redeem is the
 //! `UiOp::Redeem` entry, applied atomically per Raft index, so a single-use code redeems
@@ -47,7 +50,8 @@ use axum::body::Bytes;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, post};
+use axum::routing::{delete, get, post};
+use axum::Extension;
 use axum::{middleware, Json, Router};
 use serde_json::{json, Value};
 use wayhouse_enroll::{Code, RedeemRequest, RedeemResponse, Role};
@@ -55,6 +59,7 @@ use zeroize::Zeroizing;
 
 use crate::ha::members::Joiner;
 use crate::ha::{WriteRequest, WriteResponse};
+use crate::scoped_auth::Caller;
 use crate::ui_data::api::{actor, err, internal, now, UiState};
 use crate::ui_data::{self, Applied, Kind, PoolChild, UiOp};
 
@@ -134,7 +139,8 @@ pub struct Grants {
     pub ui_token: Option<Arc<str>>,
     pub proxy_token: Option<Arc<str>>,
     pub ingest_token: Option<Arc<str>>,
-    pub step_up: Option<Arc<str>>,
+    /// The public half of the step-up key; `None` means no mint that needs a step-up can be made.
+    pub step_up: Option<wayhouse_enroll::step_up::StepUpKey>,
     /// This controller's `--tunnel-network`, given to a replica (it must match the cluster's).
     pub tunnel_network: Option<Arc<str>>,
 }
@@ -144,6 +150,8 @@ struct EnrollState {
     ui: UiState,
     grants: Grants,
     limiter: Arc<Limiter>,
+    /// Step-up nonces already used, with their expiry (unix seconds).
+    nonces: Arc<Mutex<HashMap<String, u64>>>,
     /// Present under HA: what adds a joining controller replica to the Raft group.
     joiner: Option<Joiner>,
 }
@@ -158,9 +166,11 @@ pub fn router(ui: UiState, grants: Grants) -> Router {
         ui,
         grants,
         limiter: Arc::default(),
+        nonces: Arc::default(),
     };
     let admin = Router::new()
         .route("/enrollments", post(mint).get(list))
+        .route("/enrollments/step-up", get(step_up_salt))
         .route("/enrollments/{id}", delete(revoke))
         .route_layer(auth);
     let public = Router::new()
@@ -213,8 +223,9 @@ struct MintBody {
     /// Agent and proxy only: the code then redeems under any name that starts with this prefix
     /// (and ends the redeem's `name`), one identity per pod. It must end in `-`.
     name_prefix: Option<String>,
-    /// Roles that need it only; never logged, never stored.
-    step_up: Option<String>,
+    /// Roles that need it (and every mint made with the UI token): the signed assertion.
+    /// Never logged, never stored.
+    step_up: Option<wayhouse_enroll::step_up::Assertion>,
 }
 
 fn default_role() -> Role {
@@ -248,7 +259,7 @@ fn not_ready(st: &EnrollState, role: Role) -> Option<&'static str> {
             Some("this controller has no secret key (--secret-key-file) to hand to a replica")
         }
         _ if role.needs_step_up() && g.step_up.is_none() => {
-            Some("this role needs --enroll-step-up-file on the controller")
+            Some("this role needs --enroll-step-up-pubkey-file on the controller")
         }
         _ => None,
     }
@@ -267,7 +278,12 @@ fn parent_url_ok(u: &str) -> bool {
 
 /// `POST /enrollments`: `{role?, name, ttl_secs?, uses?, parent_url?, name_prefix?, step_up?}`. The code is
 /// in this answer and nowhere else, ever: the store keeps a hash.
-async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn mint(
+    State(st): State<EnrollState>,
+    caller: Option<Extension<Caller>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let Ok(b) = serde_json::from_slice::<MintBody>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
@@ -332,12 +348,20 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
     if let Some(why) = not_ready(&st, b.role) {
         return err(StatusCode::CONFLICT, why);
     }
-    if b.role.needs_step_up() && !step_up_ok(&st, b.step_up.as_deref()) {
-        tracing::warn!(role = b.role.as_str(), name = %b.name, actor = who.as_deref().unwrap_or("-"), "enrollment mint refused: step-up failed");
+    // The UI token is the weaker credential: whatever it mints, a signed assertion backs.
+    let ui_caller = matches!(caller, Some(Extension(Caller::Ui)));
+    let needs_step_up = b.role.needs_step_up() || ui_caller;
+    if needs_step_up && st.grants.step_up.is_none() {
         return err(
-            StatusCode::FORBIDDEN,
-            "this role needs the step-up secret; enter it again",
+            StatusCode::CONFLICT,
+            "this mint needs --enroll-step-up-pubkey-file on the controller",
         );
+    }
+    if needs_step_up {
+        if let Err(why) = step_up_ok(&st, &b) {
+            tracing::warn!(role = b.role.as_str(), name = %b.name, actor = who.as_deref().unwrap_or("-"), why, "enrollment mint refused: step-up failed");
+            return err(StatusCode::FORBIDDEN, why);
+        }
     }
     let uses = b.uses.unwrap_or(1);
     let code = Code::generate();
@@ -398,7 +422,7 @@ async fn mint(State(st): State<EnrollState>, headers: HeaderMap, body: Bytes) ->
             Err(r) => return r,
         }
     }
-    tracing::warn!(enrollment = code.id(), role = b.role.as_str(), name = %b.name, actor = who.as_deref().unwrap_or("-"), step_up = b.role.needs_step_up(), "enrollment code minted");
+    tracing::warn!(enrollment = code.id(), role = b.role.as_str(), name = %b.name, actor = who.as_deref().unwrap_or("-"), step_up = needs_step_up, "enrollment code minted");
     let mut out = json!({
         "id": code.id(), "code": &*code.expose(), "role": b.role.as_str(), "name": b.name,
         "expires_at": created + ttl, "uses": uses,
@@ -427,20 +451,56 @@ fn next_node_id(st: &EnrollState) -> u64 {
     members.into_iter().chain(codes).max().unwrap_or(0) + 1
 }
 
-/// Checks the step-up secret in constant time. A wrong guess counts against one shared bucket
-/// (the admin token is already required, so this only slows a stolen admin token).
-fn step_up_ok(st: &EnrollState, presented: Option<&str>) -> bool {
-    let (Some(expected), Some(p)) = (st.grants.step_up.as_deref(), presented) else {
-        return false;
+/// Checks the step-up assertion of a mint: the signature over this exact request, the clock, and
+/// that the nonce has not been used. A refusal counts against one shared bucket (the admin token
+/// is already required, so this only slows a stolen admin token); a good one is refunded.
+fn step_up_ok(st: &EnrollState, b: &MintBody) -> Result<(), &'static str> {
+    use wayhouse_enroll::step_up::{verify, Request, MAX_ASSERTION_TTL_SECS};
+    let (Some(key), Some(a)) = (st.grants.step_up.as_ref(), b.step_up.as_ref()) else {
+        return Err("this mint needs a signed step-up assertion");
     };
     if !st.limiter.take("step-up", PER_ID) {
-        return false;
+        return Err("too many failed step-up attempts; wait a minute");
     }
-    let ok = wayhouse_http::token_eq(p, expected);
-    if ok {
-        st.limiter.refund("step-up");
+    let req = Request {
+        role: b.role.as_str(),
+        name: &b.name,
+        ttl_secs: b.ttl_secs,
+        uses: b.uses,
+        name_prefix: b.name_prefix.as_deref(),
+        parent_url: b.parent_url.as_deref(),
+    };
+    let t = now();
+    verify(&key.public, &req, a, t).map_err(wayhouse_enroll::step_up::Refusal::as_str)?;
+    // Replay: remember the nonce until the assertion would have expired anyway.
+    {
+        let mut seen = st.nonces.lock().unwrap_or_else(PoisonError::into_inner);
+        seen.retain(|_, exp| *exp > t);
+        if seen.len() >= 4096 {
+            return Err("too many step-up assertions in the last minute");
+        }
+        if seen
+            .insert(a.nonce.clone(), a.exp.min(t + MAX_ASSERTION_TTL_SECS))
+            .is_some()
+        {
+            return Err("this step-up assertion was already used");
+        }
     }
-    ok
+    st.limiter.refund("step-up");
+    Ok(())
+}
+
+/// `GET /enrollments/step-up`: the salt a signer needs to derive the key from the passphrase.
+/// Not a secret (it sits beside the public key); the route is behind the admin or UI token like
+/// the rest of `/enrollments`.
+async fn step_up_salt(State(st): State<EnrollState>) -> Response {
+    match &st.grants.step_up {
+        Some(k) => Json(json!({ "salt": k.salt_b64() })).into_response(),
+        None => err(
+            StatusCode::CONFLICT,
+            "this controller has no --enroll-step-up-pubkey-file",
+        ),
+    }
 }
 
 /// `GET /enrollments`: every code with its state; never the code or its hash.
@@ -1057,7 +1117,10 @@ async fn grant_files(
             put("agent-token", g.agent_token.as_deref());
             put("ui-token", g.ui_token.as_deref());
             put("ingest-token", g.ingest_token.as_deref());
-            put("enroll-step-up", g.step_up.as_deref());
+            put(
+                "enroll-step-up-pubkey",
+                g.step_up.as_ref().map(|k| k.render()).as_deref(),
+            );
         }
     }
     Ok(f)
@@ -1147,7 +1210,47 @@ mod tests {
     const AGENT: &str = "agent-token-agent-token";
     const PROXY: &str = "proxy-token-proxy-token";
     const INGEST: &str = "ingest-token-ingest-token";
+    /// The marker a test body carries in `step_up`; `mint_as` swaps it for a signed assertion.
     const STEP_UP: &str = "step-up-step-up-step-up";
+    const PASSPHRASE: &str = "a long enough step-up passphrase";
+
+    fn step_up_key() -> &'static (
+        wayhouse_enroll::step_up::SigningKey,
+        wayhouse_enroll::step_up::StepUpKey,
+    ) {
+        static K: std::sync::OnceLock<(
+            wayhouse_enroll::step_up::SigningKey,
+            wayhouse_enroll::step_up::StepUpKey,
+        )> = std::sync::OnceLock::new();
+        K.get_or_init(|| {
+            let salt = [3u8; 16];
+            let key = wayhouse_enroll::step_up::derive(PASSPHRASE, &salt).unwrap();
+            let public = key.verifying_key().to_bytes();
+            (key, wayhouse_enroll::step_up::StepUpKey { salt, public })
+        })
+    }
+
+    /// Signs `body` as the operator would, with the test passphrase.
+    fn assertion_for(body: &Value) -> Value {
+        use wayhouse_enroll::step_up::{sign, Request};
+        let req = Request {
+            role: body["role"].as_str().unwrap_or("agent"),
+            name: body["name"].as_str().or(body["origin"].as_str()).unwrap(),
+            ttl_secs: body["ttl_secs"].as_u64(),
+            uses: body["uses"].as_u64(),
+            name_prefix: body["name_prefix"].as_str(),
+            parent_url: body["parent_url"].as_str(),
+        };
+        serde_json::to_value(sign(&step_up_key().0, &req, now())).unwrap()
+    }
+
+    /// A body whose `step_up` is the marker gets a real assertion for exactly that body.
+    fn with_assertion(mut body: Value) -> Value {
+        if body["step_up"] == STEP_UP {
+            body["step_up"] = assertion_for(&body);
+        }
+        body
+    }
     const UI: &str = "ui-token-ui-token-ui-token";
 
     struct T {
@@ -1189,7 +1292,7 @@ mod tests {
                     ui_token: ui_token.map(Arc::from),
                     proxy_token: Some(Arc::from(PROXY)),
                     ingest_token: Some(Arc::from(INGEST)),
-                    step_up: Some(Arc::from(STEP_UP)),
+                    step_up: Some(step_up_key().1.clone()),
                     tunnel_network: Some(Arc::from("10.60.0.0/24")),
                 },
             ),
@@ -1208,11 +1311,40 @@ mod tests {
         token: Option<&str>,
         ip: &str,
     ) -> (StatusCode, Value) {
+        call_with(app, method, uri, body, token, ip, None).await
+    }
+
+    /// `POST /enrollments` as the scoped-token layer leaves a request made with the UI token.
+    async fn call_as_ui(t: &T, body: Value) -> (StatusCode, Value) {
+        call_with(
+            &t.app,
+            "POST",
+            "/enrollments",
+            body,
+            Some(ADMIN),
+            "10.0.0.1",
+            Some(Caller::Ui),
+        )
+        .await
+    }
+
+    async fn call_with(
+        app: &Router,
+        method: &str,
+        uri: &str,
+        body: Value,
+        token: Option<&str>,
+        ip: &str,
+        caller: Option<Caller>,
+    ) -> (StatusCode, Value) {
         let mut req = Request::builder().method(method).uri(uri);
         if let Some(t) = token {
             req = req.header("authorization", format!("Bearer {t}"));
         }
         let mut req = req.body(Body::from(body.to_string())).unwrap();
+        if let Some(c) = caller {
+            req.extensions_mut().insert(c);
+        }
         req.extensions_mut()
             .insert(ConnectInfo(wayhouse_http::tls::PeerAddr(
                 format!("{ip}:4000").parse().unwrap(),
@@ -1847,7 +1979,7 @@ mod tests {
             &t.app,
             "POST",
             "/enrollments",
-            body,
+            with_assertion(body),
             Some(ADMIN),
             "10.0.0.1",
         )
@@ -2083,18 +2215,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn keyring_and_admin_roles_need_the_step_up_secret_at_every_mint() {
+    async fn keyring_and_admin_roles_need_a_signed_step_up_at_every_mint() {
         let t = setup(Some(KEY));
         for role in ["proxy", "ui"] {
-            for bad in [None, Some("wrong-wrong-wrong-wrong"), Some(ADMIN)] {
+            let valid = assertion_for(&json!({"role": role, "name": "n"}));
+            let mut expired = valid.clone();
+            expired["exp"] = 1.into();
+            for (what, bad) in [
+                ("none", None),
+                ("a string", Some(json!("the-old-shared-secret-123"))),
+                ("an expired one", Some(expired)),
+                (
+                    "one for another name",
+                    Some(assertion_for(&json!({"role": role, "name": "other"}))),
+                ),
+                (
+                    "one for another role",
+                    Some(assertion_for(&json!({"role": "controller", "name": "n"}))),
+                ),
+            ] {
                 let mut body = json!({"role": role, "name": "n"});
                 if let Some(b) = bad {
-                    body["step_up"] = b.into();
+                    body["step_up"] = b;
                 }
-                assert_eq!(
-                    mint_as(&t, body).await.0,
-                    StatusCode::FORBIDDEN,
-                    "{role} {bad:?}"
+                let st = call(
+                    &t.app,
+                    "POST",
+                    "/enrollments",
+                    body,
+                    Some(ADMIN),
+                    "10.0.0.1",
+                )
+                .await
+                .0;
+                assert!(
+                    st == StatusCode::FORBIDDEN || st == StatusCode::BAD_REQUEST,
+                    "{role} {what}: {st}"
                 );
             }
         }
@@ -2112,19 +2268,72 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guessing_the_step_up_secret_is_rate_limited() {
+    async fn an_assertion_mints_once_and_cannot_be_replayed() {
+        let t = setup(Some(KEY));
+        let body = json!({"role": "proxy", "name": "edge-1", "step_up": assertion_for(&json!({"role": "proxy", "name": "edge-1"}))});
+        let post = |b: Value| call(&t.app, "POST", "/enrollments", b, Some(ADMIN), "10.0.0.1");
+        assert_eq!(post(body.clone()).await.0, StatusCode::OK);
+        let (st, v) = post(body).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("already used"), "{v}");
+        assert_eq!(t.store.list(Kind::Enrollment).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_step_up_salt_is_published_and_the_key_never_is() {
+        let t = setup(Some(KEY));
+        let (st, v) = call(
+            &t.app,
+            "GET",
+            "/enrollments/step-up",
+            json!(null),
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["salt"], step_up_key().1.salt_b64());
+        let text = v.to_string();
+        assert!(!text.contains(&wayhouse_enroll::step_up::StepUpKey::render(&step_up_key().1)[3..]));
+    }
+
+    #[tokio::test]
+    async fn a_mint_made_with_the_ui_token_needs_a_step_up_for_every_role() {
+        // The router is the same; only the `Caller` the scoped-token layer sets differs.
+        let t = setup(Some(KEY));
+        for role in ["agent", "aggregator"] {
+            let mut body = json!({"role": role, "name": "n"});
+            let (st, v) = call_as_ui(&t, body.clone()).await;
+            assert_eq!(st, StatusCode::FORBIDDEN, "{role}: {v}");
+            body["step_up"] = assertion_for(&body);
+            let (st, v) = call_as_ui(&t, body).await;
+            assert_eq!(st, StatusCode::OK, "{role}: {v}");
+        }
+        // The admin token still mints an agent code without one.
+        assert_eq!(
+            mint_as(&t, json!({"role": "agent", "name": "m"})).await.0,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn guessing_the_step_up_is_rate_limited() {
         let t = setup(Some(KEY));
         let mut last = StatusCode::OK;
         for _ in 0..PER_ID + 2 {
-            last = mint_as(
-                &t,
-                json!({"role": "proxy", "name": "n", "step_up": "nope-nope-nope-nope"}),
+            last = call(
+                &t.app,
+                "POST",
+                "/enrollments",
+                json!({"role": "proxy", "name": "n", "step_up": {"sig": "AAAA", "nonce": "0123456789abcdef", "exp": now() + 30}}),
+                Some(ADMIN),
+                "10.0.0.1",
             )
             .await
             .0;
         }
         assert_eq!(last, StatusCode::FORBIDDEN);
-        // Even the right secret is refused until the window passes.
+        // Even a right assertion is refused until the window passes.
         let (st, _) = mint_as(
             &t,
             json!({"role": "proxy", "name": "n", "step_up": STEP_UP}),
@@ -2283,7 +2492,7 @@ mod tests {
                     ui_token: None,
                     proxy_token: Some(Arc::from(PROXY)),
                     ingest_token: Some(Arc::from(INGEST)),
-                    step_up: Some(Arc::from(STEP_UP)),
+                    step_up: Some(step_up_key().1.clone()),
                     tunnel_network: Some(Arc::from("10.60.0.0/24")),
                 },
             ),
@@ -2382,7 +2591,9 @@ mod tests {
                         &app,
                         "POST",
                         "/enrollments",
-                        json!({"role": "controller", "name": format!("c{i}"), "step_up": STEP_UP}),
+                        with_assertion(
+                            json!({"role": "controller", "name": format!("c{i}"), "step_up": STEP_UP}),
+                        ),
                         Some(ADMIN),
                         "10.0.0.1",
                     )
@@ -2481,7 +2692,7 @@ mod tests {
             [
                 "agent-token",
                 "auth-token",
-                "enroll-step-up",
+                "enroll-step-up-pubkey",
                 "ha-join-proof",
                 "ha-token",
                 "ingest-token",

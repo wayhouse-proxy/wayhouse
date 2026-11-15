@@ -98,16 +98,18 @@ struct Args {
     #[arg(skip)]
     ingest_token: Option<String>,
 
-    /// Secret an operator must enter again to mint an enrollment code for a role that receives
-    /// the cluster keyring or the admin token (`proxy`, `ui`). At least 16 bytes, different
-    /// from the other tokens; without it those roles cannot be minted.
+    /// The public half of the step-up key (`wayhouse-controller step-up init` makes it): the
+    /// salt and the verifying key, one line. Minting a code for a role that receives the cluster
+    /// keyring or the admin token (`proxy`, `ui`, `controller`), or any code with the UI token,
+    /// needs an assertion signed with the matching key. The controller holds nothing that can
+    /// sign. Without it those mints are refused.
     #[arg(long, value_name = "PATH")]
-    enroll_step_up_file: Option<std::path::PathBuf>,
+    enroll_step_up_pubkey_file: Option<std::path::PathBuf>,
 
-    /// Resolved from `--enroll-step-up-file`, `$CREDENTIALS_DIRECTORY/enroll-step-up` or `$WAYHOUSE_ENROLL_STEP_UP`;
-    /// never a command-line value.
+    /// Resolved from `--enroll-step-up-pubkey-file`, `$CREDENTIALS_DIRECTORY/enroll-step-up-pubkey`
+    /// or `$WAYHOUSE_ENROLL_STEP_UP_PUBKEY`; never a command-line value.
     #[arg(skip)]
-    enroll_step_up: Option<String>,
+    enroll_step_up_pubkey: Option<String>,
 
     /// Bearer token `GET /metrics` accepts instead of `--auth-token`, at least
     /// 16 bytes, so a Prometheus scraper need not hold the admin token. It
@@ -365,9 +367,11 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
     args.ingest_token =
         wayhouse_http::secret_arg::resolve("ingest-token", args.ingest_token_file.as_deref())
             .map_err(anyhow::Error::msg)?;
-    args.enroll_step_up =
-        wayhouse_http::secret_arg::resolve("enroll-step-up", args.enroll_step_up_file.as_deref())
-            .map_err(anyhow::Error::msg)?;
+    args.enroll_step_up_pubkey = wayhouse_http::secret_arg::resolve(
+        "enroll-step-up-pubkey",
+        args.enroll_step_up_pubkey_file.as_deref(),
+    )
+    .map_err(anyhow::Error::msg)?;
     args.parent_token =
         wayhouse_http::secret_arg::resolve("parent-token", args.parent_token_file.as_deref())
             .map_err(anyhow::Error::msg)?;
@@ -422,27 +426,12 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
     .map_err(|e| anyhow::anyhow!(e))?;
     wayhouse_http::policy::check_optional_secret("--ingest-token", args.ingest_token.as_deref())
         .map_err(anyhow::Error::msg)?;
-    wayhouse_http::policy::check_optional_secret(
-        "--enroll-step-up",
-        args.enroll_step_up.as_deref(),
-    )
-    .map_err(anyhow::Error::msg)?;
-    if let Some(s) = args.enroll_step_up.as_deref() {
-        if [
-            &args.auth_token,
-            &args.proxy_token,
-            &args.agent_token,
-            &args.ingest_token,
-            &args.metrics_token,
-            &args.parent_token,
-        ]
-        .into_iter()
-        .flatten()
-        .any(|t| t == s)
-        {
-            anyhow::bail!("--enroll-step-up must differ from the controller's tokens");
-        }
-    }
+    let step_up_key = args
+        .enroll_step_up_pubkey
+        .as_deref()
+        .map(wayhouse_enroll::step_up::StepUpKey::parse)
+        .transpose()
+        .map_err(|e| anyhow::anyhow!("--enroll-step-up-pubkey-file: {e}"))?;
     wayhouse_http::policy::check_optional_secret("--metrics-token", args.metrics_token.as_deref())
         .map_err(|e| anyhow::anyhow!(e))?;
     let (tunnel_network, stale_after) = crate::addresses::resolve_flags(
@@ -1123,7 +1112,7 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
                 ui_token: args.ui_token.as_deref().map(std::sync::Arc::from),
                 proxy_token: args.proxy_token.as_deref().map(std::sync::Arc::from),
                 ingest_token: args.ingest_token.as_deref().map(std::sync::Arc::from),
-                step_up: args.enroll_step_up.as_deref().map(std::sync::Arc::from),
+                step_up: step_up_key,
                 tunnel_network: args.tunnel_network.as_deref().map(std::sync::Arc::from),
             },
         ))
