@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../api";
 import { SessionProvider, type Role } from "../lib/session";
 
 const api = vi.hoisted(() => ({
@@ -114,6 +115,15 @@ describe("SecretsPage", () => {
     page();
     await screen.findByRole("table", { name: "Keys per node" });
     expect(screen.getByRole("button", { name: "Re-encrypt plugin secrets" })).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("shows no key rotation when the controller has no plugins (404)", async () => {
+    api.getPluginSecretKeys.mockRejectedValue(new ApiError(404, "not found"));
+    page();
+    await screen.findByText("gossip-psk");
+    await vi.waitFor(() => expect(api.getPluginSecretKeys).toHaveBeenCalled());
+    expect(screen.queryByRole("region", { name: "Key rotation" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("an operator neither sees the key rotation nor triggers the admin-only key request", async () => {

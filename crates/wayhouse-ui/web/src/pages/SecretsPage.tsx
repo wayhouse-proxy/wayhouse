@@ -171,13 +171,16 @@ function KeyRotation() {
   const [problem, setProblem] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // A controller without plugins has no plugin secrets to rotate: show nothing, not an error.
+  const [absent, setAbsent] = useState(false);
 
   const load = useCallback(async () => {
     try {
       setKeys(await getPluginSecretKeys());
       setProblem(null);
     } catch (err) {
-      setProblem(errorText(err));
+      if (err instanceof ApiError && err.status === 404) setAbsent(true);
+      else setProblem(errorText(err));
     }
   }, []);
   useEffect(() => {
@@ -199,6 +202,7 @@ function KeyRotation() {
     }
   }
 
+  if (absent) return null;
   const rows = keys ? (Object.keys(keys.nodes).length ? Object.entries(keys.nodes) : [["this controller", keys.key_ids] as const]) : [];
   const lacking = keys?.active ? rows.filter(([, ids]) => Array.isArray(ids) && !ids.includes(keys.active!)).map(([n]) => n) : [];
   return (

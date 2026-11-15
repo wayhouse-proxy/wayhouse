@@ -42,5 +42,5 @@ test("sign in, then walk the pages an empty box has", async ({ page }) => {
   await page.goto("/settings/secrets");
   await expect(page.getByRole("heading", { level: 1, name: "Secrets" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add secret" })).toBeEnabled();
-  await expect(page.getByRole("row")).toHaveCount(1); // the header only: nothing stored yet
+  await expect(page.getByRole("table").first().getByRole("row")).toHaveCount(1); // the header only: nothing stored yet
 });
