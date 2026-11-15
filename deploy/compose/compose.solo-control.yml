@@ -33,6 +33,7 @@ services:
       - --controller-auth-token-file=/run/secrets/auth-token
       - --controller-proxy-token-file=/run/secrets/proxy-token
       - --controller-agent-token-file=/run/secrets/agent-token
+      - --controller-ui-token-file=/run/secrets/ui-token
       - --controller-plugins
       - --controller-secret-key-file=/keys/secret.keys
       - --aggregator-listen=0.0.0.0:9902
@@ -51,6 +52,7 @@ services:
       - { source: aggregator-token, target: aggregator-auth-token }
       - ingest-token
       - ui-password
+      - ui-token
     ports:
       - "127.0.0.1:9902:9902"
       - "127.0.0.1:9903:9903"

@@ -6,8 +6,8 @@
 #   sh deploy/solo/init.sh [FILE]
 #     compose: writes FILE (default deploy/compose/.env) and a tls/ directory next to it.
 #   sh deploy/solo/init.sh --credentials DIR
-#     systemd: one file per secret (controller-token, proxy-token, agent-token, aggregator-token,
-#     ingest-token, ui-password) in DIR, the sources for LoadCredential= in deploy/systemd/, and the
+#     systemd: one file per secret (controller-token, proxy-token, agent-token, ui-token,
+#     aggregator-token, ingest-token, ui-password) in DIR, the sources for LoadCredential= in deploy/systemd/, and the
 #     certificates in DIR/../tls.
 # The binary is `wayhouse-controller` on PATH, or WAYHOUSE_CONTROLLER_BIN (a path, or a command such
 # as "cargo run -q -p wayhouse-controller --"). The program has other targets (k8s-secret) and

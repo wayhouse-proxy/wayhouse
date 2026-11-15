@@ -407,7 +407,10 @@ The controller separates three credentials, so a compromised edge box cannot adm
   `*/subscribe` stream, `/intent/*`, `/ha/*` or the adopt route, so a leaked UI host cannot read
   sealed secrets or tunnel keys and can be rotated without touching the admin token. The console
   is still an admin console: the UI token can submit config. Without `--ui-token`, a `ui`
-  enrollment hands out the admin token as before.
+  enrollment hands out the admin token as before. Known gap until the signed step-up (#638
+  slice 2): `agent` enrollment codes need no step-up, so a holder of the UI token can still mint one
+  and redeem it for a fresh token and tunnel key under any name, including one that is already in
+  use (which replaces that origin's credentials).
 
 Setting `--auth-token` requires the proxy and agent tokens, and all of them (and `--ui-token`
 when given) must differ; the controller

@@ -139,12 +139,13 @@ fn random_hex(bytes: usize) -> Zeroizing<String> {
     Zeroizing::new(raw.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// The shared secrets. Every token is 48 hex characters and the five controller-side ones are
+/// The shared secrets. Every token is 48 hex characters and the six controller-side ones are
 /// pairwise different (`scoped_auth` refuses equal ones).
 pub struct Secrets {
     pub controller_token: Zeroizing<String>,
     pub proxy_token: Zeroizing<String>,
     pub agent_token: Zeroizing<String>,
+    pub ui_token: Zeroizing<String>,
     pub aggregator_token: Zeroizing<String>,
     pub ingest_token: Zeroizing<String>,
     pub ui_password: Zeroizing<String>,
@@ -156,6 +157,7 @@ impl Secrets {
             controller_token: random_hex(TOKEN_BYTES),
             proxy_token: random_hex(TOKEN_BYTES),
             agent_token: random_hex(TOKEN_BYTES),
+            ui_token: random_hex(TOKEN_BYTES),
             aggregator_token: random_hex(TOKEN_BYTES),
             ingest_token: random_hex(TOKEN_BYTES),
             ui_password: random_hex(PASSWORD_BYTES),
@@ -457,6 +459,7 @@ fn systemd(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
         ),
         plan(creds.join("proxy-token"), 0o600, s.proxy_token.as_bytes()),
         plan(creds.join("agent-token"), 0o600, s.agent_token.as_bytes()),
+        plan(creds.join("ui-token"), 0o600, s.ui_token.as_bytes()),
         plan(
             creds.join("aggregator-token"),
             0o600,
@@ -477,7 +480,7 @@ fn systemd(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
     };
     writeln!(
         summary,
-        "wrote {}/{{controller-token,proxy-token,agent-token,aggregator-token,ingest-token,ui-password}} (mode 0600). The values stay out of your terminal.",
+        "wrote {}/{{controller-token,proxy-token,agent-token,ui-token,aggregator-token,ingest-token,ui-password}} (mode 0600). The values stay out of your terminal.",
         creds.display()
     )
     .map_err(io_err)?;
@@ -521,11 +524,12 @@ fn compose(args: &InitArgs, summary: &mut dyn Write) -> Result<(), InitError> {
     )?;
     let env = Zeroizing::new(format!(
         "WAYHOUSE_CONTROLLER_TOKEN={}\nWAYHOUSE_PROXY_TOKEN={}\nWAYHOUSE_AGENT_TOKEN={}\n\
-         WAYHOUSE_AGGREGATOR_TOKEN={}\nWAYHOUSE_INGEST_TOKEN={}\nWAYHOUSE_UI_PASSWORD={}\n\
+         WAYHOUSE_UI_TOKEN={}\nWAYHOUSE_AGGREGATOR_TOKEN={}\nWAYHOUSE_INGEST_TOKEN={}\nWAYHOUSE_UI_PASSWORD={}\n\
          WAYHOUSE_TLS_DIR={}\n",
         *s.controller_token,
         *s.proxy_token,
         *s.agent_token,
+        *s.ui_token,
         *s.aggregator_token,
         *s.ingest_token,
         *s.ui_password,
@@ -614,6 +618,7 @@ fn k8s_secret(
                 ("controller-token", s.controller_token.as_bytes()),
                 ("proxy-token", s.proxy_token.as_bytes()),
                 ("agent-token", s.agent_token.as_bytes()),
+                ("ui-token", s.ui_token.as_bytes()),
                 ("aggregator-token", s.aggregator_token.as_bytes()),
                 ("ingest-token", s.ingest_token.as_bytes()),
                 ("admin-token", admin_token.as_bytes()),
@@ -774,6 +779,7 @@ mod tests {
             &s.controller_token,
             &s.proxy_token,
             &s.agent_token,
+            &s.ui_token,
             &s.aggregator_token,
             &s.ingest_token,
             &s.ui_password,
@@ -788,7 +794,7 @@ mod tests {
             Some(&s.controller_token),
             Some(&s.proxy_token),
             Some(&s.agent_token),
-            None,
+            Some(&s.ui_token),
         )
         .unwrap();
     }
@@ -803,6 +809,7 @@ mod tests {
             "controller-token",
             "proxy-token",
             "agent-token",
+            "ui-token",
             "aggregator-token",
             "ingest-token",
             "ui-password",
@@ -889,6 +896,7 @@ mod tests {
             "WAYHOUSE_CONTROLLER_TOKEN",
             "WAYHOUSE_PROXY_TOKEN",
             "WAYHOUSE_AGENT_TOKEN",
+            "WAYHOUSE_UI_TOKEN",
             "WAYHOUSE_AGGREGATOR_TOKEN",
             "WAYHOUSE_INGEST_TOKEN",
             "WAYHOUSE_UI_PASSWORD",
@@ -964,6 +972,7 @@ mod tests {
             "controller-token",
             "proxy-token",
             "agent-token",
+            "ui-token",
             "aggregator-token",
             "ingest-token",
             "admin-token",
