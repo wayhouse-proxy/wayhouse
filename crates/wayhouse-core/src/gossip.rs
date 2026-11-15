@@ -69,6 +69,13 @@ const MAX_BACKENDS: usize = 8192;
 /// value near `u64::MAX` would otherwise pin its origin's register for ever,
 /// because only a newer `changed_at` replaces it (#305).
 const MAX_VERSION_SKEW_MS: u64 = 60_000;
+/// How long a register counts without being heard again. Every health probe publishes the
+/// origin's verdict with a fresh version, so a live origin refreshes it once per
+/// `health_check.interval_sec`. A register older than this is ignored, and any register from its
+/// origin replaces it even with a lower version, so a clock that stepped forward and was
+/// corrected (or a restart under a lower clock) cannot pin a stale vote above the origin's
+/// new ones for ever (#278).
+const REGISTER_TTL_MS: u64 = 600_000;
 /// Origins remembered for the rate-limited drop warning; a table past this is
 /// cleared rather than grown by forged origins.
 const MAX_WARNED_ORIGINS: usize = 1024;
@@ -94,6 +101,16 @@ struct BackendHealthRegister {
     up: bool,
     changed_at: u64,
     origin: SocketAddr,
+    /// When this instance last heard this register (wall ms). Not on the wire: set when it
+    /// is stored.
+    #[serde(skip)]
+    seen_ms: u64,
+}
+
+impl BackendHealthRegister {
+    fn expired(&self, now_ms: u64) -> bool {
+        now_ms.saturating_sub(self.seen_ms) > REGISTER_TTL_MS
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,11 +219,18 @@ impl foca::BroadcastHandler<SocketAddr> for BroadcastMerger {
         if !per_origin.contains_key(&reg.origin) && per_origin.len() >= MAX_ORIGINS_PER_BACKEND {
             return Ok(None);
         }
+        let now = wall_ms();
         let is_new = per_origin
             .get(&reg.origin)
-            .is_none_or(|cur| cur.changed_at < reg.changed_at);
+            .is_none_or(|cur| cur.changed_at < reg.changed_at || cur.expired(now));
         if is_new {
-            per_origin.insert(reg.origin, reg);
+            per_origin.insert(
+                reg.origin,
+                BackendHealthRegister {
+                    seen_ms: now,
+                    ..reg
+                },
+            );
             Ok(Some(key))
         } else {
             Ok(None)
@@ -315,7 +339,11 @@ impl GossipHandle {
             return (0, 0);
         };
         let (mut up, mut down) = (0, 0);
-        for reg in regs.values().filter(|r| members.contains(&r.origin)) {
+        let now = wall_ms();
+        for reg in regs
+            .values()
+            .filter(|r| members.contains(&r.origin) && !r.expired(now))
+        {
             if reg.up {
                 up += 1;
             } else {
@@ -467,6 +495,7 @@ pub async fn run(
                     up,
                     changed_at,
                     origin: identity,
+                    seen_ms: 0,
                 };
                 // `add_broadcast` itself runs `data` through
                 // `BroadcastMerger::receive_item(data, None)` — the sender
@@ -750,7 +779,8 @@ mod tests {
                 addr,
                 up: false,
                 changed_at: before,
-                origin
+                origin,
+                seen_ms: 0,
             }
         )
         .is_some());
@@ -764,7 +794,8 @@ mod tests {
                 addr,
                 up: true,
                 changed_at: after,
-                origin
+                origin,
+                seen_ms: 0,
             }
         )
         .is_some());
@@ -946,7 +977,41 @@ mod tests {
             up: false,
             changed_at,
             origin,
+            seen_ms: wall_ms(),
         }
+    }
+
+    /// #278: a vote nobody has refreshed for the TTL stops counting, and the origin's next
+    /// register replaces it even with a lower version (a clock that stepped forward and was
+    /// corrected, or a restart under a lower clock).
+    #[test]
+    fn a_register_that_is_not_refreshed_expires_and_a_lower_version_then_replaces_it() {
+        let (handle, _inbox) = GossipHandle::new();
+        let mut merger = handle.merger();
+        let addr: SocketAddr = "10.0.0.1:1".parse().unwrap();
+        let origin: SocketAddr = "10.0.0.2:1".parse().unwrap();
+        handle.replace_members([origin].into_iter().collect());
+        let high = wall_ms() + 30_000;
+        assert!(deliver(&mut merger, now_reg(addr, origin, high)).is_some());
+        assert_eq!(handle.domain_votes(addr), (0, 1));
+        // A lower version is refused while the held one is fresh.
+        assert!(deliver(&mut merger, now_reg(addr, origin, high - 10_000)).is_none());
+        // Time passes without a refresh: the vote no longer counts.
+        handle
+            .domain
+            .lock()
+            .unwrap()
+            .get_mut(&addr)
+            .unwrap()
+            .get_mut(&origin)
+            .unwrap()
+            .seen_ms = wall_ms() - REGISTER_TTL_MS - 1;
+        assert_eq!(handle.domain_votes(addr), (0, 0));
+        // The origin's next publication, under the corrected clock, takes its place.
+        let mut healthy = now_reg(addr, origin, high - 10_000);
+        healthy.up = true;
+        assert!(deliver(&mut merger, healthy).is_some());
+        assert_eq!(handle.domain_votes(addr), (1, 0));
     }
 
     /// #305: drop warnings are rate limited to one a minute per origin, and the
@@ -1111,6 +1176,7 @@ mod tests {
                 up: false,
                 changed_at: 1,
                 origin: voter(2),
+                seen_ms: wall_ms(),
             },
         );
         domain.entry(addr).or_default().insert(
@@ -1120,6 +1186,7 @@ mod tests {
                 up: true,
                 changed_at: 1,
                 origin: voter(3),
+                seen_ms: wall_ms(),
             },
         );
         drop(domain);
