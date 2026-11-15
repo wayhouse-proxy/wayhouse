@@ -177,17 +177,23 @@ impl Keyring {
 
     /// Reads a key file, refusing one other users can read.
     pub fn from_file(path: &Path) -> Result<Self, KeyringError> {
+        use std::io::Read;
+        // Open once and check the permissions of the open file, so the file that was checked
+        // is the file that is read.
+        let mut file = std::fs::File::open(path).map_err(|e| KeyringError::Read(e.to_string()))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let meta = std::fs::metadata(path).map_err(|e| KeyringError::Read(e.to_string()))?;
+            let meta = file
+                .metadata()
+                .map_err(|e| KeyringError::Read(e.to_string()))?;
             if meta.permissions().mode() & 0o077 != 0 {
                 return Err(KeyringError::Permissions);
             }
         }
-        let text = Zeroizing::new(
-            std::fs::read_to_string(path).map_err(|e| KeyringError::Read(e.to_string()))?,
-        );
+        let mut text = Zeroizing::new(String::new());
+        file.read_to_string(&mut text)
+            .map_err(|e| KeyringError::Read(e.to_string()))?;
         Self::parse(&text)
     }
 
@@ -197,7 +203,8 @@ impl Keyring {
         match std::env::var(KEY_ENV) {
             Ok(v) if !v.trim().is_empty() => {
                 let v = Zeroizing::new(v);
-                Self::parse(&v.split_whitespace().collect::<Vec<_>>().join("\n")).map(Some)
+                let joined = Zeroizing::new(v.split_whitespace().collect::<Vec<_>>().join("\n"));
+                Self::parse(&joined).map(Some)
             }
             _ => Ok(None),
         }

@@ -207,7 +207,15 @@ fn label_value(labels: &str, key: &str) -> Option<String> {
     while let Some(c) = chars.next() {
         match c {
             '"' => return Some(out),
-            '\\' => out.push(chars.next()?),
+            '\\' => match chars.next()? {
+                'n' => out.push('\n'),
+                e @ ('\\' | '"') => out.push(e),
+                // Not an escape the exposition format defines: keep it as written.
+                e => {
+                    out.push('\\');
+                    out.push(e);
+                }
+            },
             c => out.push(c),
         }
     }
@@ -306,6 +314,15 @@ fn build_payload(
 mod tests {
     use super::*;
     use wayhouse_core::{Runtime, Snapshot};
+
+    #[test]
+    fn label_values_unescape_only_what_the_exposition_format_defines() {
+        let l = r#"a="x\\y",b="line\nbreak",c="q\"q",d="odd\xescape""#;
+        assert_eq!(label_value(l, "a").as_deref(), Some("x\\y"));
+        assert_eq!(label_value(l, "b").as_deref(), Some("line\nbreak"));
+        assert_eq!(label_value(l, "c").as_deref(), Some("q\"q"));
+        assert_eq!(label_value(l, "d").as_deref(), Some("odd\\xescape"));
+    }
 
     const YAML: &str = r#"
 settings:

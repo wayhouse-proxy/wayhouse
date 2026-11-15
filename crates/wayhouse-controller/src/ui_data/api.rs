@@ -295,7 +295,7 @@ async fn put_override(
     };
     write(st, op, Method::PUT, path, headers, body, move || {
         let (flag, on, reason, expires_at) = audit;
-        tracing::warn!(%flag, value = on, ?reason, ?expires_at, actor = actor.as_deref().unwrap_or("-"), "feature override set");
+        tracing::warn!(%flag, value = on, ?reason, ?expires_at, actor = ?actor.as_deref().unwrap_or("-"), "feature override set");
         Json(reply).into_response()
     })
     .await
@@ -391,7 +391,7 @@ async fn put_secret(st: &UiState, name: String, headers: &HeaderMap, body: Bytes
         value: record,
     };
     let done = move || {
-        tracing::warn!(secret = %name, %key_id, actor = who.as_deref().unwrap_or("-"), "cluster secret set");
+        tracing::warn!(secret = %name, %key_id, actor = ?who.as_deref().unwrap_or("-"), "cluster secret set");
         Json(json!({ "name": name, "set": true, "key_id": key_id, "set_at": set_at }))
             .into_response()
     };
@@ -514,7 +514,7 @@ async fn delete_secret(st: &UiState, name: String, path: &str, headers: &HeaderM
         name,
     };
     write(st, op, Method::DELETE, path, headers, Bytes::new(), move || {
-        tracing::warn!(%secret, actor = who.as_deref().unwrap_or("-"), "cluster secret deleted");
+        tracing::warn!(%secret, actor = ?who.as_deref().unwrap_or("-"), "cluster secret deleted");
         if let Some(ha) = &ha {
             crate::plugins::peer::request_purge(ha);
         }
@@ -540,7 +540,7 @@ async fn delete_override(st: &UiState, name: String, path: &str, headers: &Heade
         name,
     };
     write(st, op, Method::DELETE, path, headers, Bytes::new(), move || {
-        tracing::warn!(%flag, actor = who.as_deref().unwrap_or("-"), "feature override deleted");
+        tracing::warn!(%flag, actor = ?who.as_deref().unwrap_or("-"), "feature override deleted");
         StatusCode::NO_CONTENT.into_response()
     })
     .await
