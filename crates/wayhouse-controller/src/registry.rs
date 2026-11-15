@@ -37,7 +37,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::StreamExt;
 use tracing::Instrument;
 use wayhouse_http::peers::receiver_supports;
 use wayhouse_http::protocol::PeerProtocol;
@@ -181,6 +181,11 @@ fn wording(role: Role) -> Wording {
     }
 }
 
+/// Most concurrent subscribe streams per registry. A fleet has one per proxy, far below this.
+const MAX_SUBSCRIBERS: usize = 1024;
+/// Revisions read from the store per catch-up page.
+const CATCH_UP_PAGE: usize = 256;
+
 #[derive(Clone)]
 pub struct RegistryState<R: Registration> {
     pub(crate) store: Arc<Store>,
@@ -189,6 +194,9 @@ pub struct RegistryState<R: Registration> {
     /// and `crate::api::AppState::stage`'s identical pattern.
     current: crate::kv::Tree,
     pub(crate) updates: broadcast::Sender<u64>,
+    /// One permit per live `{base}/subscribe` stream ([`MAX_SUBSCRIBERS`]); past the cap a
+    /// stream is refused with `503`.
+    subscribers: Arc<tokio::sync::Semaphore>,
     /// Bearer token every request must present, or `None` to leave the API
     /// open — same posture as `crate::api::AppState`'s and
     /// `crate::intent::api::IntentState`'s own `auth_token`.
@@ -249,6 +257,7 @@ impl<R: Registration> RegistryState<R> {
             store,
             current,
             updates,
+            subscribers: Arc::new(tokio::sync::Semaphore::new(MAX_SUBSCRIBERS)),
             auth_token: auth_token.map(Arc::from),
             book,
             write_lock: Arc::new(std::sync::Mutex::new(())),
@@ -865,19 +874,40 @@ struct SubscribeParams {
 async fn subscribe<R: Registration>(
     State(state): State<RegistryState<R>>,
     Query(params): Query<SubscribeParams>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+) -> Response {
+    let Ok(permit) = state.subscribers.clone().try_acquire_owned() else {
+        tracing::warn!(
+            registry = wording(R::ROLE).log,
+            max = MAX_SUBSCRIBERS,
+            "subscriber cap reached; refusing a stream"
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(axum::http::header::RETRY_AFTER, "5")],
+            Json(serde_json::json!({"error": "too many subscribers; retry shortly"})),
+        )
+            .into_response();
+    };
     let (tx, rx) = mpsc::channel(16);
     let updates = state.updates.subscribe();
+    let store = state.store.clone();
     tokio::spawn(
-        subscribe_worker(state.store.clone(), updates, params.since.unwrap_or(0), tx).instrument(
-            tracing::info_span!("subscribe", registry = wording(R::ROLE).log),
-        ),
+        async move {
+            let _permit = permit;
+            subscribe_worker(store, updates, params.since.unwrap_or(0), tx).await;
+        }
+        .instrument(tracing::info_span!(
+            "subscribe",
+            registry = wording(R::ROLE).log
+        )),
     );
 
     let events = ReceiverStream::new(rx).map(|(revision, bytes)| {
-        Ok(Event::default().data(event_payload(revision, &bytes).to_string()))
+        Ok::<_, Infallible>(Event::default().data(event_payload(revision, &bytes).to_string()))
     });
-    Sse::new(events).keep_alive(KeepAlive::default())
+    Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 pub(crate) async fn subscribe_worker(
@@ -922,20 +952,25 @@ async fn catch_up(
     last_sent: &mut u64,
     tx: &mpsc::Sender<(u64, RevisionBytes)>,
 ) -> bool {
-    let revisions = match store.revisions_after(*last_sent) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(error = %e, "store error building the registry catch-up range");
-            return false;
+    loop {
+        let revisions = match store.revisions_page(*last_sent, CATCH_UP_PAGE) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, "store error building the registry catch-up range");
+                return false;
+            }
+        };
+        let page_len = revisions.len();
+        for (revision, bytes) in revisions {
+            if tx.send((revision, bytes)).await.is_err() {
+                return false;
+            }
+            *last_sent = revision;
         }
-    };
-    for (revision, bytes) in revisions {
-        if tx.send((revision, bytes)).await.is_err() {
-            return false;
+        if page_len < CATCH_UP_PAGE {
+            return true;
         }
-        *last_sent = revision;
     }
-    true
 }
 
 /// Log payload for a deleted registration. Deliberately not a
@@ -1220,5 +1255,30 @@ mod tests {
         wake.send(3).unwrap();
         assert_eq!(rx.recv().await.unwrap().0, 2);
         assert_eq!(rx.recv().await.unwrap().0, 3);
+    }
+
+    /// E4-controller-api-4: a catch-up longer than one page arrives complete and in order, and
+    /// streams past the cap are refused.
+    #[tokio::test]
+    async fn catch_up_pages_through_a_long_log_and_the_subscriber_cap_holds() {
+        let (state, _d) = state();
+        let total = CATCH_UP_PAGE + 3;
+        for i in 0..total {
+            state
+                .register_applied(&reg(&format!("n{i}")), None)
+                .unwrap();
+        }
+        let (_wake, updates) = broadcast::channel(8);
+        let (tx, mut rx) = mpsc::channel(8);
+        tokio::spawn(subscribe_worker(state.store.clone(), updates, 0, tx));
+        for want in 1..=total as u64 {
+            assert_eq!(rx.recv().await.unwrap().0, want);
+        }
+        let held: Vec<_> = (0..MAX_SUBSCRIBERS)
+            .map(|_| state.subscribers.clone().try_acquire_owned().unwrap())
+            .collect();
+        assert!(state.subscribers.clone().try_acquire_owned().is_err());
+        drop(held);
+        assert!(state.subscribers.clone().try_acquire_owned().is_ok());
     }
 }

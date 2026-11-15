@@ -140,11 +140,21 @@ impl Store {
     /// keys sort by byte order, and `encode_rev` is big-endian, so a plain
     /// range scan is already revision order.
     pub fn revisions_after(&self, since: u64) -> Result<Vec<(u64, RevisionBytes)>, StoreError> {
+        self.revisions_page(since, usize::MAX)
+    }
+
+    /// At most `limit` revisions strictly after `since`, oldest first: one page of the catch-up
+    /// range, so a subscriber far behind a long log does not have the whole log in memory.
+    pub fn revisions_page(
+        &self,
+        since: u64,
+        limit: usize,
+    ) -> Result<Vec<(u64, RevisionBytes)>, StoreError> {
         use std::ops::Bound;
 
         let mut out = Vec::new();
         let range = (Bound::Excluded(encode_rev(since)), Bound::Unbounded);
-        for item in self.revisions.range::<[u8; 8], _>(range) {
+        for item in self.revisions.range::<[u8; 8], _>(range).take(limit) {
             let (k, v) = item?;
             out.push((decode_rev(&k), v.to_vec()));
         }
