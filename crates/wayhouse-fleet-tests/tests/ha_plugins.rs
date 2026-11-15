@@ -22,7 +22,7 @@ fn counter_module() -> Vec<u8> {
     let caps = CAPS.replace('"', "\\\"");
     wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (import "wayhouse" "state_get" (func $get (param i32 i32 i32 i32) (result i32)))
@@ -53,7 +53,7 @@ fn bound_module() -> Vec<u8> {
     let esc = |s: &str| s.replace('"', "\\\"");
     wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{}")
   (@custom "wayhouse.plugin-manifest" "{}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
@@ -408,7 +408,7 @@ fn hook_module() -> Vec<u8> {
     let (len, resp) = (resp.len(), resp.replace('"', "\\\""));
     wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (import "wayhouse" "webhook_respond" (func $respond (param i32 i32) (result i32)))

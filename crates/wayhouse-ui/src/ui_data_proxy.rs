@@ -45,7 +45,24 @@ pub fn viewer_router() -> Router<AppState> {
 
 /// Operators save and delete dashboards and saved filters.
 pub fn operator_router() -> Router<AppState> {
-    named_writes(&["dashboards", "filters"])
+    named_writes(&["dashboards", "filters"]).route(
+        "/api/ui/dashboards/{name}/rename",
+        axum::routing::post(|s, a, Path(name): Path<String>, b: Bytes| async move {
+            match crate::proxy_util::path_segment(&name) {
+                Some(seg) => {
+                    write(
+                        s,
+                        a,
+                        Method::POST,
+                        format!("dashboards/{seg}/rename"),
+                        Some(b),
+                    )
+                    .await
+                }
+                None => bad_name(),
+            }
+        }),
+    )
 }
 
 /// Admins save themes, the form layout override and the deployment defaults.
@@ -230,6 +247,15 @@ mod tests {
         );
         assert_eq!(
             call(&app, &operator, "DELETE", "/api/ui/filters/f", "").await,
+            ok
+        );
+        let rename = "/api/ui/dashboards/ops/rename";
+        assert_eq!(
+            call(&app, &viewer, "POST", rename, r#"{"to":"x"}"#).await,
+            no
+        );
+        assert_eq!(
+            call(&app, &operator, "POST", rename, r#"{"to":"x"}"#).await,
             ok
         );
         for p in ["themes/x", "layout", "defaults"] {

@@ -23,7 +23,7 @@ pub const MAX_EVENT_PAYLOAD: usize = 16 * 1024;
 
 /// The events a plugin may subscribe to. The list only grows; payloads only gain optional
 /// fields (docs/plugins.md "Events").
-pub const EVENT_KINDS: &[&str] = &["config_revision", "plugin_changed"];
+pub const EVENT_KINDS: &[&str] = &["config_revision", "plugin_changed", "backend_health"];
 
 /// What the guest sees of a webhook call. The authorization header never appears.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -248,6 +248,7 @@ mod tests {
         RouteEntry {
             host: host.into(),
             backend: backend.into(),
+            kind: wayhouse_plugin_host::routes::RouteKind::default(),
         }
     }
 

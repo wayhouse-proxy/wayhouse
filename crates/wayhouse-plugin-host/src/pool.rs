@@ -171,7 +171,7 @@ mod tests {
     fn good_module() -> Vec<u8> {
         wat::parse_str(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{\"log\":true}")
   (memory (export "memory") 1)
   (func (export "alloc") (param i32) (result i32) (i32.const 0))

@@ -883,7 +883,7 @@ mod tests {
 
     use wayhouse_plugin_host::{inspect, Limits, PluginHost};
 
-    const ABI: &str = "\\00\\00\\02\\00";
+    const ABI: &str = "\\00\\00\\03\\00";
     const TIMER: &str = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"state":{"max_bytes":64}}"#;
     const NO_TIMER: &str = r#"{"log":true}"#;
 
@@ -1422,6 +1422,23 @@ mod tests {
             r.schedule.lock().await.loaded.contains_key(HID),
             "the scan evicted a plugin that only has a webhook"
         );
+    }
+
+    #[tokio::test]
+    async fn the_install_list_is_read_again_only_after_the_store_changed() {
+        let (r, store, _d) = fixture(1, 4);
+        install(&store, "a", &counter());
+        let first = r.installs().await.unwrap();
+        let again = r.installs().await.unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "an unchanged store is not listed twice"
+        );
+        let id = first[0].id.clone();
+        store.set_enabled(&id, false).unwrap();
+        let after = r.installs().await.unwrap();
+        assert!(!Arc::ptr_eq(&first, &after));
+        assert!(!after[0].enabled, "a change shows in the next list");
     }
 
     #[tokio::test]
