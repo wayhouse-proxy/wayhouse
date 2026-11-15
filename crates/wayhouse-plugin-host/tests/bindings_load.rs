@@ -72,7 +72,7 @@ fn a_wider_config_cannot_load_under_an_older_approval() {
         json!({"pat":"*.mc.example.com"}),
         json!({"pat":"b.mc.example.com"}),
         json!({"pat":"a.mc.example.com","net":"10.0.0.0/8"}),
-        json!({"pat":"a.mc.example.com","net":"0.0.0.0/0"}),
+        json!({"pat":"a.mc.example.com","net":"11.0.0.0/8"}),
     ] {
         assert!(
             matches!(load(wider.clone()), Err(ModuleError::CapsNotApproved(_))),

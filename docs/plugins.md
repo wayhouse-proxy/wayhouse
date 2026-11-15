@@ -98,6 +98,10 @@ placeholder, a placeholder in a key or in any other field is refused when the mo
 | `port_range`         | `port_routes.ports[]`                                                | `port` or `lo-hi`                                            |
 | `int`                | `http.hosts[].port`, `routes.max_entries`, `port_routes.max_entries` | a non-negative JSON integer (then the ordinary bounds apply) |
 
+A `cidr` network must be no wider than `/8` (IPv4) or `/16` (IPv6), so a typo such as `/0` cannot
+allow every backend, and an option marked `x-wayhouse-secret` cannot be bound: its value would
+land in the granted capability, which an operator reads back.
+
 `options` is a JSON Schema subset: `type`, `properties`, `required`, `enum`, `default`,
 `minimum`, `maximum`, `items`, `additionalProperties` (a boolean) and the display hints
 `title`, `description`, `group`, `order` and `x-wayhouse-secret`. Anything else (including

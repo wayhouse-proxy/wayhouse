@@ -73,13 +73,13 @@ All routes need the admin bearer token like the rest of the controller API.
 
 The web UI's Certificates page reads these routes for every role and, for an admin, adds, replaces and removes sites, registers gateways (the token is shown once, in the dialog that registers it) and revokes them. Its backend passes `PUT` and `DELETE /api/acme/sites/{name}`, `POST /api/acme/gateways` and `DELETE /api/acme/gateways/{name}` to the controller unchanged (bodies are capped at 64 KiB for a site and 1 KiB for a gateway, and each write leaves an audit log line naming the actor), so every rule below is the controller's.
 
-| Route                       | Does                                                                                                                  |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `PUT /acme/sites/{name}`    | Create or replace a site. Body: `names`, `dns_plugin`, optional `challenge`, `gateways`, `challenge_zone`, `enabled`. |
-| `GET /acme/sites`           | Every site with its certificate status and last error.                                                                |
-| `GET /acme/sites/{name}`    | One site.                                                                                                             |
-| `DELETE /acme/sites/{name}` | Remove the site, its certificates and its retry state.                                                                |
-| `GET /acme/account`         | The account URL, for pinning `CAA accounturi=` at your DNS provider. No key.                                          |
+| Route                       | Does                                                                                                                                                        |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUT /acme/sites/{name}`    | Create or replace a site. Body: `names`, `dns_plugin`, optional `challenge`, `gateways` (each must be registered, else `400`), `challenge_zone`, `enabled`. |
+| `GET /acme/sites`           | Every site with its certificate status and last error.                                                                                                      |
+| `GET /acme/sites/{name}`    | One site.                                                                                                                                                   |
+| `DELETE /acme/sites/{name}` | Remove the site, its certificates and its retry state.                                                                                                      |
+| `GET /acme/account`         | The account URL, for pinning `CAA accounturi=` at your DNS provider. No key.                                                                                |
 
 Rules: names are lowercase hostnames, optionally `*.zone`, at most 100 per site (the CA limit);
 a name belongs to one site
@@ -176,19 +176,18 @@ created with whatever binding the flags carry at that time.
 A gateway host gets its certificates from the controller, not from the CA. Each gateway has
 its own **token**; a token reads only the sites that list that gateway's name in `gateways`.
 
-| Route                          | Auth          | Does                                                                                   |
-| ------------------------------ | ------------- | -------------------------------------------------------------------------------------- |
-| `POST /acme/gateways`          | admin token   | Register a gateway. Body `{"name": "edge-1"}`. Answers `201` with the token, **once**. |
-| `GET /acme/gateways`           | admin token   | The gateways and the sites each may read. No token, no hash.                           |
-| `DELETE /acme/gateways/{name}` | admin token   | Revoke: its token answers `401` at once on every replica.                              |
-| `GET /acme/bundles`            | gateway token | The sites this gateway may read that have a certificate: `{site, version, not_after}`. |
-| `GET /acme/bundles/{site}`     | gateway token | `{version, chain_pem, key_pem, not_after, serial, untrusted}`.                         |
+| Route                          | Auth          | Does                                                                                                  |
+| ------------------------------ | ------------- | ----------------------------------------------------------------------------------------------------- |
+| `POST /acme/gateways`          | admin token   | Register a gateway. Body `{"name": "edge-1"}`. Answers `201` with the token, **once**.                |
+| `GET /acme/gateways`           | admin token   | The gateways and the sites each may read. No token, no hash.                                          |
+| `DELETE /acme/gateways/{name}` | admin token   | Revoke: its token answers `401` at once on every replica and the name leaves every site's `gateways`. |
+| `GET /acme/bundles`            | gateway token | The sites this gateway may read that have a certificate: `{site, version, not_after}`.                |
+| `GET /acme/bundles/{site}`     | gateway token | `{version, chain_pem, key_pem, not_after, serial, untrusted}`.                                        |
 
-A site's `gateways` list is not checked against the registered gateways. A name that is not
-registered (yet) fetches nothing, and a site with an empty list is issued and renewed but no
-gateway can read it. Deleting a gateway leaves its name in the sites that list it: whoever
-registers that name later can read those sites, so remove the name from the sites too unless
-you mean to re-register the same gateway.
+A site's `gateways` must all be registered: `PUT /acme/sites/{name}` answers `400` for a name
+nobody registered. Deleting a gateway removes its name from every site that lists it, so
+registering the same name later does not give the new holder the old sites; list the name in the
+sites again to grant it. A site with an empty list is issued and renewed but no gateway can read it.
 
 The controller stores only the SHA-256 of a token and replicates only that. To rotate a
 token, delete the gateway and register it again (a second `POST` of a taken name is `409`).

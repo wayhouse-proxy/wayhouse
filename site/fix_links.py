@@ -11,7 +11,7 @@ import re
 import sys
 
 REPO = "https://github.com/wayhouse-proxy/wayhouse/blob/main/"
-HREF = re.compile(r'href="([^"]*)"')
+LINK = re.compile(r'\b(href|src)="([^"]*)"')
 
 
 def rewrite(page_dir: str, root: str, href: str) -> str:
@@ -41,10 +41,12 @@ def main(root: str) -> int:
             page = os.path.join(dirpath, name)
             with open(page, encoding="utf-8") as f:
                 html = f.read()
-            html = HREF.sub(lambda m: 'href="%s"' % rewrite(dirpath, root, m.group(1)), html)
+            html = LINK.sub(
+                lambda m: '%s="%s"' % (m.group(1), rewrite(dirpath, root, m.group(2))), html
+            )
             with open(page, "w", encoding="utf-8") as f:
                 f.write(html)
-            for href in HREF.findall(html):
+            for _, href in LINK.findall(html):
                 if re.match(r"^[a-z][a-z0-9+.-]*:|^#|^/", href):
                     continue
                 target = os.path.join(dirpath, href.partition("#")[0].partition("?")[0])

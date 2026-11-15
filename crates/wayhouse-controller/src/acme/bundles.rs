@@ -297,6 +297,11 @@ mod tests {
 
     impl Fixture {
         fn site(&self, name: &str, host: &str, gateways: &[&str]) {
+            for g in gateways {
+                if self.store.gateway(g).unwrap().is_none() {
+                    self.store.seed_gateway(g);
+                }
+            }
             let op = AcmeOp::SiteSet(site(name, host, gateways));
             assert_eq!(self.store.apply_local(&op).unwrap(), Applied::Done);
         }
@@ -327,12 +332,11 @@ mod tests {
 
         fn gateway(&self, name: &str) -> String {
             let token = new_token();
-            let op = AcmeOp::GatewaySet(Gateway {
+            self.store.overwrite_gateway(&Gateway {
                 name: name.into(),
                 token_hash: hash_token(&token),
                 created_at: 1,
             });
-            assert_eq!(self.store.apply_local(&op).unwrap(), Applied::Done);
             token
         }
 
@@ -370,6 +374,22 @@ mod tests {
                 .unwrap();
             (status, headers, String::from_utf8(bytes.to_vec()).unwrap())
         }
+    }
+
+    #[test]
+    fn a_sealed_key_opens_only_in_its_own_site_version_and_scope() {
+        use super::super::types::ACCOUNT_SLOT;
+        let ring = KeyringHandle::new(Keyring::parse(KEY).unwrap());
+        let sealed = ring
+            .current()
+            .seal(SEAL_SCOPE, &cert_slot("a", 1), b"secret-bytes")
+            .unwrap();
+        let open = |scope: &str, slot: &str| ring.current().open(scope, slot, &sealed).is_ok();
+        assert!(open(SEAL_SCOPE, &cert_slot("a", 1)));
+        assert!(!open(SEAL_SCOPE, &cert_slot("b", 1)), "another site");
+        assert!(!open(SEAL_SCOPE, &cert_slot("a", 2)), "another version");
+        assert!(!open(SEAL_SCOPE, ACCOUNT_SLOT), "the account slot");
+        assert!(!open("plugin", &cert_slot("a", 1)), "another scope");
     }
 
     #[tokio::test]

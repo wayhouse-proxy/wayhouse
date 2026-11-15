@@ -2433,6 +2433,8 @@ mod tests {
         let done = WriteResponse::AcmeResult(Applied::Done);
         let (mut a, _a) = test_sm();
         let (mut b, _b) = test_sm();
+        a.acme().seed_gateway("gw1");
+        b.acme().seed_gateway("gw1");
         let log = [
             WriteRequest::Acme(AcmeOp::SiteSet(acme_site("web", "a.example.com"))),
             WriteRequest::Acme(AcmeOp::SiteSet(acme_site("dup", "a.example.com"))),
@@ -2470,6 +2472,7 @@ mod tests {
             .await
             .unwrap();
         let (mut c, _c) = test_sm();
+        c.acme().seed_gateway("gw1");
         apply_one(
             &mut c,
             1,

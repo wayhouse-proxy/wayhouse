@@ -257,6 +257,17 @@ impl Manifest {
             } else {
                 "string"
             };
+            // A secret option is sealed and never shown; a binding would put its value into
+            // the granted capability, where an operator reads it back (#486).
+            if m.options.0["properties"][&b.option]
+                .get("x-wayhouse-secret")
+                .is_some()
+            {
+                return Err(bad(format!(
+                    "binding {}: a secret option cannot be bound to a capability",
+                    b.option
+                )));
+            }
             if !valid_option_name(&b.option) || ty != Some(want) {
                 return Err(bad(format!(
                     "binding {}: needs an option named a-z, 0-9, _ of type {want} for kind {:?}",
@@ -308,7 +319,7 @@ mod tests {
                 "nets":{"type":"array","items":{"type":"string"},"default":["10.0.0.0/8"]},
                 "max":{"type":"integer","minimum":1,"maximum":10,"default":5},
                 "mode":{"type":"string","enum":["a","b"]}}},
-            "bindings":[{"option":"panel","kind":"hostname"},{"option":"max","kind":"int"}]})
+            "bindings":[{"option":"mode","kind":"hostname"},{"option":"max","kind":"int"}]})
     }
 
     #[test]
@@ -380,6 +391,14 @@ mod tests {
         let mut v = basic();
         v["options"]["properties"]["max"]["default"] = json!(99);
         assert!(matches!(parse(v), Err(ModuleError::ManifestInvalid(_))));
+    }
+
+    #[test]
+    fn a_secret_option_cannot_be_bound() {
+        let mut m = basic();
+        m["bindings"] = json!([{"option":"panel","kind":"hostname"}]);
+        let err = parse(m).unwrap_err().to_string();
+        assert!(err.contains("secret"), "{err}");
     }
 
     #[test]
