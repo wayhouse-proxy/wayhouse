@@ -1703,7 +1703,13 @@ async fn subscribe_worker(
     }
 
     loop {
-        match updates.recv().await {
+        // An idle subscriber that disconnected ends here too, not at the next revision, so its
+        // slot (and worker) does not wait for a write that may never come.
+        let received = tokio::select! {
+            () = tx.closed() => return,
+            r = updates.recv() => r,
+        };
+        match received {
             Ok(revision) if revision <= last_sent => {} // already sent by catch-up
             Ok(revision) if !is_visible(&stage, revision, group) => {} // not (yet) ours to see
             // Replay from the cursor rather than fetching just `revision`: a
@@ -2056,6 +2062,37 @@ listeners:
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// An idle subscriber that disconnects gives its slot back at once, not at the next
+    /// revision: 1024 dead connections must not lock real proxies out.
+    #[tokio::test]
+    async fn an_idle_subscriber_that_disconnects_releases_its_slot() {
+        let (state, _dir) = test_state();
+        let app = router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::get("/config/subscribe")
+                    .header(
+                        wayhouse_http::protocol::HEADER,
+                        wayhouse_http::protocol::ProtocolVersion::CURRENT.to_string(),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(state.subscribers.available_permits(), MAX_SUBSCRIBERS - 1);
+        // The client goes away without a single revision having been written.
+        drop(resp);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while state.subscribers.available_permits() != MAX_SUBSCRIBERS {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the permit came back");
     }
 
     #[tokio::test]

@@ -190,7 +190,7 @@ impl foca::BroadcastHandler<SocketAddr> for BroadcastMerger {
     fn receive_item(
         &mut self,
         data: &[u8],
-        _sender: Option<&SocketAddr>,
+        sender: Option<&SocketAddr>,
     ) -> Result<Option<Self::Key>, Self::Error> {
         let reg: BackendHealthRegister = postcard::from_bytes(data)?;
         if reg.changed_at > wall_ms().saturating_add(MAX_VERSION_SKEW_MS) {
@@ -220,9 +220,14 @@ impl foca::BroadcastHandler<SocketAddr> for BroadcastMerger {
             return Ok(None);
         }
         let now = wall_ms();
+        // A held register that expired is replaced by a lower version only when the origin
+        // itself sent it (or this instance published it: `sender` is `None`). A relayed copy
+        // must still be newer: otherwise an old verdict a peer kept would come back to life
+        // after expiry and be rebroadcast.
+        let from_origin = sender.is_none_or(|s| *s == reg.origin);
         let is_new = per_origin
             .get(&reg.origin)
-            .is_none_or(|cur| cur.changed_at < reg.changed_at || cur.expired(now));
+            .is_none_or(|cur| cur.changed_at < reg.changed_at || (cur.expired(now) && from_origin));
         if is_new {
             per_origin.insert(
                 reg.origin,
@@ -757,6 +762,16 @@ mod tests {
             .unwrap()
     }
 
+    /// [`deliver`] as received in a packet from `sender`.
+    fn deliver_from(
+        m: &mut BroadcastMerger,
+        sender: SocketAddr,
+        r: BackendHealthRegister,
+    ) -> Option<BackendHealthKey> {
+        m.receive_item(&postcard::to_allocvec(&r).unwrap(), Some(&sender))
+            .unwrap()
+    }
+
     /// Like [`deliver`] for a merger built by [`merger`], which has no member list: the
     /// origin is listed first, as the mesh would have by the time its register matters.
     fn receive(m: &mut BroadcastMerger, r: BackendHealthRegister) -> Option<BackendHealthKey> {
@@ -1007,11 +1022,20 @@ mod tests {
             .unwrap()
             .seen_ms = wall_ms() - REGISTER_TTL_MS - 1;
         assert_eq!(handle.domain_votes(addr), (0, 0));
+        // A stale copy relayed by another member does not come back to life, however old.
+        let other: SocketAddr = "10.0.0.3:1".parse().unwrap();
+        assert!(deliver_from(&mut merger, other, now_reg(addr, origin, high - 10_000)).is_none());
+        assert_eq!(handle.domain_votes(addr), (0, 0));
         // The origin's next publication, under the corrected clock, takes its place.
         let mut healthy = now_reg(addr, origin, high - 10_000);
         healthy.up = true;
-        assert!(deliver(&mut merger, healthy).is_some());
+        assert!(deliver_from(&mut merger, origin, healthy).is_some());
         assert_eq!(handle.domain_votes(addr), (1, 0));
+        // And a relayed copy that is newer than what is held is still taken.
+        let mut newer = now_reg(addr, origin, high - 5_000);
+        newer.up = false;
+        assert!(deliver_from(&mut merger, other, newer).is_some());
+        assert_eq!(handle.domain_votes(addr), (0, 1));
     }
 
     /// #305: drop warnings are rate limited to one a minute per origin, and the

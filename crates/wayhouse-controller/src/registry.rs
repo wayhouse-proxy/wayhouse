@@ -923,7 +923,13 @@ pub(crate) async fn subscribe_worker(
     }
 
     loop {
-        match updates.recv().await {
+        // An idle subscriber that disconnected ends here too, not at the next revision, so its
+        // slot (and worker) does not wait for a write that may never come.
+        let received = tokio::select! {
+            () = tx.closed() => return,
+            r = updates.recv() => r,
+        };
+        match received {
             Ok(revision) if revision <= last_sent => {}
             // Replay from the cursor rather than fetching just `revision`: a
             // snapshot install wakes once, for its newest revision, and the
@@ -1280,5 +1286,21 @@ mod tests {
         assert!(state.subscribers.clone().try_acquire_owned().is_err());
         drop(held);
         assert!(state.subscribers.clone().try_acquire_owned().is_ok());
+    }
+
+    /// An idle registry subscriber that disconnects ends its worker at once.
+    #[tokio::test]
+    async fn an_idle_registry_subscriber_that_disconnects_ends_its_worker() {
+        let (state, _d) = state();
+        let (_wake, updates) = broadcast::channel(8);
+        let (tx, rx) = mpsc::channel(8);
+        let worker = tokio::spawn(subscribe_worker(state.store.clone(), updates, 0, tx));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!worker.is_finished());
+        drop(rx);
+        tokio::time::timeout(std::time::Duration::from_secs(5), worker)
+            .await
+            .expect("the worker ended without a write")
+            .unwrap();
     }
 }
