@@ -59,7 +59,9 @@
   typically `EMFILE` (out of file descriptors). The
   worker pauses 50 ms, doubling to 1 s, until an accept succeeds, and logs at most
   one `accept failed` warning per second with a `suppressed` count; this counter
-  carries the full rate.
+  carries the full rate. A failure that only concerns the one dropped connection
+  (`ECONNABORTED`, `ECONNRESET`, `ECONNREFUSED`) is counted but neither pauses the worker
+  nor logs (#239).
 - `wayhouse_filter_blocked_total{listener,filter}` – `filter` = `acl` | `geo` |
   `rate_ip` | `rate_net` | `src_conn_ip` | `src_conn_net` | `max_conn` |
   `max_udp` | `max_new_rate`; a connection / new UDP session was dropped by the
