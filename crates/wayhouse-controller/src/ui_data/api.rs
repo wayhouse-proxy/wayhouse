@@ -40,6 +40,10 @@ fn exported(kind: Kind, name: &str, mut v: Value) -> Value {
     if !kind_is_single(kind) {
         if let Some(o) = v.as_object_mut() {
             o.insert("name".into(), name.into());
+            // A dashboard that predates revisions reads as revision 0.
+            if kind == Kind::Dashboard {
+                o.entry("revision").or_insert(0.into());
+            }
         }
     }
     v
@@ -88,6 +92,18 @@ pub fn router(state: UiState) -> Router {
                 ),
             );
     }
+    r = r.route(
+        "/ui/dashboards/{name}/rename",
+        axum::routing::post(
+            |State(st): State<UiState>,
+             OriginalUri(uri): OriginalUri,
+             headers: HeaderMap,
+             Path(name): Path<String>,
+             body: Bytes| async move {
+                rename_dashboard(&st, name, uri.path(), &headers, body).await
+            },
+        ),
+    );
     for (path, kind) in [
         ("/ui/layout", Kind::FormLayout),
         ("/ui/defaults", Kind::Defaults),
@@ -575,10 +591,54 @@ async fn put_one(
                 .into_response();
         }
     }
-    let reply = exported(kind, &name, value.clone());
+    let mut reply = exported(kind, &name, value.clone());
+    if kind == Kind::Dashboard {
+        // A save that named its revision was applied only if that was the stored one, so the new
+        // one is known without a read; an import without one gets none (read it back).
+        match value.get("revision").and_then(Value::as_u64) {
+            Some(r) => reply["revision"] = (r + 1).into(),
+            None => {
+                reply.as_object_mut().map(|o| o.remove("revision"));
+            }
+        }
+    }
     let op = UiOp::Put { kind, name, value };
     write(st, op, Method::PUT, path, headers, body, move || {
         Json(reply).into_response()
+    })
+    .await
+}
+
+/// `POST /ui/dashboards/{name}/rename` with `{"to": "new name", "revision"?: N}`; answers
+/// `{"name"}`.
+async fn rename_dashboard(
+    st: &UiState,
+    from: String,
+    path: &str,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Response {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Body {
+        to: String,
+        revision: Option<u64>,
+    }
+    let Ok(b) = serde_json::from_slice::<Body>(&body) else {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "the body must be {\"to\": name} with an optional revision",
+        );
+    };
+    let to = b.to.clone();
+    let op = UiOp::RenameDashboard {
+        from,
+        to: b.to,
+        revision: b.revision,
+    };
+    // Not a read-back: on a follower the write may not have reached this replica yet.
+    write(st, op, Method::POST, path, headers, body, move || {
+        Json(json!({ "name": to })).into_response()
     })
     .await
 }
@@ -606,11 +666,20 @@ fn answer(applied: &Applied, ok: impl FnOnce() -> Response) -> Response {
             StatusCode::CONFLICT,
             format!("already {max} records of this kind; delete one first"),
         ),
-        Applied::Stale => err(
+        // `code` lets the UI tell "someone saved since" from the other 409s without reading prose.
+        Applied::Stale => (
             StatusCode::CONFLICT,
-            "the record changed while the request was applied; try again",
-        ),
+            Json(json!({
+                "error": "the record changed since it was read; reload it and try again",
+                "code": "stale",
+            })),
+        )
+            .into_response(),
         Applied::Refused => err(StatusCode::UNAUTHORIZED, "invalid or expired code"),
+        Applied::Exists => err(
+            StatusCode::CONFLICT,
+            "a record with that name already exists",
+        ),
         Applied::Taken => err(StatusCode::CONFLICT, "that node id is already taken"),
         Applied::NameTaken => err(StatusCode::CONFLICT, "that name is already enrolled"),
         Applied::Replayed | Applied::Allocated(_) => {
@@ -969,6 +1038,61 @@ mod tests {
         assert_eq!(st, StatusCode::NO_CONTENT);
         let (st, _) = call(&app, "GET", "/ui/dashboards/ops", Value::Null, None).await;
         assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_stale_dashboard_save_is_a_409_and_a_rename_moves_it_atomically() {
+        let (app, _s, _d) = app(None);
+        let (_, first) = call(&app, "PUT", "/ui/dashboards/ops", dash(), None).await;
+        assert!(
+            first.get("revision").is_none(),
+            "an import is not told a revision"
+        );
+        let (_, first) = call(&app, "GET", "/ui/dashboards/ops", Value::Null, None).await;
+        assert_eq!(first["revision"], 1);
+        let mut mine = first.clone();
+        mine["widgets"] = json!([{"id": "nodes", "width": 12}]);
+        assert_eq!(
+            call(&app, "PUT", "/ui/dashboards/ops", mine.clone(), None)
+                .await
+                .0,
+            StatusCode::OK
+        );
+        // The same edit again, from the revision already replaced.
+        let (st, body) = call(&app, "PUT", "/ui/dashboards/ops", mine, None).await;
+        assert_eq!(
+            (st, body["code"].as_str()),
+            (StatusCode::CONFLICT, Some("stale"))
+        );
+        let (st, body) = call(
+            &app,
+            "POST",
+            "/ui/dashboards/ops/rename",
+            json!({"to": "noc", "revision": 1}),
+            None,
+        )
+        .await;
+        assert_eq!(
+            (st, body["code"].as_str()),
+            (StatusCode::CONFLICT, Some("stale"))
+        );
+        let (st, body) = call(
+            &app,
+            "POST",
+            "/ui/dashboards/ops/rename",
+            json!({"to": "noc", "revision": 2}),
+            None,
+        )
+        .await;
+        assert_eq!((st, body["name"].as_str()), (StatusCode::OK, Some("noc")));
+        let (st, got) = call(&app, "GET", "/ui/dashboards/noc", Value::Null, None).await;
+        assert_eq!((st, got["revision"].clone()), (StatusCode::OK, json!(3)));
+        assert_eq!(
+            call(&app, "GET", "/ui/dashboards/ops", Value::Null, None)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]

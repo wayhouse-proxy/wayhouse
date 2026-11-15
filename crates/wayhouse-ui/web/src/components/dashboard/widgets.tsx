@@ -185,14 +185,37 @@ function Rollout() {
   const q = useQuery({ queryKey: ["revisions"], queryFn: listRevisions, refetchInterval: 30_000 });
   const versions = new Map<string, number>();
   for (const i of instances) versions.set(i.version || "unknown", (versions.get(i.version || "unknown") ?? 0) + 1);
+  // How many nodes run each applied revision; a node that reports none (a file-config proxy, an older build) is counted apart.
+  const applied = new Map<number, number>();
+  let unreported = 0;
+  for (const i of instances) {
+    if (typeof i.config_revision === "number") applied.set(i.config_revision, (applied.get(i.config_revision) ?? 0) + 1);
+    else unreported++;
+  }
+  const spread = [...applied].sort((a, b) => b[0] - a[0]);
   return (
-    <Panel title="Config rollout" footer={[q.dataUpdatedAt ? updated(q.dataUpdatedAt) : null, "Per-instance applied revisions are not reported yet"].filter(Boolean).join(" · ")}>
+    <Panel title="Config rollout" footer={q.dataUpdatedAt ? updated(q.dataUpdatedAt) : undefined}>
       <Async q={q} empty={(r) => (r.length === 0 ? "No configuration has been submitted yet." : null)}>
         {(revs) => {
           const current = revs.find((r) => r.current) ?? revs[0];
           return (
             <>
               <Headline value={`r${current.revision}`} unit={`current of ${revs.length} revisions`} />
+              <p className="mb-1 text-sm">{fmtCount(applied.get(current.revision) ?? 0)} of {fmtCount(instances.length)} nodes on r{current.revision}</p>
+              <ul aria-label="Nodes by applied revision" className="mb-2 flex flex-col gap-0.5 text-sm">
+                {spread.map(([r, n]) => (
+                  <li key={r} className="flex justify-between">
+                    <span className="font-mono">r{r}{r === current.revision ? " (current)" : ""}</span>
+                    <span className="tabular-nums">{fmtCount(n)}</span>
+                  </li>
+                ))}
+                {unreported > 0 && (
+                  <li className="flex justify-between text-ink-muted">
+                    <span>not reported</span>
+                    <span className="tabular-nums">{fmtCount(unreported)}</span>
+                  </li>
+                )}
+              </ul>
               <p className="mb-1 text-xs text-ink-muted">Software versions across the fleet{connected ? "" : " (last known)"}</p>
               <ul className="flex flex-col gap-0.5 text-sm">
                 {[...versions].sort((a, b) => b[1] - a[1]).map(([v, n]) => (

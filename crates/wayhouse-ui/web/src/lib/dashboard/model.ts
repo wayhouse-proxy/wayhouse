@@ -10,6 +10,8 @@ export interface PlacedWidget {
 export interface Dashboard {
   name: string;
   widgets: PlacedWidget[];
+  /** Counted up by the controller on every save; sent back so a save that lost to someone else's is refused. Not exported. */
+  revision?: number;
 }
 
 export const MAX_WIDGETS = 100;
@@ -86,4 +88,12 @@ export function saveDashboard(d: Dashboard): Promise<Dashboard> {
 }
 export function deleteDashboard(name: string): Promise<void> {
   return requestJson(`/api/ui/dashboards/${encodeURIComponent(name)}`, { method: "DELETE" });
+}
+/** Renames in one step on the controller (it also moves the deployment default). */
+export function renameDashboard(from: string, to: string, revision?: number): Promise<{ name: string }> {
+  return requestJson(`/api/ui/dashboards/${encodeURIComponent(from)}/rename`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ to, revision }),
+  });
 }
