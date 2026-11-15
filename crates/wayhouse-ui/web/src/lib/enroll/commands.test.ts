@@ -54,7 +54,7 @@ describe("controller replica", () => {
     expect(step.text).toContain("--listen=0.0.0.0:7443");
   });
 
-  it("needs the step-up secret and goes to systemd or Kubernetes only", () => {
+  it("needs the step-up passphrase and goes to systemd or Kubernetes only", () => {
     expect(needsStepUp("controller")).toBe(true);
     expect(unsupported("controller", "systemd")).toBeNull();
     expect(unsupported("controller", "k8s")).toBeNull();
@@ -71,7 +71,7 @@ describe("controller replica", () => {
         "Store the pool code as a Secret",
         "Apply the overlay and start the replicas",
       ]);
-      expect(steps[0].text).toContain("create secret generic wayhouse-enroll-step-up --from-file=step-up=");
+      expect(steps[0].text).toContain("create secret generic wayhouse-enroll-step-up --from-file=step-up-pubkey=");
       expect(steps[1].text).toBe(
         `printf '%s' ${CODE} | kubectl -n wayhouse create secret generic wayhouse-enroll-code --from-file=code=/dev/stdin`,
       );

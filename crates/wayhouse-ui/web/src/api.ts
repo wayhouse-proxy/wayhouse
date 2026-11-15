@@ -466,7 +466,7 @@ export interface MintRequest {
   parent_url?: string;
   /** Agent, proxy or pool controller codes: the node names a multi-use code covers. */
   name_prefix?: string;
-  /** Proxy and UI codes only. Typed per mint, sent once, never stored. */
+  /** The operator's step-up passphrase (16+ characters): required for proxy, ui and controller codes, and for any code when the console uses the scoped UI token. Typed per mint, sent once, never stored. */
   step_up?: string;
 }
 

@@ -36,7 +36,7 @@ spec:
             - --ha-peers=0=https://wayhouse-controller-0.wayhouse-controller-peers:9901
             - --ha-token-file=/run/secrets/wayhouse/ha-token
             - --secret-key-file=/run/keyring/secret.keys
-            - --enroll-step-up-file=/run/step-up/step-up
+            - --enroll-step-up-pubkey-file=/run/step-up/step-up-pubkey
             - --tls-cert=/run/tls/controller.crt   # one leaf for every replica: its names include *.wayhouse-controller-peers
             - --tls-key=/run/tls/controller.key
             - --ca-file=/run/tls/ca.crt
@@ -63,7 +63,7 @@ spec:
         - name: keyring
           secret: { secretName: wayhouse-keyring, defaultMode: 0440, items: [{ key: secret.keys, path: secret.keys }] }
         - name: step-up
-          secret: { secretName: wayhouse-enroll-step-up, defaultMode: 0440, items: [{ key: step-up, path: step-up }] }
+          secret: { secretName: wayhouse-enroll-step-up, defaultMode: 0440, items: [{ key: step-up-pubkey, path: step-up-pubkey }] }
   volumeClaimTemplates:
     - metadata: { name: data }
       spec:
@@ -116,7 +116,7 @@ spec:
             - --agent-token-file=/enrolled/agent-token
             - --ha-token-file=/enrolled/ha-token
             - --secret-key-file=/enrolled/secret.keys
-            - --enroll-step-up-file=/enrolled/enroll-step-up
+            - --enroll-step-up-pubkey-file=/enrolled/enroll-step-up-pubkey
             - --ha-join
             - --ha-node-id-file=/enrolled/ha-node-id
             - --ha-join-proof-file=/enrolled/ha-join-proof

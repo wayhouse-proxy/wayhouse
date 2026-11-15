@@ -24,7 +24,7 @@ export const TARGETS: { target: Target; label: string }[] = [
   { target: "k8s", label: "Kubernetes" },
 ];
 
-/** Roles whose grant is the keyring or the admin token: minting needs the step-up secret. */
+/** Roles whose grant is the keyring or the admin token: minting needs the signed step-up. */
 export const needsStepUp = (role: EnrollRole) => role === "proxy" || role === "ui" || role === "controller";
 
 /** Why `role` cannot go to `target` yet, or null. */
@@ -375,8 +375,8 @@ function k8sControllerPool(s: Spec): Step[] {
       title: "Create the step-up Secret (once, by hand)",
       language: "sh",
       holdsCode: false,
-      text: `kubectl -n ${ns} create secret generic wayhouse-enroll-step-up --from-file=step-up=./step-up`,
-      note: "The overlay also needs the wayhouse-tls, wayhouse-tokens and wayhouse-keyring Secrets that `wayhouse-controller init --target k8s-secret` makes; create them first. Skip this step if the step-up Secret exists. It must hold the same step-up secret you typed above, in a file named step-up; the bootstrap controller and every replica read it.",
+      text: `kubectl -n ${ns} create secret generic wayhouse-enroll-step-up --from-file=step-up-pubkey=./step-up.pub`,
+      note: "The overlay also needs the wayhouse-tls, wayhouse-tokens and wayhouse-keyring Secrets that `wayhouse-controller init --target k8s-secret` makes; create them first. Skip this step if the step-up Secret exists. It holds only the public half of the step-up key, never the passphrase: make it with `wayhouse-controller step-up init --passphrase-file ./passphrase --out ./step-up.pub` (a passphrase of 16 or more characters, the one you typed above); the bootstrap controller and every replica read it.",
     },
     {
       title: "Store the pool code as a Secret",

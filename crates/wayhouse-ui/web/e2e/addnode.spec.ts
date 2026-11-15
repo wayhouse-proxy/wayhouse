@@ -35,12 +35,12 @@ test("mint a proxy code with the step-up secret, copy the command, then revoke t
   await page.getByLabel("Name", { exact: false }).first().fill("edge-1");
   await page.getByLabel("Controller URL").fill("https://ctl.example:9901");
   await page.getByLabel("Certificate fingerprint").fill(PIN);
-  await page.getByLabel("Step-up secret").fill("wrong guess, but long enough");
+  await page.getByLabel("Step-up passphrase").fill("wrong guess, but long enough");
   await page.getByRole("button", { name: "Create code" }).click();
   await expect(page.getByText("enter it again")).toBeVisible();
-  await expect(page.getByLabel("Step-up secret")).toHaveValue("");
+  await expect(page.getByLabel("Step-up passphrase")).toHaveValue("");
 
-  await page.getByLabel("Step-up secret").fill("correct step-up secret");
+  await page.getByLabel("Step-up passphrase").fill("correct step-up secret");
   await page.getByRole("button", { name: "Create code" }).click();
   const step = page.getByLabel("Step 1 text");
   await expect(step).toContainText(`WAYHOUSE_ENROLL_CODE=${CODE}`);
@@ -97,7 +97,7 @@ for (const scheme of ["light", "dark"] as const) {
     await page.getByLabel("Controller URL").fill("https://ctl.example:9901");
     await page.getByLabel("Certificate fingerprint").fill(PIN);
     await page.getByLabel("Advertise address").fill("https://ctl-4.example:9901");
-    await page.getByLabel("Step-up secret").fill("correct step-up secret");
+    await page.getByLabel("Step-up passphrase").fill("correct step-up secret");
     expect(await serious()).toEqual([]);
 
     await page.getByRole("button", { name: "Create code" }).click();
@@ -129,7 +129,7 @@ for (const scheme of ["light", "dark"] as const) {
     await page.getByLabel("Set up with").selectOption("k8s");
     await page.getByLabel("Name", { exact: false }).first().fill("ctl-pool");
     await page.getByLabel("Uses").fill("3");
-    await page.getByLabel("Step-up secret").fill("correct step-up secret");
+    await page.getByLabel("Step-up passphrase").fill("correct step-up secret");
     expect(await serious()).toEqual([]);
 
     await page.getByRole("button", { name: "Create code" }).click();

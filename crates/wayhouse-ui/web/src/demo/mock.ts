@@ -287,7 +287,7 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
   if (path === "/api/enrollments" && method === "GET") return ok({ items: enrollments });
   if (path === "/api/enrollments" && method === "POST") {
     const b = await json();
-    if ((b.role === "proxy" || b.role === "ui") && !b.step_up) return err(403, "this role needs the step-up secret; enter it again");
+    if ((b.role === "proxy" || b.role === "ui") && !b.step_up) return err(403, "this role needs the step-up passphrase; enter it again");
     const now = Math.floor(Date.now() / 1000);
     const id = Math.random().toString(36).slice(2, 10);
     enrollments.push({ id, role: b.role, origin: b.name, created_at: now, expires_at: now + b.ttl_secs, uses: b.uses, uses_left: b.uses, status: "pending", created_by: "demo" });
