@@ -194,3 +194,65 @@ jobs:
               docker buildx imagetools create -t "$image:$tag" "$image:$VERSION-amd64" "$image:$VERSION-arm64"
             done
           done
+
+  # The release feed (RELEASING.md): a small signed JSON file that tells running
+  # controllers and UIs a newer version exists. It runs after `publish`, so a problem here
+  # (a missing signing secret, a bad feed) turns this job red but never withholds the images.
+  # It creates the GitHub release if there is none, and attaches `release-feed.json` and its
+  # `.minisig` to it; readers fetch releases/latest/download/release-feed.json.
+  release-feed:
+    needs: [verify, publish]
+    runs-on: ubuntu-24.04   # pinned like ci.yml
+    timeout-minutes: 20
+    permissions:
+      contents: write   # create the release and attach the feed
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      LATEST: ${{ needs.verify.outputs.latest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Create the GitHub release if there is none
+        run: |
+          set -eu
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "release $TAG exists"
+            exit 0
+          fi
+          flags=""
+          case "$TAG" in *-*) flags="--prerelease --latest=false" ;; *)
+            if [ "$LATEST" = true ]; then flags="--latest"; else flags="--latest=false"; fi ;;
+          esac
+          # shellcheck disable=SC2086
+          gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes --verify-tag $flags
+      - name: Build, sign and attach the feed
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.RELEASE_MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.RELEASE_MINISIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::error::RELEASE_MINISIGN_SECRET_KEY is not set: no release feed was published (the images are out)"
+            exit 1
+          fi
+          cargo build --locked --release -p wayhouse-registry --bin wayhouse-registry-gen
+          gen=target/release/wayhouse-registry-gen
+          work=$(mktemp -d)
+          key="$work/release.key"
+          ( umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key" )
+          trap 'rm -rf "$work"' EXIT
+          gh api "repos/$REPO/releases" --paginate > "$work/releases.json"
+          "$gen" release-feed --releases "$work/releases.json" --out "$work/release-feed.json"
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key" -t "wayhouse-v1 release-feed" \
+            -m "$work/release-feed.json" -x "$work/release-feed.json.minisig"
+          # The same check a controller makes, with the key compiled into this build: a feed
+          # that would not verify in the field never gets attached.
+          "$gen" verify-release-feed "$work/release-feed.json" "$work/release-feed.json.minisig"
+          gh release upload "$TAG" --repo "$REPO" --clobber \
+            "$work/release-feed.json" "$work/release-feed.json.minisig"

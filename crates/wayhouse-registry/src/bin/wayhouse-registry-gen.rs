@@ -69,6 +69,22 @@ enum Command {
         #[arg(long)]
         details_dir: Option<PathBuf>,
     },
+    /// Build `release-feed.json` from the JSON `gh api repos/<owner>/<repo>/releases --paginate` prints.
+    ReleaseFeed {
+        /// The GitHub releases JSON.
+        #[arg(long)]
+        releases: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Check a release feed against its signature (the compiled-in release key unless --key).
+    VerifyReleaseFeed {
+        feed: PathBuf,
+        signature: PathBuf,
+        /// Base64 public key to check with, for tests.
+        #[arg(long)]
+        key: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -172,6 +188,29 @@ fn main() -> Result<()> {
             let parsed = resolve_plugin_details(parsed, details_dir.as_deref())?;
             let versions: usize = parsed.plugins.iter().map(|p| p.versions.len()).sum();
             println!("ok: {} plugins, {versions} versions", parsed.plugins.len());
+        }
+        Command::ReleaseFeed { releases, out } => {
+            let json = std::fs::read_to_string(&releases)
+                .with_context(|| format!("reading {}", releases.display()))?;
+            let feed = wayhouse_registry::from_github_releases(&json)?;
+            let bytes = wayhouse_registry::release_feed::to_json(&feed)?;
+            write_atomically(&out, &bytes)?;
+            println!("ok: {} releases", feed.releases.len());
+        }
+        Command::VerifyReleaseFeed {
+            feed,
+            signature,
+            key,
+        } => {
+            let bytes =
+                std::fs::read(&feed).with_context(|| format!("reading {}", feed.display()))?;
+            let sig = std::fs::read(&signature)
+                .with_context(|| format!("reading {}", signature.display()))?;
+            let key = key
+                .as_deref()
+                .unwrap_or(wayhouse_registry::RELEASE_FEED_PUBKEY);
+            let parsed = wayhouse_registry::verify_release_feed(&bytes, &sig, key)?;
+            println!("ok: {} releases, signature verified", parsed.releases.len());
         }
     }
     Ok(())

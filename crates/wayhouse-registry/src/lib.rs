@@ -7,6 +7,8 @@ pub mod index;
 pub mod legacy;
 pub mod manifest;
 pub mod plugin_index;
+pub mod release_feed;
+pub mod release_key;
 pub mod verify;
 
 pub use compat::{abi_matches, check_min_proxy, select, AbiParseError, Environment, Incompatible};
@@ -21,4 +23,9 @@ pub use plugin_index::{
     parse_plugin_detail, parse_plugin_index, plugin_abi, verify_plugin_artifact, PluginDetail,
     PluginEntry, PluginIndex, PluginIndexError, PluginVerified, PluginVerifyError, PluginVersion,
 };
+pub use release_feed::{
+    from_github_releases, newer_than, parse_release_feed, verify_release_feed, FeedError,
+    ReleaseEntry, ReleaseFeed, FEED_CLAIM, FEED_SCHEMA,
+};
+pub use release_key::RELEASE_FEED_PUBKEY;
 pub use verify::{check_module, signed_claim, verify_artifact, AbiDecl, Verified, VerifyError};

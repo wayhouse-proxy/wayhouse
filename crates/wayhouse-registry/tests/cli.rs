@@ -363,3 +363,56 @@ fn verify_plugin_refuses_a_signed_flag_that_the_newest_version_does_not_back() {
         .status
         .success());
 }
+
+#[test]
+fn a_release_feed_is_built_signed_and_verified_end_to_end() {
+    use std::io::Cursor;
+    let dir = tempfile::tempdir().unwrap();
+    let releases = dir.path().join("releases.json");
+    std::fs::write(
+        &releases,
+        r#"[{"tag_name":"v0.4.0","html_url":"https://github.com/o/r/releases/tag/v0.4.0","published_at":"2026-11-20T10:00:00Z","draft":false,"prerelease":false}]"#,
+    )
+    .unwrap();
+    let feed = dir.path().join("release-feed.json");
+    let out = Command::new(BIN)
+        .args(["release-feed", "--releases"])
+        .arg(&releases)
+        .arg("--out")
+        .arg(&feed)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let bytes = std::fs::read(&feed).unwrap();
+    let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let sig = minisign::sign(
+        Some(&kp.pk),
+        &kp.sk,
+        Cursor::new(&bytes),
+        Some(wayhouse_registry::FEED_CLAIM),
+        None,
+    )
+    .unwrap();
+    let sig_path = dir.path().join("release-feed.json.minisig");
+    std::fs::write(&sig_path, sig.to_string()).unwrap();
+    let key = kp.pk.to_box().unwrap().to_string();
+    let key = key.lines().nth(1).unwrap().to_string();
+
+    let run = |key: &str| {
+        Command::new(BIN)
+            .arg("verify-release-feed")
+            .arg(&feed)
+            .arg(&sig_path)
+            .args(["--key", key])
+            .output()
+            .unwrap()
+    };
+    assert!(run(&key).status.success());
+    // The shipped key is not the one that signed it, so the real workflow check would fail here.
+    assert!(!run(wayhouse_registry::RELEASE_FEED_PUBKEY).status.success());
+}
