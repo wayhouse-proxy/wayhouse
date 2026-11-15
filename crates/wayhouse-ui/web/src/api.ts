@@ -637,6 +637,26 @@ export function clearFeatureOverride(name: string): Promise<void> {
   return requestJson(`/api/features/overrides/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
+/** `GET /api/plugins/secrets/keys`: key ids only. `nodes` is empty on a standalone controller. */
+export interface PluginSecretKeys {
+  key_ids: string[];
+  active: string | null;
+  nodes: Record<string, string[] | { error: string }>;
+}
+export interface RewrapResult {
+  rewrapped: number;
+  skipped: string[];
+  unreadable: string[];
+  active_key_id: string | null;
+}
+export function getPluginSecretKeys(): Promise<PluginSecretKeys> {
+  return requestJson("/api/plugins/secrets/keys");
+}
+/** Step two of a key rotation: every plugin secret is re-sealed under the active key. */
+export function rewrapPluginSecrets(): Promise<RewrapResult> {
+  return requestJson("/api/plugins/secrets/rewrap", { method: "POST" });
+}
+
 export async function listClusterSecrets(): Promise<ClusterSecret[]> {
   return (await requestJson<{ items: ClusterSecret[] }>("/api/secrets")).items;
 }

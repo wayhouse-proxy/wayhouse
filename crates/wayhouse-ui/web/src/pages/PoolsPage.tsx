@@ -25,7 +25,7 @@ export function PoolsPage() {
     <div className="max-w-4xl">
       <PageHeader
         title="Pools"
-        summary={f ? <span>{f.stale && <StatusMark state="degraded" word="" />} {f.text}. Backend health as the latest instance reports it.</span> : "Backend health per pool."}
+        summary={f ? <span>{f.stale && <StatusMark state="degraded" word="" />} {f.text}. Backend health as the latest instance reports it; counts are summed over instances.</span> : "Backend health per pool."}
         actions={<RangeSelect value={range} onChange={setRange} />}
       />
       {q.isPending && <Loading rows={4} />}
@@ -39,8 +39,8 @@ export function PoolsPage() {
                 <TR>
                   <TH>Pool</TH>
                   <TH>Health</TH>
-                  <TH numeric>Healthy</TH>
-                  <TH numeric>Backends</TH>
+                  <TH numeric>Healthy (summed over instances)</TH>
+                  <TH numeric>Backends (summed over instances)</TH>
                 </TR>
               </THead>
               <TBody>
@@ -66,7 +66,7 @@ export function PoolsPage() {
           </div>
           <h2 className="mb-2 font-mono text-lg font-semibold">{current.name}</h2>
           <TimeSeriesChart
-            title="Backends"
+            title="Backends, summed over instances"
             rows={toRows(current.points, (p) => ({ healthy: p.healthy_backends, total: p.backends }))}
             series={[
               { key: "healthy", label: "Healthy" },

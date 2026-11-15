@@ -166,6 +166,8 @@ export interface RegistrySnifferDetail {
   sniffer: RegistrySniffer;
   host_abi: string;
   min_proxy_checked: boolean;
+  /** Why it could not be checked, as a sentence (aggregator not configured, an error answer, no proxies, an old build). */
+  min_proxy_note?: string | null;
 }
 
 export interface InstallInstanceResult {
@@ -184,6 +186,9 @@ export interface InstallResponse {
   signed: boolean;
   risk: "official" | "external";
   sha256: string;
+  /** False when `min_proxy` was only checked against the proxies that report a version. */
+  min_proxy_checked?: boolean;
+  min_proxy_note?: string | null;
   results: InstallInstanceResult[];
   pinned_instances: { instance: string; pin: { name: string; sha256: string } }[];
 }
@@ -212,6 +217,7 @@ export interface UpdateCheckRow {
 export interface UpdateCheck {
   host_abi: string;
   min_proxy_checked: boolean;
+  min_proxy_note?: string | null;
   registries: { id: string; name: string; ok: boolean; error?: string }[];
   sniffers: UpdateCheckRow[];
   instance_errors: { instance: string; status: number; detail: string }[];

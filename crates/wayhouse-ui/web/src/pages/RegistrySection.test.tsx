@@ -255,6 +255,23 @@ describe("RegistrySection", () => {
     expect(screen.getByText(/1 of 3 instances/)).toBeInTheDocument();
   });
 
+  it("an install that could not check min_proxy says why, in the aggregator's words", async () => {
+    api.installFromRegistry.mockResolvedValue(installed({ min_proxy_checked: false, min_proxy_note: "The minimum proxy version was not checked: the aggregator answered 502 to the fleet health request." }));
+    view();
+    const dlg = await openInstall();
+    await userEvent.click(within(dlg).getByRole("button", { name: "Install on every instance" }));
+    expect(await screen.findByText(/aggregator answered 502/)).toBeInTheDocument();
+  });
+
+  it("an install that checked min_proxy for every proxy adds no note", async () => {
+    api.installFromRegistry.mockResolvedValue(installed({ min_proxy_checked: true, min_proxy_note: null }));
+    view();
+    const dlg = await openInstall();
+    await userEvent.click(within(dlg).getByRole("button", { name: "Install on every instance" }));
+    await screen.findByText(/1 of 1 instances|Installed on/);
+    expect(screen.queryByText(/not checked/)).toBeNull();
+  });
+
   it("a pinned instance shows the pin snippet to add", async () => {
     const sha = "cd".repeat(32);
     api.installFromRegistry.mockResolvedValue(

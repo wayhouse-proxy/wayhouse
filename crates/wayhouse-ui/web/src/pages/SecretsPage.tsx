@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, deleteClusterSecret, listClusterSecrets, putClusterSecret } from "../api";
+import { ApiError, deleteClusterSecret, getPluginSecretKeys, listClusterSecrets, putClusterSecret, rewrapPluginSecrets, type PluginSecretKeys } from "../api";
 import type { ClusterSecret } from "../types";
 import { PageHeader } from "../components/shell/Page";
 import { ErrorState, Loading } from "../components/shell/States";
@@ -100,6 +100,7 @@ export function SecretsPage() {
       <p className="mt-2 text-sm text-ink-muted">
         Values are write-only: once saved they cannot be read back, here or anywhere. A change applies to a proxy at its next restart.
       </p>
+      <KeyRotation canWrite={canWrite} />
       {adding && (
         <AddDialog
           taken={new Set((items ?? []).map((s) => s.name))}
@@ -161,5 +162,85 @@ function AddDialog({ taken, onClose }: { taken: Set<string>; onClose: (saved: bo
         </div>
       </form>
     </Dialog>
+  );
+}
+
+/** Key rotation for the plugin secrets: which key ids each controller holds, and the re-encrypt step once all hold the active one. */
+function KeyRotation({ canWrite }: { canWrite: boolean }) {
+  const [keys, setKeys] = useState<PluginSecretKeys | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setKeys(await getPluginSecretKeys());
+      setProblem(null);
+    } catch (err) {
+      setProblem(errorText(err));
+    }
+  }, []);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function rewrap() {
+    setBusy(true);
+    setDone(null);
+    try {
+      const r = await rewrapPluginSecrets();
+      const left = r.skipped.length + r.unreadable.length;
+      setDone(`Re-encrypted ${r.rewrapped} plugin secret${r.rewrapped === 1 ? "" : "s"} under ${r.active_key_id ?? "the active key"}.${left ? ` ${left} could not be re-encrypted: ${[...r.skipped, ...r.unreadable].join(", ")}.` : ""}`);
+      await load();
+    } catch (err) {
+      setProblem(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const rows = keys ? (Object.keys(keys.nodes).length ? Object.entries(keys.nodes) : [["this controller", keys.key_ids] as const]) : [];
+  const lacking = keys?.active ? rows.filter(([, ids]) => Array.isArray(ids) && !ids.includes(keys.active!)).map(([n]) => n) : [];
+  return (
+    <section aria-label="Key rotation" className="mt-8">
+      <h2 className="mb-1 text-lg font-semibold">Key rotation</h2>
+      <p className="mb-2 max-w-(--measure) text-sm text-ink-muted">
+        Plugin secrets are sealed under the controller key. To rotate: add the new key to every controller&apos;s key file, restart them, check below that every node holds the active key, then re-encrypt. Remove the old key only after that.
+      </p>
+      {problem && <ErrorState onRetry={load}>{problem}</ErrorState>}
+      {keys && (
+        <Table aria-label="Keys per node">
+          <THead>
+            <TR>
+              <TH>node</TH>
+              <TH>key ids</TH>
+            </TR>
+          </THead>
+          <TBody>
+            {rows.map(([node, ids]) => (
+              <TR key={node}>
+                <TD className="text-ink">{node}</TD>
+                <TD className="font-mono text-xs">{Array.isArray(ids) ? ids.map((i) => (i === keys.active ? `${i} (active)` : i)).join(", ") : <span className="text-bad">{ids.error}</span>}</TD>
+              </TR>
+            ))}
+          </TBody>
+        </Table>
+      )}
+      {lacking.map((n) => (
+        <p key={n} role="status" className="mt-1 text-sm font-semibold">
+          Node {n} does not hold the active key {keys!.active}. Re-encrypting now would leave it unable to read its plugin secrets.
+        </p>
+      ))}
+      {done && (
+        <p role="status" className="mt-2 text-sm">
+          {done}
+        </p>
+      )}
+      {canWrite && (
+        <Button className="mt-2" loading={busy} disabled={!keys || lacking.length > 0} onClick={rewrap}>
+          Re-encrypt plugin secrets
+        </Button>
+      )}
+    </section>
   );
 }

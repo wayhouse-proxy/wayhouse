@@ -156,9 +156,9 @@ function Results({
       </div>
       {!result.min_proxy_checked && (
         <p className="text-xs text-ink-muted">
-          Compatibility is checked against sniffer ABI {result.host_abi}. Each sniffer&apos;s minimum proxy version
-          could not be checked against every proxy: the aggregator is unreachable, no proxy is registered, or one
-          runs a build that reports no version.
+          Compatibility is checked against sniffer ABI {result.host_abi}.{" "}
+          {result.min_proxy_note ??
+            "Each sniffer's minimum proxy version could not be checked against every proxy: the aggregator is unreachable, no proxy is registered, or one runs a build that reports no version."}
         </p>
       )}
     </div>
