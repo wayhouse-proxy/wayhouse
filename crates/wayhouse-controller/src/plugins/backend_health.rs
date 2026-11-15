@@ -88,6 +88,23 @@ impl HealthBoard {
         if !inner.reports.contains_key(proxy) && inner.reports.len() >= MAX_PROXIES {
             return Err(Refused::Proxy);
         }
+        // Count the distinct backends the board would hold *before* touching it, so a
+        // refused report (a `full` one included) leaves the earlier state alone.
+        let mut known: BTreeSet<&String> = inner
+            .reports
+            .iter()
+            .filter(|(p, _)| p.as_str() != proxy)
+            .flat_map(|(_, (_, m))| m.keys())
+            .collect();
+        if !full {
+            if let Some((_, mine)) = inner.reports.get(proxy) {
+                known.extend(mine.keys());
+            }
+        }
+        known.extend(items.iter().map(|(b, _)| b));
+        if known.len() > MAX_BACKENDS {
+            return Err(Refused::TooMany);
+        }
         let mut touched: BTreeSet<String> = BTreeSet::new();
         let entry = inner
             .reports
@@ -101,11 +118,6 @@ impl HealthBoard {
         for (b, up) in items {
             entry.1.insert(b.clone(), *up);
             touched.insert(b.clone());
-        }
-        // The verdict map grows only with backends some proxy reports; refuse past the cap.
-        let known: BTreeSet<&String> = inner.reports.values().flat_map(|(_, m)| m.keys()).collect();
-        if known.len() > MAX_BACKENDS {
-            return Err(Refused::TooMany);
         }
         Ok(Self::recompute(&mut inner, &touched, now, unix))
     }
@@ -270,6 +282,51 @@ mod tests {
         let snap = board.snapshot();
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].backend, "10.0.0.2:1");
+    }
+
+    #[test]
+    fn a_report_over_the_backend_cap_is_refused_and_leaves_the_board_alone() {
+        let board = HealthBoard::default();
+        let t = Instant::now();
+        let block = |n: usize| -> Vec<(String, bool)> {
+            (0..MAX_REPORT)
+                .map(|i| {
+                    let k = n * MAX_REPORT + i;
+                    r(&format!("10.{}.{}.{}:1", n, k / 250 % 250, k % 250), false)
+                })
+                .collect()
+        };
+        for n in 0..MAX_BACKENDS / MAX_REPORT {
+            board
+                .report(&format!("p{n}"), true, &block(n), t, 1)
+                .unwrap();
+        }
+        assert_eq!(board.snapshot().len(), MAX_BACKENDS);
+        // A new proxy with one more address, and a `full` report that would add one.
+        let extra = [r("192.0.2.1:1", true)];
+        assert_eq!(
+            board.report("new", true, &extra, t, 2),
+            Err(Refused::TooMany)
+        );
+        assert_eq!(
+            board.report("p0", false, &extra, t, 2),
+            Err(Refused::TooMany)
+        );
+        let mut grown = block(0);
+        grown.truncate(MAX_REPORT - 1);
+        grown.extend(extra.clone());
+        grown.push(r("192.0.2.2:1", true));
+        assert_eq!(
+            board.report("p0", true, &grown, t, 2),
+            Err(Refused::TooMany)
+        );
+        // Nothing moved: same verdicts, the refused proxy is not on the board.
+        let snap = board.snapshot();
+        assert_eq!(snap.len(), MAX_BACKENDS);
+        assert!(snap.iter().all(|b| !b.up));
+        // And p0 still replaces its own set within the cap.
+        board.report("p0", true, &block(0)[..10], t, 3).unwrap();
+        assert_eq!(board.snapshot().len(), MAX_BACKENDS - MAX_REPORT + 10);
     }
 
     #[test]

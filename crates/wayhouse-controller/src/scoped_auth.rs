@@ -26,6 +26,7 @@ const PROXY: Allowed = &[
     (&Method::GET, "/peers/*"),
     (&Method::GET, "/features/overrides"),
     (&Method::POST, "/proxy-peers"),
+    (&Method::POST, "/backend-health"),
 ];
 
 const AGENT: Allowed = &[
@@ -306,6 +307,7 @@ mod tests {
             ("GET", "/peers/home"),
             ("GET", "/features/overrides"),
             ("POST", "/proxy-peers"),
+            ("POST", "/backend-health"),
         ] {
             assert_eq!(status(m, p, PROXY_T).await, StatusCode::OK, "{m} {p}");
         }
@@ -351,6 +353,7 @@ mod tests {
             ("GET", "/proxy-peers/edge"),
             ("POST", "/peers"),
             ("POST", "/proxy-peers"),
+            ("POST", "/backend-health"),
             ("GET", "/config/subscribe"),
             ("GET", "/peers/subscribe"),
             ("GET", "/proxy-peers/subscribe"),

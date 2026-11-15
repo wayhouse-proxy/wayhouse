@@ -161,6 +161,11 @@ pub fn merge_web_text(text: &str, routes: &[(String, String)]) -> Result<Merged,
         .filter_map(Value::as_str)
         .filter_map(|h| crate::web::web_host_key(h).ok())
         .collect();
+    let operator_wild: Vec<String> = taken
+        .iter()
+        .filter(|k| k.starts_with("*."))
+        .cloned()
+        .collect();
     for (host, backend) in routes {
         let skip = |why: &str| format!("web route {host} -> {backend}: {why}");
         let k = match crate::web::web_host_key(host) {
@@ -172,6 +177,12 @@ pub fn merge_web_text(text: &str, routes: &[(String, String)]) -> Result<Merged,
         };
         if backend.parse::<std::net::SocketAddr>().is_err() {
             out.skipped.push(skip("the backend is not an ip:port"));
+            continue;
+        }
+        // An operator wildcard owns every name under it, plugin patterns included.
+        if let Some(w) = operator_wild.iter().find(|w| k.ends_with(&w[1..])) {
+            out.skipped
+                .push(skip(&format!("the operator site {w} covers it")));
             continue;
         }
         if !taken.insert(k) {
@@ -672,6 +683,17 @@ listeners:
         assert!(m.text.contains("app.example.com") && m.text.contains("10.1.0.2:80"));
         assert!(!m.text.contains("10.1.0.1:80"));
         assert!(parse_str(&m.text).unwrap().web.unwrap().sites.len() == 2);
+        // An operator wildcard also covers exact names and narrower patterns under it.
+        let wild = text.replace("Panel.example.com", "\"*.example.com\"");
+        let under = vec![
+            ("a.example.com".to_string(), "10.1.0.2:80".to_string()),
+            ("*.eu.example.com".to_string(), "10.1.0.3:80".to_string()),
+            ("other.test".to_string(), "10.1.0.4:80".to_string()),
+        ];
+        let m = merge_web_text(&wild, &under).unwrap();
+        assert_eq!(m.applied, 1, "{:?}", m.skipped);
+        assert_eq!(m.skipped.len(), 2);
+        assert!(m.text.contains("other.test") && !m.text.contains("10.1.0.2:80"));
         // No web block, or no routes: byte for byte.
         let plain = "schema_version: 3\nlisteners: []\npools: []\n";
         assert_eq!(merge_web_text(plain, &routes).unwrap().text, plain);

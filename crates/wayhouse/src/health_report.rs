@@ -100,7 +100,7 @@ pub async fn run(base_url: String, token: Option<String>, handle: RuntimeHandle)
                 tracing::debug!("controller takes no backend health reports");
                 tokio::time::sleep(NOT_SUPPORTED_BACKOFF).await;
             }
-            Ok(r) => tracing::debug!(status = %r.status(), "backend health report refused"),
+            Ok(r) => tracing::warn!(status = %r.status(), "backend health report refused"),
             Err(e) => {
                 tracing::debug!(error = %wayhouse_http::error_chain(&e), "backend health report failed")
             }
