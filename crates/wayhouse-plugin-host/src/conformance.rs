@@ -130,7 +130,7 @@ mod tests {
         let caps = caps.replace('"', "\\\"");
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (memory (export "memory") 1)
@@ -204,7 +204,7 @@ mod tests {
         let (caps, manifest) = (caps.replace('"', "\\\""), manifest.replace('"', "\\\""));
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (@custom "wayhouse.plugin-manifest" "{manifest}")
   (memory (export "memory") 1)

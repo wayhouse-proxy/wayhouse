@@ -232,7 +232,7 @@ pub(crate) mod tests {
         wat::parse_str(src).unwrap()
     }
 
-    pub(crate) const GOOD_ABI: &str = "\\00\\00\\02\\00";
+    pub(crate) const GOOD_ABI: &str = "\\00\\00\\03\\00";
     const GOOD_CAPS: &str = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true}"#;
 
     #[test]
@@ -270,14 +270,14 @@ pub(crate) mod tests {
 
     #[test]
     fn a_module_with_another_abi_minor_is_refused_either_way() {
-        // 0.1 on a 0.2 host, and 0.3 (a future module) on this host.
-        for (abi, minor) in [("\\00\\00\\01\\00", 1), ("\\00\\00\\03\\00", 3)] {
+        // 0.2 (a pre-bump module) on a 0.3 host, and 0.4 (a future module) on this host.
+        for (abi, minor) in [("\\00\\00\\02\\00", 2), ("\\00\\00\\04\\00", 4)] {
             let m = wat_with(Some(abi), &[GOOD_CAPS], "");
             match inspect(&m) {
                 Err(ModuleError::AbiIncompatible { plugin, host }) => {
                     assert_eq!((plugin.major, plugin.minor), (0, minor));
                     assert_eq!(host, HOST_ABI);
-                    assert_eq!(HOST_ABI.to_string(), "0.2");
+                    assert_eq!(HOST_ABI.to_string(), "0.3");
                 }
                 other => panic!("{other:?}"),
             }

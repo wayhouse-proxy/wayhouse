@@ -883,7 +883,7 @@ mod tests {
 
     use wayhouse_plugin_host::{inspect, Limits, PluginHost};
 
-    const ABI: &str = "\\00\\00\\02\\00";
+    const ABI: &str = "\\00\\00\\03\\00";
     const TIMER: &str = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"state":{"max_bytes":64}}"#;
     const NO_TIMER: &str = r#"{"log":true}"#;
 

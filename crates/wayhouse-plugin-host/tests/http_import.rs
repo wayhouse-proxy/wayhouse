@@ -21,7 +21,7 @@ fn guest(caps: &str, request: &str) -> Vec<u8> {
     let len = request.len();
     wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (import "wayhouse" "http_request" (func $req (param i32 i32) (result i32)))
@@ -194,7 +194,7 @@ fn a_guest_looping_on_http_requests_still_times_out() {
     let len = 48;
     let m = wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "http_request" (func $req (param i32 i32) (result i32)))
   (memory (export "memory") 2)
@@ -237,7 +237,7 @@ fn a_refused_request_does_not_leave_the_previous_answer_to_read() {
     let len = REQUEST.len();
     let m = wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (import "wayhouse" "http_request" (func $req (param i32 i32) (result i32)))

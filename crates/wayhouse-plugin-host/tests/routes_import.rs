@@ -1,5 +1,6 @@
 //! The `routes_set` import against a WAT guest.
 
+use wayhouse_plugin_host::routes::RouteKind;
 use wayhouse_plugin_host::{inspect, CallError, Limits, PluginHost, RouteEntry, StateSnapshot};
 
 const CAPS: &str = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"routes":{"hosts":["*.mc.example.com"],"backends":["10.0.0.0/16"],"max_entries":4}}"#;
@@ -12,7 +13,7 @@ fn guest(caps: &str, doc: &str) -> Vec<u8> {
     let len = doc.len();
     wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (import "wayhouse" "routes_set" (func $set (param i32 i32) (result i32)))
@@ -52,7 +53,8 @@ fn an_approved_set_is_returned_sorted() {
         routes[0],
         RouteEntry {
             host: "a.mc.example.com".into(),
-            backend: "10.0.1.3:25565".into()
+            backend: "10.0.1.3:25565".into(),
+            kind: RouteKind::default(),
         }
     );
 }
@@ -102,4 +104,18 @@ fn a_module_cannot_declare_more_routes_than_were_approved() {
         .unwrap()
         .load(&m, &approved)
         .is_err());
+}
+
+#[test]
+fn a_web_route_needs_the_web_kind_in_the_approval() {
+    let web = r#"[{"host":"a.example.com","backend":"10.0.0.1:80","kind":"web"}]"#;
+    let tcp_only = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"routes":{"hosts":["a.example.com"],"backends":["10.0.0.0/16"],"max_entries":4}}"#;
+    let with_web = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"routes":{"hosts":["a.example.com"],"backends":["10.0.0.0/16"],"max_entries":4,"kinds":["web"]}}"#;
+    let refused = run(tcp_only, web).unwrap();
+    assert!(refused.routes.is_none(), "a tcp-only approval refuses web");
+    let ok = run(with_web, web).unwrap();
+    assert_eq!(
+        ok.routes.unwrap()[0].kind,
+        wayhouse_plugin_host::routes::RouteKind::Web
+    );
 }

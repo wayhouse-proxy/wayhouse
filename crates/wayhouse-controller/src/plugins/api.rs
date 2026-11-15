@@ -1551,7 +1551,7 @@ mod tests {
         let caps = caps.replace('"', "\\\"");
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (memory (export "memory") 1)
@@ -1630,7 +1630,7 @@ mod tests {
         let m = module(CAPS);
         let (status, v) = call(&app, "POST", "/plugins/modules", m.clone(), None).await;
         assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(v["abi"], "0.2");
+        assert_eq!(v["abi"], "0.3");
         assert_eq!(v["size"], m.len());
         assert_eq!(v["capabilities"]["log"], true);
         assert_eq!(v["capabilities"]["tick_interval_secs"], 30);
@@ -1642,7 +1642,7 @@ mod tests {
         let esc = |s: &str| s.replace('"', "\\\"");
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{}")
   (@custom "wayhouse.plugin-manifest" "{}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
@@ -2009,7 +2009,7 @@ mod tests {
         let (len, resp) = (resp.len(), resp.replace('"', "\\\""));
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (import "wayhouse" "webhook_respond" (func $respond (param i32 i32) (result i32)))
@@ -2905,6 +2905,7 @@ mod tests {
         let set = [wayhouse_plugin_host::RouteEntry {
             host: "a.mc.example.com".into(),
             backend: "10.0.1.1:25565".into(),
+            kind: wayhouse_plugin_host::routes::RouteKind::default(),
         }];
         store
             .commit_state_routes(&id, 0, &std::collections::BTreeMap::new(), Some(&set))
