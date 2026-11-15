@@ -522,3 +522,22 @@ fn a_trap_or_timeout_keeps_the_lines_logged_before_it() {
     };
     assert!(e.to_string().contains("hello"), "{e}");
 }
+
+#[test]
+fn the_log_text_of_a_failed_call_is_capped() {
+    // 40 lines of 100 bytes each would be 4000 bytes of log text.
+    let calls = r#"(call $log (i32.const 2) (i32.const 0) (i32.const 5))"#.repeat(400);
+    let m = guest(
+        TIMER_LOG_STATE,
+        &format!(
+            r#"(func (export "init") (param i32 i32))
+               (func (export "on_timer") {calls} unreachable)"#
+        ),
+    );
+    let plugin = host().load(&m, &approved(&m)).unwrap();
+    let Err(CallError::Trap(why)) = plugin.on_timer(&StateSnapshot::new()) else {
+        panic!("expected a trap");
+    };
+    assert!(why.contains("hello"), "{why}");
+    assert!(why.len() < 2048 + 200, "{} bytes", why.len());
+}
