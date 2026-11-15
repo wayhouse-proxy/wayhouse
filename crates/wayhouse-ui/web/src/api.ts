@@ -687,3 +687,12 @@ export function confirmProcess(program: string, rev: number): Promise<ProcessFil
 export function undoProcess(program: string, rev: number): Promise<ProcessFile> {
   return requestJson(`/api/process/${encodeURIComponent(program)}/undo`, jsonInit("POST", { rev }));
 }
+
+/** `GET /api/web/sync`: what `wayhouse-web-sync` reports about itself, through the UI backend's `--web-sync-url`. */
+export type WebSyncStatus =
+  | { configured: false }
+  | { configured: true; reachable: false; error: string }
+  | { configured: true; reachable: true; last_ok_age_secs: number | null; loads: number; rejects: number; errors: { read: number; render: number; send: number } };
+export function getWebSyncStatus(): Promise<WebSyncStatus> {
+  return requestJson("/api/web/sync");
+}
