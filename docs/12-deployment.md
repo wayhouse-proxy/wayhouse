@@ -398,8 +398,19 @@ The controller separates three credentials, so a compromised edge box cannot adm
   `POST /peers` and `GET /proxy-peers/subscribe`. An origin that enrolled holds a token of its
   own instead (see "Enrolling an origin agent"), which also unlocks `GET /peers/{name}/psk` for
   that name only.
+- `--ui-token` (optional) is what `wayhouse-ui` presents (`--controller-token`). It unlocks only
+  the routes the console proxies: config (read, validate, submit, revisions, diff, pending,
+  confirm, revert, rollback, promote), plugins, ACME sites and gateways, features and overrides,
+  secret names (`GET /secrets`, `PUT`/`DELETE /secrets/{name}`), enrollments, releasing a tunnel
+  address, rotating a tunnel key, and the `/ui/*` records. It does **not** unlock
+  `GET /secrets/{name}/sealed`, `GET /peers/{name}/psk`, peer or proxy registration and reads, any
+  `*/subscribe` stream, `/intent/*`, `/ha/*` or the adopt route, so a leaked UI host cannot read
+  sealed secrets or tunnel keys and can be rotated without touching the admin token. The console
+  is still an admin console: the UI token can submit config. Without `--ui-token`, a `ui`
+  enrollment hands out the admin token as before.
 
-Setting `--auth-token` requires both of the others, and all three must differ; the controller
+Setting `--auth-token` requires the proxy and agent tokens, and all of them (and `--ui-token`
+when given) must differ; the controller
 refuses to start otherwise. The admin token still works on every route (the UI, operators and a
 slave controller's `--parent-token` use it). Under HA every replica takes the same three flags.
 `wayhouse-certsync` reads `/acme/bundles` (private keys) and so holds the admin token.
@@ -459,7 +470,7 @@ files, named after the credentials the binary already reads (`$CREDENTIALS_DIREC
 | `agent` | `wayhouse-agent` | `agent-token`, `tunnel-psk` | admin token |
 | `proxy` | `wayhouse` | `controller-token` (the proxy token), `aggregator-token` (the ingest token, if the controller has one), `secret.keys` (the cluster keyring) | admin token **and step-up secret** |
 | `aggregator` | `wayhouse-aggregator` | `ingest-token`, and `auth-token` (made on the node, never sent) | admin token |
-| `ui` | `wayhouse-ui` | `controller-token` (the **admin token**) | admin token **and step-up secret** |
+| `ui` | `wayhouse-ui` | `controller-token` (the UI token when the controller has `--ui-token`, otherwise the **admin token**) | admin token **and step-up secret** |
 
 ```sh
 curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
@@ -533,7 +544,7 @@ What happens, in order:
    with the same id). The answer carries `node_id`.
 2. `enroll` redeems the code over the pinned TLS connection and writes, 0600 in
    `/etc/wayhouse/controller`: `ha-token`, `secret.keys` (the keyring), `auth-token` (the **admin**
-   token), `proxy-token`, `agent-token`, `ingest-token` and `enroll-step-up` (each only if the
+   token), `proxy-token`, `agent-token`, `ui-token`, `ingest-token` and `enroll-step-up` (each only if the
    first controller has one) and `ha-join-proof`, plus `enrollment.json` with the node id and the
    `--advertise` address. A replica serves the same API, so it holds every token the first
    controller holds; because the **Raft token is cluster-wide**, a replica holds the cluster's Raft

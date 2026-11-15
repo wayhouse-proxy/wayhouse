@@ -77,6 +77,17 @@ struct Args {
     #[arg(skip)]
     agent_token: Option<String>,
 
+    /// Bearer token for the operator console (`wayhouse-ui`): unlocks only the routes the UI
+    /// proxies, not sealed secrets, tunnel keys or the machine streams. At least 16 bytes. Needs
+    /// `--auth-token`. Without it a `ui` enrollment hands out the admin token.
+    #[arg(long, value_name = "PATH")]
+    ui_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--ui-token-file`, `$CREDENTIALS_DIRECTORY/ui-token` or `$WAYHOUSE_UI_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
+    ui_token: Option<String>,
+
     /// Token handed to a redeemed aggregator or proxy enrollment code, so it can accept (or
     /// push) telemetry. The same secret as the aggregator's `--ingest-token`. At least 16 bytes.
     #[arg(long, value_name = "PATH")]
@@ -349,6 +360,8 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
     args.agent_token =
         wayhouse_http::secret_arg::resolve("agent-token", args.agent_token_file.as_deref())
             .map_err(anyhow::Error::msg)?;
+    args.ui_token = wayhouse_http::secret_arg::resolve("ui-token", args.ui_token_file.as_deref())
+        .map_err(anyhow::Error::msg)?;
     args.ingest_token =
         wayhouse_http::secret_arg::resolve("ingest-token", args.ingest_token_file.as_deref())
             .map_err(anyhow::Error::msg)?;
@@ -404,6 +417,7 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
         args.auth_token.as_deref(),
         args.proxy_token.as_deref(),
         args.agent_token.as_deref(),
+        args.ui_token.as_deref(),
     )
     .map_err(|e| anyhow::anyhow!(e))?;
     wayhouse_http::policy::check_optional_secret("--ingest-token", args.ingest_token.as_deref())
@@ -1106,6 +1120,7 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
             ui_state.clone(),
             crate::enroll::Grants {
                 agent_token: args.agent_token.as_deref().map(std::sync::Arc::from),
+                ui_token: args.ui_token.as_deref().map(std::sync::Arc::from),
                 proxy_token: args.proxy_token.as_deref().map(std::sync::Arc::from),
                 ingest_token: args.ingest_token.as_deref().map(std::sync::Arc::from),
                 step_up: args.enroll_step_up.as_deref().map(std::sync::Arc::from),
@@ -1125,6 +1140,7 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
         args.auth_token.as_deref(),
         args.proxy_token.as_deref(),
         args.agent_token.as_deref(),
+        args.ui_token.as_deref(),
     ) {
         let t = t.with_origin_tokens(crate::origin::lookup(ui_store.clone()));
         app = app.layer(axum::middleware::from_fn_with_state(

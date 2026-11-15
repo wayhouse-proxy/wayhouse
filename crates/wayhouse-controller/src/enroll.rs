@@ -9,7 +9,7 @@
 //! | agent | the shared agent token and a fresh tunnel preshared key |
 //! | proxy | the proxy token, the ingest token (if set) and the cluster keyring |
 //! | aggregator | the ingest token (if set); its own admin token is made on the node |
-//! | ui | the admin token as `controller-token` |
+//! | ui | the UI token as `controller-token` (the admin token when the controller has no `--ui-token`) |
 //! | controller | every token this controller runs with, the cluster keyring, the Raft token and a join proof |
 //!
 //! A controller code is the odd one out: redeeming it only hands over the files, the new node
@@ -131,6 +131,7 @@ fn ip_key(ip: IpAddr) -> String {
 #[derive(Clone, Default)]
 pub struct Grants {
     pub agent_token: Option<Arc<str>>,
+    pub ui_token: Option<Arc<str>>,
     pub proxy_token: Option<Arc<str>>,
     pub ingest_token: Option<Arc<str>>,
     pub step_up: Option<Arc<str>>,
@@ -1040,7 +1041,11 @@ async fn grant_files(
             put("secret.keys", Some(&st.ui.keyring.current().export()));
         }
         Role::Aggregator => put("ingest-token", g.ingest_token.as_deref()),
-        Role::Ui => put("controller-token", st.ui.auth_token.as_deref()),
+        // The scoped UI token when the controller has one; the admin token otherwise.
+        Role::Ui => put(
+            "controller-token",
+            g.ui_token.as_deref().or(st.ui.auth_token.as_deref()),
+        ),
         Role::Controller => {
             put(
                 "ha-token",
@@ -1050,6 +1055,7 @@ async fn grant_files(
             put("auth-token", st.ui.auth_token.as_deref());
             put("proxy-token", g.proxy_token.as_deref());
             put("agent-token", g.agent_token.as_deref());
+            put("ui-token", g.ui_token.as_deref());
             put("ingest-token", g.ingest_token.as_deref());
             put("enroll-step-up", g.step_up.as_deref());
         }
@@ -1142,6 +1148,7 @@ mod tests {
     const PROXY: &str = "proxy-token-proxy-token";
     const INGEST: &str = "ingest-token-ingest-token";
     const STEP_UP: &str = "step-up-step-up-step-up";
+    const UI: &str = "ui-token-ui-token-ui-token";
 
     struct T {
         app: Router,
@@ -1156,6 +1163,10 @@ mod tests {
     }
 
     fn setup_with(key: Option<&str>, admin: Option<&str>) -> T {
+        setup_full(key, admin, Some(UI))
+    }
+
+    fn setup_full(key: Option<&str>, admin: Option<&str>, ui_token: Option<&str>) -> T {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::kv::Db::open(dir.path()).unwrap();
         let store = UiStore::open(&db).unwrap();
@@ -1175,6 +1186,7 @@ mod tests {
                 ui,
                 Grants {
                     agent_token: Some(Arc::from(AGENT)),
+                    ui_token: ui_token.map(Arc::from),
                     proxy_token: Some(Arc::from(PROXY)),
                     ingest_token: Some(Arc::from(INGEST)),
                     step_up: Some(Arc::from(STEP_UP)),
@@ -2039,7 +2051,20 @@ mod tests {
                 .key_ids(),
             t.keyring.current().key_ids()
         );
-        assert_eq!(go("ui").await["files"]["controller-token"], ADMIN);
+        assert_eq!(
+            go("ui").await["files"]["controller-token"],
+            UI,
+            "a UI host never gets the admin token when a UI token exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ui_grant_falls_back_to_the_admin_token_without_a_ui_token() {
+        let t = setup_full(Some(KEY), Some(ADMIN), None);
+        let (_, m) = mint_as(&t, json!({"role": "ui", "name": "n", "step_up": STEP_UP})).await;
+        let (st, v) = redeem_as(&t, m["code"].as_str().unwrap(), "ui").await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!(v["files"]["controller-token"], ADMIN);
     }
 
     #[tokio::test]
@@ -2255,6 +2280,7 @@ mod tests {
                 ui,
                 Grants {
                     agent_token: Some(Arc::from(AGENT)),
+                    ui_token: None,
                     proxy_token: Some(Arc::from(PROXY)),
                     ingest_token: Some(Arc::from(INGEST)),
                     step_up: Some(Arc::from(STEP_UP)),
