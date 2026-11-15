@@ -38,7 +38,19 @@ or approve pull requests"; a `RELEASE_PLEASE_TOKEN` secret works instead of the 
 3. Tag that commit `v0.N.P` and push the tag. The tag stays manual (release-please runs with
    `skip-github-release`) so `release.yml` triggers and its `verify` job runs in order.
 4. Watch `release.yml`. If `publish` fails half-way, re-run it; the pushes are idempotent.
-5. Nothing to do for the `autorelease: pending` label on the merged release PR: the next run
+5. The `release-feed` job (after `publish`) creates the GitHub release if there is none, builds
+   `release-feed.json` from the releases list, signs it with the release key and attaches it and
+   its `.minisig`. Running controllers and UIs read
+   `releases/latest/download/release-feed.json` to show "a newer release exists"; nothing is
+   installed by it. It needs the secrets `RELEASE_MINISIGN_SECRET_KEY` (the whole
+   `.key` file) and `RELEASE_MINISIGN_PASSWORD`, kept in the `release` environment (Settings >
+   Environments: deployment branches and tags limited to `v*`, you as required reviewer, so
+   the job waits for your approval when a tag is pushed); the matching public key is
+   `RELEASE_FEED_PUBKEY` in `crates/wayhouse-registry/src/release_key.rs` (key id
+   `433303EA43BF7163`). It is a separate key from the sniffer and plugin registry key. If this job
+   fails, the images are already out; fix the cause and re-run the job (the upload is idempotent).
+   A pre-release never becomes the feed's `latest`.
+6. Nothing to do for the `autorelease: pending` label on the merged release PR: the next run
    of the Release PR workflow after the tag exists flips it to `autorelease: tagged` itself.
    Until the tag is pushed the label stays, and release-please opens no further release PR
    (it logs "untagged, merged release PRs outstanding"; the job stays green).

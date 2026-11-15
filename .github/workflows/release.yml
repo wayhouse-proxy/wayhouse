@@ -194,3 +194,88 @@ jobs:
               docker buildx imagetools create -t "$image:$tag" "$image:$VERSION-amd64" "$image:$VERSION-arm64"
             done
           done
+
+  # The release feed (RELEASING.md): a small signed JSON file that tells running controllers
+  # and UIs a newer version exists. It runs after `publish`, so a problem here (a missing
+  # signing secret, a bad feed) turns this job red but never withholds the images. It creates
+  # the GitHub release if there is none, and attaches `release-feed.json` and its `.minisig`
+  # to it; readers fetch releases/latest/download/release-feed.json.
+  #
+  # Secrets are split by step, so code that runs in one never sees the other's secret:
+  # building the tool (dependency build scripts and proc-macros run arbitrary code) has
+  # neither the signing key nor the token; signing has only the two minisign secrets and
+  # runs nothing but `minisign`; the GitHub token is given only to `gh` and to our own
+  # `wayhouse-registry-gen` check. The signing secrets live in the `release` environment
+  # (restricted to `v*` tags, with the maintainer's approval).
+  release-feed:
+    needs: [verify, publish]
+    runs-on: ubuntu-24.04   # pinned like ci.yml
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: write   # create the release and attach the feed
+    env:
+      REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+      LATEST: ${{ needs.verify.outputs.latest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Create the GitHub release if there is none
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "release $TAG exists"
+            exit 0
+          fi
+          flags=""
+          case "$TAG" in *-*) flags="--prerelease --latest=false" ;; *)
+            if [ "$LATEST" = true ]; then flags="--latest"; else flags="--latest=false"; fi ;;
+          esac
+          # shellcheck disable=SC2086
+          gh release create "$TAG" --repo "$REPO" --title "$TAG" --generate-notes --verify-tag $flags
+      - name: List the releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/feed"
+          gh api "repos/$REPO/releases" --paginate > "$RUNNER_TEMP/feed/releases.json"
+      - name: Build the tool and the feed (no secrets, no token)
+        run: |
+          set -eu
+          cargo build --locked --release -p wayhouse-registry --bin wayhouse-registry-gen
+          target/release/wayhouse-registry-gen release-feed \
+            --releases "$RUNNER_TEMP/feed/releases.json" --out "$RUNNER_TEMP/feed/release-feed.json"
+      - name: Sign the feed (only the signing secrets, only minisign)
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.RELEASE_MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.RELEASE_MINISIGN_PASSWORD }}
+        run: |
+          set -eu
+          if [ -z "$MINISIGN_SECRET_KEY" ]; then
+            echo "::error::RELEASE_MINISIGN_SECRET_KEY is not set: no release feed was published (the images are out)"
+            exit 1
+          fi
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key" -t "wayhouse-v1 release-feed" \
+            -m "$RUNNER_TEMP/feed/release-feed.json" -x "$RUNNER_TEMP/feed/release-feed.json.minisig"
+      - name: Check the signature the way a client does, then attach the feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # The key compiled into this build, so a feed that would not verify in the field
+          # is never attached.
+          target/release/wayhouse-registry-gen verify-release-feed \
+            "$RUNNER_TEMP/feed/release-feed.json" "$RUNNER_TEMP/feed/release-feed.json.minisig"
+          gh release upload "$TAG" --repo "$REPO" --clobber \
+            "$RUNNER_TEMP/feed/release-feed.json" "$RUNNER_TEMP/feed/release-feed.json.minisig"
