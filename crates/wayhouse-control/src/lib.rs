@@ -615,7 +615,7 @@ mod tests {
             .filter_map(|l| l.strip_prefix("LoadCredential="))
             .filter_map(|l| l.split_once(':').map(|(_, src)| src))
             .collect();
-        assert_eq!(sources.len(), 7, "{sources:?}");
+        assert_eq!(sources.len(), 8, "{sources:?}");
         for src in sources {
             let file = src.strip_prefix("/etc/wayhouse/").expect(src);
             assert!(d.join(file).is_file(), "init wrote no {file}");
@@ -677,6 +677,11 @@ mod tests {
             "controller-agent-token"
         ));
         assert!(file(
+            &p.controller,
+            "--ui-token-file",
+            "controller-ui-token"
+        ));
+        assert!(file(
             &p.aggregator,
             "--auth-token-file",
             "aggregator-auth-token"
@@ -687,10 +692,11 @@ mod tests {
             "aggregator-ingest-token"
         ));
         assert!(file(&p.ui, "--ui-password-file", "ui-ui-password"));
+        // The UI presents the scoped UI token, not the admin token.
         assert!(file(
             &p.ui,
             "--controller-token-file",
-            "controller-auth-token"
+            "controller-ui-token"
         ));
         assert!(strs(&p.ui).contains(&"https://127.0.0.1:9902".to_string()));
         std::fs::remove_dir_all(&d).unwrap();
