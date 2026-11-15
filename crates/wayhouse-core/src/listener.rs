@@ -43,6 +43,18 @@ const ACCEPT_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(1
 /// At most one "accept failed" warning per this interval; the rest are counted.
 const ACCEPT_WARN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Errors that concern only the one connection being accepted (the peer gave up
+/// during the handshake). The next `accept` succeeds at once, so pausing for them
+/// only stalls the other connections queued on the worker (#239). Everything else
+/// (EMFILE, ENFILE, ENOBUFS, ENOMEM, unknown kinds) is a resource error and backs off.
+fn is_per_connection_error(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{ConnectionAborted, ConnectionRefused, ConnectionReset};
+    matches!(
+        e.kind(),
+        ConnectionAborted | ConnectionRefused | ConnectionReset
+    )
+}
+
 /// Backoff and warning rate limit for consecutive `accept` failures of one worker.
 #[derive(Default)]
 struct AcceptErrors {
@@ -129,6 +141,10 @@ pub async fn run_tcp_listener(
                     Err(e) => {
                         metrics::counter!(m::ACCEPT_ERRORS_TOTAL, "listener" => cfg.name.clone())
                             .increment(1);
+                        if is_per_connection_error(&e) {
+                            // Counted above; no pause, no warning, no streak.
+                            continue;
+                        }
                         let (delay, warn) = accept_errors.record(std::time::Instant::now());
                         if let Some(suppressed) = warn {
                             tracing::warn!(
@@ -459,8 +475,28 @@ fn routing_bytes_complete(buf: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{routing_bytes_complete, AcceptErrors};
+    use super::{is_per_connection_error, routing_bytes_complete, AcceptErrors};
+    use std::io::{Error, ErrorKind};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn only_errors_of_the_dropped_connection_skip_the_backoff() {
+        for kind in [
+            ErrorKind::ConnectionAborted,
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionRefused,
+        ] {
+            assert!(is_per_connection_error(&Error::from(kind)), "{kind:?}");
+        }
+        // EMFILE (24), ENFILE (23), ENOBUFS (105), ENOMEM (12) and unknown kinds back off.
+        for raw in [24, 23, 105, 12] {
+            assert!(
+                !is_per_connection_error(&Error::from_raw_os_error(raw)),
+                "{raw}"
+            );
+        }
+        assert!(!is_per_connection_error(&Error::from(ErrorKind::Other)));
+    }
 
     #[test]
     fn accept_errors_back_off_exponentially_up_to_a_cap() {
