@@ -96,6 +96,14 @@ describe("Listeners and pools", () => {
   });
 });
 
+describe("Pools, summed over instances", () => {
+  it("says the backend counts are summed over every instance", async () => {
+    show(<PoolsPage />);
+    await screen.findByRole("link", { name: "eu" });
+    expect(screen.getAllByText(/summed over instances/).length).toBeGreaterThan(0);
+  });
+});
+
 describe("Pools, stale pools", () => {
   it("does not show a pool that stopped reporting as up now", async () => {
     show(<PoolsPage />);
@@ -107,6 +115,11 @@ describe("Pools, stale pools", () => {
 });
 
 describe("stats helpers", () => {
+  it("steps up a unit instead of printing 1000 of the one below", () => {
+    expect(fmtBytes(999.5)).toBe("1 kB/s");
+    expect(fmtBytes(999.4)).toBe("999 B/s");
+    expect(fmtBytes(999_500)).toBe("1 MB/s");
+  });
   it("pads a chart's rows to every minute, with nulls for a minute nobody reported", () => {
     const pts = [0, 3].map((i) => ({ t_ms: T0 + i * 60_000, partial: i === 3, v: 5 }));
     const rows = toRows(pts, (p) => ({ a: p.v, b: null }));

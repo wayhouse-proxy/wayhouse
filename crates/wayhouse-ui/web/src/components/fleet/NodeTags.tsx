@@ -4,6 +4,7 @@ import { ApiError, clearNodeTags, setNodeTags } from "../../api";
 import type { FleetNode } from "../../lib/fleet/nodes";
 import { useCan } from "../../lib/session";
 import { Button } from "../ui/Button";
+import { useConfirm } from "../ui/ConfirmDialog";
 import { Input } from "../ui/Input";
 import { useToast } from "../ui/Toast";
 
@@ -33,6 +34,7 @@ export function NodeTags({
 }) {
   const canOperate = useCan("operator");
   const toast = useToast();
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const [key, setKey] = useState("");
   const [value, setValue] = useState("");
@@ -61,6 +63,18 @@ export function NodeTags({
     onError: (e) => toast(`Tags not saved: ${e instanceof ApiError ? e.message : e}`, "down"),
   });
 
+  // A node that dropped out of the list keeps its stored tags (the list cannot show them), so an operator can clear them by id.
+  const clearStored = useMutation({
+    mutationFn: () => clearNodeTags(instance),
+    onSuccess: () => toast("Stored tags cleared"),
+    // The controller answers 404 when nothing is stored under the id.
+    onError: (e) => (e instanceof ApiError && e.status === 404 ? toast("No tags are stored for this id") : toast(`Tags not cleared: ${e instanceof ApiError ? e.message : e}`, "down")),
+  });
+  async function askClear() {
+    const ok = await confirm({ title: "Clear stored tags?", description: `Removes every operator tag stored for ${instance}. If the node is still running it loses them too.`, confirmLabel: "Clear tags" });
+    if (ok) clearStored.mutate();
+  }
+
   function add(e: React.FormEvent) {
     e.preventDefault();
     if (off || save.isPending || !key || !value) return;
@@ -83,7 +97,16 @@ export function NodeTags({
       <h3 className="font-semibold">Tags</h3>
       {unavailable && <p className="text-ink-muted">Operator tags are unavailable (the controller did not answer), so only the tags the node reports are shown and editing is off.</p>}
       {!canOperate && <p className="text-ink-muted">Your role can view tags but not change them.</p>}
-      {canOperate && !node && !unavailable && !untaggable && <p className="text-ink-muted">This node is not on the current page, so its tags cannot be edited here.</p>}
+      {canOperate && !node && !unavailable && !untaggable && (
+        <>
+          <p className="text-ink-muted">This node is not on the current page, so its tags cannot be edited here.</p>
+          <div>
+            <Button size="sm" disabled={clearStored.isPending} onClick={askClear}>
+              Clear stored tags for this id
+            </Button>
+          </div>
+        </>
+      )}
       {untaggable && <p className="text-ink-muted">A node id with a slash or over 64 characters cannot be tagged.</p>}
       <ul className="flex flex-wrap gap-1">
         {reported.map(([k, v]) => (
@@ -114,6 +137,7 @@ export function NodeTags({
         </Button>
       </form>
       {problem && <p id="tag-problem" role="alert" className="text-bad">{problem.text}</p>}
+      {dialog}
     </section>
   );
 }

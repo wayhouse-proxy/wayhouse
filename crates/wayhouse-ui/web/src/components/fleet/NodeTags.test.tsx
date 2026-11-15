@@ -121,6 +121,21 @@ describe("node tags", () => {
     expect(screen.getByText(/not on the current page/i)).toBeInTheDocument();
   });
 
+  it("lets an operator clear the tags stored for an id that is not in the list", async () => {
+    show({ node: undefined });
+    await userEvent.click(screen.getByRole("button", { name: "Clear stored tags for this id" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Clear tags" }));
+    await vi.waitFor(() => expect(api.clearNodeTags).toHaveBeenCalledWith("n1"));
+    expect(api.setNodeTags).not.toHaveBeenCalled();
+  });
+
+  it("offers no clearing for a node that is listed, or to a viewer", () => {
+    show();
+    expect(screen.queryByRole("button", { name: "Clear stored tags for this id" })).toBeNull();
+    show({ node: undefined }, "viewer");
+    expect(screen.queryByRole("button", { name: "Clear stored tags for this id" })).toBeNull();
+  });
+
   it("is read-only for a viewer", () => {
     show({}, "viewer");
     expect(screen.getByLabelText("Tag key")).toBeDisabled();

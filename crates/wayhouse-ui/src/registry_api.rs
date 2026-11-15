@@ -119,22 +119,28 @@ struct FleetEnv {
     /// proxy, or one runs a build that reports no (or an unreadable) version;
     /// the versions that are known are still checked.
     min_proxy_checked: bool,
+    /// Why `min_proxy_checked` is false, in a sentence the UI shows as it is.
+    min_proxy_note: Option<String>,
 }
 
 /// The ABI-only environment, for when the fleet's versions cannot be learned.
-fn unchecked() -> FleetEnv {
+fn unchecked(why: impl std::fmt::Display) -> FleetEnv {
     FleetEnv {
         env: Environment {
             abi: host_abi(),
             proxy_versions: Vec::new(),
         },
         min_proxy_checked: false,
+        min_proxy_note: Some(format!("The minimum proxy version was not checked: {why}.")),
     }
 }
 
 /// Read the proxy versions from the aggregator's `/fleet/healthz`. Stale
 /// instances count: the install still fans out to them.
 async fn fleet_env(state: &AppState, actor: Option<String>) -> FleetEnv {
+    if state.aggregator.is_none() {
+        return unchecked("no aggregator is configured (--aggregator-url)");
+    }
     let resp = crate::aggregator_proxy::proxy_raw(
         state,
         Method::GET,
@@ -146,14 +152,17 @@ async fn fleet_env(state: &AppState, actor: Option<String>) -> FleetEnv {
     .await;
     let (parts, body) = resp.into_parts();
     if parts.status != StatusCode::OK {
-        return unchecked();
+        return unchecked(format!(
+            "the aggregator answered {} to the fleet health request",
+            parts.status.as_u16()
+        ));
     }
     let body = axum::body::to_bytes(body, 1024 * 1024)
         .await
         .unwrap_or_default();
     match serde_json::from_slice::<Vec<HealthEntry>>(&body) {
         Ok(instances) => fleet_env_from(&instances),
-        Err(_) => unchecked(),
+        Err(_) => unchecked("the aggregator's fleet health reply was not understood"),
     }
 }
 
@@ -162,8 +171,18 @@ fn fleet_env_from(instances: &[HealthEntry]) -> FleetEnv {
         .iter()
         .map(|i| semver::Version::parse(&i.version).ok())
         .collect();
+    let checked = !versions.is_empty() && !versions.iter().any(Option::is_none);
+    let note = if checked {
+        None
+    } else if versions.is_empty() {
+        Some("no proxy is registered with the aggregator")
+    } else {
+        Some("a proxy reports no usable version (an older build)")
+    };
     FleetEnv {
-        min_proxy_checked: !versions.is_empty() && versions.iter().all(Option::is_some),
+        min_proxy_checked: checked,
+        min_proxy_note: note
+            .map(|n| format!("The minimum proxy version was not checked for every proxy: {n}.")),
         env: Environment {
             abi: host_abi(),
             proxy_versions: versions.into_iter().flatten().collect(),
@@ -283,6 +302,7 @@ async fn sniffer_detail(
         "sniffer": v,
         "host_abi": host_abi(),
         "min_proxy_checked": fleet.min_proxy_checked,
+        "min_proxy_note": fleet.min_proxy_note,
     }))
     .into_response()
 }
@@ -398,6 +418,7 @@ async fn install(
 
     let fleet = fleet_env(&state, actor.clone()).await;
     let min_proxy_checked = fleet.min_proxy_checked;
+    let min_proxy_note = fleet.min_proxy_note.clone();
     let env = fleet.env;
     let version = match &req.version {
         Some(want) => {
@@ -541,6 +562,7 @@ async fn install(
             // False when a proxy's version is unknown, so `min_proxy` was only checked
             // against the proxies that report one.
             "min_proxy_checked": min_proxy_checked,
+            "min_proxy_note": min_proxy_note,
             "results": results,
             "pinned_instances": pinned,
         })),
@@ -827,6 +849,7 @@ async fn check_updates(
     Json(json!({
         "host_abi": host_abi(),
         "min_proxy_checked": fleet.min_proxy_checked,
+        "min_proxy_note": fleet.min_proxy_note,
         "registries": registries,
         "sniffers": rows,
         "instance_errors": instance_errors,
@@ -1223,6 +1246,9 @@ mod tests {
         assert_eq!(body["sniffer"]["verifiable"], false);
         assert_eq!(body["sniffer"]["versions"][0]["verifiable"], false);
         assert_eq!(body["min_proxy_checked"], false);
+        // This aggregator has no /fleet/healthz: an error answer, not "not configured".
+        let note = body["min_proxy_note"].as_str().unwrap();
+        assert!(note.contains("the aggregator answered"), "{note}");
     }
 
     fn health(versions: &[&str]) -> serde_json::Value {
@@ -1595,6 +1621,8 @@ mod tests {
         let (status, body) = install_version(&h, "0.1.0").await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["min_proxy_checked"], false);
+        let note = body["min_proxy_note"].as_str().unwrap();
+        assert!(note.contains("reports no usable version"), "{note}");
     }
 
     #[tokio::test]

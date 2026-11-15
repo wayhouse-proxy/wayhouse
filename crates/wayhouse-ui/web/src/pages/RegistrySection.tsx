@@ -62,7 +62,7 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
   const [listing, setListing] = useState<RegistrySniffers | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
-  const [installing, setInstalling] = useState<{ sniffer: RegistrySniffer; minProxyChecked: boolean } | null>(null);
+  const [installing, setInstalling] = useState<{ sniffer: RegistrySniffer; minProxyChecked: boolean; note?: string | null } | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -116,7 +116,7 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
     setNotice(null);
     try {
       const d = await getRegistrySniffer(selected.id, name);
-      setInstalling({ sniffer: d.sniffer, minProxyChecked: d.min_proxy_checked });
+      setInstalling({ sniffer: d.sniffer, minProxyChecked: d.min_proxy_checked, note: d.min_proxy_note });
     } catch (err) {
       setNotice(`could not open ${name}: ${message(err)}`);
     } finally {
@@ -257,6 +257,7 @@ export function RegistrySection({ onInstalled }: { onInstalled?: (name: string) 
           registry={selected}
           sniffer={installing.sniffer}
           minProxyChecked={installing.minProxyChecked}
+          minProxyNote={installing.note}
           onClose={() => setInstalling(null)}
           onInstalled={onInstalled}
         />
@@ -346,6 +347,7 @@ export function InstallDialog({
   version: wantedVersion,
   verb = "Install",
   minProxyChecked = true,
+  minProxyNote,
   onClose,
   onInstalled,
 }: {
@@ -356,6 +358,8 @@ export function InstallDialog({
   verb?: "Install" | "Update";
   /** False when some proxy's minimum version could not be checked against this sniffer. */
   minProxyChecked?: boolean;
+  /** Why, when the aggregator said (see `min_proxy_note`). */
+  minProxyNote?: string | null;
   onClose: () => void;
   onInstalled?: (name: string) => void;
 }) {
@@ -395,8 +399,8 @@ export function InstallDialog({
       {version && <VersionDetails version={version} />}
       {!minProxyChecked && (
         <p className="text-xs text-ink-muted">
-          The minimum proxy version could not be checked against every proxy: the aggregator is unreachable, no proxy
-          is registered, or one runs a build that reports no version.
+          {minProxyNote ??
+            "The minimum proxy version could not be checked against every proxy: the aggregator is unreachable, no proxy is registered, or one runs a build that reports no version."}
         </p>
       )}
       <p className="text-sm text-ink-muted">
@@ -456,6 +460,7 @@ function InstallOutcome({ outcome, onClose }: { outcome: InstallResponse; onClos
       <p className="text-ink-muted">
         Installed on {ok} of {outcome.results.length} instances.
       </p>
+      {outcome.min_proxy_checked === false && outcome.min_proxy_note && <p className="text-xs text-ink-muted">{outcome.min_proxy_note}</p>}
       <ul className="divide-y divide-line rounded-sm border border-line">
         {outcome.results.map((r) => (
           <li key={r.instance} className="flex items-start justify-between gap-3 px-3 py-2">

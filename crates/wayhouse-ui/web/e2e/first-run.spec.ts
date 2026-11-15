@@ -24,6 +24,7 @@ test("sign in, then walk the pages an empty box has", async ({ page }) => {
   await page.route("**/api/plugins", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/secrets", (r) => r.fulfill({ json: { items: [] } }));
   await page.route("**/api/ui/**", (r) => r.fulfill({ json: { items: [] } }));
+  await page.route("**/api/plugins/secrets/keys", (r) => r.fulfill({ status: 404, json: { error: "no plugins" } }));
 
   await page.goto("/");
   await page.getByLabel("Password").fill("not-it");
@@ -42,5 +43,5 @@ test("sign in, then walk the pages an empty box has", async ({ page }) => {
   await page.goto("/settings/secrets");
   await expect(page.getByRole("heading", { level: 1, name: "Secrets" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Add secret" })).toBeEnabled();
-  await expect(page.getByRole("row")).toHaveCount(1); // the header only: nothing stored yet
+  await expect(page.getByRole("table").first().getByRole("row")).toHaveCount(1); // the header only: nothing stored yet
 });

@@ -1,11 +1,33 @@
-import { Suspense, useEffect, useState } from "react";
+import { Component, Suspense, useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Menu } from "lucide-react";
 import { Button } from "../ui/Button";
 import { InspectorPanel, InspectorProvider } from "./Inspector";
 import { breadcrumbFor, NAV, type NavGroup } from "./nav";
 import { Rail } from "./Rail";
-import { Loading } from "./States";
+import { ErrorState, Loading } from "./States";
+
+/**
+ * A page that cannot be loaded: after an upgrade an open tab asks for a hashed chunk the new build no longer
+ * serves, and the lazy import rejects. Without this the whole app unmounts. Keyed by path, so another page clears it.
+ */
+class PageBoundary extends Component<{ children: React.ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <ErrorState>
+        This page could not be loaded, most likely because the console was upgraded since this tab opened. Reload to get the new version.
+        <Button size="sm" className="mt-2 block" onClick={() => window.location.reload()}>
+          Reload
+        </Button>
+      </ErrorState>
+    );
+  }
+}
 
 /**
  * Three zones: the rail on the left, the page in the middle, the inspector on the
@@ -38,9 +60,11 @@ export function Shell({ onSignOut, nav = NAV, banner }: { onSignOut: () => void;
                 {crumbs.join(" / ")}
               </nav>
             )}
-            <Suspense fallback={<Loading />}>
-              <Outlet />
-            </Suspense>
+            <PageBoundary key={pathname}>
+              <Suspense fallback={<Loading />}>
+                <Outlet />
+              </Suspense>
+            </PageBoundary>
           </main>
           <InspectorPanel />
         </div>
