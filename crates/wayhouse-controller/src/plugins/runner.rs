@@ -1425,6 +1425,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_install_list_is_read_again_only_after_the_store_changed() {
+        let (r, store, _d) = fixture(1, 4);
+        install(&store, "a", &counter());
+        let first = r.installs().await.unwrap();
+        let again = r.installs().await.unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "an unchanged store is not listed twice"
+        );
+        let id = first[0].id.clone();
+        store.set_enabled(&id, false).unwrap();
+        let after = r.installs().await.unwrap();
+        assert!(!Arc::ptr_eq(&first, &after));
+        assert!(!after[0].enabled, "a change shows in the next list");
+    }
+
+    #[tokio::test]
     async fn a_slow_tick_does_not_hold_up_the_scan_or_the_other_installs() {
         let (r, store, _d) = fixture(1, 4);
         install(&store, "a", &counter());
