@@ -19,7 +19,7 @@ pub const STALE_AFTER: Duration = Duration::from_secs(180);
 /// Most backends the board holds; a report that would exceed it is refused.
 pub const MAX_BACKENDS: usize = 16 * 1024;
 /// Most distinct proxies the board holds.
-pub const MAX_PROXIES: usize = 1024;
+pub const MAX_PROXIES: usize = 64;
 /// Most entries in one report.
 pub const MAX_REPORT: usize = 4096;
 
@@ -327,6 +327,25 @@ mod tests {
         // And p0 still replaces its own set within the cap.
         board.report("p0", true, &block(0)[..10], t, 3).unwrap();
         assert_eq!(board.snapshot().len(), MAX_BACKENDS - MAX_REPORT + 10);
+    }
+
+    #[test]
+    fn only_a_bounded_number_of_proxy_names_can_vote() {
+        let board = HealthBoard::default();
+        let t = Instant::now();
+        for i in 0..MAX_PROXIES {
+            board
+                .report(&format!("p{i}"), true, &[r("10.0.0.1:1", true)], t, 1)
+                .unwrap();
+        }
+        assert_eq!(
+            board.report("one-too-many", true, &[r("10.0.0.1:1", false)], t, 2),
+            Err(Refused::Proxy)
+        );
+        // A name already on the board still reports.
+        board
+            .report("p0", true, &[r("10.0.0.1:1", false)], t, 3)
+            .unwrap();
     }
 
     #[test]

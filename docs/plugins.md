@@ -377,7 +377,7 @@ cannot learn the rest of the topology. Declaring the event needs the capability.
 `--plugin-overlay-url`) posts its view of its backends to `POST /backend-health` (a full snapshot
 when something changed and at least once a minute). The leader keeps `(proxy, backend) -> up` in
 memory; a backend is **down when a majority of the proxies that reported it say down**, and a proxy
-not heard from for 3 minutes is forgotten. A change of verdict becomes one `backend_health` event
+not heard from for 3 minutes is forgotten. At most 64 proxy names can report at a time. A report names its proxy and the name is not verified: every holder of the proxy token is trusted like any fleet member, so a compromised proxy could skew a verdict, bounded by that cap. A change of verdict becomes one `backend_health` event
 through the bounded hook queue. Nothing is stored or replicated: after a failover the new leader
 starts empty and refills from the proxies' next reports, and a plugin that needs certainty
 reconciles with `backends_get` on its timer. Controllers at plugin support level 7 or higher only;
