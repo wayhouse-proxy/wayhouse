@@ -1226,7 +1226,7 @@ mod tests {
             wayhouse_enroll::step_up::StepUpKey,
         )> = std::sync::OnceLock::new();
         K.get_or_init(|| {
-            let salt = [3u8; 16];
+            let salt: [u8; 16] = rand::random();
             let key = wayhouse_enroll::step_up::derive(PASSPHRASE, &salt).unwrap();
             let public = key.verifying_key().to_bytes();
             (key, wayhouse_enroll::step_up::StepUpKey { salt, public })

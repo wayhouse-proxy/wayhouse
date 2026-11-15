@@ -115,6 +115,10 @@ fn run(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<String, Str
     match cli.cmd {
         Cmd::Init(a) => {
             let pass = if a.generate {
+                // A refused `--out` must not leave a stray passphrase file behind.
+                if a.out.exists() {
+                    return Err(format!("{}: already exists", a.out.display()));
+                }
                 write_generated(&a.pass.passphrase_file)?
             } else {
                 read_passphrase(&a.pass.passphrase_file)?
@@ -125,7 +129,12 @@ fn run(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<String, Str
                 .write(true)
                 .create_new(true)
                 .open(&a.out)
-                .map_err(|e| format!("{}: {e}", a.out.display()))?;
+                .map_err(|e| {
+                    if a.generate {
+                        let _ = std::fs::remove_file(&a.pass.passphrase_file);
+                    }
+                    format!("{}: {e}", a.out.display())
+                })?;
             std::io::Write::write_all(&mut f, key.render().as_bytes())
                 .map_err(|e| format!("{}: {e}", a.out.display()))?;
             Ok(format!(
@@ -261,6 +270,20 @@ mod tests {
             std::fs::metadata(&pass).unwrap().permissions().mode() & 0o777,
             0o600
         );
+        // An existing `--out` is refused before any passphrase file is made.
+        let kept = d.path().join("kept");
+        std::fs::write(&kept, "x").unwrap();
+        let stray = d.path().join("stray");
+        assert!(run(os(&[
+            "init",
+            "--generate",
+            "--passphrase-file",
+            stray.to_str().unwrap(),
+            "--out",
+            kept.to_str().unwrap()
+        ]))
+        .is_err());
+        assert!(!stray.exists());
         // It never replaces an existing passphrase file.
         let out2 = d.path().join("pub2");
         assert!(run(os(&[

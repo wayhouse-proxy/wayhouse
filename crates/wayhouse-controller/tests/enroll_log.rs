@@ -17,10 +17,13 @@ const AGENT: &str = "agent-token-agent-token";
 const PROXY: &str = "proxy-token-proxy-token";
 const INGEST: &str = "ingest-token-ingest-token";
 const PASSPHRASE: &str = "a long enough step-up passphrase";
-const SALT: [u8; 16] = [5; 16];
+fn salt() -> [u8; 16] {
+    static SALT: std::sync::OnceLock<[u8; 16]> = std::sync::OnceLock::new();
+    *SALT.get_or_init(rand::random)
+}
 
 fn signing_key() -> wayhouse_enroll::step_up::SigningKey {
-    wayhouse_enroll::step_up::derive(PASSPHRASE, &SALT).unwrap()
+    wayhouse_enroll::step_up::derive(PASSPHRASE, &salt()).unwrap()
 }
 
 fn now() -> u64 {
@@ -106,7 +109,7 @@ async fn no_secret_reaches_the_log_even_at_trace() {
             proxy_token: Some(Arc::from(PROXY)),
             ingest_token: Some(Arc::from(INGEST)),
             step_up: Some(wayhouse_enroll::step_up::StepUpKey {
-                salt: SALT,
+                salt: salt(),
                 public: signing_key().verifying_key().to_bytes(),
             }),
             tunnel_network: None,

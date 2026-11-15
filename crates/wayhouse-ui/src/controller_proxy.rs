@@ -1479,6 +1479,16 @@ mod tests {
 
     /// A controller stand-in that records (method, path, content-type, body) of every call
     /// and answers `status` with a small JSON body.
+    /// The step-up key the mock controller publishes the salt of.
+    fn test_key() -> &'static wayhouse_enroll::step_up::StepUpKey {
+        static K: std::sync::OnceLock<wayhouse_enroll::step_up::StepUpKey> =
+            std::sync::OnceLock::new();
+        K.get_or_init(|| wayhouse_enroll::step_up::StepUpKey {
+            salt: rand::random(),
+            public: rand::random(),
+        })
+    }
+
     async fn recording_controller(status: StatusCode) -> (String, Seen) {
         let seen = Seen::default();
         let log = seen.clone();
@@ -1499,9 +1509,9 @@ mod tests {
                     body.to_vec(),
                 ));
                 let answer = if parts.uri.path() == "/enrollments/step-up" {
-                    r#"{"salt":"AwMDAwMDAwMDAwMDAwMDAw=="}"#
+                    format!(r#"{{"salt":"{}"}}"#, test_key().salt_b64())
                 } else {
-                    r#"{"ok":true}"#
+                    r#"{"ok":true}"#.to_owned()
                 };
                 (status, [("content-type", "application/json")], answer)
             }
@@ -1958,7 +1968,7 @@ mod tests {
         let assertion: wayhouse_enroll::step_up::Assertion =
             serde_json::from_value(sent["step_up"].clone()).unwrap();
         let signing =
-            wayhouse_enroll::step_up::derive("a long enough step-up passphrase", &[3u8; 16])
+            wayhouse_enroll::step_up::derive("a long enough step-up passphrase", &test_key().salt)
                 .unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

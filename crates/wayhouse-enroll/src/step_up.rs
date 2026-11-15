@@ -38,8 +38,7 @@ pub struct StepUpKey {
 impl StepUpKey {
     /// A new key for `passphrase` with a random salt.
     pub fn generate(passphrase: &str) -> Result<Self, String> {
-        let mut salt = [0u8; SALT_LEN];
-        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut salt);
+        let salt: [u8; SALT_LEN] = rand::random();
         let key = derive(passphrase, &salt)?;
         Ok(Self {
             salt,
@@ -235,7 +234,7 @@ mod tests {
     }
 
     fn fixture() -> (SigningKey, StepUpKey) {
-        let salt = [7u8; SALT_LEN];
+        let salt: [u8; SALT_LEN] = rand::random();
         let key = derive(PASS, &salt).unwrap();
         let public = key.verifying_key().to_bytes();
         (key, StepUpKey { salt, public })
@@ -257,7 +256,7 @@ mod tests {
             k.public
         );
         assert_ne!(
-            derive(PASS, &[8u8; SALT_LEN])
+            derive(PASS, &rand::random::<[u8; SALT_LEN]>())
                 .unwrap()
                 .verifying_key()
                 .to_bytes(),
@@ -310,13 +309,14 @@ mod tests {
 
     #[test]
     fn fields_cannot_run_into_each_other() {
+        let n = crate::generate_token();
         let a = canonical(
             &Request {
                 name: "ab",
                 name_prefix: Some("c-"),
                 ..req()
             },
-            "n",
+            &n,
             1,
         );
         let b = canonical(
@@ -326,7 +326,7 @@ mod tests {
                 uses: Some(2),
                 ..req()
             },
-            "n",
+            &n,
             1,
         );
         assert_ne!(a, b);
@@ -336,7 +336,7 @@ mod tests {
                 name_prefix: Some("b-c-"),
                 ..req()
             },
-            "n",
+            &n,
             1,
         );
         assert_ne!(a, c);
@@ -363,7 +363,7 @@ mod tests {
             Err(Refusal::TooFarAhead)
         );
         let short = Assertion {
-            nonce: "short".into(),
+            nonce: a.nonce[..4].to_owned(),
             ..a.clone()
         };
         assert_eq!(
