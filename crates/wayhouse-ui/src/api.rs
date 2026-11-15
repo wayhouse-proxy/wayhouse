@@ -77,6 +77,8 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub aggregator: Option<AggregatorTarget>,
     pub controller: Option<ControllerTarget>,
+    /// `wayhouse-web-sync`'s metrics endpoint, for the Web sites page ([`crate::web_sync_api`]).
+    pub web_sync: Option<crate::web_sync_api::WebSyncTarget>,
     /// The live bridge to the aggregator's `/fleet/subscribe` feed
     /// ([`crate::fleet_feed`], slice 11d) — `None` when no aggregator is
     /// configured at all, same as `aggregator` being `None`.
@@ -132,6 +134,7 @@ impl AppState {
                 .expect("the extra roots were validated by init_ca_file, so the client builds"),
             aggregator: None,
             controller: None,
+            web_sync: None,
             fleet_feed: None,
             secure_cookie: false,
             ws_session_recheck: Duration::from_secs(30),
@@ -205,6 +208,11 @@ impl AppState {
         self
     }
 
+    pub fn with_web_sync(mut self, base_url: String, token: Option<String>) -> Self {
+        self.web_sync = Some(crate::web_sync_api::WebSyncTarget { base_url, token });
+        self
+    }
+
     pub fn with_controller(mut self, base_url: String, token: Option<String>) -> Self {
         self.controller = Some(ControllerTarget { base_url, token });
         self
@@ -264,6 +272,7 @@ pub fn router(state: AppState) -> Router {
         .merge(crate::registry_api::viewer_router())
         .merge(crate::plugin_registry_api::viewer_router())
         .merge(crate::process_api::viewer_router())
+        .merge(crate::web_sync_api::viewer_router())
         .merge(crate::ws::router())
         .route_layer(role_layer!(Role::Viewer));
 

@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
   getPendingConfig: vi.fn(),
   submitConfig: vi.fn(),
   validateConfig: vi.fn(),
+  getWebSyncStatus: vi.fn(),
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
 const live = vi.hoisted(() => ({ instances: [] as any[] }));
@@ -62,6 +63,7 @@ beforeEach(() => {
   api.getPendingConfig.mockResolvedValue({ pending: null, now_ms: 1, auto_confirm_secs: 60, risks: [] });
   api.submitConfig.mockResolvedValue({ revision: 4 });
   api.validateConfig.mockResolvedValue({ ok: true, schema_version: 4 });
+  api.getWebSyncStatus.mockReset().mockResolvedValue({ configured: false });
 });
 
 const pools = (role: Role = "admin", path = "/config/pools") => renderConfigPage(path, { "/config/pools": <PoolsEditorPage /> }, role);
@@ -230,6 +232,38 @@ describe("Resolvers editor", () => {
     const text = await apply();
     expect(text).toContain("http://resolver.internal:9000");
     expect(text).toContain("# edge");
+  });
+});
+
+describe("Web sites, sync status", () => {
+  const status = (over: object) => ({ configured: true, reachable: true, last_ok_age_secs: 12, loads: 7, rejects: 0, errors: { read: 0, render: 0, send: 0 }, ...over });
+
+  it("says when the last sync left Caddy on the intended configuration", async () => {
+    api.getWebSyncStatus.mockResolvedValue(status({}));
+    web();
+    const panel = await screen.findByRole("region", { name: "Web sync" });
+    expect(await within(panel).findByText(/Last successful sync 12 s ago/)).toBeInTheDocument();
+    expect(within(panel).getByText(/7 loads/)).toBeInTheDocument();
+  });
+
+  it("warns when the last success is old or Caddy refused a document", async () => {
+    api.getWebSyncStatus.mockResolvedValue(status({ last_ok_age_secs: 900, rejects: 2, errors: { read: 0, render: 1, send: 0 } }));
+    web();
+    const panel = await screen.findByRole("region", { name: "Web sync" });
+    expect(await within(panel).findByText(/15 min ago/)).toBeInTheDocument();
+    expect(within(panel).getByText(/Caddy refused 2 documents/)).toBeInTheDocument();
+    expect(within(panel).getByText(/1 cycle failed before reaching Caddy/)).toBeInTheDocument();
+  });
+
+  it("explains how to connect it when the UI is not pointed at a sync, and reports one it cannot reach", async () => {
+    web();
+    expect(await screen.findByText(/--web-sync-url/)).toBeInTheDocument();
+  });
+
+  it("names the error when the sync cannot be reached", async () => {
+    api.getWebSyncStatus.mockResolvedValue({ configured: true, reachable: false, error: "the web sync did not answer" });
+    web();
+    expect(await screen.findByText(/the web sync did not answer/)).toBeInTheDocument();
   });
 });
 
