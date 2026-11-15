@@ -138,7 +138,7 @@ async fn a_spawned_binary_announces_its_injected_version_and_refuses_another_maj
     let _older = spawn_controller_env(
         dir.path(),
         &format!("127.0.0.1:{port}"),
-        &[],
+        &["--tunnel-network".to_string(), "10.60.0.0/16".to_string()],
         &override_env(current.major, current.minor - 1),
     )?;
     let base = format!("http://127.0.0.1:{port}");
@@ -147,12 +147,8 @@ async fn a_spawned_binary_announces_its_injected_version_and_refuses_another_maj
         wayhouse_fleet_tests::STARTUP_TIMEOUT,
     )
     .await?;
-    let resp = http.get(format!("{base}/config")).send().await?;
-    let announced = resp
-        .headers()
-        .get(HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
+    let (status, announced, body) = register(&base, "peer-a", &current.to_string()).await?;
+    assert_eq!(status, 200, "{body}");
     assert_eq!(
         announced.as_deref(),
         Some(format!("{}.{}", current.major, current.minor - 1).as_str())
@@ -187,10 +183,10 @@ async fn a_spawned_binary_announces_its_injected_version_and_refuses_another_maj
         wayhouse_fleet_tests::STARTUP_TIMEOUT,
     )
     .await?;
-    let resp = http.get(format!("{base}/config")).send().await?;
-    assert_eq!(resp.status().as_u16(), 426);
-    let text = resp.text().await?;
-    assert!(text.contains("upgrade the older side"), "{text}");
+    let (status, _, body) = register(&base, "peer-b", &current.to_string()).await?;
+    assert_eq!(status, 426);
+    let text = body.as_str().unwrap_or_default();
+    assert!(text.contains("upgrade the older side"), "{body}");
     Ok(())
 }
 
@@ -256,7 +252,7 @@ async fn a_slave_tier_one_minor_behind_relays_and_resumes_its_cursor_after_upgra
     )?;
     wait_until(
         || {
-            let (f, b) = (child_revision.clone(), child_base.clone());
+            let (f, b) = (child_revision, child_base.clone());
             async move { Ok(f(b).await == Some(1)) }
         },
         Duration::from_secs(30),
@@ -275,7 +271,7 @@ async fn a_slave_tier_one_minor_behind_relays_and_resumes_its_cursor_after_upgra
     )?;
     wait_until(
         || {
-            let (f, b) = (child_revision.clone(), child_base.clone());
+            let (f, b) = (child_revision, child_base.clone());
             async move { Ok(f(b).await == Some(2)) }
         },
         Duration::from_secs(30),

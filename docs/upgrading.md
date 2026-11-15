@@ -163,12 +163,12 @@ minor older than its parent is sent only baseline fields. A `slave` tier relays 
 upward through its leader; a tier mid-upgrade keeps relaying as long as the protocol
 major matches.
 
-The baseline-fields rule for a child one minor older is **not covered by an automated
-test** for the tier path (the fleet tests exercise a proxy against a controller, not a
-`slave` tier against its parent), and neither is the relay cursor across versions (a child
-resuming the parent's revision stream after one side upgraded). Treat the first tier
-upgrade in your environment as a rehearsal, and read the "N and N-1" window above as
-tested for proxy against controller only.
+The only protocol-gated field today is the registration `capabilities` answer, which tiers do
+not use, so for the tier path "baseline fields" comes down to the relay working across a minor
+difference. That is tested with real binaries: a `slave` tier started one minor behind its
+parent relays the parent's config, and after it restarts on the newer build (same data dir) it
+resumes from its relay cursor and receives the next revision once. Raft replicas are a
+different mechanism and are not covered by that test (see below).
 
 ## Raft HA inside a tier
 
