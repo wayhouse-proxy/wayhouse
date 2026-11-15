@@ -219,8 +219,18 @@ Rules:
   and is listed under `conflicts` in `GET /plugin-routes`, with `owner` (`plugin:<install id>`) and
   plugin name on every route.
 - Exact names match before `*.suffix` patterns, longer suffixes first.
-- Disabling or deleting an install withdraws its routes at once. A plugin whose ticks fail keeps its
-  last committed set, and so does one that stops calling `routes_set`: the set stays until the next successful tick replaces it or the install is deleted or disabled. (The spec's grace period with an alert is not built; see the follow-up issue.)
+- Disabling or deleting an install withdraws its routes at once. A plugin whose ticks fail keeps
+  its last committed set for a grace period, `max(10 x tick interval, 10 minutes)` after its last
+  successful tick (on a new leader the clock starts at takeover). After that the status shows
+  `routes_stale` (and a WARN is logged once). At twice the grace the leader commits an empty route
+  set: the routes leave `GET /plugin-routes` on every replica, while the plugin's state and port
+  assignments stay. A plugin that declares its routes on every tick gets them back with its next
+  successful tick; one that only calls `routes_set` when something changed should call it every
+  tick. A plugin that stops calling `routes_set` while its ticks succeed keeps its set.
+- Routes of kind `web` are listed under `web_routes` in the overlay (a separate list, so a proxy
+  that predates the kind never sees them). A proxy adds each as a site of its `web:` block
+  (`hosts: [host]`, one `addr` upstream) unless an operator site already has that host, which is
+  logged and skipped. Without a `web:` block they are ignored.
 - A controller started without `--plugins` answers `501` (`404` on an older build) and proxies drop
   the plugin routes at once, keeping their own config; a controller that is only unreachable leaves
   the last overlay in place. A proxy on a config file (no `--controller`) ignores the overlay
@@ -345,7 +355,7 @@ waiting per install), so a slow plugin loses events instead of building a backlo
 counted as `hooks_dropped` in the status. A restart, a failover (only the Raft leader delivers) or
 a lagging feed also loses some. The list of kinds only grows. A plugin that must not miss a change
 reconciles from the controller's state on its timer and treats an event as a reason to do it
-sooner. The `backend_health` kind (ABI 0.3, see "Backend health") is declared by the host; the controller does not deliver it yet.
+sooner. The `backend_health` kind (ABI 0.3, see "Backend health") goes only to installs whose approved `backends` networks hold the address.
 
 ## Backend health (`backends`, ABI 0.3)
 
@@ -362,6 +372,16 @@ backends inside `networks` (at most `max_entries`, the most recently changed fir
 the buffer was too small and `0` that nothing is known. The `backend_health` event carries one
 such object per change. Both only ever show backends inside the approved networks, so a plugin
 cannot learn the rest of the topology. Declaring the event needs the capability.
+
+**Where it comes from.** Each proxy that talks to the controller (`--controller`, or
+`--plugin-overlay-url`) posts its view of its backends to `POST /backend-health` (a full snapshot
+when something changed and at least once a minute). The leader keeps `(proxy, backend) -> up` in
+memory; a backend is **down when a majority of the proxies that reported it say down**, and a proxy
+not heard from for 3 minutes is forgotten. A change of verdict becomes one `backend_health` event
+through the bounded hook queue. Nothing is stored or replicated: after a failover the new leader
+starts empty and refills from the proxies' next reports, and a plugin that needs certainty
+reconciles with `backends_get` on its timer. Controllers at plugin support level 7 or higher only;
+a mixed cluster refuses to commit a plugin that needs it.
 
 ## ACME DNS-01 (`on_acme_dns`)
 

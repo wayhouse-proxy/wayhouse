@@ -222,7 +222,7 @@ mod tests {
         );
         // One recovers: back to up, and that is news too.
         let news = board.report("p1", false, &[r(b, true)], t, 130).unwrap();
-        assert_eq!(news[0].up, true);
+        assert!(news[0].up);
         assert_eq!(board.snapshot()[0].since, 130);
     }
 

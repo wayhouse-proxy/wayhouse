@@ -54,6 +54,9 @@ pub struct PluginStatus {
     pub last_ok: Option<bool>,
     pub last_error: Option<String>,
     pub consecutive_failures: u32,
+    /// The plugin has published routes but has not ticked successfully for a grace period
+    /// (`max(10 x interval, 10 min)`); at twice that its routes are withdrawn.
+    pub routes_stale: bool,
     /// Why the plugin is not run on this node (a secret it needs cannot be read here), or
     /// `None`. A held plugin never ticks.
     pub held: Option<String>,
@@ -127,6 +130,22 @@ struct Schedule {
     inflight: std::collections::HashSet<String>,
     /// The term this node has been ticking in as leader (HA); a change resets the schedule.
     led_term: Option<u64>,
+    /// When this node took the lead: the route-expiry clock of an install that has not
+    /// ticked successfully since (conservative, it delays withdrawal by at most one grace).
+    led_since: Option<Instant>,
+    /// The last successful tick of each install, for route expiry.
+    ok_at: HashMap<String, Instant>,
+}
+
+/// How long an install's routes stay published after its last good tick before the status
+/// shows `routes_stale`; withdrawal comes at twice that (#290, keep-last-good).
+pub fn route_grace(tick_interval_secs: u64) -> Duration {
+    Duration::from_secs(
+        tick_interval_secs
+            .min(MAX_TICK_INTERVAL_SECS)
+            .saturating_mul(10)
+            .max(600),
+    )
 }
 
 pub struct Runner {
@@ -381,6 +400,7 @@ impl Runner {
             }
         };
         let mut due = Vec::new();
+        let mut expiring = Vec::new();
         {
             let mut sched = self.schedule.lock().await;
             if sched.led_term != term {
@@ -389,6 +409,7 @@ impl Runner {
                     ..Schedule::default()
                 };
             }
+            let led_since = *sched.led_since.get_or_insert(now);
             let live = |r: &&InstallRecord| r.enabled && r.approved.triggers.on_timer;
             // A plugin with only a webhook trigger is cached too, so each hook does not
             // compile the module and run `init` again (`on_event` needs `on_timer`).
@@ -407,6 +428,14 @@ impl Runner {
                 .collect();
             sched.loaded.retain(|id, _| cached.contains(&id.as_str()));
             sched.next_due.retain(|id, _| ids.contains(&id.as_str()));
+            sched.ok_at.retain(|id, _| ids.contains(&id.as_str()));
+            for rec in installs.iter().filter(live) {
+                let since = sched
+                    .ok_at
+                    .get(&rec.id)
+                    .map_or(led_since, |ok| (*ok).max(led_since));
+                expiring.push((rec.clone(), now.saturating_duration_since(since)));
+            }
             let all: Vec<&str> = installs.iter().map(|r| r.id.as_str()).collect();
             self.lock_status()
                 .retain(|id, _| all.contains(&id.as_str()));
@@ -429,6 +458,25 @@ impl Runner {
                 }
             }
         }
+        for (rec, age) in expiring {
+            let grace = route_grace(rec.approved.tick_interval_secs);
+            if age < grace {
+                self.set_stale(&rec.id, false);
+                continue;
+            }
+            if self.set_stale(&rec.id, true) {
+                tracing::warn!(
+                    install = %rec.id,
+                    "plugin has not ticked successfully for {}s; its routes are marked stale",
+                    age.as_secs()
+                );
+            }
+            if age >= grace * 2 {
+                let this = self.clone();
+                let id = rec.id.clone();
+                running.spawn(async move { this.withdraw_routes(&id, term).await });
+            }
+        }
         for (rec, at) in due {
             let this = self.clone();
             running.spawn(async move {
@@ -443,6 +491,42 @@ impl Runner {
                 }
                 this.schedule.lock().await.inflight.remove(&id);
             });
+        }
+    }
+
+    /// Sets `routes_stale` for an install that has routes to be stale about; returns whether
+    /// it just turned on.
+    fn set_stale(&self, id: &str, stale: bool) -> bool {
+        let has_routes = stale && self.store.routes(id).is_ok_and(|r| !r.is_empty());
+        let mut all = self.lock_status();
+        let st = all.entry(id.to_string()).or_default();
+        let now = stale && has_routes;
+        let turned_on = now && !st.routes_stale;
+        st.routes_stale = now;
+        turned_on
+    }
+
+    /// Takes the routes of an install that stopped ticking out of the overlay. State and
+    /// port assignments stay; the next tick that declares routes brings them back.
+    async fn withdraw_routes(&self, id: &str, term: Option<u64>) {
+        let _turn = self.install_lock(id).await;
+        if self.lead() != Some(term) || self.store.routes(id).is_ok_and(|r| r.is_empty()) {
+            return;
+        }
+        let read_id = id.to_string();
+        let Ok(Ok((rev, _))) = self
+            .blocking(move |store| store.state(&read_id).map_err(|e| e.to_string()))
+            .await
+        else {
+            return;
+        };
+        let fx = Effects {
+            routes: Some(Vec::new()),
+            ..Effects::default()
+        };
+        match self.commit(id, rev, &fx, term).await {
+            Ok(()) => tracing::warn!(install = id, "plugin routes withdrawn: no successful tick"),
+            Err(e) => tracing::warn!(install = id, error = %e, "could not withdraw stale routes"),
         }
     }
 
@@ -871,6 +955,13 @@ impl Runner {
                 return;
             }
         };
+        if result.is_ok() {
+            self.schedule
+                .lock()
+                .await
+                .ok_at
+                .insert(id.to_string(), Instant::now());
+        }
         let mut all = self.lock_status();
         let st = all.entry(id.to_string()).or_default();
         st.held = None;
@@ -878,6 +969,7 @@ impl Runner {
         st.last_tick_unix = Some(unix_now());
         match result {
             Ok(()) => {
+                st.routes_stale = false;
                 st.last_ok = Some(true);
                 st.last_error = None;
                 st.consecutive_failures = 0;
@@ -1766,6 +1858,39 @@ mod tests {
         store.set_enabled(AID, false).unwrap();
         assert!(store.overlay().unwrap().routes.is_empty());
     }
+    #[tokio::test]
+    async fn routes_go_stale_after_a_grace_and_are_withdrawn_at_twice_that() {
+        let (r, store, _d) = fixture(1, 4);
+        // Fails every tick, so the clock for its routes never restarts.
+        let m = guest(
+            ROUTE_TIMER,
+            r#"(func (export "init") (param i32 i32))
+               (func (export "on_timer") unreachable)"#,
+        );
+        install(&store, AID, &m);
+        let seeded = [wayhouse_plugin_host::RouteEntry {
+            host: "a.mc.example.com".into(),
+            backend: "10.0.1.2:25565".into(),
+            kind: wayhouse_plugin_host::routes::RouteKind::default(),
+        }];
+        store
+            .commit_state_routes(AID, 0, &BTreeMap::new(), Some(&seeded))
+            .unwrap();
+        let t0 = Instant::now();
+        r.run_due(t0).await;
+        // 30 s interval: grace is the 10 minute floor.
+        r.run_due(secs(t0, 599)).await;
+        assert!(!r.status(AID).unwrap().routes_stale);
+        r.run_due(secs(t0, 600)).await;
+        assert!(r.status(AID).unwrap().routes_stale);
+        assert_eq!(store.overlay().unwrap().routes.len(), 1, "still published");
+        r.run_due(secs(t0, 1199)).await;
+        assert_eq!(store.overlay().unwrap().routes.len(), 1);
+        r.run_due(secs(t0, 1200)).await;
+        assert!(store.overlay().unwrap().routes.is_empty(), "withdrawn");
+        assert!(store.routes(AID).unwrap().is_empty());
+    }
+
     const PORT_TIMER: &str = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"state":{"max_bytes":256},"port_routes":{"ports":["30000-30009"],"proto":["udp","tcp"],"backends":["10.0.0.0/16"],"max_entries":4}}"#;
 
     /// Declares `doc` on every tick, then stores whatever `port_routes_get` reports under `n`.

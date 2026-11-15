@@ -19,6 +19,7 @@ mod grpc_resolver;
 #[cfg(not(feature = "grpc-resolver"))]
 #[path = "grpc_resolver_disabled.rs"]
 mod grpc_resolver;
+mod health_report;
 mod intent_client;
 #[cfg(feature = "tunnel")]
 mod live_interface;
@@ -750,6 +751,9 @@ async fn run(
         ConfigSource::Controller(url, token) => Some((url.clone(), token.clone())),
         ConfigSource::File(_) => file_mode_overlay,
     };
+    let health_report = overlay_source
+        .clone()
+        .map(|(url, token)| tokio::spawn(health_report::run(url, token, handle.clone())));
     let plugin_overlay = overlay_source
         .map(|(url, token)| tokio::spawn(plugin_overlay::run(url, token, handle.clone())));
     let feature_overrides = if let ConfigSource::Controller(url, token) = &config_source {
@@ -813,6 +817,9 @@ async fn run(
     }
     if let Some(feature_overrides) = feature_overrides {
         feature_overrides.abort();
+    }
+    if let Some(health_report) = health_report {
+        health_report.abort();
     }
     if let Some(plugin_overlay) = plugin_overlay {
         plugin_overlay.abort();
