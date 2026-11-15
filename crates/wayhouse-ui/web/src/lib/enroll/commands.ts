@@ -376,7 +376,7 @@ function k8sControllerPool(s: Spec): Step[] {
       language: "sh",
       holdsCode: false,
       text: `kubectl -n ${ns} create secret generic wayhouse-enroll-step-up --from-file=step-up-pubkey=./step-up.pub`,
-      note: "The overlay also needs the wayhouse-tls, wayhouse-tokens and wayhouse-keyring Secrets that `wayhouse-controller init --target k8s-secret` makes; create them first. Skip this step if the step-up Secret exists. It holds only the public half of the step-up key, never the passphrase: make it with `wayhouse-controller step-up init --passphrase-file ./passphrase --out ./step-up.pub` (a passphrase of 16 or more characters, the one you typed above); the bootstrap controller and every replica read it.",
+      note: "The overlay also needs the wayhouse-tls, wayhouse-tokens and wayhouse-keyring Secrets that `wayhouse-controller init --target k8s-secret` makes; create them first. Skip this step if the step-up Secret exists. It holds only the public half of the step-up key, never the passphrase: make it with `wayhouse-controller step-up init --generate --passphrase-file ./passphrase --out ./step-up.pub` (the passphrase it writes is the one you type above; keep it off the controller host); the bootstrap controller and every replica read it.",
     },
     {
       title: "Store the pool code as a Secret",

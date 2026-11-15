@@ -20,6 +20,10 @@ use zeroize::Zeroizing;
 pub const MIN_PASSPHRASE_LEN: usize = 16;
 /// How far in the future an assertion's `exp` may lie, and so how long a nonce is remembered.
 pub const MAX_ASSERTION_TTL_SECS: u64 = 60;
+
+/// How long a signer makes its assertions last. Half the verifier's cap, so a signer whose clock
+/// runs up to 30 s ahead of the controller's is still accepted.
+pub const SIGN_TTL_SECS: u64 = 30;
 const SALT_LEN: usize = 16;
 const DOMAIN: &[u8] = b"wayhouse-step-up-v1\n";
 
@@ -81,7 +85,7 @@ pub fn decode_salt(b64: &str) -> Result<Vec<u8>, String> {
     Ok(salt)
 }
 
-/// The signing key for `passphrase` and `salt` (argon2id, 19 MiB, 2 passes). The same inputs
+/// The signing key for `passphrase` and `salt` (argon2id, 64 MiB, 3 passes). The same inputs
 /// always give the same key.
 pub fn derive(passphrase: &str, salt: &[u8]) -> Result<SigningKey, String> {
     if passphrase.chars().count() < MIN_PASSPHRASE_LEN {
@@ -89,7 +93,7 @@ pub fn derive(passphrase: &str, salt: &[u8]) -> Result<SigningKey, String> {
             "the step-up passphrase must be at least {MIN_PASSPHRASE_LEN} characters"
         ));
     }
-    let params = Params::new(19 * 1024, 2, 1, Some(32)).map_err(|e| e.to_string())?;
+    let params = Params::new(64 * 1024, 3, 1, Some(32)).map_err(|e| e.to_string())?;
     let mut seed = Zeroizing::new([0u8; 32]);
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into(passphrase.as_bytes(), salt, &mut seed[..])
@@ -148,12 +152,12 @@ pub fn canonical(req: &Request<'_>, nonce: &str, exp: u64) -> Vec<u8> {
     out
 }
 
-/// Signs `req` with a fresh nonce, valid for [`MAX_ASSERTION_TTL_SECS`] from `now`.
+/// Signs `req` with a fresh nonce, valid for [`SIGN_TTL_SECS`] from `now`.
 pub fn sign(key: &SigningKey, req: &Request<'_>, now: u64) -> Assertion {
     let mut raw = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut raw);
     let nonce = B64.encode(raw);
-    let exp = now + MAX_ASSERTION_TTL_SECS;
+    let exp = now + SIGN_TTL_SECS;
     let sig = key.sign(&canonical(req, &nonce, exp));
     Assertion {
         sig: B64.encode(sig.to_bytes()),
@@ -336,6 +340,17 @@ mod tests {
             1,
         );
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn a_signer_whose_clock_is_ahead_is_still_accepted() {
+        let (key, k) = fixture();
+        // The signer reads 1010 while the controller reads 1000.
+        let a = sign(&key, &req(), 1010);
+        verify(&k.public, &req(), &a, 1000).unwrap();
+        // And one 20 s behind still has 10 s left.
+        let b = sign(&key, &req(), 980);
+        verify(&k.public, &req(), &b, 1000).unwrap();
     }
 
     #[test]

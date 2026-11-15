@@ -409,7 +409,7 @@ The controller separates three credentials, so a compromised edge box cannot adm
   is still an admin console: the UI token can submit config. Without `--ui-token`, a `ui`
   enrollment hands out the admin token as before. Every enrollment code minted with the UI token,
   for any role (an `agent` code replaces an origin's token and tunnel key), also needs the signed
-  step-up below, so a leaked UI host cannot mint on its own.
+  step-up below, so a leaked UI host cannot mint on its own. A controller with `--ui-token` but no `--enroll-step-up-pubkey-file` therefore cannot mint any code from the console (it answers 409, `agent` codes included): make the key first.
 
 Setting `--auth-token` requires the proxy and agent tokens, and all of them (and `--ui-token`
 when given) must differ; the controller
@@ -485,19 +485,23 @@ sudo wayhouse install --systemd --controller-url https://controller.example:9901
 - The keyring and the admin token are the crown jewels, so a `proxy`, `ui` or `controller` code is
   only minted with a **signed step-up** in the body: an Ed25519 signature, made from a passphrase
   the operator knows, over exactly the fields of that mint (role, name, lifetime, uses, prefix,
-  parent URL), a random nonce and an expiry at most 60 seconds ahead. The controller holds only
+  parent URL), a random nonce and a short expiry (signed for 30 seconds; the controller accepts at
+  most 60 ahead, so clocks may differ by about 30 seconds). The controller holds only
   the public key (`--enroll-step-up-pubkey-file`, `$CREDENTIALS_DIRECTORY/enroll-step-up-pubkey`
-  or `$WAYHOUSE_ENROLL_STEP_UP_PUBKEY`), so a stolen controller disk or admin token cannot forge
-  one, and an assertion cannot be reused for another mint (each nonce is accepted once). Without
-  that flag those roles cannot be minted. Make the key once:
+  or `$WAYHOUSE_ENROLL_STEP_UP_PUBKEY`), so a stolen admin token cannot forge one, and an
+  assertion cannot be reused for another mint (each nonce is accepted once). Without
+  that flag those roles cannot be minted. The key file is replicated and readable by anyone who
+  reads the controller's disk, and it lets them **guess the passphrase offline** (argon2id, 64 MiB,
+  3 passes, slows each guess but cannot stop a weak passphrase). Use a random passphrase, not a
+  word or phrase you chose. Make the key once:
 
   ```sh
-  printf '%s' 'a passphrase of at least 16 characters' > passphrase   # keep it out of shell history
-  wayhouse-controller step-up init --passphrase-file ./passphrase --out ./step-up.pub
+  # --generate writes a random passphrase to the file (0600, refused if it exists)
+  wayhouse-controller step-up init --generate --passphrase-file ./passphrase --out ./step-up.pub
   # start the controller with --enroll-step-up-pubkey-file ./step-up.pub
   ```
 
-  The passphrase is not stored anywhere; `step-up.pub` holds a random salt and the public key. The
+  The controller never sees the passphrase; keep `./passphrase` in your password manager and off the controller host. `step-up.pub` holds a random salt and the public key. The
   console asks for the passphrase on each mint, signs in the UI process and forwards only the
   signature. With `curl`, `wayhouse-controller step-up sign` (above) prints the assertion for one mint.
   Wrong guesses are limited to five a minute. Limits of this gate: the passphrase is typed into
@@ -505,7 +509,7 @@ sudo wayhouse install --systemd --controller-url https://controller.example:9901
   your own machine to avoid that); the wrong-guess bucket is shared by all callers, so someone
   with only the admin token can use it up and block the operator for a minute; and under HA each
   replica counts guesses and remembers nonces separately, so an assertion could be replayed once
-  on each replica within its 60 seconds. `proxy`, `ui` and `controller` codes live at most 24 hours and a `ui` code is single use. Every
+  on each replica within its 30 seconds. `proxy`, `ui` and `controller` codes live at most 24 hours and a `ui` code is single use. Every
   mint, refused mint, redeem and revoke is logged with the actor (the `X-Actor` header the UI sets),
   never with a secret.
 - The controller needs `--ingest-token-file` (the same secret the aggregator and proxies use) to

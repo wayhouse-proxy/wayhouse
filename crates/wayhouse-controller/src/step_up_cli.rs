@@ -47,6 +47,10 @@ struct InitArgs {
     /// Where to write the public key file. Refused if it exists.
     #[arg(long, value_name = "PATH")]
     out: PathBuf,
+    /// Make a random passphrase and write it to `--passphrase-file` (0600; refused if it exists)
+    /// instead of reading one. Prefer this: the key file allows offline guessing of a chosen one.
+    #[arg(long)]
+    generate: bool,
 }
 
 #[derive(Args, Debug)]
@@ -87,6 +91,21 @@ fn read_passphrase(path: &Path) -> Result<Zeroizing<String>, String> {
     ))
 }
 
+/// Writes a random passphrase to a new 0600 file (never over an existing one) and returns it.
+fn write_generated(path: &Path) -> Result<Zeroizing<String>, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let pass = Zeroizing::new(wayhouse_enroll::generate_token());
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    std::io::Write::write_all(&mut f, pass.as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(pass)
+}
+
 /// Runs the subcommand and returns what to print on stdout.
 fn run(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<String, String> {
     let cli = Cli::try_parse_from(
@@ -95,7 +114,11 @@ fn run(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<String, Str
     .map_err(|e| e.to_string())?;
     match cli.cmd {
         Cmd::Init(a) => {
-            let pass = read_passphrase(&a.pass.passphrase_file)?;
+            let pass = if a.generate {
+                write_generated(&a.pass.passphrase_file)?
+            } else {
+                read_passphrase(&a.pass.passphrase_file)?
+            };
             let key = StepUpKey::generate(&pass)?;
             // Created exclusively: an existing key file is never replaced under a running controller.
             let mut f = std::fs::OpenOptions::new()
@@ -216,6 +239,50 @@ mod tests {
         ]))
         .unwrap_err();
         assert!(e.contains("does not match"), "{e}");
+    }
+
+    #[test]
+    fn generate_makes_a_private_passphrase_file_and_a_matching_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let pass = d.path().join("pass");
+        let out = d.path().join("pub");
+        let (pf, o) = (pass.to_str().unwrap(), out.to_str().unwrap());
+        run(os(&[
+            "init",
+            "--generate",
+            "--passphrase-file",
+            pf,
+            "--out",
+            o,
+        ]))
+        .unwrap();
+        assert_eq!(
+            std::fs::metadata(&pass).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // It never replaces an existing passphrase file.
+        let out2 = d.path().join("pub2");
+        assert!(run(os(&[
+            "init",
+            "--generate",
+            "--passphrase-file",
+            pf,
+            "--out",
+            out2.to_str().unwrap()
+        ]))
+        .is_err());
+        // The generated passphrase signs for the key that was written.
+        run(os(&[
+            "sign",
+            "--passphrase-file",
+            pf,
+            "--pubkey-file",
+            o,
+            "--name",
+            "n",
+        ]))
+        .unwrap();
     }
 
     #[test]
