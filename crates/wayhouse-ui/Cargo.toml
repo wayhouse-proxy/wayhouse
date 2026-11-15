@@ -35,6 +35,7 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
 serde_norway.workspace = true
 argon2 = "0.6.0"
+zeroize = "1"
 wayhouse-registry = { path = "../wayhouse-registry" }
 sha2.workspace = true
 minisign-verify.workspace = true

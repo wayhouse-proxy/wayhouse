@@ -1,5 +1,5 @@
 //! A controller replica joins a running HA group by one-time code: the code is minted on the
-//! cluster (admin token plus step-up), `wayhouse-controller enroll` redeems it into a data dir,
+//! cluster (admin token plus a signed step-up), `wayhouse-controller enroll` redeems it into a data dir,
 //! and the node started with `--ha-join` and the files it received asks the cluster to add it,
 //! with no admin token on the new host. Plain `cargo test`: loopback only.
 
@@ -10,13 +10,12 @@ use std::time::Duration;
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Value};
 use wayhouse_fleet_tests::{
-    bin_path, build_fleet_bins, free_port, spawn_controller_with, wait_http_up, wait_until, Proc,
-    STARTUP_TIMEOUT,
+    bin_path, build_fleet_bins, free_port, spawn_controller_with, step_up_assertion,
+    step_up_pubkey_file, wait_http_up, wait_until, Proc, STARTUP_TIMEOUT, STEP_UP_PASSPHRASE,
 };
 
 const KEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
 const ADMIN: &str = "ha-join-admin-token-0123";
-const STEP_UP: &str = "ha-join-step-up-secret-0123";
 
 fn private_file(dir: &Path, name: &str, text: &str) -> Result<String> {
     let p = dir.join(name);
@@ -30,6 +29,7 @@ struct Cluster {
     base1: String,
     dir: tempfile::TempDir,
     node1: Option<Proc>,
+    step_up: wayhouse_enroll::step_up::StepUpKey,
 }
 
 /// Node 1 alone in a one-voter group.
@@ -38,6 +38,7 @@ async fn first_node() -> Result<Cluster> {
     let dir = tempfile::tempdir()?;
     let d = dir.path();
     std::fs::create_dir_all(d.join("node1"))?;
+    let (pubkey, step_up) = step_up_pubkey_file(d)?;
     let port = free_port()?;
     let node1 = spawn_controller_with(
         &d.join("node1"),
@@ -55,8 +56,8 @@ async fn first_node() -> Result<Cluster> {
             private_file(d, "agent", "ha-join-agent-token-0123")?,
             "--ingest-token-file".into(),
             private_file(d, "ingest", "ha-join-ingest-token-0123")?,
-            "--enroll-step-up-file".into(),
-            private_file(d, "stepup", STEP_UP)?,
+            "--enroll-step-up-pubkey-file".into(),
+            pubkey,
             "--plugin-secret-key-file".into(),
             private_file(d, "secret.key", &format!("{KEY}\n"))?,
         ],
@@ -68,6 +69,7 @@ async fn first_node() -> Result<Cluster> {
         base1,
         dir,
         node1: Some(node1),
+        step_up,
     };
     wait_until(
         || {
@@ -106,7 +108,11 @@ async fn mint_controller(c: &Cluster, name: &str) -> Result<(String, u64)> {
         .http
         .post(format!("{}/enrollments", c.base1))
         .bearer_auth(ADMIN)
-        .json(&json!({"role": "controller", "name": name, "step_up": STEP_UP}))
+        .json(&json!({
+            "role": "controller",
+            "name": name,
+            "step_up": step_up_assertion(&c.step_up, "controller", name)?
+        }))
         .send()
         .await?;
     let status = r.status();
@@ -162,8 +168,8 @@ fn start_replica(c: &Cluster, node_id: u64, port: u16, advertise_port: u16) -> R
             f("agent-token"),
             "--ingest-token-file".into(),
             f("ingest-token"),
-            "--enroll-step-up-file".into(),
-            f("enroll-step-up"),
+            "--enroll-step-up-pubkey-file".into(),
+            f("enroll-step-up-pubkey"),
             "--plugin-secret-key-file".into(),
             f("secret.keys"),
         ],
@@ -194,7 +200,9 @@ async fn two_replicas_join_by_code_with_distinct_ids_and_the_group_survives_losi
         // Not one value on screen.
         let shown = String::from_utf8_lossy(&out.stderr).into_owned()
             + &String::from_utf8_lossy(&out.stdout);
-        ensure!(!shown.contains(ADMIN) && !shown.contains(STEP_UP) && !shown.contains(KEY));
+        ensure!(
+            !shown.contains(ADMIN) && !shown.contains(STEP_UP_PASSPHRASE) && !shown.contains(KEY)
+        );
     }
     // Exactly the grant, 0600.
     let dir_a = c.dir.path().join(format!("enrolled-{port_a}"));
@@ -206,7 +214,7 @@ async fn two_replicas_join_by_code_with_distinct_ids_and_the_group_survives_losi
         got == [
             "agent-token",
             "auth-token",
-            "enroll-step-up",
+            "enroll-step-up-pubkey",
             "enrollment.json",
             "ha-join-proof",
             "ha-node-id",

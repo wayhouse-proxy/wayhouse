@@ -229,7 +229,10 @@ async fn create_acme_gateway(
 }
 
 /// `POST /api/enrollments`: mints a one-time enrollment code. The body may carry the step-up
-/// secret and the answer carries the code, so neither is logged here and the answer is never cached.
+/// **passphrase** as `step_up` (a string): this backend fetches the controller's salt, derives the
+/// key, signs the exact request with a short expiry and forwards an assertion instead; the
+/// passphrase is dropped here and never logged or stored. The answer carries the code, so it is
+/// never cached.
 async fn mint_enrollment(
     State(state): State<AppState>,
     Extension(Actor(actor)): Extension<Actor>,
@@ -239,6 +242,10 @@ async fn mint_enrollment(
         actor = actor.as_deref().unwrap_or("-"),
         "enrollment: mint code"
     );
+    let body = match sign_step_up(&state, body).await {
+        Ok(b) => b,
+        Err(resp) => return resp,
+    };
     let mut resp = proxy_typed(
         &state,
         Method::POST,
@@ -253,6 +260,97 @@ async fn mint_enrollment(
         axum::http::HeaderValue::from_static("no-store"),
     );
     resp
+}
+
+fn mint_error(status: StatusCode, error: impl Into<String>) -> Response {
+    (
+        status,
+        Json(ErrorResponse {
+            error: error.into(),
+        }),
+    )
+        .into_response()
+}
+
+/// Replaces a `step_up` passphrase in a mint body with a signed assertion for that body. A body
+/// without a string `step_up` is forwarded untouched (the controller decides whether it needs one).
+#[allow(clippy::result_large_err)] // the Err is the HTTP answer to send as is
+async fn sign_step_up(state: &AppState, body: Bytes) -> Result<Bytes, Response> {
+    use zeroize::Zeroizing;
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return Ok(body);
+    };
+    let Some(pass) = v
+        .get("step_up")
+        .and_then(|p| p.as_str())
+        .map(|p| Zeroizing::new(p.to_owned()))
+    else {
+        return Ok(body);
+    };
+    let Some(controller) = &state.controller else {
+        return Ok(body);
+    };
+    let mut req = state
+        .http
+        .get(format!("{}/enrollments/step-up", controller.base_url));
+    if let Some(token) = &controller.token {
+        req = req.bearer_auth(token);
+    }
+    let answer = req.send().await.map_err(|e| {
+        tracing::warn!(error = %wayhouse_http::error_chain(&e), "step-up salt: controller unreachable");
+        mint_error(StatusCode::BAD_GATEWAY, "the controller could not be reached")
+    })?;
+    if !answer.status().is_success() {
+        return Err(mint_error(
+            StatusCode::CONFLICT,
+            "this controller has no step-up key (--enroll-step-up-pubkey-file)",
+        ));
+    }
+    let salt = answer
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|j| j["salt"].as_str().map(str::to_owned))
+        .ok_or_else(|| {
+            mint_error(
+                StatusCode::BAD_GATEWAY,
+                "the controller sent no step-up salt",
+            )
+        })
+        .and_then(|s| {
+            wayhouse_enroll::step_up::decode_salt(&s)
+                .map_err(|e| mint_error(StatusCode::BAD_GATEWAY, e))
+        })?;
+    let text = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_owned);
+    let num = |k: &str| v.get(k).and_then(serde_json::Value::as_u64);
+    let (role, name) = (
+        text("role").unwrap_or_else(|| "agent".into()),
+        text("name").or_else(|| text("origin")).unwrap_or_default(),
+    );
+    let (name_prefix, parent_url) = (text("name_prefix"), text("parent_url"));
+    let (ttl_secs, uses) = (num("ttl_secs"), num("uses"));
+    let assertion = tokio::task::spawn_blocking(move || {
+        // argon2id is deliberately slow: off the async threads.
+        let key = wayhouse_enroll::step_up::derive(&pass, &salt)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let r = wayhouse_enroll::step_up::Request {
+            role: &role,
+            name: &name,
+            ttl_secs,
+            uses,
+            name_prefix: name_prefix.as_deref(),
+            parent_url: parent_url.as_deref(),
+        };
+        Ok::<_, String>(wayhouse_enroll::step_up::sign(&key, &r, now))
+    })
+    .await
+    .map_err(|_| mint_error(StatusCode::INTERNAL_SERVER_ERROR, "signing failed"))?
+    .map_err(|e| mint_error(StatusCode::BAD_REQUEST, e))?;
+    v["step_up"] = serde_json::to_value(assertion)
+        .map_err(|_| mint_error(StatusCode::INTERNAL_SERVER_ERROR, "signing failed"))?;
+    Ok(Bytes::from(v.to_string()))
 }
 
 /// `GET /api/enrollments`: codes with their state, never the code itself.
@@ -1381,6 +1479,16 @@ mod tests {
 
     /// A controller stand-in that records (method, path, content-type, body) of every call
     /// and answers `status` with a small JSON body.
+    /// The step-up key the mock controller publishes the salt of.
+    fn test_key() -> &'static wayhouse_enroll::step_up::StepUpKey {
+        static K: std::sync::OnceLock<wayhouse_enroll::step_up::StepUpKey> =
+            std::sync::OnceLock::new();
+        K.get_or_init(|| wayhouse_enroll::step_up::StepUpKey {
+            salt: rand::random(),
+            public: rand::random(),
+        })
+    }
+
     async fn recording_controller(status: StatusCode) -> (String, Seen) {
         let seen = Seen::default();
         let log = seen.clone();
@@ -1400,11 +1508,12 @@ mod tests {
                     ct,
                     body.to_vec(),
                 ));
-                (
-                    status,
-                    [("content-type", "application/json")],
-                    r#"{"ok":true}"#,
-                )
+                let answer = if parts.uri.path() == "/enrollments/step-up" {
+                    format!(r#"{{"salt":"{}"}}"#, test_key().salt_b64())
+                } else {
+                    r#"{"ok":true}"#.to_owned()
+                };
+                (status, [("content-type", "application/json")], answer)
             }
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1825,7 +1934,8 @@ mod tests {
     async fn enrollment_routes_reach_the_controller_and_the_mint_answer_is_not_cached() {
         let (url, seen) = recording_controller(StatusCode::OK).await;
         let app = app_with_controller(url, None);
-        let body = r#"{"role":"proxy","name":"edge-1","step_up":"correct horse battery"}"#;
+        let body =
+            r#"{"role":"proxy","name":"edge-1","step_up":"a long enough step-up passphrase"}"#;
         let mint = app
             .clone()
             .oneshot(
@@ -1851,15 +1961,65 @@ mod tests {
             .iter()
             .map(|(m, p, _, b)| (m.as_str(), p.as_str(), b.clone()))
             .collect();
+        // The passphrase never leaves the UI: the controller got its salt request, then a signed assertion.
+        let sent = String::from_utf8(calls[1].2.clone()).unwrap();
+        assert!(!sent.contains("long enough"), "{sent}");
+        let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        let assertion: wayhouse_enroll::step_up::Assertion =
+            serde_json::from_value(sent["step_up"].clone()).unwrap();
+        let signing =
+            wayhouse_enroll::step_up::derive("a long enough step-up passphrase", &test_key().salt)
+                .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let req = wayhouse_enroll::step_up::Request {
+            role: "proxy",
+            name: "edge-1",
+            ttl_secs: None,
+            uses: None,
+            name_prefix: None,
+            parent_url: None,
+        };
+        wayhouse_enroll::step_up::verify(
+            &signing.verifying_key().to_bytes(),
+            &req,
+            &assertion,
+            now,
+        )
+        .unwrap();
+        let calls: Vec<_> = calls.iter().map(|(m, p, _)| (*m, *p)).collect();
         assert_eq!(
             calls,
             [
-                ("POST", "/enrollments", body.as_bytes().to_vec()),
-                ("GET", "/enrollments", Vec::new()),
-                ("DELETE", "/enrollments/abc123", Vec::new()),
-                ("DELETE", "/enrollments/a%2Fb", Vec::new()),
+                ("GET", "/enrollments/step-up"),
+                ("POST", "/enrollments"),
+                ("GET", "/enrollments"),
+                ("DELETE", "/enrollments/abc123"),
+                ("DELETE", "/enrollments/a%2Fb"),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_short_passphrase_is_refused_before_any_controller_call() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        let r = app
+            .oneshot(
+                Request::post("/api/enrollments")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"role":"agent","name":"a","step_up":"too short"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        assert!(seen.lock().unwrap().len() <= 1, "no mint was forwarded");
+        assert!(seen.lock().unwrap().iter().all(|c| c.0 != "POST"));
     }
 
     #[tokio::test]

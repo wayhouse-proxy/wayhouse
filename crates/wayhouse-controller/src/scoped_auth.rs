@@ -87,6 +87,7 @@ const UI: Allowed = &[
     (&Method::PUT, "/secrets/*"),
     (&Method::DELETE, "/secrets/*"),
     (&Method::GET, "/enrollments"),
+    (&Method::GET, "/enrollments/step-up"),
     (&Method::POST, "/enrollments"),
     (&Method::DELETE, "/enrollments/*"),
     (&Method::GET, "/ui/*"),

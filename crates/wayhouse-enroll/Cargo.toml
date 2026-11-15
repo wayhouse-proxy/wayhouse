@@ -18,6 +18,8 @@ rand.workspace = true
 sha2.workspace = true
 base64 = "0.22"
 zeroize = "1"
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+argon2 = "0.6.0"
 tokio-rustls.workspace = true
 wayhouse-http.workspace = true
 reqwest.workspace = true

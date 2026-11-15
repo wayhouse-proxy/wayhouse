@@ -8,6 +8,10 @@ async fn main() -> anyhow::Result<()> {
     if std::env::args_os().nth(1).is_some_and(|a| a == "init") {
         return wayhouse_controller::init::main(std::env::args_os().skip(2));
     }
+    // `wayhouse-controller step-up init|sign`: the operator's side of the signed step-up.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "step-up") {
+        return wayhouse_controller::step_up_cli::main(std::env::args_os().skip(2));
+    }
     // `enroll` / `install --systemd`: join an existing HA group as a replica by one-time code.
     let argv: Vec<_> = std::env::args_os().collect();
     if wayhouse_enroll::cli::is_node_cmd(&argv) {

@@ -36,7 +36,7 @@ const TTLS: { secs: number; label: string; stepUpOk: boolean }[] = [
   { secs: 604_800, label: "7 days", stepUpOk: false },
 ];
 
-// Public values worth remembering between visits. The code and the step-up secret are never here.
+// Public values worth remembering between visits. The code and the step-up passphrase are never here.
 const PREF_KEY = "wayhouse.addnode.prefs";
 interface Prefs {
   controllerUrl: string;
@@ -82,7 +82,7 @@ interface Minted {
 const isRole = (s: string | null): s is EnrollRole => ROLES.some((r) => r.role === s);
 
 // Nodes > Add node: one code, one command per target. The code is shown once, from memory
-// (never localStorage, never a URL), and the step-up secret is typed for each mint and dropped
+// (never localStorage, never a URL), and the step-up passphrase is typed for each mint and dropped
 // the moment the request returns.
 export function AddNodePage() {
   const canWrite = useCan("admin");
@@ -158,6 +158,7 @@ export function AddNodePage() {
     if (containerTarget && !validTag(prefs.imageTag)) e.imageTag = "A valid image tag.";
     if (target === "k8s" && !pool && !validNamespace(prefs.namespace)) e.namespace = "A Kubernetes namespace name.";
     if (stepUpRole && stepUp.length === 0) e.stepUp = "Required for this role.";
+    else if (stepUp.length > 0 && stepUp.length < 16) e.stepUp = "At least 16 characters.";
     if (!Number.isInteger(effectiveUses) || effectiveUses < (pool ? 2 : 1) || effectiveUses > (pool ? 16 : 1000)) e.uses = pool ? "2 to 16." : "1 to 1000.";
     return e;
   }, [name, prefs, role, pool, backends, aggregatorUrl, parentUrl, advertise, containerTarget, target, stepUpRole, stepUp, effectiveUses]);
@@ -174,8 +175,8 @@ export function AddNodePage() {
     setMinting(true);
     setFormError(null);
     setStepUpError(null);
-    const secret = stepUpRole ? stepUp : undefined;
-    // The secret leaves state before the request: whatever the outcome, it is not kept.
+    const secret = stepUp.length > 0 ? stepUp : undefined;
+    // The passphrase leaves state before the request: whatever the outcome, it is not kept.
     setStepUp("");
     try {
       const code = await mintEnrollment({
@@ -435,17 +436,19 @@ export function AddNodePage() {
               <Input {...a} type="number" min={pool ? 2 : 1} max={pool ? 16 : 1000} disabled={usesFixed} value={effectiveUses} onChange={(e) => (pool ? setPoolUses : setUses)(Number(e.target.value))} className="w-24" />
             )}
           />
-          {stepUpRole && (
-            <FieldRow
-              label="Step-up secret"
-              required
-              help={`${role === "proxy" ? "This code hands out the cluster keyring" : role === "controller" ? "This code hands out every token, the keyring and the Raft credential" : "This code hands out the admin token"}. Type the controller's step-up secret again; it is sent with this request only and kept nowhere.`}
-              error={stepUpError ?? shown("stepUp")}
-              render={(a) => (
-                <Input {...a} type="password" autoComplete="new-password" data-1p-ignore data-lpignore="true" data-form-type="other" value={stepUp} onChange={(e) => setStepUp(e.target.value)} className="w-full max-w-xl" />
-              )}
-            />
-          )}
+          <FieldRow
+            label="Step-up passphrase"
+            required={stepUpRole}
+            help={
+              stepUpRole
+                ? `${role === "proxy" ? "This code hands out the cluster keyring" : role === "controller" ? "This code hands out every token, the keyring and the Raft credential" : "This code hands out the admin token"}. Type the operator's step-up passphrase again (16 or more characters). It signs this one request here and is kept nowhere; the controller holds only its public key.`
+                : "Only needed when this console uses the scoped UI token: the controller then asks for the passphrase on every code. Leave it empty otherwise."
+            }
+            error={stepUpError ?? shown("stepUp")}
+            render={(a) => (
+              <Input {...a} type="password" autoComplete="new-password" data-1p-ignore data-lpignore="true" data-form-type="other" value={stepUp} onChange={(e) => setStepUp(e.target.value)} className="w-full max-w-xl" />
+            )}
+          />
           <FieldRow
             label="Keep the code out of the command"
             help="The command carries no code; you paste it when the node asks. Use it if shell history or process lists are shared."

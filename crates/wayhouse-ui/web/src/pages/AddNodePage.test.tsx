@@ -101,7 +101,7 @@ describe("AddNodePage form", () => {
     expect(api.mintEnrollment).not.toHaveBeenCalled();
 
     await userEvent.type(screen.getByLabelText(/^Advertise address/), "https://ctl-4.example:9901");
-    await userEvent.type(screen.getByLabelText(/^Step-up secret/), "a long enough step-up secret");
+    await userEvent.type(screen.getByLabelText(/^Step-up passphrase/), "a long enough step-up secret");
     await userEvent.click(screen.getByRole("button", { name: "Create code" }));
     expect(api.mintEnrollment).toHaveBeenCalledWith({
       role: "controller", name: "ctl-4", ttl_secs: 900, uses: 1, step_up: "a long enough step-up secret",
@@ -133,7 +133,7 @@ describe("AddNodePage form", () => {
     expect(uses).toHaveValue(2);
 
     await userEvent.type(screen.getByLabelText(/^Name(?!space)/), "ctl-pool");
-    await userEvent.type(screen.getByLabelText(/^Step-up secret/), "a long enough step-up secret");
+    await userEvent.type(screen.getByLabelText(/^Step-up passphrase/), "a long enough step-up secret");
     await userEvent.clear(uses);
     await userEvent.type(uses, "17");
     await userEvent.click(screen.getByRole("button", { name: "Create code" }));
@@ -267,7 +267,7 @@ describe("AddNodePage step-up", () => {
     expect(api.mintEnrollment).not.toHaveBeenCalled();
     expect(await screen.findByText("Required for this role.")).toBeInTheDocument();
 
-    const field = screen.getByLabelText(/^Step-up secret/);
+    const field = screen.getByLabelText(/^Step-up passphrase/);
     expect(field).toHaveAttribute("type", "password");
     await userEvent.type(field, "a long enough step-up secret");
     await userEvent.click(screen.getByRole("button", { name: "Create code" }));
@@ -286,7 +286,7 @@ describe("AddNodePage step-up", () => {
   it("shows a wrong secret as an error on the field and does not keep what was typed", async () => {
     api.mintEnrollment.mockRejectedValue(new ApiError(403, "this role needs the step-up secret; enter it again"));
     await proxyForm();
-    const field = screen.getByLabelText(/^Step-up secret/);
+    const field = screen.getByLabelText(/^Step-up passphrase/);
     await userEvent.type(field, "wrong secret value here");
     await userEvent.click(screen.getByRole("button", { name: "Create code" }));
     expect(await screen.findByText(/enter it again/)).toBeInTheDocument();
@@ -294,10 +294,15 @@ describe("AddNodePage step-up", () => {
     expect(screen.queryByLabelText("Step 1 text")).not.toBeInTheDocument();
   });
 
-  it("does not send a step-up secret for a role that does not need one", async () => {
+  it("leaves the step-up passphrase optional for a role that does not need one, and refuses a short one", async () => {
     render();
     await fillCommon();
-    expect(screen.queryByLabelText(/^Step-up secret/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/^Step-up passphrase/)).not.toBeRequired();
+    await userEvent.type(screen.getByLabelText(/^Step-up passphrase/), "too short");
+    await userEvent.click(screen.getByRole("button", { name: "Create code" }));
+    expect(api.mintEnrollment).not.toHaveBeenCalled();
+    expect(await screen.findByText("At least 16 characters.")).toBeInTheDocument();
+    await userEvent.clear(screen.getByLabelText(/^Step-up passphrase/));
     await userEvent.click(screen.getByRole("button", { name: "Create code" }));
     expect(api.mintEnrollment.mock.calls[0][0]).not.toHaveProperty("step_up");
   });

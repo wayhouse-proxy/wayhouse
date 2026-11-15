@@ -1,14 +1,15 @@
 //! Enrollment for the proxy, aggregator and UI roles, through the real binaries: each node's
 //! `enroll` subcommand redeems a code the controller minted for that role and leaves exactly
 //! that role's files (0600) in its data dir. The keyring and the admin token are only minted
-//! with the step-up secret.
+//! with a signed step-up assertion.
 
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 use anyhow::{ensure, Result};
 use wayhouse_fleet_tests::{
-    bin_path, build_fleet_bins, free_port, spawn_controller_with, wait_until,
+    bin_path, build_fleet_bins, free_port, spawn_controller_with, step_up_assertion,
+    step_up_pubkey_file, wait_until,
 };
 
 const KEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
@@ -16,7 +17,6 @@ const ADMIN: &str = "admin-token-admin-token";
 const PROXY: &str = "proxy-token-proxy-token";
 const AGENT: &str = "agent-token-agent-token";
 const INGEST: &str = "ingest-token-ingest-token";
-const STEP_UP: &str = "step-up-step-up-step-up";
 
 fn private_file(dir: &std::path::Path, name: &str, text: &str) -> Result<String> {
     let p = dir.join(name);
@@ -31,6 +31,7 @@ async fn each_node_binary_enrolls_into_exactly_its_role_files() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let d = dir.path();
     std::fs::create_dir_all(d.join("data"))?;
+    let (pubkey, step_up_key) = step_up_pubkey_file(d)?;
     let port = free_port()?;
     let _ctl = spawn_controller_with(
         &d.join("data"),
@@ -44,8 +45,8 @@ async fn each_node_binary_enrolls_into_exactly_its_role_files() -> Result<()> {
             &private_file(d, "agent", AGENT)?,
             "--ingest-token-file",
             &private_file(d, "ingest", INGEST)?,
-            "--enroll-step-up-file",
-            &private_file(d, "stepup", STEP_UP)?,
+            "--enroll-step-up-pubkey-file",
+            &pubkey,
             "--plugin-secret-key-file",
             &private_file(d, "secret.key", &format!("{KEY}\n"))?,
         ]
@@ -75,7 +76,7 @@ async fn each_node_binary_enrolls_into_exactly_its_role_files() -> Result<()> {
             anyhow::Ok((r.status().as_u16(), r.json::<serde_json::Value>().await?))
         }
     };
-    // The keyring and admin roles are refused without the step-up secret.
+    // The keyring and admin roles are refused without a signed step-up.
     ensure!(
         mint(serde_json::json!({"role": "proxy", "name": "edge-1"}))
             .await?
@@ -96,8 +97,12 @@ async fn each_node_binary_enrolls_into_exactly_its_role_files() -> Result<()> {
         ),
         ("wayhouse-ui", "ui", &["controller-token"][..]),
     ] {
-        let (st, m) =
-            mint(serde_json::json!({"role": role, "name": "n1", "step_up": STEP_UP})).await?;
+        let (st, m) = mint(serde_json::json!({
+            "role": role,
+            "name": "n1",
+            "step_up": step_up_assertion(&step_up_key, role, "n1")?
+        }))
+        .await?;
         ensure!(st == 200, "{role}: {m}");
         let data = d.join(format!("node-{role}"));
         let out = std::process::Command::new(bin_path(bin))

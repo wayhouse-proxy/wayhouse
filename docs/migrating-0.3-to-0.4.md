@@ -35,7 +35,7 @@ With `--auth-token`, an enrolled origin gets a token of its own (not the shared 
 its key can be rotated without re-enrolling (`POST /peers/{name}/psk/rotate`, [how](11-backend-transport.md#rotating-the-key)).
 An origin enrolled earlier keeps working on the shared token and cannot rotate until it
 re-enrolls. Proxies, aggregators and UI processes enroll the same way (`wayhouse enroll`, `install --systemd`;
-[roles and the step-up secret](12-deployment.md#enrolling-a-proxy-an-aggregator-or-a-ui)). Breaking
+[roles and the signed step-up](12-deployment.md#enrolling-a-proxy-an-aggregator-or-a-ui)). Breaking
 for the mint call: `POST /enrollments` takes `name` (the old `origin` still works) and a `role`.
 
 ## Aggregator: loopback `admin_url`s need `--instance-url-allow`
@@ -165,8 +165,11 @@ secrets. Now:
    token, and every `wayhouse-agent`'s `--controller-token` at the agent token.
 3. Give the UI its own token too (`--ui-token-file` on the controller, the same file as the UI's
    `--controller-token-file`). It is optional: without it the UI keeps the admin token. With it a
-   leaked UI host cannot read sealed secrets or tunnel keys. Until the signed step-up lands, it can
-   still mint `agent` enrollment codes (see [deployment](12-deployment.md#controller-tokens-admin-proxy-agent)).
+   leaked UI host cannot read sealed secrets or tunnel keys, and every enrollment code it mints, `agent`
+   codes too, needs the signed step-up. So a controller with `--ui-token` but no
+   `--enroll-step-up-pubkey-file` cannot mint any code from the console (409): make the key first with
+   `wayhouse-controller step-up init --generate` (see
+   [deployment](12-deployment.md#enrolling-a-proxy-an-aggregator-or-a-ui)).
 4. Keep the admin token for operators, slave controllers (`--parent-token`) and
    `wayhouse-certsync`.
 

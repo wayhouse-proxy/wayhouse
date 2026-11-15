@@ -45,5 +45,6 @@ pub mod relay;
 pub mod role;
 pub mod scoped_auth;
 pub mod serve;
+pub mod step_up_cli;
 pub mod store;
 pub mod ui_data;

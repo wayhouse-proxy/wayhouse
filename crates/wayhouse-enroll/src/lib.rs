@@ -11,6 +11,7 @@ pub mod code;
 pub mod files;
 pub mod input;
 pub mod install;
+pub mod step_up;
 
 use serde::{Deserialize, Serialize};
 
@@ -58,7 +59,7 @@ impl Role {
                 "agent-token",
                 "ui-token",
                 "ingest-token",
-                "enroll-step-up",
+                "enroll-step-up-pubkey",
                 files::JOIN_PROOF_FILE,
             ],
         }
