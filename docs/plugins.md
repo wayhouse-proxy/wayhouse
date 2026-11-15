@@ -9,9 +9,9 @@ Plugins are not [sniffers](sniffers.md): sniffers run on the proxy data path.
 controller can store plugin installs behind an admin API and ticks the enabled ones
 (below); the web UI has a Plugins page on top of the install API (see "The Plugins page"). An HA tier replicates installs and state through Raft, serves the same API on every replica
 and ticks on the leader only, and the module bytes follow the installs to every replica (see
-"High availability"). Secrets, `http`, `routes`, webhooks and events are built; `backends` is not.
+"High availability"). Secrets, `http`, `routes`, `backends`, webhooks and events are built.
 
-## Module contract (ABI 0.2)
+## Module contract (ABI 0.3)
 
 Link `wayhouse-plugin-abi` (it stamps the `wayhouse.plugin-abi` section and exports
 `alloc`). The host accepts a module only when the section equals its own version (exact
@@ -191,6 +191,12 @@ The `routes` capability lets a plugin publish hostname routes:
 "routes": { "hosts": ["*.mc.example.com", "play.example.com"], "backends": ["10.0.0.0/16"], "max_entries": 64 }
 ```
 
+An entry may carry a `kind` (ABI 0.3): `tcp` (the default, a listener route as below) or `web`
+(a site of the `web:` front door with the backend as its upstream). The approval lists the kinds
+a plugin may publish in `kinds` (absent means `["tcp"]`), so a plugin approved for hostnames
+cannot start serving web sites without a new approval: `"routes": {…, "kinds": ["web"]}`. A set
+with an entry of a kind that was not approved is refused like any other entry outside the approval.
+
 `hosts` are the names (exact or `*.suffix`) the plugin may claim, `backends` the networks its
 backend addresses must be in, `max_entries` (1 to 256) the size of one set. A module cannot ask
 for more of any of these than was approved. `routes_set` replaces the plugin's whole set; the host
@@ -339,7 +345,23 @@ waiting per install), so a slow plugin loses events instead of building a backlo
 counted as `hooks_dropped` in the status. A restart, a failover (only the Raft leader delivers) or
 a lagging feed also loses some. The list of kinds only grows. A plugin that must not miss a change
 reconciles from the controller's state on its timer and treats an event as a reason to do it
-sooner. A backend-health event is not built yet.
+sooner. The `backend_health` kind (ABI 0.3, see "Backend health") is declared by the host; the controller does not deliver it yet.
+
+## Backend health (`backends`, ABI 0.3)
+
+The `backends` capability lets a plugin hear about backend health inside networks the operator
+approved:
+
+```json
+"backends": { "networks": ["10.0.0.0/16"], "max_entries": 256 },
+"triggers": { "on_timer": true, "on_event": ["backend_health"] }
+```
+
+`backends_get(out_ptr, out_cap) -> len` returns a JSON array of `{backend, up, since}` for the
+backends inside `networks` (at most `max_entries`, the most recently changed first); `-1` means
+the buffer was too small and `0` that nothing is known. The `backend_health` event carries one
+such object per change. Both only ever show backends inside the approved networks, so a plugin
+cannot learn the rest of the topology. Declaring the event needs the capability.
 
 ## ACME DNS-01 (`on_acme_dns`)
 

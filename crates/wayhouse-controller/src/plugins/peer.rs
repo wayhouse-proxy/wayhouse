@@ -711,7 +711,7 @@ mod tests {
     fn module(tag: &str) -> Vec<u8> {
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{{\"log\":true}}")
   (@custom "tag" "{tag}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))

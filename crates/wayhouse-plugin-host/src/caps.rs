@@ -49,11 +49,15 @@ pub struct Capabilities {
     /// and where they may point.
     #[serde(default)]
     pub port_routes: Option<Box<crate::port_routes::PortRouteCap>>,
+    /// May call `backends_get` and receive `backend_health` events for backends in these
+    /// networks (ABI 0.3).
+    #[serde(default)]
+    pub backends: Option<crate::backends::BackendsCap>,
 }
 
 /// The capabilities an operator can switch off for an install without revoking its approval
 /// (`Capabilities::suspend`). Triggers are not here: an install's `enabled` flag covers them.
-pub const SUSPENDABLE: &[&str] = &["log", "state", "http", "routes", "port_routes"];
+pub const SUSPENDABLE: &[&str] = &["log", "state", "http", "routes", "port_routes", "backends"];
 
 impl Capabilities {
     /// Clears the named capabilities (names from [`SUSPENDABLE`]; others are ignored), so
@@ -67,6 +71,7 @@ impl Capabilities {
                 "http" => self.http = None,
                 "routes" => self.routes = None,
                 "port_routes" => self.port_routes = None,
+                "backends" => self.backends = None,
                 _ => {}
             }
         }
@@ -244,6 +249,11 @@ impl Capabilities {
                 return over("routes (a hostname, network or count beyond the approval)");
             }
         }
+        if let Some(want) = &self.backends {
+            if !approved.backends.as_ref().is_some_and(|a| want.within(a)) {
+                return over("backends (a network or count beyond the approval)");
+            }
+        }
         if let Some(want) = &self.port_routes {
             if !approved
                 .port_routes
@@ -320,6 +330,14 @@ impl Capabilities {
         }
         if let Some(port_routes) = &caps.port_routes {
             port_routes.validate().map_err(ModuleError::CapsInvalid)?;
+        }
+        if let Some(backends) = &caps.backends {
+            backends.validate().map_err(ModuleError::CapsInvalid)?;
+        }
+        if caps.backends.is_none() && caps.triggers.on_event.iter().any(|k| k == "backend_health") {
+            return Err(ModuleError::CapsInvalid(
+                "the backend_health event needs the backends capability".into(),
+            ));
         }
         Ok(caps)
     }

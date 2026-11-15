@@ -1,6 +1,7 @@
 //! Loads and runs wayhouse WASM plugins (Wave 5). See `docs/plugins.md`.
 
 pub mod acme_dns;
+pub mod backends;
 pub mod bindings;
 pub mod bounds;
 pub mod caps;
@@ -16,6 +17,7 @@ pub mod secret;
 pub mod webhook;
 
 pub use acme_dns::{AcmeDnsAnswer, AcmeDnsOp, AcmeDnsRequest};
+pub use backends::{BackendStatus, BackendsCap};
 pub use bindings::{parse_declared, resolve_caps, BindError, DeclaredCaps};
 pub use bounds::Bounds;
 pub use caps::{

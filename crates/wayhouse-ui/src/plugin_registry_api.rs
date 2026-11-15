@@ -386,13 +386,13 @@ mod tests {
     use tower::ServiceExt;
 
     const MODULE_WAT: &str =
-        r#"(module (memory (export "memory") 1) (@custom "wayhouse.plugin-abi" "\00\00\02\00"))"#;
+        r#"(module (memory (export "memory") 1) (@custom "wayhouse.plugin-abi" "\00\00\03\00"))"#;
 
     #[test]
     fn the_default_pick_skips_pre_releases_but_a_named_one_is_allowed() {
         let version = |v: &str| {
             serde_json::from_value::<PluginVersion>(json!({
-                "version": v, "abi": "0.2", "url": "https://x.example/m.wasm",
+                "version": v, "abi": "0.3", "url": "https://x.example/m.wasm",
                 "sha256": "0".repeat(64), "size": 1
             }))
             .unwrap()
@@ -405,17 +405,17 @@ mod tests {
             categories: Vec::new(),
             tags: Vec::new(),
             latest: "0.3.0-rc.1".parse().unwrap(),
-            abi: "0.2".into(),
+            abi: "0.3".into(),
             signed: false,
             updated: "2026-11-12".into(),
             detail_url: None,
             versions: vec![version("0.3.0-rc.1"), version("0.2.0")],
         };
-        let picked = pick(&entry, None, "0.2").unwrap();
+        let picked = pick(&entry, None, "0.3").unwrap();
         assert_eq!(picked.version.to_string(), "0.2.0");
         let rc: semver::Version = "0.3.0-rc.1".parse().unwrap();
         assert_eq!(
-            pick(&entry, Some(&rc), "0.2").unwrap().version.to_string(),
+            pick(&entry, Some(&rc), "0.3").unwrap().version.to_string(),
             "0.3.0-rc.1"
         );
     }
@@ -569,7 +569,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_operator_can_neither_fetch_nor_add_a_plugin_registry() {
-        let registry = fake_registry(module(), "0.2", None).await;
+        let registry = fake_registry(module(), "0.3", None).await;
         let (controller, calls) = fake_controller().await;
         let mut h = harness(&registry, &controller, false).await;
         h.cookie = h.operator_cookie.clone();
@@ -597,7 +597,7 @@ mod tests {
     #[tokio::test]
     async fn a_confirmed_fetch_uploads_the_verified_bytes_and_installs_nothing() {
         let m = module();
-        let registry = fake_registry(m.clone(), "0.2", None).await;
+        let registry = fake_registry(m.clone(), "0.3", None).await;
         let (controller, calls) = fake_controller().await;
         let h = harness(&registry, &controller, false).await;
         let (status, body) = h
@@ -615,7 +615,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unsigned_module_needs_an_explicit_confirm_and_uploads_nothing_before_it() {
-        let registry = fake_registry(module(), "0.2", None).await;
+        let registry = fake_registry(module(), "0.3", None).await;
         let (controller, calls) = fake_controller().await;
         let h = harness(&registry, &controller, false).await;
         let (status, body) = h.fetch(json!({ "name": "demo" })).await;
@@ -627,7 +627,7 @@ mod tests {
     #[tokio::test]
     async fn a_tampered_hash_is_refused_even_when_confirmed() {
         let bad = "0".repeat(64);
-        let registry = fake_registry(module(), "0.2", Some(&bad)).await;
+        let registry = fake_registry(module(), "0.3", Some(&bad)).await;
         let (controller, calls) = fake_controller().await;
         let h = harness(&registry, &controller, false).await;
         let (status, body) = h
@@ -677,7 +677,7 @@ mod tests {
             r#"(module (memory (export "memory") 1) (@custom "wayhouse.plugin-abi" "\00\00\01\00"))"#,
         )
         .unwrap();
-        let registry = fake_registry(wrong, "0.2", None).await;
+        let registry = fake_registry(wrong, "0.3", None).await;
         let (controller, calls) = fake_controller().await;
         let h = harness(&registry, &controller, false).await;
         let (status, _) = h
@@ -689,7 +689,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_listing_shows_compatibility_and_a_sniffer_registry_is_not_a_plugin_one() {
-        let registry = fake_registry(module(), "0.2", None).await;
+        let registry = fake_registry(module(), "0.3", None).await;
         let (controller, _calls) = fake_controller().await;
         let h = harness(&registry, &controller, false).await;
         let (status, body) = h
@@ -716,7 +716,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["plugin"]["compatible"], true);
         assert_eq!(body["plugin"]["versions"][0]["verifiable"], false);
-        assert_eq!(body["host_abi"], "0.2");
+        assert_eq!(body["host_abi"], "0.3");
         let (status, body) = h.call("GET", "/api/plugin-registries", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["registries"].as_array().unwrap().len(), 1);
