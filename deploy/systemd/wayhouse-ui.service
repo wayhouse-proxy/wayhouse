@@ -9,7 +9,8 @@ User=wayhouse
 # The tokens arrive as files under $CREDENTIALS_DIRECTORY; the program reads them from there
 # (`wayhouse-controller init --target systemd` writes the sources under /etc/wayhouse/credentials).
 LoadCredential=ui-password:/etc/wayhouse/credentials/ui-password
-LoadCredential=controller-token:/etc/wayhouse/credentials/controller-token
+# The scoped UI token, not the admin token: the console reaches only the routes it proxies.
+LoadCredential=controller-token:/etc/wayhouse/credentials/ui-token
 LoadCredential=aggregator-token:/etc/wayhouse/credentials/aggregator-token
 ExecStart=/usr/local/bin/wayhouse-ui \
   --listen=127.0.0.1:9903 \

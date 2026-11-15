@@ -163,11 +163,15 @@ secrets. Now:
    and `--agent-token-file` (see the next section: tokens are files now).
 2. Point every `wayhouse` proxy's `--controller-token` and `--tunnel-controller-token` at the proxy
    token, and every `wayhouse-agent`'s `--controller-token` at the agent token.
-3. Keep the admin token for the UI, operators, slave controllers (`--parent-token`) and
+3. Give the UI its own token too (`--ui-token-file` on the controller, the same file as the UI's
+   `--controller-token-file`). It is optional: without it the UI keeps the admin token. With it a
+   leaked UI host cannot read sealed secrets or tunnel keys. Until the signed step-up lands, it can
+   still mint `agent` enrollment codes (see [deployment](12-deployment.md#controller-tokens-admin-proxy-agent)).
+4. Keep the admin token for operators, slave controllers (`--parent-token`) and
    `wayhouse-certsync`.
 
 The compose files, systemd units, k8s manifests and `deploy/solo/init.sh` already do this; an
-existing `.env` needs `WAYHOUSE_PROXY_TOKEN` and `WAYHOUSE_AGENT_TOKEN` added. The exact route lists
+existing `.env` needs `WAYHOUSE_PROXY_TOKEN`, `WAYHOUSE_AGENT_TOKEN` and `WAYHOUSE_UI_TOKEN` added. The exact route lists
 are in [deployment](12-deployment.md#controller-tokens-admin-proxy-agent). Upgrade and reconfigure the
 controllers first, then move proxies and agents to their tokens.
 
@@ -187,7 +191,7 @@ use `LoadCredential=`, so no token is on a command line. See [deployment](12-dep
 
 ## Tokens and passwords are no longer command-line flags (breaking)
 
-`--auth-token`, `--proxy-token`, `--agent-token`, `--ingest-token`, `--metrics-token`, `--instance-token`, `--parent-token`,
+`--auth-token`, `--proxy-token`, `--agent-token`, `--ui-token`, `--ingest-token`, `--metrics-token`, `--instance-token`, `--parent-token`,
 `--ha-token`, `--controller-token`, `--aggregator-token`, `--tunnel-controller-token`,
 `--plugin-overlay-token` and `--ui-password` are gone: a value on the command line is visible in
 `ps`, `/proc/<pid>/cmdline` and `docker inspect`. Each has a `--<name>-file PATH` flag instead (for

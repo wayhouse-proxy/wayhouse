@@ -17,6 +17,7 @@ services:
       - --auth-token-file=/run/secrets/auth-token
       - --proxy-token-file=/run/secrets/proxy-token
       - --agent-token-file=/run/secrets/agent-token
+      - --ui-token-file=/run/secrets/ui-token
       - --tunnel-network=fd49:89c1:4b5e:60::/64
   wayhouse:
     user: "0"          # NET_ADMIN is only in the bounding set for non-root: run as root

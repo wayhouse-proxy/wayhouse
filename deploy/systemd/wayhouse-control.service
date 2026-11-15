@@ -16,6 +16,7 @@ StateDirectory=wayhouse
 LoadCredential=controller-auth-token:/etc/wayhouse/credentials/controller-token
 LoadCredential=controller-proxy-token:/etc/wayhouse/credentials/proxy-token
 LoadCredential=controller-agent-token:/etc/wayhouse/credentials/agent-token
+LoadCredential=controller-ui-token:/etc/wayhouse/credentials/ui-token
 LoadCredential=aggregator-auth-token:/etc/wayhouse/credentials/aggregator-token
 LoadCredential=aggregator-ingest-token:/etc/wayhouse/credentials/ingest-token
 LoadCredential=ui-ui-password:/etc/wayhouse/credentials/ui-password

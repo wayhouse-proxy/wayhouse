@@ -35,7 +35,7 @@ spec:
           secret:
             secretName: wayhouse-tokens
             defaultMode: 0440   # group-readable; fsGroup gives the container its group
-            items: [{ key: ui-password, path: ui-password }, { key: controller-token, path: controller-token }, { key: aggregator-token, path: aggregator-token }]
+            items: [{ key: ui-password, path: ui-password }, { key: ui-token, path: controller-token }, { key: aggregator-token, path: aggregator-token }]
 ---
 # ClusterIP only: front it with an Ingress / LoadBalancer (and TLS) yourself.
 apiVersion: v1

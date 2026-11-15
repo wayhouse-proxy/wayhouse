@@ -15,7 +15,8 @@ unset BIN_SOURCE
 # Distinct sentinel values, so a rendered command that interpolates one is caught by its value
 # (the rendered config holds values, not variable names).
 export WAYHOUSE_CONTROLLER_TOKEN=lint-sentinel-controller WAYHOUSE_PROXY_TOKEN=lint-sentinel-proxy \
-       WAYHOUSE_AGENT_TOKEN=lint-sentinel-agent WAYHOUSE_AGGREGATOR_TOKEN=lint-sentinel-aggregator \
+       WAYHOUSE_AGENT_TOKEN=lint-sentinel-agent WAYHOUSE_UI_TOKEN=lint-sentinel-uitok \
+       WAYHOUSE_AGGREGATOR_TOKEN=lint-sentinel-aggregator \
        WAYHOUSE_INGEST_TOKEN=lint-sentinel-ingest WAYHOUSE_UI_PASSWORD=lint-sentinel-ui \
        WAYHOUSE_TUNNEL_ENDPOINT=1.2.3.4:51820
 C=deploy/compose
@@ -227,6 +228,14 @@ errs << "wayhouse-caddy must replace /usr/bin/caddy with the patched build (COPY
 errs << "wayhouse-caddy must run as 65532" unless caddy_stage.include?("USER 65532:65532")
 errs << "wayhouse image must carry wayhouse-web-sync" unless wayhouse_stage.include?("/out/wayhouse-web-sync /usr/local/bin/wayhouse-web-sync")
 errs << "wayhouse image must carry wayhouse-certsync" unless wayhouse_stage.include?("/out/wayhouse-certsync /usr/local/bin/wayhouse-certsync")
+
+# The UI never holds the admin token: it presents the scoped --ui-token, and the controller is
+# started with it.
+[["base", base], ["solo", solo]].each do |n, svcs|
+  errs << "#{n}: the controller needs --ui-token-file=/run/secrets/ui-token" unless svcs["controller"]["command"].include?("--ui-token-file=/run/secrets/ui-token")
+  errs << "#{n}: the UI must get the ui-token secret as its controller-token, not the admin token" unless svcs["ui"]["secrets"].any? { |x| x["source"] == "ui-token" && x["target"] == "controller-token" } && svcs["ui"]["secrets"].none? { |x| x["source"] == "controller-token" }
+end
+errs << "solo-control: the one process needs --controller-ui-token-file" unless solo_control["controller"]["command"].include?("--controller-ui-token-file=/run/secrets/ui-token")
 
 # Solo bundle: plugins and a sealed secret store on the controller, a keyring that is created once
 # and mounted read-only, and nothing published beyond the host loopback.

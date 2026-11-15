@@ -321,7 +321,12 @@ pub fn plan(
             format!("--{flag}-url").into(),
             format!("{scheme}://{addr}").into(),
         ]);
-        if let Some(t) = value_of(&forwarded[target], "auth-token-file") {
+        // The UI presents the controller's scoped UI token when it has one, never the admin
+        // token it could have used.
+        let own_token = (flag == "controller")
+            .then(|| value_of(&forwarded[target], "ui-token-file"))
+            .flatten();
+        if let Some(t) = own_token.or_else(|| value_of(&forwarded[target], "auth-token-file")) {
             derived.extend([format!("--{flag}-token-file").into(), t.into()]);
         }
     }
@@ -413,6 +418,24 @@ mod tests {
         assert!(has("--controller-url", "http://127.0.0.1:7001"), "{u:?}");
         assert!(has("--aggregator-url", "http://127.0.0.1:9902"), "{u:?}");
         assert!(has("--controller-token-file", "/ct"), "{u:?}");
+        assert!(has("--aggregator-token-file", "/at"), "{u:?}");
+    }
+
+    #[test]
+    fn the_ui_presents_the_controllers_ui_token_instead_of_its_admin_token() {
+        let p = run(&[
+            "--controller-auth-token-file",
+            "/ct",
+            "--controller-ui-token-file",
+            "/ut",
+            "--aggregator-auth-token-file",
+            "/at",
+        ])
+        .unwrap();
+        let u = strs(&p.ui);
+        let has = |f: &str, v: &str| u.windows(2).any(|w| w == [f, v]);
+        assert!(has("--controller-token-file", "/ut"), "{u:?}");
+        assert!(!has("--controller-token-file", "/ct"), "{u:?}");
         assert!(has("--aggregator-token-file", "/at"), "{u:?}");
     }
 

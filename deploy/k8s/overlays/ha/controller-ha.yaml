@@ -31,6 +31,7 @@ spec:
             - --auth-token-file=/run/secrets/wayhouse/auth-token
             - --proxy-token-file=/run/secrets/wayhouse/proxy-token
             - --agent-token-file=/run/secrets/wayhouse/agent-token
+            - --ui-token-file=/run/secrets/wayhouse/ui-token
             - --ha-node-id=$(POD_INDEX)
             - --ha-peers=0=https://wayhouse-controller-0.wayhouse-controller-peers:9901,1=https://wayhouse-controller-1.wayhouse-controller-peers:9901,2=https://wayhouse-controller-2.wayhouse-controller-peers:9901
             - --ha-token-file=/run/secrets/wayhouse/ha-token
@@ -54,7 +55,7 @@ spec:
           secret:
             secretName: wayhouse-tokens
             defaultMode: 0440   # group-readable; fsGroup gives the container its group
-            items: [{ key: controller-token, path: auth-token }, { key: proxy-token, path: proxy-token }, { key: agent-token, path: agent-token }, { key: ha-token, path: ha-token }]
+            items: [{ key: controller-token, path: auth-token }, { key: proxy-token, path: proxy-token }, { key: agent-token, path: agent-token }, { key: ui-token, path: ui-token }, { key: ha-token, path: ha-token }]
   volumeClaimTemplates:
     - metadata: { name: data }
       spec:
