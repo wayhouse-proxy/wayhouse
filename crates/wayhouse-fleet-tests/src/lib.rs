@@ -736,3 +736,41 @@ mod tests {
         wait_http_up(&url, Duration::from_secs(5)).await.unwrap();
     }
 }
+
+/// The step-up passphrase the enrollment tests sign with (#638). Only its public half is ever
+/// handed to a controller.
+pub const STEP_UP_PASSPHRASE: &str = "a fleet test step-up passphrase";
+
+/// Writes the step-up public key file for [`STEP_UP_PASSPHRASE`] into `dir` (0600) and returns
+/// its path and the key, for `--enroll-step-up-pubkey-file` and [`step_up_assertion`].
+pub fn step_up_pubkey_file(dir: &Path) -> Result<(String, wayhouse_enroll::step_up::StepUpKey)> {
+    use std::os::unix::fs::PermissionsExt;
+    let key = wayhouse_enroll::step_up::StepUpKey::generate(STEP_UP_PASSPHRASE)
+        .map_err(anyhow::Error::msg)?;
+    let p = dir.join("step-up.pub");
+    std::fs::write(&p, key.render())?;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?;
+    Ok((p.display().to_string(), key))
+}
+
+/// The signed assertion for one mint of `role` named `name` (no limits set).
+pub fn step_up_assertion(
+    key: &wayhouse_enroll::step_up::StepUpKey,
+    role: &str,
+    name: &str,
+) -> Result<serde_json::Value> {
+    use wayhouse_enroll::step_up;
+    let signing = step_up::derive(STEP_UP_PASSPHRASE, &key.salt).map_err(anyhow::Error::msg)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    let req = step_up::Request {
+        role,
+        name,
+        ttl_secs: None,
+        uses: None,
+        name_prefix: None,
+        parent_url: None,
+    };
+    Ok(serde_json::to_value(step_up::sign(&signing, &req, now))?)
+}

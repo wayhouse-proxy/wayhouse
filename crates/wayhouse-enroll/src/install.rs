@@ -559,7 +559,7 @@ mod tests {
             "proxy-token",
             "agent-token",
             "ingest-token",
-            "enroll-step-up",
+            "enroll-step-up-pubkey",
             "ha-join-proof",
         ]
         .map(String::from)
@@ -574,7 +574,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             u,
-            "[Unit]\nDescription=wayhouse controller node edge-1\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nDynamicUser=yes\nStateDirectory=wayhouse-controller\nStateDirectoryMode=0700\nLoadCredential=ha-token:/etc/wayhouse/controller/ha-token\nLoadCredential=secret.keys:/etc/wayhouse/controller/secret.keys\nLoadCredential=auth-token:/etc/wayhouse/controller/auth-token\nLoadCredential=proxy-token:/etc/wayhouse/controller/proxy-token\nLoadCredential=agent-token:/etc/wayhouse/controller/agent-token\nLoadCredential=ingest-token:/etc/wayhouse/controller/ingest-token\nLoadCredential=enroll-step-up:/etc/wayhouse/controller/enroll-step-up\nLoadCredential=ha-join-proof:/etc/wayhouse/controller/ha-join-proof\nExecStart=/usr/local/bin/x \\\n  --data-dir=/var/lib/wayhouse-controller \\\n  --ha-join \\\n  --ha-node-id=4 \\\n  --ha-advertise=https://ctl-4.example:9901 \\\n  --ha-join-via=https://ctl.example:9901 \\\n  --secret-key-file=%d/secret.keys \\\n  --tunnel-network=10.60.0.0/24 \\\n  --listen \\\n  0.0.0.0:9901\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nProtectKernelTunables=yes\nProtectControlGroups=yes\nPrivateDevices=yes\nCapabilityBoundingSet=\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\n\n[Install]\nWantedBy=multi-user.target\n"
+            "[Unit]\nDescription=wayhouse controller node edge-1\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nDynamicUser=yes\nStateDirectory=wayhouse-controller\nStateDirectoryMode=0700\nLoadCredential=ha-token:/etc/wayhouse/controller/ha-token\nLoadCredential=secret.keys:/etc/wayhouse/controller/secret.keys\nLoadCredential=auth-token:/etc/wayhouse/controller/auth-token\nLoadCredential=proxy-token:/etc/wayhouse/controller/proxy-token\nLoadCredential=agent-token:/etc/wayhouse/controller/agent-token\nLoadCredential=ingest-token:/etc/wayhouse/controller/ingest-token\nLoadCredential=enroll-step-up-pubkey:/etc/wayhouse/controller/enroll-step-up-pubkey\nLoadCredential=ha-join-proof:/etc/wayhouse/controller/ha-join-proof\nExecStart=/usr/local/bin/x \\\n  --data-dir=/var/lib/wayhouse-controller \\\n  --ha-join \\\n  --ha-node-id=4 \\\n  --ha-advertise=https://ctl-4.example:9901 \\\n  --ha-join-via=https://ctl.example:9901 \\\n  --secret-key-file=%d/secret.keys \\\n  --tunnel-network=10.60.0.0/24 \\\n  --listen \\\n  0.0.0.0:9901\nRestart=on-failure\nRestartSec=2\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nProtectKernelTunables=yes\nProtectControlGroups=yes\nPrivateDevices=yes\nCapabilityBoundingSet=\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\n\n[Install]\nWantedBy=multi-user.target\n"
         );
         // Not one secret value is in the unit, only names.
         assert!(!u.contains("Bearer") && !u.contains("--ha-token"));
