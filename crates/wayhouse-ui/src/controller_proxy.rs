@@ -274,6 +274,7 @@ fn mint_error(status: StatusCode, error: impl Into<String>) -> Response {
 
 /// Replaces a `step_up` passphrase in a mint body with a signed assertion for that body. A body
 /// without a string `step_up` is forwarded untouched (the controller decides whether it needs one).
+#[allow(clippy::result_large_err)] // the Err is the HTTP answer to send as is
 async fn sign_step_up(state: &AppState, body: Bytes) -> Result<Bytes, Response> {
     use zeroize::Zeroizing;
     let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(&body) else {

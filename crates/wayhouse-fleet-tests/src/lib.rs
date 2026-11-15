@@ -712,31 +712,6 @@ pub fn spawn_ui_with(listen_port: u16, extra: &[String]) -> Result<Proc> {
     Proc::spawn("wayhouse-ui", &args)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::io::AsyncWriteExt;
-
-    /// A binary that is still starting can reset or cut off a request; that
-    /// is not a connect error, but `wait_http_up` must keep retrying it.
-    #[tokio::test]
-    async fn wait_http_up_retries_a_connection_cut_off_mid_request() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/healthz", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            // First request: hang up without answering (an incomplete message).
-            drop(listener.accept().await.unwrap());
-            loop {
-                let (mut s, _) = listener.accept().await.unwrap();
-                let _ = s
-                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
-                    .await;
-            }
-        });
-        wait_http_up(&url, Duration::from_secs(5)).await.unwrap();
-    }
-}
-
 /// The step-up passphrase the enrollment tests sign with (#638). Only its public half is ever
 /// handed to a controller.
 pub const STEP_UP_PASSPHRASE: &str = "a fleet test step-up passphrase";
@@ -773,4 +748,29 @@ pub fn step_up_assertion(
         parent_url: None,
     };
     Ok(serde_json::to_value(step_up::sign(&signing, &req, now))?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    /// A binary that is still starting can reset or cut off a request; that
+    /// is not a connect error, but `wait_http_up` must keep retrying it.
+    #[tokio::test]
+    async fn wait_http_up_retries_a_connection_cut_off_mid_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/healthz", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            // First request: hang up without answering (an incomplete message).
+            drop(listener.accept().await.unwrap());
+            loop {
+                let (mut s, _) = listener.accept().await.unwrap();
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+        wait_http_up(&url, Duration::from_secs(5)).await.unwrap();
+    }
 }

@@ -35,7 +35,7 @@ With `--auth-token`, an enrolled origin gets a token of its own (not the shared 
 its key can be rotated without re-enrolling (`POST /peers/{name}/psk/rotate`, [how](11-backend-transport.md#rotating-the-key)).
 An origin enrolled earlier keeps working on the shared token and cannot rotate until it
 re-enrolls. Proxies, aggregators and UI processes enroll the same way (`wayhouse enroll`, `install --systemd`;
-[roles and the step-up secret](12-deployment.md#enrolling-a-proxy-an-aggregator-or-a-ui)). Breaking
+[roles and the signed step-up](12-deployment.md#enrolling-a-proxy-an-aggregator-or-a-ui)). Breaking
 for the mint call: `POST /enrollments` takes `name` (the old `origin` still works) and a `role`.
 
 ## Aggregator: loopback `admin_url`s need `--instance-url-allow`

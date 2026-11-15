@@ -1119,7 +1119,10 @@ async fn grant_files(
             put("ingest-token", g.ingest_token.as_deref());
             put(
                 "enroll-step-up-pubkey",
-                g.step_up.as_ref().map(|k| k.render()).as_deref(),
+                g.step_up
+                    .as_ref()
+                    .map(wayhouse_enroll::step_up::StepUpKey::render)
+                    .as_deref(),
             );
         }
     }
@@ -2881,11 +2884,7 @@ mod tests {
             json!({"role": "controller", "name": "ctl-pool", "name_prefix": "ctl-", "uses": 2}),
         )
         .await;
-        assert_eq!(
-            st,
-            StatusCode::FORBIDDEN,
-            "a pool needs the step-up secret too"
-        );
+        assert_eq!(st, StatusCode::FORBIDDEN, "a pool needs the step-up too");
     }
 
     #[tokio::test]

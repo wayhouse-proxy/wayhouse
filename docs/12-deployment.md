@@ -407,7 +407,9 @@ The controller separates three credentials, so a compromised edge box cannot adm
   `*/subscribe` stream, `/intent/*`, `/ha/*` or the adopt route, so a leaked UI host cannot read
   sealed secrets or tunnel keys and can be rotated without touching the admin token. The console
   is still an admin console: the UI token can submit config. Without `--ui-token`, a `ui`
-  enrollment hands out the admin token as before.
+  enrollment hands out the admin token as before. Every enrollment code minted with the UI token,
+  for any role (an `agent` code replaces an origin's token and tunnel key), also needs the signed
+  step-up below, so a leaked UI host cannot mint on its own.
 
 Setting `--auth-token` requires the proxy and agent tokens, and all of them (and `--ui-token`
 when given) must differ; the controller
@@ -468,28 +470,44 @@ files, named after the credentials the binary already reads (`$CREDENTIALS_DIREC
 | Role | Binary | Files written to `--data-dir` | Minted with |
 |---|---|---|---|
 | `agent` | `wayhouse-agent` | `agent-token`, `tunnel-psk` | admin token |
-| `proxy` | `wayhouse` | `controller-token` (the proxy token), `aggregator-token` (the ingest token, if the controller has one), `secret.keys` (the cluster keyring) | admin token **and step-up secret** |
+| `proxy` | `wayhouse` | `controller-token` (the proxy token), `aggregator-token` (the ingest token, if the controller has one), `secret.keys` (the cluster keyring) | admin token **and signed step-up** |
 | `aggregator` | `wayhouse-aggregator` | `ingest-token`, and `auth-token` (made on the node, never sent) | admin token |
-| `ui` | `wayhouse-ui` | `controller-token` (the UI token when the controller has `--ui-token`, otherwise the **admin token**) | admin token **and step-up secret** |
+| `ui` | `wayhouse-ui` | `controller-token` (the UI token when the controller has `--ui-token`, otherwise the **admin token**) | admin token **and signed step-up** |
 
 ```sh
 curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
-  -d '{"role": "proxy", "name": "edge-1", "step_up": "'"$(cat step-up)"'"}'
+  -d '{"role": "proxy", "name": "edge-1", "step_up": '"$(wayhouse-controller step-up sign \
+      --passphrase-file ./passphrase --pubkey-file ./step-up.pub --role proxy --name edge-1)"'}'
 sudo wayhouse install --systemd --controller-url https://controller.example:9901 \
   --pin sha256:<leaf fingerprint> --code-file ./code -- --aggregator https://agg.example:9902
 ```
 
-- The keyring and the admin token are the crown jewels, so a `proxy` or `ui` code is only minted
-  with the **step-up secret** in the body (the controller's `--enroll-step-up-file`,
-  `$CREDENTIALS_DIRECTORY/enroll-step-up` or `$WAYHOUSE_ENROLL_STEP_UP`: at least 16 bytes,
-  different from every token). Without that flag those roles cannot be minted. Wrong guesses are
-  limited to five a minute. Limits of this gate: it protects against a leaked admin token, not
-  against a compromised UI host (the UI sees the secret whenever the operator types it) or
-  controller host (which already holds the keyring). The wrong-guess bucket is shared by all
-  callers, so someone with only the admin token can use it up and block the operator for a
-  minute, and under HA each replica counts separately. `proxy` and `ui` codes live at most 24
-  hours and a `ui` code is single use. Every mint, refused mint, redeem and revoke is logged with the actor
-  (the `X-Actor` header the UI sets), never with a secret.
+- The keyring and the admin token are the crown jewels, so a `proxy`, `ui` or `controller` code is
+  only minted with a **signed step-up** in the body: an Ed25519 signature, made from a passphrase
+  the operator knows, over exactly the fields of that mint (role, name, lifetime, uses, prefix,
+  parent URL), a random nonce and an expiry at most 60 seconds ahead. The controller holds only
+  the public key (`--enroll-step-up-pubkey-file`, `$CREDENTIALS_DIRECTORY/enroll-step-up-pubkey`
+  or `$WAYHOUSE_ENROLL_STEP_UP_PUBKEY`), so a stolen controller disk or admin token cannot forge
+  one, and an assertion cannot be reused for another mint (each nonce is accepted once). Without
+  that flag those roles cannot be minted. Make the key once:
+
+  ```sh
+  printf '%s' 'a passphrase of at least 16 characters' > passphrase   # keep it out of shell history
+  wayhouse-controller step-up init --passphrase-file ./passphrase --out ./step-up.pub
+  # start the controller with --enroll-step-up-pubkey-file ./step-up.pub
+  ```
+
+  The passphrase is not stored anywhere; `step-up.pub` holds a random salt and the public key. The
+  console asks for the passphrase on each mint, signs in the UI process and forwards only the
+  signature. With `curl`, `wayhouse-controller step-up sign` (above) prints the assertion for one mint.
+  Wrong guesses are limited to five a minute. Limits of this gate: the passphrase is typed into
+  the UI, so a compromised UI host sees it while the operator types it (use `step-up sign` on
+  your own machine to avoid that); the wrong-guess bucket is shared by all callers, so someone
+  with only the admin token can use it up and block the operator for a minute; and under HA each
+  replica counts guesses and remembers nonces separately, so an assertion could be replayed once
+  on each replica within its 60 seconds. `proxy`, `ui` and `controller` codes live at most 24 hours and a `ui` code is single use. Every
+  mint, refused mint, redeem and revoke is logged with the actor (the `X-Actor` header the UI sets),
+  never with a secret.
 - The controller needs `--ingest-token-file` (the same secret the aggregator and proxies use) to
   mint an `aggregator` code and to give proxies their aggregator token. An aggregator tier's
   `parent_url` can be set at mint time and is written to `enrollment.json`.
@@ -517,12 +535,13 @@ sudo wayhouse install --systemd --controller-url https://controller.example:9901
 A second or third controller joins a running HA group with one command, and the new host never
 holds an admin token to do it. The group must run HA already (`--ha-peers` on the first
 controller; a standalone controller cannot mint this code) and have `--auth-token`, a secret key
-(`--secret-key-file`) and `--enroll-step-up-file`.
+(`--secret-key-file`) and `--enroll-step-up-pubkey-file`.
 
 ```sh
-# On anything that can reach the cluster: mint a code (admin token and step-up secret).
+# On anything that can reach the cluster: mint a code (admin token and a signed step-up).
 curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
-  -d '{"role": "controller", "name": "ctl-4", "step_up": "'"$(cat step-up)"'"}'
+  -d '{"role": "controller", "name": "ctl-4", "step_up": '"$(wayhouse-controller step-up sign \
+      --passphrase-file ./passphrase --pubkey-file ./step-up.pub --role controller --name ctl-4)"'}'
 # -> {"code": "...", "node_id": 4, ...}
 
 # On the new host (root; the cluster needs its own TLS certificate here, see "HA replicas over TLS"):
@@ -544,7 +563,7 @@ What happens, in order:
    with the same id). The answer carries `node_id`.
 2. `enroll` redeems the code over the pinned TLS connection and writes, 0600 in
    `/etc/wayhouse/controller`: `ha-token`, `secret.keys` (the keyring), `auth-token` (the **admin**
-   token), `proxy-token`, `agent-token`, `ui-token`, `ingest-token` and `enroll-step-up` (each only if the
+   token), `proxy-token`, `agent-token`, `ui-token`, `ingest-token` and `enroll-step-up-pubkey` (each only if the
    first controller has one) and `ha-join-proof`, plus `enrollment.json` with the node id and the
    `--advertise` address. A replica serves the same API, so it holds every token the first
    controller holds; because the **Raft token is cluster-wide**, a replica holds the cluster's Raft
@@ -585,7 +604,9 @@ whole StatefulSet and scaling up needs no new code (until the uses or the TTL ru
 
 ```sh
 curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
-  -d '{"role":"controller","name":"ctl-pool","name_prefix":"ctl-","uses":3,"ttl_secs":3600,"step_up":"'"$(cat step-up)"'"}'
+  -d '{"role":"controller","name":"ctl-pool","name_prefix":"ctl-","uses":3,"ttl_secs":3600,"step_up":'"$(wayhouse-controller step-up sign \
+      --passphrase-file ./passphrase --pubkey-file ./step-up.pub --role controller --name ctl-pool \
+      --ttl-secs 3600 --uses 3 --name-prefix ctl-)"'}'
 ```
 
 - The node id is chosen when the pod redeems, inside the replicated store: one above every Raft
@@ -612,13 +633,13 @@ curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin
   (`wayhouse-controller-0`, a group of one, on the shared Secrets) and a `wayhouse-controller-replica`
   StatefulSet whose init container redeems the pool code from the `wayhouse-enroll-code` Secret as
   `$(POD_NAME)` and keeps the result on a volume claim (a restart spends no use). Create first the
-  Secrets `wayhouse-enroll-step-up` (key `step-up`, any 16+ character secret; `init` does not make it)
+  Secrets `wayhouse-enroll-step-up` (key `step-up-pubkey`, the file `step-up init` wrote; `init --target k8s-secret` does not make it)
   and, after the bootstrap controller is up, mint the pool with `name_prefix`
   `wayhouse-controller-replica-` and `uses` at least the replica count, then
   `kubectl create secret generic wayhouse-enroll-code --from-file=code=...`. Scaling later needs a fresh
   code with uses left. Not validated on a real cluster (CI renders and lints it only).
 - Needs the same group setup as a single-use controller code (HA, `--auth-token`, a secret key and
-  `--enroll-step-up-file`). Roll every replica to this build first (the UI data level is 9).
+  `--enroll-step-up-pubkey-file`). Roll every replica to this build first (the UI data level is 9).
 
 ### Per-node enrollment on Kubernetes
 
@@ -644,11 +665,13 @@ curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin
   -d '{"role":"agent","name":"k8s-agents","name_prefix":"agent-","uses":20,"ttl_secs":86400}' \
   | jq -r .code > code
 kubectl -n wayhouse create secret generic wayhouse-enroll-code-agent --from-file=code=code && rm code
-# The proxy DaemonSet needs its own code (role proxy, prefix k8s-, step-up secret, at most 24 hours),
+# The proxy DaemonSet needs its own code (role proxy, prefix k8s-, signed step-up, at most 24 hours),
 # in its own Secret: a code has one role, so one Secret cannot serve both DaemonSets.
 curl -sS -X POST "$CONTROLLER/enrollments" -H "Authorization: Bearer $(cat admin-token)" \
   -H 'Content-Type: application/json' \
-  -d '{"role":"proxy","name":"k8s-proxies","name_prefix":"k8s-","uses":20,"ttl_secs":86400,"step_up":"'"$(cat step-up)"'"}' \
+  -d '{"role":"proxy","name":"k8s-proxies","name_prefix":"k8s-","uses":20,"ttl_secs":86400,"step_up":'"$(wayhouse-controller step-up sign \
+      --passphrase-file ./passphrase --pubkey-file ./step-up.pub --role proxy --name k8s-proxies \
+      --ttl-secs 86400 --uses 20 --name-prefix k8s-)"'}' \
   | jq -r .code > proxy-code
 kubectl -n wayhouse create secret generic wayhouse-enroll-code-proxy --from-file=code=proxy-code && rm proxy-code
 kubectl apply -k deploy/k8s/overlays/enrolled
@@ -656,7 +679,7 @@ kubectl apply -k deploy/k8s/overlays/enrolled
 
 The `enrolled` overlay adds two components: `components/enroll` makes the proxy DaemonSet redeem the
 code in an init container as `k8s-<node name>` (mint that one with `"name_prefix":"k8s-"`, role
-`proxy`, which also needs the step-up secret and lasts at most 24 hours) and reads its tokens from
+`proxy`, which also needs the signed step-up and lasts at most 24 hours) and reads its tokens from
 an emptyDir instead of the shared `wayhouse-tokens` Secret; `components/agent` adds a `wayhouse-agent`
 DaemonSet that enrolls as `agent-<node name>` (edit `--backends` in it). The init container runs
 `enroll --skip-if-enrolled`, so a pod that starts again where its files still are spends no use.
@@ -688,18 +711,20 @@ by themselves see "Per-node enrollment on Kubernetes" below, the page does not m
 - The code lives in the page's memory only: never in browser storage or a URL, never logged by the
   UI, and gone when you press Done or leave the page. The UI's `/api/enrollments` routes are
   admin-only and answer `Cache-Control: no-store`.
-- A `proxy` or `ui` code needs the controller's step-up secret, typed for every mint. The UI sends it
-  with that one request and clears the field, so it is neither stored nor logged.
+- A `proxy`, `ui` or `controller` code needs the step-up passphrase (16 or more characters), typed
+  for every mint; with the scoped UI token the controller asks for it on every code, so the
+  field is optional only for the other roles. The UI signs the request with it, sends the signature
+  and clears the field, so the passphrase is neither stored nor logged.
 - "Keep the code out of the command" produces commands without the code; you paste it when the
   node asks, so it stays out of shell history and process lists.
 - The list under the form shows every code (pending, used or expired) and revokes any of them.
   On **Tunnel addresses**, an origin row has **Re-enroll**, which opens the form pre-filled.
-- A **Controller replica** code (systemd only) needs the HA group's step-up secret and the new node's
+- A **Controller replica** code (systemd only) needs the step-up passphrase and the new node's
   advertise address. The page shows the Raft node id the replica gets, and the list shows the code as
   `joining` until the cluster has added it, then `joined`. The replica's own certificate, key and
   the cluster CA go in the paths the command names (change them as needed).
 - **Controller replica** with **Kubernetes** mints a **pool code** (2 to 16 uses, name prefix
-  `wayhouse-controller-replica-`, step-up secret required, 24 hours at most) for the `ha-enrolled`
+  `wayhouse-controller-replica-`, step-up passphrase required, 24 hours at most) for the `ha-enrolled`
   overlay. The page asks for no URL, fingerprint or advertise address (the overlay's init container
   knows them) and shows three steps: create the `wayhouse-enroll-step-up` Secret by hand (it is not
   made for you), store the code as the `wayhouse-enroll-code` Secret, apply the overlay and scale the
