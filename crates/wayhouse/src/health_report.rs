@@ -68,6 +68,8 @@ pub async fn run(base_url: String, token: Option<String>, handle: RuntimeHandle)
     let url = format!("{base_url}/backend-health");
     let mut last: Option<Vec<Item>> = None;
     let mut since_sent = REFRESH_EVERY;
+    // The last refusal logged, so a standing 403 is one line, not one per retry.
+    let mut refused: Option<u16> = None;
     loop {
         tokio::time::sleep(CHECK_EVERY).await;
         since_sent += CHECK_EVERY;
@@ -92,6 +94,7 @@ pub async fn run(base_url: String, token: Option<String>, handle: RuntimeHandle)
         }
         match req.send().await {
             Ok(r) if r.status().is_success() => {
+                refused = None;
                 last = Some(now);
                 since_sent = Duration::ZERO;
             }
@@ -100,7 +103,12 @@ pub async fn run(base_url: String, token: Option<String>, handle: RuntimeHandle)
                 tracing::debug!("controller takes no backend health reports");
                 tokio::time::sleep(NOT_SUPPORTED_BACKOFF).await;
             }
-            Ok(r) => tracing::warn!(status = %r.status(), "backend health report refused"),
+            Ok(r) => {
+                if refused != Some(r.status().as_u16()) {
+                    refused = Some(r.status().as_u16());
+                    tracing::warn!(status = %r.status(), "backend health report refused; retrying");
+                }
+            }
             Err(e) => {
                 tracing::debug!(error = %wayhouse_http::error_chain(&e), "backend health report failed")
             }

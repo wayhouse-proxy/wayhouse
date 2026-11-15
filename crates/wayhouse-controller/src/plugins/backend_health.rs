@@ -19,7 +19,7 @@ pub const STALE_AFTER: Duration = Duration::from_secs(180);
 /// Most backends the board holds; a report that would exceed it is refused.
 pub const MAX_BACKENDS: usize = 16 * 1024;
 /// Most distinct proxies the board holds.
-pub const MAX_PROXIES: usize = 64;
+pub const MAX_PROXIES: usize = 256;
 /// Most entries in one report.
 pub const MAX_REPORT: usize = 4096;
 
