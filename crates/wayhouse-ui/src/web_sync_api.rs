@@ -73,9 +73,8 @@ async fn status(State(state): State<AppState>) -> Response {
     let unreachable = |why: String| {
         Json(json!({ "configured": true, "reachable": false, "error": why })).into_response()
     };
-    let resp = match req.timeout(std::time::Duration::from_secs(3)).send().await {
-        Ok(r) => r,
-        Err(_) => return unreachable("the web sync did not answer".into()),
+    let Ok(resp) = req.timeout(std::time::Duration::from_secs(3)).send().await else {
+        return unreachable("the web sync did not answer".into());
     };
     if !resp.status().is_success() {
         return unreachable(format!("the web sync answered {}", resp.status().as_u16()));
