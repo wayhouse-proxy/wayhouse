@@ -78,6 +78,7 @@ async fn no_secret_reaches_the_log_even_at_trace() {
         ui,
         wayhouse_controller::enroll::Grants {
             agent_token: Some(Arc::from(AGENT)),
+            ui_token: None,
             proxy_token: Some(Arc::from(PROXY)),
             ingest_token: Some(Arc::from(INGEST)),
             step_up: Some(Arc::from(STEP_UP)),

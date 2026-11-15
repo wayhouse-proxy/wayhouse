@@ -56,6 +56,7 @@ impl Role {
                 "auth-token",
                 "proxy-token",
                 "agent-token",
+                "ui-token",
                 "ingest-token",
                 "enroll-step-up",
                 files::JOIN_PROOF_FILE,

@@ -12,6 +12,7 @@ use wayhouse_fleet_tests::{
 const ADMIN: &str = "admin-token-0123456789";
 const PROXY: &str = "proxy-token-0123456789";
 const AGENT: &str = "agent-token-0123456789";
+const UI: &str = "ui-token-0123456789-x";
 
 #[tokio::test]
 async fn a_proxy_token_reads_config_but_cannot_write_it() -> Result<()> {
@@ -69,6 +70,71 @@ async fn a_proxy_token_reads_config_but_cannot_write_it() -> Result<()> {
     );
     ensure!(status(c.get(format!("{url}/config")).bearer_auth(AGENT)).await? == 401);
     ensure!(status(c.get(format!("{url}/config")).bearer_auth(ADMIN)).await? != 401);
+    Ok(())
+}
+
+/// A UI host that enrolled holds the scoped token: it runs the console's calls, but cannot read
+/// a sealed secret or a tunnel key, and cannot register or stream as a machine.
+#[tokio::test]
+async fn a_ui_token_runs_the_console_but_not_the_machine_routes() -> Result<()> {
+    build_fleet_bins()?;
+    let dir = tempfile::tempdir()?;
+    let port = free_port()?;
+    let url = format!("http://127.0.0.1:{port}");
+    let _controller = spawn_controller_with(
+        dir.path(),
+        &format!("127.0.0.1:{port}"),
+        &[
+            "--auth-token",
+            ADMIN,
+            "--proxy-token",
+            PROXY,
+            "--agent-token",
+            AGENT,
+            "--ui-token",
+            UI,
+        ]
+        .map(String::from),
+    )?;
+    wait_http_up(
+        &format!("{url}/healthz"),
+        wayhouse_fleet_tests::STARTUP_TIMEOUT,
+    )
+    .await?;
+    let c = wayhouse_http::client();
+    let status = |req: reqwest::RequestBuilder| async move {
+        Ok::<_, anyhow::Error>(req.send().await?.status().as_u16())
+    };
+    for path in [
+        "/config/schema",
+        "/config/revisions",
+        "/plugins",
+        "/secrets",
+        "/features",
+        "/features/overrides",
+        "/enrollments",
+        "/acme/sites",
+        "/tunnel/addresses",
+        "/ui/dashboards",
+    ] {
+        let got = status(c.get(format!("{url}{path}")).bearer_auth(UI)).await?;
+        ensure!(got != 401, "GET {path}: the UI token was refused ({got})");
+    }
+    for path in [
+        "/secrets/x/sealed",
+        "/peers/x/psk",
+        "/peers/x",
+        "/peers/subscribe",
+        "/config/subscribe",
+        "/intent/subscribe",
+    ] {
+        let got = status(c.get(format!("{url}{path}")).bearer_auth(UI)).await?;
+        ensure!(got == 401, "GET {path}: the UI token got through ({got})");
+    }
+    ensure!(
+        status(c.post(format!("{url}/peers")).bearer_auth(UI).body("{}")).await? == 401,
+        "the UI token registered a peer"
+    );
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 //! Scoped tokens for the components that talk to the controller but must not administer it.
 //!
-//! `--auth-token` is the admin token and works everywhere. `--proxy-token` and `--agent-token`
-//! each unlock a fixed list of method and path pairs (what that component really calls) and
+//! `--auth-token` is the admin token and works everywhere. `--proxy-token`, `--agent-token` and
+//! (optionally) `--ui-token` each unlock a fixed list of method and path pairs (what that component really calls) and
 //! nothing else, so a compromised edge proxy cannot submit config, install plugins or write
 //! secrets (#589). [`promote`] runs once, outside every router: a scoped token on an allowed
 //! request is exchanged for the admin token, so the per-module bearer layers stay untouched.
@@ -33,6 +33,69 @@ const AGENT: Allowed = &[
     (&Method::GET, "/proxy-peers/subscribe"),
 ];
 
+/// What the operator console (`wayhouse-ui`) calls on the controller: the config, plugin, ACME,
+/// feature, secret-name, enrollment and tunnel-release routes it proxies, and its `/ui/*` records.
+/// Not on the list: sealed secret reads (`/secrets/*/sealed`), tunnel keys (`/peers/*/psk`),
+/// registrations (`/peers`, `/proxy-peers` beyond a release), every machine stream
+/// (`*/subscribe`), `/intent/*`, `/ha/*` and the adopt route. A test walks the UI's own routes so
+/// a new proxied path cannot be left off this list unnoticed.
+const UI: Allowed = &[
+    (&Method::GET, "/config"),
+    (&Method::POST, "/config"),
+    (&Method::GET, "/config/schema"),
+    (&Method::POST, "/config/validate"),
+    (&Method::GET, "/config/revisions"),
+    (&Method::GET, "/config/revisions/*"),
+    (&Method::GET, "/config/revisions/*/diff"),
+    (&Method::GET, "/config/pending"),
+    (&Method::POST, "/config/rollback/*"),
+    (&Method::POST, "/config/promote/*"),
+    (&Method::POST, "/config/confirm/*"),
+    (&Method::POST, "/config/revert"),
+    (&Method::GET, "/tunnel/addresses"),
+    (&Method::DELETE, "/peers/*"),
+    (&Method::POST, "/peers/*/psk/rotate"),
+    (&Method::DELETE, "/proxy-peers/*"),
+    (&Method::GET, "/plugins"),
+    (&Method::POST, "/plugins"),
+    (&Method::GET, "/plugin-routes"),
+    (&Method::POST, "/plugins/modules"),
+    (&Method::GET, "/plugins/file/plan"),
+    (&Method::GET, "/plugins/*"),
+    (&Method::DELETE, "/plugins/*"),
+    (&Method::GET, "/plugins/*/status"),
+    (&Method::POST, "/plugins/*/enable"),
+    (&Method::POST, "/plugins/*/disable"),
+    (&Method::PUT, "/plugins/*/config"),
+    (&Method::GET, "/plugins/*/secrets"),
+    (&Method::PUT, "/plugins/*/secrets/*"),
+    (&Method::DELETE, "/plugins/*/secrets/*"),
+    (&Method::POST, "/plugins/*/webhook"),
+    (&Method::DELETE, "/plugins/*/webhook"),
+    (&Method::GET, "/acme/sites"),
+    (&Method::PUT, "/acme/sites/*"),
+    (&Method::DELETE, "/acme/sites/*"),
+    (&Method::GET, "/acme/gateways"),
+    (&Method::POST, "/acme/gateways"),
+    (&Method::DELETE, "/acme/gateways/*"),
+    (&Method::GET, "/acme/account"),
+    (&Method::GET, "/features"),
+    (&Method::GET, "/features/overrides"),
+    (&Method::PUT, "/features/overrides/*"),
+    (&Method::DELETE, "/features/overrides/*"),
+    (&Method::GET, "/secrets"),
+    (&Method::PUT, "/secrets/*"),
+    (&Method::DELETE, "/secrets/*"),
+    (&Method::GET, "/enrollments"),
+    (&Method::POST, "/enrollments"),
+    (&Method::DELETE, "/enrollments/*"),
+    (&Method::GET, "/ui/*"),
+    (&Method::PUT, "/ui/*"),
+    (&Method::GET, "/ui/*/*"),
+    (&Method::PUT, "/ui/*/*"),
+    (&Method::DELETE, "/ui/*/*"),
+];
+
 /// What an enrolled origin's own token may call: the agent's list plus its tunnel key, which
 /// the handler then holds to the token's own name.
 const ORIGIN: Allowed = &[
@@ -52,21 +115,31 @@ pub enum Caller {
     SharedAgent,
     /// The token enrollment issued to one origin; the name it may act for.
     Origin(String),
+    /// The `--ui-token`: the operator console.
+    Ui,
 }
 
 /// Finds the origin a token (not the shared ones) was issued to. Reads the replicated store,
 /// so a follower sees a new or revoked token once its apply catches up.
 pub type OriginLookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
-/// Startup rule: with an admin token, both scoped tokens are required, each at least 16 bytes
-/// and all three different, so no component quietly keeps using the admin token.
-pub fn check(admin: Option<&str>, proxy: Option<&str>, agent: Option<&str>) -> Result<(), String> {
+/// Startup rule: with an admin token, the proxy and agent tokens are required, each at least 16
+/// bytes and all different, so no component quietly keeps using the admin token. `--ui-token` is
+/// optional (without it a `ui` enrollment hands out the admin token); when given it must meet the
+/// same rules and needs `--auth-token`.
+pub fn check(
+    admin: Option<&str>,
+    proxy: Option<&str>,
+    agent: Option<&str>,
+    ui: Option<&str>,
+) -> Result<(), String> {
     wayhouse_http::policy::check_optional_secret("--proxy-token", proxy)?;
     wayhouse_http::policy::check_optional_secret("--agent-token", agent)?;
+    wayhouse_http::policy::check_optional_secret("--ui-token", ui)?;
     let Some(admin) = admin else {
-        return match (proxy, agent) {
-            (None, None) => Ok(()),
-            _ => Err("--proxy-token and --agent-token need --auth-token".into()),
+        return match (proxy, agent, ui) {
+            (None, None, None) => Ok(()),
+            _ => Err("--proxy-token, --agent-token and --ui-token need --auth-token".into()),
         };
     };
     let (Some(proxy), Some(agent)) = (proxy, agent) else {
@@ -76,8 +149,12 @@ pub fn check(admin: Option<&str>, proxy: Option<&str>, agent: Option<&str>) -> R
                 .into(),
         );
     };
-    if admin == proxy || admin == agent || proxy == agent {
-        return Err("--auth-token, --proxy-token and --agent-token must all differ".into());
+    let mut all = vec![admin, proxy, agent];
+    all.extend(ui);
+    if (1..all.len()).any(|i| all[..i].contains(&all[i])) {
+        return Err(
+            "--auth-token, --proxy-token, --agent-token and --ui-token must all differ".into(),
+        );
     }
     Ok(())
 }
@@ -91,11 +168,17 @@ pub struct ScopedTokens {
 
 impl ScopedTokens {
     /// `None` when there is nothing to promote (no admin token, or no scoped token set).
-    pub fn new(admin: Option<&str>, proxy: Option<&str>, agent: Option<&str>) -> Option<Self> {
+    pub fn new(
+        admin: Option<&str>,
+        proxy: Option<&str>,
+        agent: Option<&str>,
+        ui: Option<&str>,
+    ) -> Option<Self> {
         let admin = HeaderValue::from_str(&format!("Bearer {}", admin?)).ok()?;
         let scoped: Vec<_> = [
             (proxy, PROXY, Caller::Proxy),
             (agent, AGENT, Caller::SharedAgent),
+            (ui, UI, Caller::Ui),
         ]
         .into_iter()
         .filter_map(|(t, a, c)| Some((Arc::from(t?), a, c)))
@@ -179,11 +262,13 @@ mod tests {
     const ADMIN: &str = "admin-token-0123456789";
     const PROXY_T: &str = "proxy-token-0123456789";
     const AGENT_T: &str = "agent-token-0123456789";
+    const UI_T: &str = "ui-token-0123456789-x";
 
     /// A stand-in for the real routers: everything sits behind the admin bearer check, and the
     /// scoped-token layer wraps the whole thing exactly as `main.rs` does.
     fn app() -> Router {
-        let tokens = ScopedTokens::new(Some(ADMIN), Some(PROXY_T), Some(AGENT_T)).unwrap();
+        let tokens =
+            ScopedTokens::new(Some(ADMIN), Some(PROXY_T), Some(AGENT_T), Some(UI_T)).unwrap();
         Router::new()
             .route("/{*any}", any(|| async { "ok" }))
             .route_layer(middleware::from_fn_with_state(
@@ -223,6 +308,75 @@ mod tests {
         ] {
             assert_eq!(status(m, p, PROXY_T).await, StatusCode::OK, "{m} {p}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_ui_token_reaches_what_the_console_proxies() {
+        for (m, p) in [
+            ("GET", "/config"),
+            ("POST", "/config"),
+            ("POST", "/config/validate"),
+            ("GET", "/config/revisions/3/diff"),
+            ("POST", "/config/rollback/3"),
+            ("GET", "/tunnel/addresses"),
+            ("POST", "/peers/home/psk/rotate"),
+            ("DELETE", "/peers/home"),
+            ("DELETE", "/proxy-peers/edge"),
+            ("GET", "/plugins/file/plan"),
+            ("PUT", "/plugins/abc/secrets/token"),
+            ("POST", "/plugins/abc/webhook"),
+            ("PUT", "/acme/sites/panel"),
+            ("PUT", "/features/overrides/acl"),
+            ("GET", "/secrets"),
+            ("PUT", "/secrets/gossip-psk"),
+            ("POST", "/enrollments"),
+            ("DELETE", "/enrollments/abc123"),
+            ("GET", "/ui/dashboards"),
+            ("PUT", "/ui/dashboards/ops"),
+            ("DELETE", "/ui/dashboards/ops"),
+        ] {
+            assert_eq!(status(m, p, UI_T).await, StatusCode::OK, "{m} {p}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_ui_token_cannot_read_secrets_keys_or_machine_streams() {
+        for (m, p) in [
+            ("GET", "/secrets/gossip-psk/sealed"),
+            ("GET", "/secrets/a/b/sealed"),
+            ("GET", "/peers/home/psk"),
+            ("GET", "/peers/home"),
+            ("GET", "/peers"),
+            ("GET", "/proxy-peers/edge"),
+            ("POST", "/peers"),
+            ("POST", "/proxy-peers"),
+            ("GET", "/config/subscribe"),
+            ("GET", "/peers/subscribe"),
+            ("GET", "/proxy-peers/subscribe"),
+            ("GET", "/plugin-routes/subscribe"),
+            ("GET", "/intent/subscribe"),
+            ("GET", "/intent/anything"),
+            ("POST", "/admin/adopt"),
+            ("GET", "/ha/members"),
+            ("POST", "/ha/join"),
+        ] {
+            assert_eq!(
+                status(m, p, UI_T).await,
+                StatusCode::UNAUTHORIZED,
+                "{m} {p}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ui_token_is_optional_but_held_to_the_same_rules() {
+        let (a, p, g) = (ADMIN, PROXY_T, AGENT_T);
+        assert!(check(Some(a), Some(p), Some(g), Some(UI_T)).is_ok());
+        assert!(check(Some(a), Some(p), Some(g), Some(a)).is_err());
+        assert!(check(Some(a), Some(p), Some(g), Some(p)).is_err());
+        assert!(check(Some(a), Some(p), Some(g), Some(g)).is_err());
+        assert!(check(Some(a), Some(p), Some(g), Some("short")).is_err());
+        assert!(check(None, None, None, Some(UI_T)).is_err());
     }
 
     #[tokio::test]
@@ -282,7 +436,7 @@ mod tests {
     /// The same stand-in, with one enrolled origin ("home") and a handler that echoes who the
     /// layer says is calling.
     async fn origin_call(method: &str, path: &str, token: &str) -> (StatusCode, String) {
-        let tokens = ScopedTokens::new(Some(ADMIN), Some(PROXY_T), Some(AGENT_T))
+        let tokens = ScopedTokens::new(Some(ADMIN), Some(PROXY_T), Some(AGENT_T), Some(UI_T))
             .unwrap()
             .with_origin_tokens(Arc::new(|t| (t == ORIGIN_T).then(|| "home".to_string())));
         let app =
@@ -386,19 +540,19 @@ mod tests {
     #[test]
     fn startup_requires_both_scoped_tokens_with_an_admin_token() {
         let (a, p, g) = (ADMIN, PROXY_T, AGENT_T);
-        assert!(check(None, None, None).is_ok());
-        assert!(check(Some(a), Some(p), Some(g)).is_ok());
-        assert!(check(Some(a), None, Some(g)).is_err());
-        assert!(check(Some(a), Some(p), None).is_err());
-        assert!(check(None, Some(p), None).is_err());
-        assert!(check(Some(a), Some(a), Some(g)).is_err());
-        assert!(check(Some(a), Some(p), Some(p)).is_err());
-        assert!(check(Some(a), Some("short"), Some(g)).is_err());
+        assert!(check(None, None, None, None).is_ok());
+        assert!(check(Some(a), Some(p), Some(g), None).is_ok());
+        assert!(check(Some(a), None, Some(g), None).is_err());
+        assert!(check(Some(a), Some(p), None, None).is_err());
+        assert!(check(None, Some(p), None, None).is_err());
+        assert!(check(Some(a), Some(a), Some(g), None).is_err());
+        assert!(check(Some(a), Some(p), Some(p), None).is_err());
+        assert!(check(Some(a), Some("short"), Some(g), None).is_err());
     }
 
     #[test]
     fn nothing_to_promote_without_both_an_admin_and_a_scoped_token() {
-        assert!(ScopedTokens::new(None, Some(PROXY_T), None).is_none());
-        assert!(ScopedTokens::new(Some(ADMIN), None, None).is_none());
+        assert!(ScopedTokens::new(None, Some(PROXY_T), None, None).is_none());
+        assert!(ScopedTokens::new(Some(ADMIN), None, None, None).is_none());
     }
 }

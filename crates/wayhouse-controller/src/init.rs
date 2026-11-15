@@ -788,6 +788,7 @@ mod tests {
             Some(&s.controller_token),
             Some(&s.proxy_token),
             Some(&s.agent_token),
+            None,
         )
         .unwrap();
     }
