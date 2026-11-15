@@ -312,6 +312,14 @@ async fn read_current(
     caller: Option<Extension<Caller>>,
     Path(name): Path<String>,
 ) -> Response {
+    // Without an admin token the bearer layer lets everyone in, and a request with no `Caller`
+    // counts as admin. Every other secret route returns ciphertext only; this one opens the key.
+    if st.ui.auth_token.is_none() {
+        return err(
+            StatusCode::FORBIDDEN,
+            "tunnel keys are only served when the controller has an --auth-token",
+        );
+    }
     if let Some(Extension(Caller::Origin(own))) = &caller {
         if *own != name {
             return err(
@@ -472,6 +480,28 @@ mod tests {
             peers: PeersState::new(store, None, book),
             _d: dir,
         }
+    }
+
+    #[tokio::test]
+    async fn a_controller_without_an_auth_token_does_not_open_a_tunnel_key() {
+        let mut t = setup();
+        t.enrolled("edge-1").await;
+        let (st, body) = t.call("GET", "/peers/edge-1/psk", None).await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        t.ui.auth_token = None;
+        let req = Request::builder()
+            .uri("/peers/edge-1/psk")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router(t.ui.clone(), t.peers.clone())
+            .oneshot(req)
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("psk\":\""));
     }
 
     impl T {
