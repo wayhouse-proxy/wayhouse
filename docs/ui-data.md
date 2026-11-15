@@ -27,7 +27,7 @@ The controller checks only its bearer token. The UI backend (`/api/ui/*`) holds 
 | `GET`/`PUT`/`DELETE /ui/layout`                                    | The form layout override. `404` means "use the shipped default".                                                                                                                                                   |
 | `GET`/`PUT`/`DELETE /ui/defaults`                                  | `{"dashboard"?, "theme"?}`; `GET` answers an empty object when nothing is set, `DELETE` answers `404` then.                                                                                                        |
 
-A dashboard carries a `revision`, which the controller counts up on every save (a dashboard saved before revisions reads as `0`). A `PUT` or rename that sends the `revision` it was edited from is refused with `409` when someone saved since; one without it (an import) overwrites. The answer to a `PUT` that sent a revision carries the next one.
+A dashboard carries a `revision`, which the controller counts up on every save (a dashboard saved before revisions reads as `0`). A `PUT` or rename that sends the `revision` it was edited from is refused with `409` and `"code": "stale"` when someone saved since; one without it (an import) overwrites. The answer to a `PUT` that sent a revision carries the next one.
 
 A `PUT` replaces the record. The name in the path wins over a `name` in the body. Answers: `200` with the record, `204` on delete, `404` unknown record, `409` the collection is full, `422` malformed or over a limit (the text names the path, for example `widgets[0].width must be an integer from 1 to 12`).
 
