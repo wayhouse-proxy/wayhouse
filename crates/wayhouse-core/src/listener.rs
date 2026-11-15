@@ -55,11 +55,16 @@ fn is_per_connection_error(e: &std::io::Error) -> bool {
     )
 }
 
+/// Dropped-connection accept errors in a row that skip the pause (#239).
+const HARMLESS_ACCEPT_RUN: u32 = 64;
+
 /// Backoff and warning rate limit for consecutive `accept` failures of one worker.
 #[derive(Default)]
 struct AcceptErrors {
     /// Consecutive failures since the last successful accept.
     streak: u32,
+    /// Consecutive dropped-connection errors since the last success.
+    harmless: u32,
     last_warned: Option<std::time::Instant>,
     suppressed: u64,
 }
@@ -85,8 +90,17 @@ impl AcceptErrors {
         }
     }
 
+    /// Whether a dropped-connection error may skip the pause: the first
+    /// [`HARMLESS_ACCEPT_RUN`] in a row do, after that it backs off like any
+    /// other error so a socket that keeps failing this way cannot spin the worker.
+    fn skips_pause(&mut self) -> bool {
+        self.harmless = self.harmless.saturating_add(1);
+        self.harmless <= HARMLESS_ACCEPT_RUN
+    }
+
     fn reset(&mut self) {
         self.streak = 0;
+        self.harmless = 0;
     }
 }
 
@@ -141,7 +155,7 @@ pub async fn run_tcp_listener(
                     Err(e) => {
                         metrics::counter!(m::ACCEPT_ERRORS_TOTAL, "listener" => cfg.name.clone())
                             .increment(1);
-                        if is_per_connection_error(&e) {
+                        if is_per_connection_error(&e) && accept_errors.skips_pause() {
                             // Counted above; no pause, no warning, no streak.
                             continue;
                         }
@@ -506,6 +520,20 @@ mod tests {
             .map(|_| errors.record(t).0.as_millis() as u64)
             .collect();
         assert_eq!(delays, [50, 100, 200, 400, 800, 1000, 1000, 1000]);
+    }
+
+    #[test]
+    fn a_long_run_of_dropped_connection_errors_falls_back_to_the_backoff() {
+        let mut errors = AcceptErrors::default();
+        for _ in 0..super::HARMLESS_ACCEPT_RUN {
+            assert!(errors.skips_pause());
+        }
+        assert!(
+            !errors.skips_pause(),
+            "no spinning on a socket that keeps failing"
+        );
+        errors.reset();
+        assert!(errors.skips_pause());
     }
 
     #[test]
