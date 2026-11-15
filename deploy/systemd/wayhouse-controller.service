@@ -15,6 +15,7 @@ StateDirectory=wayhouse
 LoadCredential=auth-token:/etc/wayhouse/credentials/controller-token
 LoadCredential=proxy-token:/etc/wayhouse/credentials/proxy-token
 LoadCredential=agent-token:/etc/wayhouse/credentials/agent-token
+LoadCredential=ui-token:/etc/wayhouse/credentials/ui-token
 LoadCredential=tls-key:/etc/wayhouse/tls/controller.key
 ExecStart=/usr/local/bin/wayhouse-controller \
   --listen=127.0.0.1:9901 \

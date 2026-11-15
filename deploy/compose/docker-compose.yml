@@ -22,10 +22,12 @@ services:
       - --auth-token-file=/run/secrets/auth-token
       - --proxy-token-file=/run/secrets/proxy-token
       - --agent-token-file=/run/secrets/agent-token
+      - --ui-token-file=/run/secrets/ui-token
     secrets:
       - { source: controller-token, target: auth-token }
       - proxy-token
       - agent-token
+      - ui-token
     ports: ["127.0.0.1:9901:9901"]   # wayhouse (host network) dials it here
     volumes: ["controller-data:/data"]
     restart: unless-stopped
@@ -58,7 +60,10 @@ services:
       - --controller-token-file=/run/secrets/controller-token
       - --aggregator-url=http://aggregator:9902
       - --aggregator-token-file=/run/secrets/aggregator-token
-    secrets: [ui-password, controller-token, aggregator-token]
+    secrets:
+      - ui-password
+      - { source: ui-token, target: controller-token }   # the scoped UI token, not the admin token
+      - aggregator-token
     ports: ["127.0.0.1:9903:9903"]
     depends_on: [controller, aggregator]
     restart: unless-stopped
@@ -104,6 +109,7 @@ secrets:
   controller-token: { environment: WAYHOUSE_CONTROLLER_TOKEN }
   proxy-token: { environment: WAYHOUSE_PROXY_TOKEN }
   agent-token: { environment: WAYHOUSE_AGENT_TOKEN }
+  ui-token: { environment: WAYHOUSE_UI_TOKEN }
   aggregator-token: { environment: WAYHOUSE_AGGREGATOR_TOKEN }
   ingest-token: { environment: WAYHOUSE_INGEST_TOKEN }
   ui-password: { environment: WAYHOUSE_UI_PASSWORD }
