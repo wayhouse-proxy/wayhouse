@@ -181,9 +181,13 @@
 > `seeds[]` are UDP socket addresses; `seeds` is optional (any subset of a
 > domain's live members is enough to join, membership then discovers the
 > rest) and defaults to empty. `quorum_fraction` (default 0.66) must be
-> `> 0.5` and `<= 1.0` — the fraction of the domain that must report a
-> backend down before that verdict can override this instance's own "up"
-> reading; a same-or-under-half quorum could contradict itself between two
+> `> 0.5` and `<= 1.0` — the fraction of the instances that **voted** on that
+> backend (not of the whole domain) that must report it down before that verdict
+> can override this instance's own "up" reading. An instance votes only on
+> backends it checks itself, so a backend checked by two of five instances is
+> judged by those two; a vote nobody refreshes for ten minutes (a member whose
+> health checks stopped) stops counting, and a member that leaves the mesh takes
+> its votes with it; a same-or-under-half quorum could contradict itself between two
 > overlapping majorities, hence the `> 0.5` floor. `psk` (a pre-shared key,
 > must not be empty) authenticates every gossip datagram with an
 > HMAC-SHA256 tag. When the mesh itself lands, it will only ever be able to
