@@ -203,7 +203,7 @@ function KeyRotation() {
   }
 
   if (absent) return null;
-  const rows = keys ? (Object.keys(keys.nodes).length ? Object.entries(keys.nodes) : [["this controller", keys.key_ids] as const]) : [];
+  const rows = keys ? (Object.keys(keys.nodes ?? {}).length ? Object.entries(keys.nodes) : [["this controller", keys.key_ids] as const]) : [];
   const lacking = keys?.active ? rows.filter(([, ids]) => Array.isArray(ids) && !ids.includes(keys.active!)).map(([n]) => n) : [];
   return (
     <section aria-label="Key rotation" className="mt-8">

@@ -24,6 +24,7 @@ test("sign in, then walk the pages an empty box has", async ({ page }) => {
   await page.route("**/api/plugins", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/secrets", (r) => r.fulfill({ json: { items: [] } }));
   await page.route("**/api/ui/**", (r) => r.fulfill({ json: { items: [] } }));
+  await page.route("**/api/plugins/secrets/keys", (r) => r.fulfill({ status: 404, json: { error: "no plugins" } }));
 
   await page.goto("/");
   await page.getByLabel("Password").fill("not-it");
