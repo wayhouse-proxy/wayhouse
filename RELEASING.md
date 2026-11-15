@@ -42,8 +42,10 @@ or approve pull requests"; a `RELEASE_PLEASE_TOKEN` secret works instead of the 
    `release-feed.json` from the releases list, signs it with the release key and attaches it and
    its `.minisig`. Running controllers and UIs read
    `releases/latest/download/release-feed.json` to show "a newer release exists"; nothing is
-   installed by it. It needs the repository secrets `RELEASE_MINISIGN_SECRET_KEY` (the whole
-   `.key` file) and `RELEASE_MINISIGN_PASSWORD`; the matching public key is
+   installed by it. It needs the secrets `RELEASE_MINISIGN_SECRET_KEY` (the whole
+   `.key` file) and `RELEASE_MINISIGN_PASSWORD`, kept in the `release` environment (Settings >
+   Environments: deployment branches and tags limited to `v*`, you as required reviewer, so
+   the job waits for your approval when a tag is pushed); the matching public key is
    `RELEASE_FEED_PUBKEY` in `crates/wayhouse-registry/src/release_key.rs` (key id
    `433303EA43BF7163`). It is a separate key from the sniffer and plugin registry key. If this job
    fails, the images are already out; fix the cause and re-run the job (the upload is idempotent).
