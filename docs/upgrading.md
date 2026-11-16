@@ -55,7 +55,7 @@ its row. Use `unreleased` for the product column until the release is tagged.
 
 ## Upgrading from 0.3.0 to 0.4.0
 
-The plugin ABI moves from 0.1 to **0.3** and the plugin support level under HA from 4 to **5**
+The plugin ABI moves from 0.1 to **0.3** and the plugin support level under HA from 4 to **7**
 (manifest and capability bindings, see [`plugins.md`](plugins.md)). The host still requires an
 exact ABI match, so every plugin module is rebuilt against `wayhouse-plugin-abi` 0.3 and
 uploaded again; a 0.1 module answers `the plugin declares ABI 0.1, this host speaks 0.3`. Under

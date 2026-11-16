@@ -20,6 +20,7 @@ use tokio_stream::{Stream, StreamExt};
 use super::api::PluginsState;
 use super::ports::PortAssignment;
 use super::{InstallRecord, PluginStore, PluginStoreError};
+use wayhouse_plugin_host::routes::RouteKind;
 use wayhouse_plugin_host::{PortProtoSel, RouteEntry};
 
 /// One materialised route.
@@ -75,6 +76,11 @@ pub struct Overlay {
     /// predates port routes keeps reading `routes` unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub port_routes: Vec<OverlayPortRoute>,
+    /// Routes of kind `web` (ABI 0.3): sites of the `web:` front door. A separate list for
+    /// the same reason as `port_routes`: a proxy that predates the kind would otherwise
+    /// append them to a TCP listener.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub web_routes: Vec<OverlayRoute>,
     /// Port routes waiting for a free entry port.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exhausted: Vec<ExhaustedPort>,
@@ -112,18 +118,23 @@ pub fn materialise(mut installs: Vec<(InstallRecord, Vec<RouteEntry>)>) -> Overl
                 }),
                 _ => {
                     held.insert(e.host.clone(), owner.clone());
-                    out.routes.push(OverlayRoute {
+                    let route = OverlayRoute {
                         host: e.host,
                         backend: e.backend,
                         owner: owner.clone(),
                         plugin: rec.name.clone(),
-                    });
+                    };
+                    match e.kind {
+                        RouteKind::Tcp => out.routes.push(route),
+                        RouteKind::Web => out.web_routes.push(route),
+                    }
                 }
             }
         }
     }
     // Stable: ties keep install order, which keeps the output deterministic.
     out.routes.sort_by_key(|r| specificity(&r.host));
+    out.web_routes.sort_by_key(|r| specificity(&r.host));
     out
 }
 
@@ -250,6 +261,39 @@ mod tests {
             backend: backend.into(),
             kind: wayhouse_plugin_host::routes::RouteKind::default(),
         }
+    }
+
+    #[test]
+    fn a_web_route_goes_to_its_own_list_and_still_competes_for_the_hostname() {
+        let web = |host: &str, backend: &str| RouteEntry {
+            kind: RouteKind::Web,
+            ..e(host, backend)
+        };
+        let o = materialise(vec![
+            (
+                rec("0000000000000001", "first", 10, true),
+                vec![web("site.example.com", "10.0.0.1:80")],
+            ),
+            (
+                rec("0000000000000002", "second", 20, true),
+                vec![
+                    e("site.example.com", "10.0.0.2:1"),
+                    e("tcp.example.com", "10.0.0.2:1"),
+                ],
+            ),
+        ]);
+        assert_eq!(o.web_routes.len(), 1);
+        assert_eq!(o.web_routes[0].plugin, "first");
+        assert_eq!(
+            o.routes.len(),
+            1,
+            "a proxy that predates web routes sees only tcp"
+        );
+        assert_eq!(o.routes[0].host, "tcp.example.com");
+        assert_eq!(o.conflicts.len(), 1);
+        // And an overlay without web routes serialises exactly as before.
+        let plain = serde_json::to_value(materialise(vec![])).unwrap();
+        assert!(plain.get("web_routes").is_none());
     }
 
     #[test]

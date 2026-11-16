@@ -106,3 +106,20 @@ fn the_event_needs_the_capability_and_a_wider_network_needs_a_new_approval() {
     assert!(want.check_within(&want).is_ok());
     assert!(wide.check_within(&want).is_err());
 }
+
+#[test]
+fn a_suspended_backends_capability_silences_the_event() {
+    let m = guest(CAPS);
+    let approved = inspect(&m).unwrap().caps;
+    let plugin = PluginHost::new(Limits::default())
+        .unwrap()
+        .load(&m, &approved)
+        .unwrap();
+    // The guest's on_event is empty; what matters is that a suspended plugin is not called
+    // and the call does not fail.
+    plugin.set_suspended(["backends".to_string()]);
+    let fx = plugin
+        .on_event(&StateSnapshot::new(), "backend_health", b"{}")
+        .unwrap();
+    assert!(fx.logs.is_empty() && fx.state_puts.is_empty());
+}

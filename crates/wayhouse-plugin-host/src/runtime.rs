@@ -162,7 +162,9 @@ struct CallState {
     port_doc: Vec<u8>,
     /// The backend health the host holds, as `backends_get` reports it (filtered then).
     backend_status: Arc<Vec<crate::backends::BackendStatus>>,
-    backends_doc: Vec<u8>,
+    /// Built once per call: a guest looping on `backends_get` must not make the host
+    /// rebuild (and copy) the document outside the fuel meter.
+    backends_doc: Option<Arc<Vec<u8>>>,
     webhook: Option<crate::webhook::WebhookResponse>,
     acme_dns: Option<crate::acme_dns::AcmeDnsAnswer>,
     denied: Option<&'static str>,
@@ -484,6 +486,17 @@ impl Plugin {
         if !self.info.caps.triggers.on_event.iter().any(|k| k == kind) {
             return Err(CallError::CapabilityDenied("on_event"));
         }
+        // A suspended capability also silences the event that rides on it.
+        if kind == "backend_health"
+            && self
+                .suspended
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|n| n == "backends")
+        {
+            return Ok(Effects::default());
+        }
         self.run(state, |store, inst| {
             let args = write_args(store, inst, &[kind.as_bytes(), payload])?;
             inst.get_typed_func::<(i32, i32, i32, i32), ()>(&mut *store, "on_event")?
@@ -528,7 +541,7 @@ impl Plugin {
             port_assignments: self.port_assignments(),
             port_doc: Vec::new(),
             backend_status: self.backend_status(),
-            backends_doc: Vec::new(),
+            backends_doc: None,
             webhook: None,
             acme_dns: None,
             denied: None,
@@ -873,18 +886,21 @@ fn linker(engine: &Engine) -> Linker<CallState> {
                     return Err(deny(&mut caller, "backends"));
                 };
                 let st = caller.data_mut();
-                if st.backends_doc.is_empty() {
+                if st.backends_doc.is_none() {
                     let seen = cap.visible(&st.backend_status);
-                    if seen.is_empty() {
-                        return Ok(0);
-                    }
-                    st.backends_doc = serde_json::to_vec(&seen)?;
+                    let doc = if seen.is_empty() {
+                        Vec::new()
+                    } else {
+                        serde_json::to_vec(&seen)?
+                    };
+                    st.backends_doc = Some(Arc::new(doc));
                 }
-                let doc = std::mem::take(&mut st.backends_doc);
+                let doc = st.backends_doc.clone().unwrap_or_default();
+                if doc.is_empty() {
+                    return Ok(0);
+                }
                 let len = i32::try_from(doc.len())?;
                 if len > out_cap {
-                    // Keep it: the guest may retry with room.
-                    caller.data_mut().backends_doc = doc;
                     return Ok(-1);
                 }
                 let memory = caller_memory(&mut caller)?;

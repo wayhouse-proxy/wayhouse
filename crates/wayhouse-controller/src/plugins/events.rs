@@ -1,6 +1,6 @@
 //! Delivers events to plugins that declared `on_event` (design: the automation hooks addendum).
 //!
-//! Two kinds exist: `config_revision` (`{"revision": N}`, a new config revision was accepted)
+//! Three kinds exist (`backend_health`, below, arrives from the proxies' reports): `config_revision` (`{"revision": N}`, a new config revision was accepted)
 //! and `plugin_changed` (`{"id": "...", "change": "installed|enabled|disabled|deleted"}`). They
 //! are hints, not a log: a plugin that must not miss a change reconciles on its timer. An event
 //! reaches a plugin through the same bounded hook queue as a webhook, so a slow plugin loses
@@ -18,18 +18,36 @@ use super::PluginStore;
 pub const CONFIG_REVISION: &str = "config_revision";
 pub const PLUGIN_CHANGED: &str = "plugin_changed";
 
+/// `backend_health` (`{"backend", "up", "since"}`): the board's verdict for a backend changed.
+pub const BACKEND_HEALTH: &str = "backend_health";
+
 /// The kinds a plugin may subscribe to.
-pub const KINDS: [&str; 2] = [CONFIG_REVISION, PLUGIN_CHANGED];
+pub const KINDS: [&str; 3] = [CONFIG_REVISION, PLUGIN_CHANGED, BACKEND_HEALTH];
 
 /// Sends `kind` to every enabled install that approved it. Each call runs in its own task, so
 /// one slow plugin never delays another or the feed.
 pub fn deliver(runner: &Arc<Runner>, store: &PluginStore, kind: &str, payload: &serde_json::Value) {
+    deliver_to(runner, store, kind, payload, |_| true);
+}
+
+/// [`deliver`] to the installs `wanted` accepts (the health event goes only to plugins whose
+/// approved networks hold the backend).
+pub fn deliver_to(
+    runner: &Arc<Runner>,
+    store: &PluginStore,
+    kind: &str,
+    payload: &serde_json::Value,
+    wanted: impl Fn(&super::InstallRecord) -> bool,
+) {
     let Ok(installs) = store.list() else {
         return;
     };
     let payload = payload.to_string().into_bytes();
     for rec in installs {
-        if !rec.enabled || !rec.approved.triggers.on_event.iter().any(|k| k == kind) {
+        if !rec.enabled
+            || !rec.approved.triggers.on_event.iter().any(|k| k == kind)
+            || !wanted(&rec)
+        {
             continue;
         }
         let (runner, kind, payload) = (runner.clone(), kind.to_string(), payload.clone());
