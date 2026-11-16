@@ -229,7 +229,7 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
   if ((r = m(/^\/api\/registries\/([^/]+)$/)) && method === "DELETE") { const i = REGISTRIES.findIndex((x) => x.id === r![1]); if (i > 0) REGISTRIES.splice(i, 1); return ok(""); }
 
   // plugins
-  if (path === "/api/plugin-routes") return ok({ routes: [], conflicts: [], port_routes: portRoutes, exhausted: [{ key: "srv-1099", backend: "10.20.4.99:25565", owner: "server-1099", plugin: "pelican-panel" }] });
+  if (path === "/api/plugin-routes") return ok({ routes: [{ host: "mc.example.com", backend: "10.20.4.10:25565", owner: "plugin:0000000000000001", plugin: "pelican-panel" }], conflicts: [], web_routes: [{ host: "panel.example.com", backend: "10.20.4.11:8080", owner: "plugin:0000000000000001", plugin: "pelican-panel" }], port_routes: portRoutes, exhausted: [{ key: "srv-1099", backend: "10.20.4.99:25565", owner: "server-1099", plugin: "pelican-panel" }] });
   if (path === "/api/plugins/file/plan") return ok({ applied: false, plugins: [{ name: "hcloud-autoscale", id: "p3", action: "unchanged" }, { name: "dyndns", id: null, action: "refused", reason: "the approval hash does not match", effective_sha256: MODULE_SHA.replace(/^9f/, "5d") }] });
   if (path === "/api/plugins/modules") { const n = (await req.arrayBuffer()).byteLength; return ok({ sha256: MODULE_SHA, size: n, abi: "0.2", capabilities: { ...PLUGIN_CAPS.pelican, http: null, secrets: [], port_routes: null }, manifest: PELICAN_MANIFEST }); }
   if (path === "/api/plugins" && method === "GET") return ok(plugins);

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { ApiError, deletePlugin, getPluginsFilePlan, listPluginRoutes, listPlugins, setPluginEnabled } from "../api";
-import type { PluginInstall, PluginRouteOverlay, PluginsFilePlan } from "../types";
+import { ApiError, deletePlugin, getPluginStatus, getPluginsFilePlan, listPluginRoutes, listPlugins, setPluginEnabled } from "../api";
+import type { PluginHostRoute, PluginInstall, PluginRouteOverlay, PluginsFilePlan } from "../types";
 import { managedByFile } from "../lib/plugins/managed";
 import { Dialog } from "../components/ui/Dialog";
 import { bytes, CapabilityList } from "../lib/plugins/capabilities";
@@ -31,6 +31,8 @@ export function PluginsPage() {
   const canWrite = useCan("admin");
   const [plugins, setPlugins] = useState<PluginInstall[] | null>(null);
   const [overlay, setOverlay] = useState<PluginRouteOverlay | null>(null);
+  // Install ids whose routes are stale (no good tick for a grace period).
+  const [stale, setStale] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   // The wizard hands over "installed X" when it comes back here.
   const [notice, setNotice] = useState<string | null>((useLocation().state as { notice?: string } | null)?.notice ?? null);
@@ -49,8 +51,22 @@ export function PluginsPage() {
 
   async function refresh() {
     try {
-      setPlugins(await listPlugins());
+      const list = await listPlugins();
+      setPlugins(list);
       setError(null);
+      // Status is extra too: a failed read just shows no badge.
+      const statuses = await Promise.allSettled(list.filter((p) => p.enabled).map((p) => getPluginStatus(p.id)));
+      setStale(
+        new Set(
+          list
+            .filter((p) => p.enabled)
+            .filter((_, i) => {
+              const r = statuses[i];
+              return r.status === "fulfilled" && r.value.routes_stale === true;
+            })
+            .map((p) => p.id),
+        ),
+      );
     } catch (err) {
       setPlugins(null);
       setError(errorText(err));
@@ -176,6 +192,13 @@ export function PluginsPage() {
                   </TD>
                   <TD>
                     {p.enabled ? <Badge tone="good">enabled</Badge> : <Badge tone="neutral">disabled</Badge>}
+                    {stale.has(p.id) && (
+                      <div className="mt-1">
+                        <span title="No successful tick for a while: the routes stay published for now and are withdrawn if it does not recover.">
+                          <Badge tone="warn">routes stale</Badge>
+                        </span>
+                      </div>
+                    )}
                     {managedByFile(p) && (
                       <div className="mt-1">
                         <Badge tone="neutral">managed by file</Badge>
@@ -209,6 +232,7 @@ export function PluginsPage() {
         )}
       </div>
 
+      {overlay && <HostRoutes overlay={overlay} />}
       {overlay && <PortRoutes overlay={overlay} />}
 
       <p className="mt-4 text-sm text-ink-muted">
@@ -232,6 +256,73 @@ export function PluginsPage() {
 
       {dialog}
     </div>
+  );
+}
+
+/** The install a route belongs to: `plugin:<id>` links to its page. */
+function OwnerLink({ r }: { r: PluginHostRoute }) {
+  const id = r.owner.startsWith("plugin:") ? r.owner.slice("plugin:".length) : null;
+  return (
+    <span className="inline-flex items-center gap-2">
+      <Badge tone="neutral">plugin</Badge>
+      {id ? (
+        <Link to={`/plugins/${id}`} className="text-ink underline">
+          {r.plugin}
+        </Link>
+      ) : (
+        <span className="text-ink-muted">{r.plugin}</span>
+      )}
+    </span>
+  );
+}
+
+/** The hostname routes plugins publish: tcp (SNI) and web (the `web:` front door), then lost claims. */
+function HostRoutes({ overlay }: { overlay: PluginRouteOverlay }) {
+  const rows = [
+    ...overlay.routes.map((r) => ({ ...r, kind: "tcp" as const })),
+    ...(overlay.web_routes ?? []).map((r) => ({ ...r, kind: "web" as const })),
+  ];
+  const conflicts = overlay.conflicts ?? [];
+  if (rows.length === 0 && conflicts.length === 0) return null;
+  return (
+    <section className="mt-6">
+      <h2 className="mb-2 text-lg font-semibold">Hostname routes</h2>
+      <p className="mb-2 text-sm text-ink-muted">
+        Added after your own routes and sites, so yours always win.
+      </p>
+      {rows.length > 0 && (
+        <Table>
+          <THead>
+            <TR>
+              <TH>host</TH>
+              <TH>kind</TH>
+              <TH>backend</TH>
+              <TH>from</TH>
+            </TR>
+          </THead>
+          <TBody>
+            {rows.map((r) => (
+              <TR key={`${r.kind}/${r.host}`}>
+                <TD className="font-mono text-ink">{r.host}</TD>
+                <TD>
+                  <Badge tone="neutral">{r.kind}</Badge>
+                </TD>
+                <TD className="font-mono text-xs text-ink-muted">{r.backend}</TD>
+                <TD>
+                  <OwnerLink r={r} />
+                </TD>
+              </TR>
+            ))}
+          </TBody>
+        </Table>
+      )}
+      {conflicts.length > 0 && (
+        <p className="mt-2 text-sm text-ink-muted">
+          Not applied, the name is already held by an earlier install:{" "}
+          {conflicts.map((c) => `${c.host} (${c.plugin})`).join(", ")}.
+        </p>
+      )}
+    </section>
   );
 }
 

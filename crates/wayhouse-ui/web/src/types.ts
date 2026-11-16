@@ -316,6 +316,8 @@ export interface PluginStatus {
   last_ok: boolean | null;
   last_error: string | null;
   consecutive_failures: number;
+  /** Routes published but no good tick for a grace period; withdrawn at twice that. */
+  routes_stale?: boolean;
   held: string | null;
   hook_calls?: number;
   hook_failures?: number;
@@ -341,9 +343,25 @@ export interface PluginExhaustedPort {
   plugin: string;
 }
 
+/** One hostname route a plugin published (`tcp` in `routes`, `web` in `web_routes`). */
+export interface PluginHostRoute {
+  host: string;
+  backend: string;
+  /** `plugin:<install id>`. */
+  owner: string;
+  plugin: string;
+}
+
+/** A claim that lost the hostname to an earlier install. */
+export interface PluginRouteConflict extends PluginHostRoute {
+  held_by: string;
+}
+
 export interface PluginRouteOverlay {
-  routes: unknown[];
-  conflicts: unknown[];
+  routes: PluginHostRoute[];
+  conflicts: PluginRouteConflict[];
+  /** Sites of the `web:` front door (ABI 0.3); absent from an older controller. */
+  web_routes?: PluginHostRoute[];
   port_routes?: PluginPortRoute[];
   exhausted?: PluginExhaustedPort[];
 }

@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
   setPluginEnabled: vi.fn(),
   deletePlugin: vi.fn(),
   getPluginsFilePlan: vi.fn(),
+  getPluginStatus: vi.fn(),
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
 
@@ -46,6 +47,7 @@ beforeEach(() => {
   api.setPluginEnabled.mockReset().mockResolvedValue(install({ enabled: false }));
   api.deletePlugin.mockReset().mockResolvedValue(undefined);
   api.getPluginsFilePlan.mockReset().mockResolvedValue({ applied: false, plugins: [] });
+  api.getPluginStatus.mockReset().mockResolvedValue({ ticks: 1, last_ok: true, logs: [] });
 });
 
 describe("PluginsPage list", () => {
@@ -92,6 +94,42 @@ const PORT_CAPS = {
 };
 
 describe("PluginsPage port routes", () => {
+  it("lists hostname routes with a plugin badge, a link to the install and the kind", async () => {
+    api.listPluginRoutes.mockResolvedValue({
+      routes: [{ host: "mc.example.com", backend: "10.0.0.1:25565", owner: "plugin:0123456789abcdef", plugin: "pelican-sync" }],
+      web_routes: [{ host: "panel.example.com", backend: "10.0.0.2:8080", owner: "plugin:0123456789abcdef", plugin: "pelican-sync" }],
+      conflicts: [{ host: "x.example.com", backend: "10.0.0.3:1", owner: "plugin:2", plugin: "later", held_by: "plugin:0123456789abcdef" }],
+    });
+    render(<MemoryRouter><PluginsPage /></MemoryRouter>);
+    const mc = (await screen.findByText("mc.example.com")).closest("tr")!;
+    expect(within(mc).getByText("tcp")).toBeInTheDocument();
+    expect(within(mc).getByText("plugin")).toBeInTheDocument();
+    expect(within(mc).getByRole("link", { name: "pelican-sync" })).toHaveAttribute("href", "/plugins/0123456789abcdef");
+    const web = screen.getByText("panel.example.com").closest("tr")!;
+    expect(within(web).getByText("web")).toBeInTheDocument();
+    expect(screen.getByText(/x\.example\.com \(later\)/)).toBeInTheDocument();
+  });
+
+  it("shows no hostname routes section when there are none", async () => {
+    render(<MemoryRouter><PluginsPage /></MemoryRouter>);
+    await screen.findByText("pelican-sync");
+    expect(screen.queryByText("Hostname routes")).not.toBeInTheDocument();
+  });
+
+  it("badges an install whose routes went stale", async () => {
+    api.getPluginStatus.mockResolvedValue({ ticks: 9, last_ok: false, routes_stale: true, logs: [] });
+    render(<MemoryRouter><PluginsPage /></MemoryRouter>);
+    const row = (await screen.findByText("pelican-sync")).closest("tr")!;
+    expect(await within(row).findByText("routes stale")).toBeInTheDocument();
+  });
+
+  it("shows no stale badge when the status cannot be read", async () => {
+    api.getPluginStatus.mockRejectedValue(new Error("down"));
+    render(<MemoryRouter><PluginsPage /></MemoryRouter>);
+    const row = (await screen.findByText("pelican-sync")).closest("tr")!;
+    expect(within(row).queryByText("routes stale")).not.toBeInTheDocument();
+  });
+
   it("lists the entry port first and says which plugin and backend it serves", async () => {
     api.listPluginRoutes.mockResolvedValue({
       routes: [],
