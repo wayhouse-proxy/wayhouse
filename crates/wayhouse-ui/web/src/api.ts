@@ -34,6 +34,7 @@ import type {
   RevisionSummary,
   SnifferInfo,
   UpdateCheck,
+  ReleaseStatus,
   TunnelAddresses,
   EnrollmentCode,
   MintedEnrollment,
@@ -245,6 +246,11 @@ export function rollbackSniffer(name: string): Promise<FanoutResponse> {
   return requestJson(`/api/fleet/sniffers/${encodeURIComponent(name)}/rollback`, {
     method: "POST",
   });
+}
+
+/** What the signed release feed says; it only reports, nothing is installed. */
+export function getRelease(): Promise<ReleaseStatus> {
+  return requestJson("/api/release");
 }
 
 /** On demand only: refetches every registry and asks each proxy what it runs. */

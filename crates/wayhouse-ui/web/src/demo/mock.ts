@@ -208,6 +208,8 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
   }
   if (path === "/api/fleet/route-hint" || path.startsWith("/api/fleet/pools/")) return ok(fanout());
 
+  if (path === "/api/release") return ok({ current: "0.4.0", enabled: true, latest: null, checked_at: null });
+
   // sniffer registries
   if (path === "/api/registries" && method === "GET") return ok({ registries: REGISTRIES, persistent: false });
   if (path === "/api/registries" && method === "POST") { const b = await json(); const ref = { id: `r${REGISTRIES.length}`, name: b.name ?? new URL(b.url).host, url: b.url, official: false, risk: "external" as const }; REGISTRIES.push(ref); return ok(ref); }
