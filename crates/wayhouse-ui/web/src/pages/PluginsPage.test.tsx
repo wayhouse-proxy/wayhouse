@@ -107,7 +107,7 @@ describe("PluginsPage port routes", () => {
     expect(within(mc).getByRole("link", { name: "pelican-sync" })).toHaveAttribute("href", "/plugins/0123456789abcdef");
     const web = screen.getByText("panel.example.com").closest("tr")!;
     expect(within(web).getByText("web")).toBeInTheDocument();
-    expect(screen.getByText(/x\.example\.com \(later\)/)).toBeInTheDocument();
+    expect(screen.getByText(/x\.example\.com \(later, held by pelican-sync\)/)).toBeInTheDocument();
   });
 
   it("shows no hostname routes section when there are none", async () => {
@@ -121,6 +121,8 @@ describe("PluginsPage port routes", () => {
     render(<MemoryRouter><PluginsPage /></MemoryRouter>);
     const row = (await screen.findByText("pelican-sync")).closest("tr")!;
     expect(await within(row).findByText("routes stale")).toBeInTheDocument();
+    // The explanation is text on the page, not a tooltip.
+    expect(within(row).getByText(/withdrawn if it does not recover/)).toBeInTheDocument();
   });
 
   it("shows no stale badge when the status cannot be read", async () => {

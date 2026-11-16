@@ -159,7 +159,7 @@ export function PluginsPage() {
           <EmptyState>No plugins installed yet. Install a module to add one.</EmptyState>
         )}
         {!error && plugins && plugins.length > 0 && (
-          <Table>
+          <Table aria-label="Plugins">
             <THead>
               <TR>
                 <TH>name</TH>
@@ -194,9 +194,10 @@ export function PluginsPage() {
                     {p.enabled ? <Badge tone="good">enabled</Badge> : <Badge tone="neutral">disabled</Badge>}
                     {stale.has(p.id) && (
                       <div className="mt-1">
-                        <span title="No successful tick for a while: the routes stay published for now and are withdrawn if it does not recover.">
-                          <Badge tone="warn">routes stale</Badge>
-                        </span>
+                        <Badge tone="warn">routes stale</Badge>
+                        <div className="text-xs text-ink-muted">
+                          No good tick for a while. Its routes stay published for now and are withdrawn if it does not recover.
+                        </div>
                       </div>
                     )}
                     {managedByFile(p) && (
@@ -232,7 +233,7 @@ export function PluginsPage() {
         )}
       </div>
 
-      {overlay && <HostRoutes overlay={overlay} />}
+      {overlay && <HostRoutes overlay={overlay} plugins={plugins ?? []} />}
       {overlay && <PortRoutes overlay={overlay} />}
 
       <p className="mt-4 text-sm text-ink-muted">
@@ -276,8 +277,14 @@ function OwnerLink({ r }: { r: PluginHostRoute }) {
   );
 }
 
+/** The name of the install behind `plugin:<id>`, or the owner text when it is not listed. */
+function holder(owner: string, plugins: PluginInstall[]): string {
+  const id = owner.startsWith("plugin:") ? owner.slice("plugin:".length) : owner;
+  return plugins.find((p) => p.id === id)?.name ?? owner;
+}
+
 /** The hostname routes plugins publish: tcp (SNI) and web (the `web:` front door), then lost claims. */
-function HostRoutes({ overlay }: { overlay: PluginRouteOverlay }) {
+function HostRoutes({ overlay, plugins }: { overlay: PluginRouteOverlay; plugins: PluginInstall[] }) {
   const rows = [
     ...overlay.routes.map((r) => ({ ...r, kind: "tcp" as const })),
     ...(overlay.web_routes ?? []).map((r) => ({ ...r, kind: "web" as const })),
@@ -291,7 +298,7 @@ function HostRoutes({ overlay }: { overlay: PluginRouteOverlay }) {
         Added after your own routes and sites, so yours always win.
       </p>
       {rows.length > 0 && (
-        <Table>
+        <Table aria-label="Hostname routes">
           <THead>
             <TR>
               <TH>host</TH>
@@ -319,7 +326,7 @@ function HostRoutes({ overlay }: { overlay: PluginRouteOverlay }) {
       {conflicts.length > 0 && (
         <p className="mt-2 text-sm text-ink-muted">
           Not applied, the name is already held by an earlier install:{" "}
-          {conflicts.map((c) => `${c.host} (${c.plugin})`).join(", ")}.
+          {conflicts.map((c) => `${c.host} (${c.plugin}, held by ${holder(c.held_by, plugins)})`).join(", ")}.
         </p>
       )}
     </section>
@@ -344,7 +351,7 @@ function PortRoutes({ overlay }: { overlay: PluginRouteOverlay }) {
       )}
       {ports.length > 0 && (
         <div>
-          <Table>
+          <Table aria-label="Port routes">
             <THead>
               <TR>
                 <TH>entry port</TH>
@@ -377,7 +384,7 @@ function PortRoutes({ overlay }: { overlay: PluginRouteOverlay }) {
 function PlanTable({ rows }: { rows: PluginsFilePlan["plugins"] }) {
   if (rows.length === 0) return <EmptyState>The file lists no plugins.</EmptyState>;
   return (
-    <Table>
+    <Table aria-label="Plugins file plan">
       <THead>
         <TR>
           <TH>name</TH>
