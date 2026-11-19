@@ -382,6 +382,14 @@ scraper cannot hold the UI's browser session. A `wayhouse-ui` with a login confi
 open. Per-request or per-store metrics for these binaries are not built; the
 per-instance proxy surface stays on each `wayhouse`.
 
+`wayhouse-ui` also checks once a day (with up to an hour of spread) whether a newer stable
+release exists. It fetches the signed `release-feed.json` from the project's GitHub release
+assets (`--release-feed-url`; an empty value turns the check off, for air-gapped installs),
+verifies the minisign signature against the release key compiled into the binary, and shows
+a dismissible note in the header and the version under Settings. The request carries no
+instance identity; the server sees the protocol version header and the caller's IP address. It only reports; nothing is downloaded or installed. A
+failed or badly signed feed is ignored.
+
 ### `wayhouse-controller` — structural config distribution
 
 One `--auth-token`-gated (optional) surface, backed by an embedded `redb`
