@@ -29,6 +29,10 @@ struct LegacySniffer {
 /// Upgrade a schema 1 index to schema 2: the catalog fields come from each sniffer's newest
 /// version, `updated` is `updated` for every entry (the date is unknown), and categories and
 /// tags start empty until the sniffer is next published with a manifest that has them.
+///
+/// Signatures in a schema 1 index predate the claim (the trusted comment naming the sniffer,
+/// version, ABI and sha256) and fail verification, so every carried-over version comes back
+/// unsigned; the next Release signs what it builds.
 pub fn upgrade_v1(bytes: &[u8], updated: &str) -> Result<Index, IndexError> {
     if bytes.len() > MAX_INDEX_BYTES {
         return Err(IndexError::TooLarge(bytes.len()));
@@ -39,7 +43,10 @@ pub fn upgrade_v1(bytes: &[u8], updated: &str) -> Result<Index, IndexError> {
         return Err(IndexError::UnsupportedSchema(old.schema));
     }
     let mut sniffers = Vec::with_capacity(old.sniffers.len());
-    for s in old.sniffers {
+    for mut s in old.sniffers {
+        for v in &mut s.versions {
+            v.signature_url = None;
+        }
         let Some(newest) = s.versions.first() else {
             return Err(IndexError::Json(format!(
                 "sniffer {:?} lists no versions",
@@ -98,9 +105,13 @@ mod tests {
                 e.signed,
                 e.updated.as_str()
             ),
-            ("0.1.1".to_string(), "0.1", true, "2026-11-12")
+            ("0.1.1".to_string(), "0.1", false, "2026-11-12")
         );
         assert_eq!(e.versions.len(), 2, "no version is lost");
+        assert!(
+            e.versions.iter().all(|v| v.signature_url.is_none()),
+            "pre-claim signatures do not verify"
+        );
         assert!(e.categories.is_empty() && e.detail_url.is_none());
     }
 
