@@ -108,6 +108,29 @@ pub fn sniff_first<'a>(
     })
 }
 
+/// [`sniff_first`] for the async accept path: a loaded sniffer is a module that runs
+/// arbitrary code for up to its own budget, so it runs on the blocking pool and never
+/// stalls the runtime thread that serves other connections. With no sniffer configured
+/// (or the feature off) nothing is spawned. A sniffer that panics counts as no hit.
+pub async fn sniff_first_blocking(
+    names: &[String],
+    sniffers: &Arc<Sniffers>,
+    first: &[u8],
+) -> Option<(String, RouteHint)> {
+    if names.is_empty() || !crate::flags::on(SNIFFERS) {
+        return None;
+    }
+    let names = names.to_vec();
+    let sniffers = sniffers.clone();
+    let first = first.to_vec();
+    tokio::task::spawn_blocking(move || {
+        sniff_first(&names, &sniffers, &first).map(|(n, h)| (n.to_string(), h))
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Log a warning for each sniffer name `listener` routes on that resolves to
 /// nothing in `sniffers` — those routes can never match until the sniffer is
 /// loaded.
@@ -166,6 +189,49 @@ pub(crate) mod tests {
         fn sniff(&self, first: &[u8]) -> Option<RouteHint> {
             first.starts_with(b"TAG").then(RouteHint::default)
         }
+    }
+
+    /// Blocks its thread for a while, like a module that burns its whole call budget.
+    struct Slow;
+    impl Sniffer for Slow {
+        fn name(&self) -> &'static str {
+            "slow"
+        }
+        fn sniff(&self, _first: &[u8]) -> Option<RouteHint> {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            Some(RouteHint::default())
+        }
+    }
+
+    /// A slow sniffer must not stall the runtime thread: on a single-threaded runtime a
+    /// timer still fires while it runs, and the hint still arrives.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_slow_sniffer_does_not_block_the_runtime() {
+        let sniffers = Arc::new(Sniffers::new());
+        sniffers.register(Arc::new(Slow));
+        let names = vec!["slow".to_string()];
+        let ticks = async {
+            let mut n = 0u32;
+            for _ in 0..5 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                n += 1;
+            }
+            n
+        };
+        let (hit, n) = tokio::join!(sniff_first_blocking(&names, &sniffers, b"x"), ticks);
+        assert_eq!(hit.map(|(name, _)| name), Some("slow".to_string()));
+        assert_eq!(n, 5, "timers kept running while the sniffer blocked");
+    }
+
+    #[tokio::test]
+    async fn blocking_variant_matches_the_plain_one() {
+        let sniffers = Arc::new(test_registry());
+        let names = vec!["test-reject".to_string(), "test-host".to_string()];
+        let hit = sniff_first_blocking(&names, &sniffers, b"HOST:A\n").await;
+        assert_eq!(hit.unwrap().1.host.as_deref(), Some("a"));
+        assert!(sniff_first_blocking(&[], &sniffers, b"HOST:A\n")
+            .await
+            .is_none());
     }
 
     /// A registry with the test sniffers (`test-host`, `test-reject`, `test-tag`).
