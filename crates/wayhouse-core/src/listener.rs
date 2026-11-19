@@ -283,7 +283,17 @@ pub async fn run_tcp_listener(
                     let mut peek_buf = vec![0u8; peek_n];
                     let first = peek_routing_bytes(&stream, &mut peek_buf, peek_n).await;
 
-                    let hit = crate::sniff::sniff_first_blocking(&cfg.sniffers, &sniffers, first).await;
+                    let hit = match crate::sniff::sniff_first_blocking(&cfg.sniffers, &sniffers, first).await {
+                        Ok(hit) => hit,
+                        Err(crate::sniff::SnifferFailed) => {
+                            metrics::counter!(
+                                m::LISTENER_CONNECTIONS,
+                                "listener" => listener_name.clone(),
+                                "result" => "sniffer_error",
+                            ).increment(1);
+                            return;
+                        }
+                    };
 
                     // A sniffer that positively rejects drops the connection
                     // outright — checked before the push-resolver hint so a

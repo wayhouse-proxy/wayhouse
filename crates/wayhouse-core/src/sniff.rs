@@ -108,27 +108,52 @@ pub fn sniff_first<'a>(
     })
 }
 
+/// How many sniffer calls may run on the blocking pool at once. The pool is shared (DNS
+/// lookups use it too), so a flood of connections with a slow module must not take it all:
+/// the rest wait for a permit.
+const MAX_BLOCKING_SNIFFS: usize = 32;
+
+static BLOCKING_SNIFFS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+
+/// A sniffer call that died (it panicked). The caller drops the connection or datagram, as
+/// it did when the call ran inline and a panic ended the task: a `reject` sniffer that
+/// crashes must not let the traffic through.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SnifferFailed;
+
 /// [`sniff_first`] for the async accept path: a loaded sniffer is a module that runs
-/// arbitrary code for up to its own budget, so it runs on the blocking pool and never
-/// stalls the runtime thread that serves other connections. With no sniffer configured
-/// (or the feature off) nothing is spawned. A sniffer that panics counts as no hit.
+/// arbitrary code for up to its own budget, so it runs on the blocking pool (at most
+/// [`MAX_BLOCKING_SNIFFS`] at a time) and never stalls the runtime thread that serves other
+/// connections. With no sniffer configured (or the feature off) nothing is spawned.
+///
+/// # Errors
+/// [`SnifferFailed`] when the call panicked; it is logged, and the listener counts the
+/// drop as `result="sniffer_error"`.
 pub async fn sniff_first_blocking(
     names: &[String],
     sniffers: &Arc<Sniffers>,
     first: &[u8],
-) -> Option<(String, RouteHint)> {
+) -> Result<Option<(String, RouteHint)>, SnifferFailed> {
     if names.is_empty() || !crate::flags::on(SNIFFERS) {
-        return None;
+        return Ok(None);
     }
+    let permit = BLOCKING_SNIFFS
+        .get_or_init(|| tokio::sync::Semaphore::new(MAX_BLOCKING_SNIFFS))
+        .acquire()
+        .await
+        .map_err(|_| SnifferFailed)?;
     let names = names.to_vec();
     let sniffers = sniffers.clone();
     let first = first.to_vec();
-    tokio::task::spawn_blocking(move || {
+    let done = tokio::task::spawn_blocking(move || {
         sniff_first(&names, &sniffers, &first).map(|(n, h)| (n.to_string(), h))
     })
-    .await
-    .ok()
-    .flatten()
+    .await;
+    drop(permit);
+    done.map_err(|e| {
+        tracing::error!(error = %e, "sniffer call panicked; dropping the connection");
+        SnifferFailed
+    })
 }
 
 /// Log a warning for each sniffer name `listener` routes on that resolves to
@@ -219,7 +244,7 @@ pub(crate) mod tests {
             n
         };
         let (hit, n) = tokio::join!(sniff_first_blocking(&names, &sniffers, b"x"), ticks);
-        assert_eq!(hit.map(|(name, _)| name), Some("slow".to_string()));
+        assert_eq!(hit.unwrap().map(|(name, _)| name), Some("slow".to_string()));
         assert_eq!(n, 5, "timers kept running while the sniffer blocked");
     }
 
@@ -228,10 +253,36 @@ pub(crate) mod tests {
         let sniffers = Arc::new(test_registry());
         let names = vec!["test-reject".to_string(), "test-host".to_string()];
         let hit = sniff_first_blocking(&names, &sniffers, b"HOST:A\n").await;
-        assert_eq!(hit.unwrap().1.host.as_deref(), Some("a"));
+        assert_eq!(hit.unwrap().unwrap().1.host.as_deref(), Some("a"));
         assert!(sniff_first_blocking(&[], &sniffers, b"HOST:A\n")
             .await
+            .unwrap()
             .is_none());
+    }
+
+    /// Panics, like a module that traps.
+    struct Boom;
+    impl Sniffer for Boom {
+        fn name(&self) -> &'static str {
+            "boom"
+        }
+        fn sniff(&self, _first: &[u8]) -> Option<RouteHint> {
+            panic!("module trapped");
+        }
+    }
+
+    /// A panicking sniffer is an error the caller acts on (drop the connection), not "no hit".
+    #[tokio::test]
+    async fn a_panicking_sniffer_is_reported_not_swallowed() {
+        let sniffers = Arc::new(Sniffers::new());
+        sniffers.register(Arc::new(Boom));
+        let names = vec!["boom".to_string()];
+        assert_eq!(
+            sniff_first_blocking(&names, &sniffers, b"x")
+                .await
+                .unwrap_err(),
+            SnifferFailed
+        );
     }
 
     /// A registry with the test sniffers (`test-host`, `test-reject`, `test-tag`).

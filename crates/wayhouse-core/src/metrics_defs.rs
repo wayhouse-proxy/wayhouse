@@ -6,6 +6,7 @@
 /// Counter. Labels: `listener`, `result` (`accepted` | `no_route` |
 /// `sniffer_reject` | ...). `sniffer_reject` = a `sniffer` sniffer returned a
 /// `reject` hint for the connection's first bytes; it is dropped before routing.
+/// `sniffer_error` = a sniffer call panicked; the connection is dropped, not let through.
 pub const LISTENER_CONNECTIONS: &str = "wayhouse_listener_connections_total";
 
 /// Gauge. Labels: `listener`.
