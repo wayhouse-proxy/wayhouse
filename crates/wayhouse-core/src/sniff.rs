@@ -753,10 +753,10 @@ listeners:
         (runtime, slow, plain)
     }
 
-    async fn udp_roundtrip(to: std::net::SocketAddr, wait_ms: u64) -> Option<Vec<u8>> {
+    async fn udp_send(to: std::net::SocketAddr, payload: &[u8], wait_ms: u64) -> Option<Vec<u8>> {
         let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         client.connect(to).await.unwrap();
-        client.send(b"hello").await.unwrap();
+        client.send(payload).await.unwrap();
         let mut buf = [0u8; 64];
         let n = tokio::time::timeout(
             std::time::Duration::from_millis(wait_ms),
@@ -773,8 +773,10 @@ listeners:
         fn name(&self) -> &'static str {
             "slow-or-boom"
         }
-        fn sniff(&self, _first: &[u8]) -> Option<RouteHint> {
-            std::thread::sleep(std::time::Duration::from_millis(600));
+        fn sniff(&self, first: &[u8]) -> Option<RouteHint> {
+            if first.starts_with(b"slow") {
+                std::thread::sleep(std::time::Duration::from_millis(600));
+            }
             None
         }
     }
@@ -789,24 +791,57 @@ listeners:
         }
     }
 
-    /// A slow sniffer on one UDP listener must not hold up another listener's traffic on the
-    /// same single-worker runtime, and its own datagram is still delivered afterwards.
+    /// One UDP listener whose sniffer is slow only for some payloads: a fast client on the
+    /// same listener, sending while the slow one is still in the module, is answered at once.
+    /// (With the sniffer inline on the receive loop it waited out the 600 ms.)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_slow_udp_sniffer_does_not_stall_other_sessions() {
+    async fn a_slow_udp_sniff_does_not_hold_up_the_same_listener() {
         let sniffers = Sniffers::new();
         sniffers.register(Arc::new(SlowNamed));
-        let (runtime, slow, plain) = udp_pair(sniffers).await;
+        let (runtime, slow, _plain) = udp_pair(sniffers).await;
 
-        let slow_task = tokio::spawn(udp_roundtrip(slow, 3000));
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let slow_client = tokio::spawn(udp_send(slow, b"slow", 3000));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let started = std::time::Instant::now();
         assert_eq!(
-            udp_roundtrip(plain, 400).await.as_deref(),
-            Some(&b"hello"[..])
+            udp_send(slow, b"fast", 400).await.as_deref(),
+            Some(&b"fast"[..])
         );
         assert!(started.elapsed() < std::time::Duration::from_millis(400));
-        // The slow listener still answers once the module returns.
-        assert_eq!(slow_task.await.unwrap().as_deref(), Some(&b"hello"[..]));
+        // The slow one is still delivered once the module returns.
+        assert_eq!(slow_client.await.unwrap().as_deref(), Some(&b"slow"[..]));
+
+        runtime
+            .shutdown_with_grace(std::time::Duration::from_millis(100))
+            .await;
+    }
+
+    /// Datagrams that arrive while a session's route is still being decided are forwarded in
+    /// the order they came.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn datagrams_sent_while_the_sniffer_runs_arrive_in_order() {
+        let sniffers = Sniffers::new();
+        sniffers.register(Arc::new(SlowNamed));
+        let (runtime, slow, _plain) = udp_pair(sniffers).await;
+
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client.connect(slow).await.unwrap();
+        for msg in [&b"slow-1"[..], b"two", b"three"] {
+            client.send(msg).await.unwrap();
+        }
+        let mut got = Vec::new();
+        let mut buf = [0u8; 64];
+        for _ in 0..3 {
+            let n = tokio::time::timeout(std::time::Duration::from_secs(3), client.recv(&mut buf))
+                .await
+                .expect("a reply")
+                .unwrap();
+            got.push(buf[..n].to_vec());
+        }
+        assert_eq!(
+            got,
+            vec![b"slow-1".to_vec(), b"two".to_vec(), b"three".to_vec()]
+        );
 
         runtime
             .shutdown_with_grace(std::time::Duration::from_millis(100))
@@ -819,7 +854,7 @@ listeners:
         let sniffers = Sniffers::new();
         sniffers.register(Arc::new(BoomNamed));
         let (runtime, slow, _plain) = udp_pair(sniffers).await;
-        assert_eq!(udp_roundtrip(slow, 400).await, None);
+        assert_eq!(udp_send(slow, b"hello", 400).await, None);
 
         runtime
             .shutdown_with_grace(std::time::Duration::from_millis(100))
