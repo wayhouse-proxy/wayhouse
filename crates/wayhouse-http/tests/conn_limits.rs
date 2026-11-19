@@ -39,6 +39,7 @@ fn limits(header_ms: u64, max: usize) -> ConnLimits {
     ConnLimits {
         header_read_timeout: Duration::from_millis(header_ms),
         first_byte_timeout: Duration::from_millis(header_ms),
+        idle_timeout: Duration::from_secs(30),
         max_connections: max,
     }
 }
@@ -134,6 +135,7 @@ async fn a_silent_connection_is_cut_off_and_frees_its_slot() {
     let addr = start(ConnLimits {
         header_read_timeout: Duration::from_secs(30),
         first_byte_timeout: Duration::from_millis(300),
+        idle_timeout: Duration::from_secs(30),
         max_connections: 1,
     })
     .await;
@@ -155,6 +157,7 @@ async fn one_byte_then_silence_is_cut_off() {
     let addr = start(ConnLimits {
         header_read_timeout: Duration::from_secs(30),
         first_byte_timeout: Duration::from_millis(300),
+        idle_timeout: Duration::from_secs(30),
         max_connections: 4,
     })
     .await;
@@ -164,6 +167,37 @@ async fn one_byte_then_silence_is_cut_off() {
     let n = tokio::time::timeout(Duration::from_secs(3), s.read(&mut buf))
         .await
         .expect("server closes the connection")
+        .unwrap_or(0);
+    assert_eq!(n, 0);
+}
+
+/// A connection that has finished its request and then sits idle is closed after the idle
+/// timeout; one with a response still running is not.
+#[tokio::test]
+async fn an_idle_connection_is_closed_but_a_busy_one_is_not() {
+    let addr = start(ConnLimits {
+        header_read_timeout: Duration::from_secs(30),
+        first_byte_timeout: Duration::from_secs(30),
+        idle_timeout: Duration::from_millis(400),
+        max_connections: 4,
+    })
+    .await;
+    // Busy: /slow takes 700 ms, longer than the idle timeout, and still answers.
+    let mut busy = TcpStream::connect(addr).await.unwrap();
+    get_path(&mut busy, "/slow").await;
+    let reply = read_some(&mut busy, Duration::from_secs(3)).await;
+    assert!(
+        reply.is_some_and(|r| r.contains("done")),
+        "slow request must finish"
+    );
+    // Idle: one quick request, then nothing.
+    let mut idle = TcpStream::connect(addr).await.unwrap();
+    get_path(&mut idle, "/peer").await;
+    assert!(read_some(&mut idle, Duration::from_secs(3)).await.is_some());
+    let mut buf = [0u8; 16];
+    let n = tokio::time::timeout(Duration::from_secs(3), idle.read(&mut buf))
+        .await
+        .expect("server closes the idle connection")
         .unwrap_or(0);
     assert_eq!(n, 0);
 }
