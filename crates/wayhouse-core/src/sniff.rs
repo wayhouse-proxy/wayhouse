@@ -113,7 +113,11 @@ pub fn sniff_first<'a>(
 /// the rest wait for a permit.
 const MAX_BLOCKING_SNIFFS: usize = 32;
 
-static BLOCKING_SNIFFS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+static BLOCKING_SNIFFS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::OnceLock::new();
+/// Unix seconds of the last panic log line: a module that panics on every datagram would
+/// otherwise write one error line per packet.
+static LAST_PANIC_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A sniffer call that died (it panicked). The caller drops the connection or datagram, as
 /// it did when the call ran inline and a panic ended the task: a `reject` sniffer that
@@ -138,22 +142,37 @@ pub async fn sniff_first_blocking(
         return Ok(None);
     }
     let permit = BLOCKING_SNIFFS
-        .get_or_init(|| tokio::sync::Semaphore::new(MAX_BLOCKING_SNIFFS))
-        .acquire()
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_BLOCKING_SNIFFS)))
+        .clone()
+        .acquire_owned()
         .await
         .map_err(|_| SnifferFailed)?;
     let names = names.to_vec();
     let sniffers = sniffers.clone();
     let first = first.to_vec();
-    let done = tokio::task::spawn_blocking(move || {
+    // The permit moves into the closure: it is released when the call really ends, even if
+    // the task awaiting it is dropped meanwhile (a blocking call cannot be cancelled), so the
+    // limit counts running calls, not waiting callers.
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         sniff_first(&names, &sniffers, &first).map(|(n, h)| (n.to_string(), h))
     })
-    .await;
-    drop(permit);
-    done.map_err(|e| {
-        tracing::error!(error = %e, "sniffer call panicked; dropping the connection");
+    .await
+    .map_err(|e| {
+        log_panic(&e);
         SnifferFailed
     })
+}
+
+/// One error line per second at most; every panic still drops its connection.
+fn log_panic(e: &tokio::task::JoinError) {
+    use std::sync::atomic::Ordering;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if LAST_PANIC_LOG.swap(now, Ordering::Relaxed) != now {
+        tracing::error!(error = %e, "sniffer call panicked; dropping the connection (logged once a second at most)");
+    }
 }
 
 /// Log a warning for each sniffer name `listener` routes on that resolves to
@@ -258,6 +277,24 @@ pub(crate) mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    /// Dropping the task that awaits a sniffer call does not give its permit back while the
+    /// module is still running: the limit counts running calls.
+    #[tokio::test]
+    async fn an_aborted_caller_keeps_its_permit_until_the_call_ends() {
+        let sniffers = Arc::new(Sniffers::new());
+        sniffers.register(Arc::new(Slow));
+        let names = vec!["slow".to_string()];
+        let task = tokio::spawn(async move { sniff_first_blocking(&names, &sniffers, b"x").await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        task.abort();
+        let _ = task.await;
+        let free = BLOCKING_SNIFFS.get().unwrap().available_permits();
+        assert!(
+            free < MAX_BLOCKING_SNIFFS,
+            "the running call still holds its permit"
+        );
     }
 
     /// Panics, like a module that traps.
