@@ -77,6 +77,9 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub aggregator: Option<AggregatorTarget>,
     pub controller: Option<ControllerTarget>,
+    /// A file-config proxy's admin API (`--proxy-url`): where the config editor reads and writes
+    /// when there is no controller (`GET`/`PUT /config/file`, `/config/schema`, `/config/validate`).
+    pub proxy_admin: Option<ControllerTarget>,
     /// `wayhouse-web-sync`'s metrics endpoint, for the Web sites page ([`crate::web_sync_api`]).
     pub web_sync: Option<crate::web_sync_api::WebSyncTarget>,
     /// The live bridge to the aggregator's `/fleet/subscribe` feed
@@ -134,6 +137,7 @@ impl AppState {
                 .expect("the extra roots were validated by init_ca_file, so the client builds"),
             aggregator: None,
             controller: None,
+            proxy_admin: None,
             web_sync: None,
             fleet_feed: None,
             secure_cookie: false,
@@ -215,6 +219,11 @@ impl AppState {
 
     pub fn with_controller(mut self, base_url: String, token: Option<String>) -> Self {
         self.controller = Some(ControllerTarget { base_url, token });
+        self
+    }
+
+    pub fn with_proxy_admin(mut self, base_url: String, token: Option<String>) -> Self {
+        self.proxy_admin = Some(ControllerTarget { base_url, token });
         self
     }
 

@@ -788,11 +788,45 @@ async fn plugin_action(
     .await
 }
 
+/// The proxy the config editor talks to when there is no controller (`--proxy-url`).
+fn file_proxy(state: &AppState) -> Option<&crate::api::ControllerTarget> {
+    state
+        .controller
+        .as_ref()
+        .map_or(state.proxy_admin.as_ref(), |_| None)
+}
+
 async fn get_config(State(state): State<AppState>) -> Response {
+    if let Some(target) = file_proxy(&state) {
+        return send(
+            &state,
+            target,
+            "proxy",
+            Method::GET,
+            "/config/file".into(),
+            None,
+            None,
+            None,
+        )
+        .await;
+    }
     proxy(&state, Method::GET, "/config".to_string(), None, None).await
 }
 
 async fn config_schema(State(state): State<AppState>) -> Response {
+    if let Some(target) = file_proxy(&state) {
+        return send(
+            &state,
+            target,
+            "proxy",
+            Method::GET,
+            "/config/schema".into(),
+            None,
+            None,
+            None,
+        )
+        .await;
+    }
     proxy(
         &state,
         Method::GET,
@@ -805,6 +839,19 @@ async fn config_schema(State(state): State<AppState>) -> Response {
 
 /// Read-only on the controller, but admin-only here: it is the editor's save-time check.
 async fn validate_config(State(state): State<AppState>, body: Bytes) -> Response {
+    if let Some(target) = file_proxy(&state) {
+        return send(
+            &state,
+            target,
+            "proxy",
+            Method::POST,
+            "/config/validate".into(),
+            Some(body),
+            None,
+            None,
+        )
+        .await;
+    }
     proxy(
         &state,
         Method::POST,
@@ -832,6 +879,28 @@ async fn submit_config(
     RawQuery(query): RawQuery,
     body: Bytes,
 ) -> Response {
+    if let Some(target) = file_proxy(&state) {
+        // A file has no canary stage or confirm window: only the revision the edit is based on goes on.
+        let base = query
+            .as_deref()
+            .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("base=")))
+            .filter(|n| n.chars().all(|c| c.is_ascii_digit()));
+        let suffix = base.map_or_else(
+            || "/config/file".to_string(),
+            |n| format!("/config/file?base={n}"),
+        );
+        return send(
+            &state,
+            target,
+            "proxy",
+            Method::PUT,
+            suffix,
+            Some(body),
+            None,
+            actor,
+        )
+        .await;
+    }
     let suffix = match query {
         Some(q) => format!("/config?{q}"),
         None => "/config".to_string(),
@@ -1048,10 +1117,35 @@ pub(crate) async fn proxy_typed(
         )
             .into_response();
     };
+    send(
+        state,
+        controller,
+        "controller",
+        method,
+        path_suffix,
+        body,
+        content_type,
+        actor,
+    )
+    .await
+}
 
-    let url = format!("{}{}", controller.base_url, path_suffix);
+/// One call to `target` (the controller, or a proxy's admin API for the config editor), relayed to
+/// the browser; the URL and the transport error stay in the log.
+#[allow(clippy::too_many_arguments)] // one call's parts; a struct would only rename them
+async fn send(
+    state: &AppState,
+    target: &crate::api::ControllerTarget,
+    who: &str,
+    method: Method,
+    path_suffix: String,
+    body: Option<Bytes>,
+    content_type: Option<&str>,
+    actor: Option<String>,
+) -> Response {
+    let url = format!("{}{}", target.base_url, path_suffix);
     let mut req = state.http.request(method, &url);
-    if let Some(token) = &controller.token {
+    if let Some(token) = &target.token {
         req = req.bearer_auth(token);
     }
     if let Some(actor) = actor {
@@ -1065,14 +1159,13 @@ pub(crate) async fn proxy_typed(
     }
 
     match req.send().await {
-        Ok(resp) => crate::proxy_util::relay(resp, "controller").await,
+        Ok(resp) => crate::proxy_util::relay(resp, who).await,
         Err(e) => {
-            // The URL and the transport error are for the log; the browser gets neither.
-            tracing::warn!(%url, error = %wayhouse_http::error_chain(&e), "controller unreachable");
+            tracing::warn!(%url, error = %wayhouse_http::error_chain(&e), "{who} unreachable");
             (
                 StatusCode::BAD_GATEWAY,
                 Json(ErrorResponse {
-                    error: "controller unreachable".into(),
+                    error: format!("{who} unreachable"),
                 }),
             )
                 .into_response()
@@ -2287,5 +2380,138 @@ mod tests {
                 "dot segment in {path}"
             );
         }
+    }
+
+    /// A mock proxy admin API recording `(method, path and query, auth, body)` of what it is sent.
+    async fn mock_proxy_admin() -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<(String, String, Option<String>, String)>>>,
+    ) {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = calls.clone();
+        let mock = Router::new().fallback(move |req: Request<Body>| {
+            let record = record.clone();
+            async move {
+                let (parts, body) = req.into_parts();
+                let body = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+                let auth = parts
+                    .headers
+                    .get(axum::http::header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                record.lock().unwrap().push((
+                    parts.method.to_string(),
+                    parts.uri.to_string(),
+                    auth,
+                    String::from_utf8_lossy(&body).into_owned(),
+                ));
+                (
+                    [("x-config-revision", "77"), ("etag", "\"abc\"")],
+                    r#"{"revision":78}"#,
+                )
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+        (format!("http://{addr}"), calls)
+    }
+
+    #[tokio::test]
+    async fn without_a_controller_the_config_editor_talks_to_the_file_config_proxy() {
+        let (url, calls) = mock_proxy_admin().await;
+        let state = crate::api::AppState::new(None).with_proxy_admin(url, Some("ptok".into()));
+        let app = crate::api::router(state);
+        for (method, uri, body) in [
+            ("GET", "/api/config", ""),
+            ("GET", "/api/config/schema", ""),
+            ("POST", "/api/config/validate", "pools: []"),
+            // The canary and confirm parameters mean nothing for a file; the revision does.
+            (
+                "POST",
+                "/api/config?base=77&stage=canary&group=g&confirm_within=30",
+                "pools: []",
+            ),
+            ("POST", "/api/config", "pools: []"),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "{method} {uri}");
+        }
+        let seen: Vec<_> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(m, u, a, b)| (m.clone(), u.clone(), a.clone(), b.clone()))
+            .collect();
+        let ptok = Some("Bearer ptok".to_string());
+        assert_eq!(
+            seen,
+            vec![
+                (
+                    "GET".into(),
+                    "/config/file".into(),
+                    ptok.clone(),
+                    String::new()
+                ),
+                (
+                    "GET".into(),
+                    "/config/schema".into(),
+                    ptok.clone(),
+                    String::new()
+                ),
+                (
+                    "POST".into(),
+                    "/config/validate".into(),
+                    ptok.clone(),
+                    "pools: []".into()
+                ),
+                (
+                    "PUT".into(),
+                    "/config/file?base=77".into(),
+                    ptok.clone(),
+                    "pools: []".into()
+                ),
+                (
+                    "PUT".into(),
+                    "/config/file".into(),
+                    ptok,
+                    "pools: []".into()
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_proxys_revision_and_etag_reach_the_browser_and_a_controller_wins_over_the_proxy() {
+        let (proxy_url, proxy_calls) = mock_proxy_admin().await;
+        let state = crate::api::AppState::new(None).with_proxy_admin(proxy_url.clone(), None);
+        let resp = crate::api::router(state)
+            .oneshot(Request::get("/api/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.headers()["x-config-revision"], "77");
+        assert_eq!(resp.headers()["etag"], "\"abc\"");
+        // With both set, the controller answers and the proxy is not called again.
+        let (controller_url, controller_calls) = mock_proxy_admin().await;
+        let state = crate::api::AppState::new(None)
+            .with_proxy_admin(proxy_url, None)
+            .with_controller(controller_url, None);
+        let before = proxy_calls.lock().unwrap().len();
+        crate::api::router(state)
+            .oneshot(Request::get("/api/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(proxy_calls.lock().unwrap().len(), before);
+        assert_eq!(controller_calls.lock().unwrap()[0].1, "/config");
     }
 }

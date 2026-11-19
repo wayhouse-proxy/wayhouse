@@ -165,6 +165,17 @@ fn a_plugin_overlay_file_goes_with_a_config_file_and_a_bad_one_refuses_to_start(
 }
 
 #[test]
+fn allowing_config_writes_goes_with_a_config_file_not_a_controller() {
+    let out = check(BASE, &["--allow-config-write"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = check(
+        BASE,
+        &["--allow-config-write", "--controller", "http://127.0.0.1:9"],
+    );
+    assert!(!out.status.success());
+}
+
+#[test]
 fn a_plugin_overlay_url_is_checked_at_startup() {
     // No scheme (the typo that would otherwise only show up as "no plugin routes").
     let out = check(BASE, &["--plugin-overlay-url", "controller:9901"]);

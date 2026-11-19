@@ -238,6 +238,20 @@ carried in the PROXY v2 TLV if the backend should correlate it.
   (`X-Config-Schema-Version` header) and a dry-run check of a raw YAML document (`200
   {"ok":true,"schema_version":N}`, or `422 {"error":...}`; nothing is applied). Same shapes as the
   controller's, so a UI can work against a file-config proxy with no controller.
+- `GET /config/file` and `PUT /config/file` – the config file of a proxy that runs from `--config`
+  (`404` under `--controller`). `GET` returns the YAML as written with `ETag` (a hash of the
+  content) and `X-Config-Revision` (the same hash as a number the web editor keeps);
+  `?previous=1` returns the copy the last write kept. `PUT` takes the raw YAML and replaces the file
+  only if it is still the version you read: send `If-Match: <ETag>`, or `?base=<revision>`. A
+  changed file answers `409 {"code":"stale"}`, a document this build refuses `422`, no version
+  `428`. The new text is checked like a reload, written to a temp file and renamed over the file
+  (permissions kept), the old one stays as `<file>.prev`, and the proxy then reloads it like any
+  edit (the answer says `applying`, not that it applied: a reload that fails keeps the running
+  config and logs why). **Off unless the proxy starts with `--allow-config-write`** (`403`
+  otherwise): the admin token can then rewrite listeners and TLS paths, not only backends. Reads
+  stay on. `wayhouse-ui --proxy-url <admin URL>` (with `--proxy-token-file`, and no
+  `--controller-url`) points the config editor at this: it shows and saves that file, with no
+  revision history, canary stage or confirm window.
 - `GET /web` – the resolved `web:` section as JSON for `wayhouse-web-sync`: `pool`,
   `listen.{http,https}`, `trusted_proxy`, `internal_bind`, and per site its `hosts` and
   `upstreams` in final form (`{addr}`, `{pool, via: "direct"}`, or `{pool, via: "wayhouse",
