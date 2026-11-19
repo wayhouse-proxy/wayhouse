@@ -89,6 +89,11 @@ class RealRepo(unittest.TestCase):
     def test_the_sniffer_pins_only_run_the_e2e_job(self):
         # No build is involved, so the shared release build does not start.
         self.assertEqual(self.areas("sniffers.lock"), {"sniffers"})
+        self.assertEqual(self.areas("plugins.lock"), {"sniffers"})
+
+    def test_the_plugin_host_and_abi_run_the_e2e_job_that_checks_the_official_plugins(self):
+        for f in ("crates/wayhouse-plugin-host/src/runtime.rs", "crates/wayhouse-plugin-abi/src/lib.rs"):
+            self.assertIn("sniffers", self.areas(f), f)
 
     def test_wayhouse_agent_is_tunnel_only(self):
         self.assertEqual(self.areas("crates/wayhouse-agent/src/main.rs"), {"tunnel"})
@@ -178,6 +183,8 @@ class SyntheticGraph(unittest.TestCase):
             "crates/wayhouse-web-sync": pkg("wayhouse-web-sync"),
             "crates/wayhouse-config/fuzz": pkg("wayhouse-config-fuzz", "crates/wayhouse-config"),
             "crates/wayhouse-sniffer-abi": pkg("wayhouse-sniffer-abi"),
+            "crates/wayhouse-plugin-abi": pkg("wayhouse-plugin-abi"),
+            "crates/wayhouse-plugin-host": pkg("wayhouse-plugin-host", "crates/wayhouse-plugin-abi"),
         }
         packages.update(extra)
         return changes.Graph(packages, {
