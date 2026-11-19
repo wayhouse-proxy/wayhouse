@@ -23,6 +23,46 @@ async fn start(limits: ConnLimits) -> SocketAddr {
             ),
         )
         .route(
+            "/stream",
+            get(|| async {
+                // A response that keeps streaming for longer than the idle timeouts below.
+                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                tokio::spawn(async move {
+                    for i in 0..4u8 {
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                        if tx
+                            .send(Ok::<_, std::convert::Infallible>(format!("c{i};")))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+                let chunks = tokio_stream::wrappers::ReceiverStream::new(rx);
+                axum::body::Body::from_stream(chunks)
+            }),
+        )
+        .route(
+            "/upgrade",
+            get(|mut req: axum::extract::Request| async move {
+                let on = hyper::upgrade::on(&mut req);
+                tokio::spawn(async move {
+                    let up = on.await.unwrap();
+                    let mut io = hyper_util::rt::TokioIo::new(up);
+                    io.write_all(b"hello").await.unwrap();
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    let _ = io.write_all(b"later").await;
+                });
+                axum::response::Response::builder()
+                    .status(101)
+                    .header("connection", "upgrade")
+                    .header("upgrade", "test")
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
             "/slow",
             get(|| async {
                 tokio::time::sleep(Duration::from_millis(700)).await;
@@ -39,6 +79,7 @@ fn limits(header_ms: u64, max: usize) -> ConnLimits {
     ConnLimits {
         header_read_timeout: Duration::from_millis(header_ms),
         first_byte_timeout: Duration::from_millis(header_ms),
+        idle_timeout: Duration::from_secs(30),
         max_connections: max,
     }
 }
@@ -134,6 +175,7 @@ async fn a_silent_connection_is_cut_off_and_frees_its_slot() {
     let addr = start(ConnLimits {
         header_read_timeout: Duration::from_secs(30),
         first_byte_timeout: Duration::from_millis(300),
+        idle_timeout: Duration::from_secs(30),
         max_connections: 1,
     })
     .await;
@@ -155,6 +197,7 @@ async fn one_byte_then_silence_is_cut_off() {
     let addr = start(ConnLimits {
         header_read_timeout: Duration::from_secs(30),
         first_byte_timeout: Duration::from_millis(300),
+        idle_timeout: Duration::from_secs(30),
         max_connections: 4,
     })
     .await;
@@ -166,4 +209,109 @@ async fn one_byte_then_silence_is_cut_off() {
         .expect("server closes the connection")
         .unwrap_or(0);
     assert_eq!(n, 0);
+}
+
+/// A connection that has finished its request and then sits idle is closed after the idle
+/// timeout; one with a response still running is not.
+#[tokio::test]
+async fn an_idle_connection_is_closed_but_a_busy_one_is_not() {
+    let addr = start(ConnLimits {
+        header_read_timeout: Duration::from_secs(30),
+        first_byte_timeout: Duration::from_secs(30),
+        idle_timeout: Duration::from_millis(400),
+        max_connections: 4,
+    })
+    .await;
+    // Busy: /slow takes 700 ms, longer than the idle timeout, and still answers.
+    let mut busy = TcpStream::connect(addr).await.unwrap();
+    get_path(&mut busy, "/slow").await;
+    let reply = read_some(&mut busy, Duration::from_secs(3)).await;
+    assert!(
+        reply.is_some_and(|r| r.contains("done")),
+        "slow request must finish"
+    );
+    // Idle: one quick request, then nothing.
+    let mut idle = TcpStream::connect(addr).await.unwrap();
+    get_path(&mut idle, "/peer").await;
+    assert!(read_some(&mut idle, Duration::from_secs(3)).await.is_some());
+    let mut buf = [0u8; 16];
+    let n = tokio::time::timeout(Duration::from_secs(3), idle.read(&mut buf))
+        .await
+        .expect("server closes the idle connection")
+        .unwrap_or(0);
+    assert_eq!(n, 0);
+}
+
+fn idle_limits() -> ConnLimits {
+    ConnLimits {
+        header_read_timeout: Duration::from_secs(30),
+        first_byte_timeout: Duration::from_secs(30),
+        idle_timeout: Duration::from_millis(400),
+        max_connections: 4,
+    }
+}
+
+/// A response still streaming after several idle timeouts is delivered whole.
+#[tokio::test]
+async fn a_response_streaming_past_the_idle_timeout_survives() {
+    let addr = start(idle_limits()).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    get_path(&mut s, "/stream").await;
+    let mut all = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    while !all.contains("c3;") && tokio::time::Instant::now() < deadline {
+        if let Some(part) = read_some(&mut s, Duration::from_secs(2)).await {
+            all.push_str(&part);
+        } else {
+            break;
+        }
+    }
+    assert!(all.contains("c0;") && all.contains("c3;"), "got: {all:?}");
+}
+
+/// An upgraded connection (WebSocket-style) is not touched by the idle watchdog even though
+/// its 101 response body ended at once.
+#[tokio::test]
+async fn an_upgraded_connection_survives_the_idle_timeout() {
+    let addr = start(idle_limits()).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(
+        b"GET /upgrade HTTP/1.1\r\nHost: t\r\nConnection: upgrade\r\nUpgrade: test\r\n\r\n",
+    )
+    .await
+    .unwrap();
+    let mut all = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    while !all.contains("later") && tokio::time::Instant::now() < deadline {
+        match read_some(&mut s, Duration::from_secs(3)).await {
+            Some(part) => all.push_str(&part),
+            None => break,
+        }
+    }
+    assert!(all.contains("101") && all.contains("hello"), "got: {all:?}");
+    assert!(
+        all.contains("later"),
+        "upgraded stream was cut off: {all:?}"
+    );
+}
+
+/// Short requests on one keep-alive connection, each finished between two watchdog checks, still
+/// count as activity: the connection outlives several idle timeouts.
+#[tokio::test]
+async fn a_busy_keep_alive_connection_is_not_closed() {
+    let addr = start(idle_limits()).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    let end = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut answered = 0;
+    while tokio::time::Instant::now() < end {
+        get_path(&mut s, "/peer").await;
+        let reply = read_some(&mut s, Duration::from_secs(1)).await;
+        assert!(
+            reply.is_some(),
+            "connection closed after {answered} requests"
+        );
+        answered += 1;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(answered >= 6, "only {answered} requests");
 }

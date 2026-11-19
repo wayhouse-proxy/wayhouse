@@ -15,6 +15,7 @@
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -22,6 +23,7 @@ use std::time::Duration;
 use axum::extract::ConnectInfo;
 use axum::{Extension, Router};
 use hyper::body::Incoming;
+use hyper::body::{Body as HttpBody, Frame, SizeHint};
 use hyper::Request;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
@@ -41,6 +43,10 @@ pub const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// The time a new connection has to send its first byte. hyper-util's version detection
 /// reads those bytes with no timer of its own, so without this a silent peer holds a slot.
 pub const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(30);
+/// A connection that has had no request in flight for this long is closed. An HTTP/2 peer can
+/// answer pings for ever without opening a stream, so only counting requests catches it. Open
+/// streams (SSE, long polls) keep a connection alive for as long as their response runs.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// An HTTP/2 connection is pinged this often...
 pub const H2_PING_EVERY: Duration = Duration::from_secs(30);
 /// ...and dropped when the ping is not answered within this.
@@ -54,6 +60,8 @@ pub const MAX_CONNECTIONS: usize = 4096;
 pub struct ConnLimits {
     pub header_read_timeout: Duration,
     pub first_byte_timeout: Duration,
+    /// A connection with no request in flight for this long is closed (gracefully).
+    pub idle_timeout: Duration,
     pub max_connections: usize,
 }
 
@@ -62,6 +70,7 @@ impl Default for ConnLimits {
         Self {
             header_read_timeout: HEADER_READ_TIMEOUT,
             first_byte_timeout: FIRST_BYTE_TIMEOUT,
+            idle_timeout: IDLE_TIMEOUT,
             max_connections: MAX_CONNECTIONS,
         }
     }
@@ -83,11 +92,26 @@ where
             return Ok(());
         };
         let (io, peer) = listener.accept().await;
-        let service = app
+        let inflight = Arc::new(Activity::default());
+        let router = app
             .clone()
             .layer(Extension(ConnectInfo(PeerAddr(peer))))
             .map_request(|req: Request<Incoming>| req.map(axum::body::Body::new));
-        let service = TowerToHyperService::new(service);
+        let counted = inflight.clone();
+        let service = TowerToHyperService::new(tower::service_fn(move |req| {
+            // Counted from the request head until the response body is finished or dropped.
+            let guard = InFlight::new(counted.clone());
+            let router = router.clone();
+            async move {
+                let res = router.oneshot(req).await?;
+                Ok::<_, std::convert::Infallible>(res.map(|body| {
+                    axum::body::Body::new(Guarded {
+                        body,
+                        _guard: guard,
+                    })
+                }))
+            }
+        }));
         let io = TokioIo::new(FirstByte::new(io, limits.first_byte_timeout));
         tokio::spawn(async move {
             // Held for the life of the connection.
@@ -104,7 +128,15 @@ where
                 .keep_alive_timeout(H2_PING_TIMEOUT)
                 // HTTP/2 WebSockets (RFC 8441), as `axum::serve` offers.
                 .enable_connect_protocol();
-            let _ = builder.serve_connection_with_upgrades(io, service).await;
+            let conn = builder.serve_connection_with_upgrades(io, service);
+            tokio::pin!(conn);
+            tokio::select! {
+                _ = conn.as_mut() => {}
+                _ = idle_watch(&inflight, limits.idle_timeout) => {
+                    conn.as_mut().graceful_shutdown();
+                    let _ = conn.await;
+                }
+            }
         });
     }
 }
@@ -181,5 +213,73 @@ impl<Io: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for FirstByte<Io> 
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// What the idle watchdog looks at: requests in flight now, and a counter bumped whenever one
+/// starts or ends, so a request that came and went between two checks still counts as activity.
+#[derive(Default)]
+struct Activity {
+    inflight: AtomicUsize,
+    events: AtomicU64,
+}
+
+/// Resolves once the connection has had no request in flight, and no request start or end,
+/// for `limit`. Checked a few times per `limit`.
+async fn idle_watch(activity: &Activity, limit: Duration) {
+    let tick = (limit / 4).max(Duration::from_millis(10));
+    let mut idle_since = tokio::time::Instant::now();
+    let mut seen = activity.events.load(Ordering::Acquire);
+    loop {
+        tokio::time::sleep(tick).await;
+        let now_seen = activity.events.load(Ordering::Acquire);
+        if activity.inflight.load(Ordering::Acquire) > 0 || now_seen != seen {
+            idle_since = tokio::time::Instant::now();
+            seen = now_seen;
+        } else if idle_since.elapsed() >= limit {
+            return;
+        }
+    }
+}
+
+/// One request in flight on a connection; dropping it ends the count.
+struct InFlight(Arc<Activity>);
+
+impl InFlight {
+    fn new(a: Arc<Activity>) -> Self {
+        a.inflight.fetch_add(1, Ordering::AcqRel);
+        a.events.fetch_add(1, Ordering::AcqRel);
+        Self(a)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.inflight.fetch_sub(1, Ordering::AcqRel);
+        self.0.events.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// A response body that keeps its request counted until the body is finished or dropped.
+struct Guarded {
+    body: axum::body::Body,
+    _guard: InFlight,
+}
+
+impl HttpBody for Guarded {
+    type Data = <axum::body::Body as HttpBody>::Data;
+    type Error = <axum::body::Body as HttpBody>::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Pin::new(&mut self.body).poll_frame(cx)
+    }
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+    fn size_hint(&self) -> SizeHint {
+        self.body.size_hint()
     }
 }
