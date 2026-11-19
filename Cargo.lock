@@ -5202,6 +5202,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "minisign",
  "minisign-verify",
  "rand 0.8.8",
  "reqwest",

@@ -36,8 +36,9 @@ AREAS = ("ui", "sniffers", "tunnel", "deploy", "fuzz", "web", "release")
 # "/" for every package under it.
 ROOTS = {
     # `cargo nextest -p wayhouse --run-ignored only` over the pinned official sniffers
-    # (sniffers.lock); no sniffer is built from this repository any more.
-    "sniffers": ["wayhouse"],
+    # (sniffers.lock); no sniffer is built from this repository any more. The same job
+    # builds the pinned official plugins (plugins.lock) and checks them with the plugin host.
+    "sniffers": ["wayhouse", "wayhouse-plugin-host", "wayhouse-plugin-abi"],
     # make tunnel-e2e-ci: debug-builds the five binaries, runs wayhouse-fleet-tests.
     "tunnel": ["wayhouse", "wayhouse-agent", "wayhouse-controller", "wayhouse-aggregator", "wayhouse-ui", "wayhouse-fleet-tests"],
     # crates/wayhouse-config/fuzz (its own workspace; depends on wayhouse-config).
@@ -58,10 +59,10 @@ DOCS_ONLY = re.compile(r"\.md$|^docs/|^LICENSE-")
 EXTRA = {
     # The UI forms are generated from the config JSON schema, so a schema change tests them.
     "ui": re.compile(r"^crates/wayhouse-ui/web/|^crates/wayhouse-config/schema/"),
-    # .config/nextest.toml holds the `ci` profile the job runs under; sniffers.lock
-    # pins the modules it fetches. (fetch_sniffers.py lives under .github/, which
-    # already runs everything.)
-    "sniffers": re.compile(r"^\.config/|^sniffers\.lock$"),
+    # .config/nextest.toml holds the `ci` profile the job runs under; sniffers.lock and
+    # plugins.lock pin the modules it fetches and builds. (fetch_sniffers.py and
+    # check_plugins.py live under .github/, which already runs everything.)
+    "sniffers": re.compile(r"^\.config/|^(sniffers|plugins)\.lock$"),
     "tunnel": re.compile(r"^Makefile$|^\.config/"),
     # The Caddy under test comes out of the wayhouse-caddy image (deploy/Dockerfile).
     "web": re.compile(r"^deploy/(Dockerfile|caddy/|check-caddy-image\.sh)"),
