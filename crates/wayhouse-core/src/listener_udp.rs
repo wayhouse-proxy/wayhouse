@@ -199,7 +199,7 @@ pub async fn run_udp_listener(
     let mut pending: HashMap<SessionKey, Pending> = HashMap::new();
     let mut pending_bytes = 0usize;
     // One task per pending session; dropping the set (listener exit) aborts them.
-    let mut resolving: JoinSet<(SessionKey, Option<Routed>)> = JoinSet::new();
+    let mut resolving: JoinSet<(SessionKey, Result<Routed, &'static str>)> = JoinSet::new();
     let mut rbatch = RecvBatch::new();
     let mut wheel = IdleWheel::new();
     let mut wheel_tick = interval(WHEEL_TICK);
@@ -290,7 +290,7 @@ pub async fn run_udp_listener(
                 let reason = if draining {
                     Err("draining")
                 } else {
-                    routed.ok_or("no_route")
+                    routed
                 };
                 let session = match reason {
                     Ok(routed) => {
@@ -476,6 +476,39 @@ pub async fn run_udp_listener(
                         }
                     };
                     let local = local_addr(&cfg, &sock, dst);
+                    // A listener with sniffers routes its new sessions off the receive loop:
+                    // a loaded module can run for its whole call budget, and that must not
+                    // hold up the other sessions on this worker. The same pending table
+                    // (and so the same caps) bounds how many such calls run at once.
+                    if sniffing(&cfg) {
+                        if pending.len() >= PENDING_MAX
+                            || pending_bytes + data.len() > PENDING_BYTES_MAX
+                        {
+                            metrics::counter!(
+                                m::DATAGRAMS_DROPPED,
+                                "listener" => cfg.name.clone(), "reason" => "pending_full",
+                            ).increment(1);
+                            continue;
+                        }
+                        pending_bytes += data.len();
+                        let first = data.to_vec();
+                        pending.insert(key, Pending {
+                            packets: vec![first.clone()],
+                            src_guard,
+                            limit_guard,
+                        });
+                        let (cfg, snapshot, hints, sniffers, resolvers) = (
+                            cfg.clone(), snapshot.clone(), hints.clone(), sniffers.clone(),
+                            resolvers.clone(),
+                        );
+                        resolving.spawn(async move {
+                            let routed = route_sniffed(
+                                &cfg, &snapshot, &hints, &sniffers, &resolvers, client, local, &first,
+                            ).await;
+                            (key, routed)
+                        });
+                        continue;
+                    }
                     let routed = match prepare_route(&cfg, &snapshot, &hints, &sniffers, client, local, data) {
                         Ok(Prepared::Routed(r)) => r,
                         Ok(Prepared::Resolve(hit)) => {
@@ -502,7 +535,7 @@ pub async fn run_udp_listener(
                                 let routed = resolve_pending(
                                     &cfg, &resolvers, client, local, &first, hit.as_ref(),
                                 ).await;
-                                (key, routed)
+                                (key, routed.ok_or("no_route"))
                             });
                             continue;
                         }
@@ -862,13 +895,59 @@ fn prepare_route(
     local: SocketAddr,
     first: &[u8],
 ) -> Result<Prepared, &'static str> {
+    let hit =
+        crate::sniff::sniff_first(&cfg.sniffers, sniffers, first).map(|(n, h)| (n.to_string(), h));
+    route_with_hit(cfg, snapshot, hints, client, local, first, hit)
+}
+
+/// Whether new sessions on this listener run a sniffer (the listener names one and the
+/// feature is on).
+fn sniffing(cfg: &ListenerConfig) -> bool {
+    !cfg.sniffers.is_empty() && crate::flags::on(wayhouse_config::features::SNIFFERS)
+}
+
+/// [`prepare_route`] for a listener with sniffers: the sniffer runs on the blocking pool,
+/// then the route walk, then the resolver call if the first match is one. Runs in a task,
+/// never on the receive loop. On failure returns the `reason` label to record.
+#[allow(clippy::too_many_arguments)]
+async fn route_sniffed(
+    cfg: &ListenerConfig,
+    snapshot: &Arc<ArcSwap<Snapshot>>,
+    hints: &Arc<RouteHints>,
+    sniffers: &Arc<Sniffers>,
+    resolvers: &Resolvers,
+    client: SocketAddr,
+    local: SocketAddr,
+    first: &[u8],
+) -> Result<Routed, &'static str> {
+    let hit = crate::sniff::sniff_first_blocking(&cfg.sniffers, sniffers, first).await;
+    match route_with_hit(cfg, snapshot, hints, client, local, first, hit)? {
+        Prepared::Routed(r) => Ok(r),
+        Prepared::Resolve(hit) => {
+            resolve_pending(cfg, resolvers, client, local, first, hit.as_ref())
+                .await
+                .ok_or("no_route")
+        }
+    }
+}
+
+/// The part of routing a new session that comes after the sniffer: the reject, the
+/// first-packet gate, the push-resolver hint and the route walk up to its first match.
+fn route_with_hit(
+    cfg: &ListenerConfig,
+    snapshot: &Arc<ArcSwap<Snapshot>>,
+    hints: &Arc<RouteHints>,
+    client: SocketAddr,
+    local: SocketAddr,
+    first: &[u8],
+    hit: Option<(String, RouteHint)>,
+) -> Result<Prepared, &'static str> {
     let snap = snapshot.load_full();
-    let hit = crate::sniff::sniff_first(&cfg.sniffers, sniffers, first);
     let mctx = wayhouse_config::MatchContext {
         src: crate::util::canonical_addr(client),
         local,
         first_bytes: first,
-        sniff: hit.as_ref().map(|(n, h)| (*n, h)),
+        sniff: hit.as_ref().map(|(n, h)| (n.as_str(), h)),
     };
 
     // A sniffer that positively rejects drops the datagram outright — no
@@ -900,7 +979,7 @@ fn prepare_route(
     match first_action {
         None => Err("no_route"),
         Some(Action::Pool(p)) => Ok(Prepared::Routed(Routed::Pool(p))),
-        Some(Action::Resolver(_)) => Ok(Prepared::Resolve(hit.map(|(n, h)| (n.to_string(), h)))),
+        Some(Action::Resolver(_)) => Ok(Prepared::Resolve(hit)),
     }
 }
 
