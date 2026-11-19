@@ -64,6 +64,10 @@ name = "tls_metrics"
 required-features = ["server"]
 
 [[test]]
+name = "conn_limits"
+required-features = ["server"]
+
+[[test]]
 name = "tls_server"
 required-features = ["server"]
 
