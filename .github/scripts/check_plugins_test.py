@@ -9,7 +9,8 @@ import check_plugins as cp  # noqa: E402
 
 
 def module(major, minor):
-    return b"\0asm\1\0\0\0" + cp.SECTION + major.to_bytes(2, "little") + minor.to_bytes(2, "little") + b"rest"
+    payload = bytes([len(cp.SECTION)]) + cp.SECTION + major.to_bytes(2, "little") + minor.to_bytes(2, "little")
+    return b"\0asm\1\0\0\0" + b"\1\2\0\0" + b"\0" + bytes([len(payload)]) + payload
 
 
 class CheckPlugins(unittest.TestCase):
@@ -26,7 +27,7 @@ class CheckPlugins(unittest.TestCase):
         self.assertEqual(len(rev), 40)
 
     def test_a_lock_needs_a_full_sha_and_a_plain_repo(self):
-        for bad in ('repo = "a/b"\nrev = "main"\n', 'repo = "a/b"\nrev = "' + "A" * 40 + '"\n', 'repo = "../x"\nrev = "' + "a" * 40 + '"\n'):
+        for bad in ('repo = "wayhouse-proxy/b"\nrev = "main"\n', 'repo = "wayhouse-proxy/b"\nrev = "' + "A" * 40 + '"\n', 'repo = "other/x"\nrev = "' + "a" * 40 + '"\n', 'repo = "wayhouse-proxy/../x"\nrev = "' + "a" * 40 + '"\n'):
             with self.assertRaises(ValueError):
                 self.lock(bad)
 
@@ -36,6 +37,9 @@ class CheckPlugins(unittest.TestCase):
             cp.wasm_abi_minor(b"\0asm")
         with self.assertRaises(ValueError):
             cp.wasm_abi_minor(module(1, 0))
+        # the name merely appearing in other bytes is not a section
+        with self.assertRaises(ValueError):
+            cp.wasm_abi_minor(b"\0asm\1\0\0\0" + b"\1\x18" + cp.SECTION + b"\0\3\0\3\0")
         self.assertEqual(cp.host_abi_minor("pub const ABI_MINOR: u16 = 7;"), 7)
         root = pathlib.Path(__file__).resolve().parents[2]
         self.assertIsInstance(cp.host_abi_minor((root / "crates/wayhouse-plugin-abi/src/lib.rs").read_text()), int)

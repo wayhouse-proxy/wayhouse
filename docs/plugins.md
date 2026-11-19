@@ -449,7 +449,6 @@ and prints what the host saw, including which capabilities were used. It exits 1
 host would reject the module, a call fails, or the plugin used a capability it did not
 declare. Plugin repo CI is meant to run it on every build.
 
-
 **Official plugins in this repository's CI.** `plugins.lock` pins a commit of
 `wayhouse-proxy/plugins`. The `sniffers e2e` job builds the plugins at that commit and runs
 `wayhouse-plugin-check` (built from the checkout under test) on each module, so a host change
