@@ -11,6 +11,7 @@ import { Button } from "../components/ui/Button";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { FieldRow } from "../components/ui/FieldRow";
 import { Input, Select } from "../components/ui/Input";
+import { ApiError, getUiDefaults } from "../api";
 import { useToast } from "../components/ui/Toast";
 import {
   DEFAULT_DASHBOARD,
@@ -22,6 +23,7 @@ import {
   listDashboards,
   move,
   parseDashboard,
+  renameDashboard,
   saveDashboard,
   type Dashboard,
   type PlacedWidget,
@@ -88,12 +90,14 @@ function SettingsForm({ def, w, onChange }: { def: WidgetDef; w: PlacedWidget; o
 /** The first page after sign-in: named dashboards on a 12-column grid, with a button-only customize mode (components.md). */
 export function DashboardPage() {
   const stored = useQuery({ queryKey: ["ui", "dashboards"], queryFn: listDashboards });
-  if (stored.isPending) return <Loading rows={4} />;
+  // A failed read of the defaults only means "no default": the first dashboard opens.
+  const defaults = useQuery({ queryKey: ["ui", "defaults"], queryFn: getUiDefaults, retry: false });
+  if (stored.isPending || defaults.isPending) return <Loading rows={4} />;
   if (stored.error) return <ErrorState onRetry={() => stored.refetch()}>{message(stored.error)}</ErrorState>;
-  return <Board stored={stored.data} />;
+  return <Board stored={stored.data} defaultName={defaults.data?.dashboard} />;
 }
 
-function Board({ stored: storedList }: { stored: Dashboard[] }) {
+function Board({ stored: storedList, defaultName }: { stored: Dashboard[]; defaultName?: string }) {
   const canEdit = useCan("operator");
   const toast = useToast();
   const qc = useQueryClient();
@@ -106,14 +110,18 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [said, setSaid] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
+  // Set when a save lost to somebody else's: the draft is kept so the person can choose.
+  // What lost: "Save anyway" repeats that action, without a revision.
+  const [stale, setStale] = useState<{ rename?: string } | null>(null);
   const file = useRef<HTMLInputElement>(null);
 
   const save = useMutation({ mutationFn: saveDashboard, onSuccess: () => qc.invalidateQueries({ queryKey: ["ui", "dashboards"] }) });
+  const rename = useMutation({ mutationFn: (a: { from: string; to: string; revision?: number }) => renameDashboard(a.from, a.to, a.revision), onSuccess: () => qc.invalidateQueries({ queryKey: ["ui", "dashboards"] }) });
   const remove = useMutation({ mutationFn: deleteDashboard, onSuccess: () => qc.invalidateQueries({ queryKey: ["ui", "dashboards"] }) });
 
   const list = storedList.length ? storedList : [DEFAULT_DASHBOARD];
   const unsaved = storedList.length === 0;
-  const wanted = params.get("d");
+  const wanted = params.get("d") ?? defaultName;
   const savedBoard = list.find((d) => d.name === wanted) ?? list[0];
   const board = draft ?? savedBoard;
   const customizing = draft !== null;
@@ -127,18 +135,21 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
   const names = list.map((d) => d.name);
 
   const select = (name: string) => setParams((p) => (p.set("d", name), p), { replace: true });
-  const run = async (fn: () => Promise<unknown>) => {
+  const run = async (fn: () => Promise<unknown>, again: { rename?: string } = {}) => {
     setProblem(null);
+    setStale(null);
     try {
       await fn();
       return true;
     } catch (e) {
-      setProblem(message(e));
+      if (e instanceof ApiError && e.status === 409 && e.body?.code === "stale") setStale(again);
+      else setProblem(message(e));
       return false;
     }
   };
   const edit = (f: (w: PlacedWidget[]) => PlacedWidget[]) => setDraft((d) => ({ ...(d ?? board), widgets: f((d ?? board).widgets) }));
   const stopCustomizing = () => {
+    setStale(null);
     setDraft(null);
     setSaid("");
     setShowJson(false);
@@ -146,19 +157,18 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
     inspector.close();
   };
 
-  async function done() {
-    if (await run(() => save.mutateAsync(board))) {
+  async function done(overwrite = false) {
+    if (await run(() => save.mutateAsync(overwrite ? { ...board, revision: undefined } : board))) {
       toast("Dashboard saved");
       stopCustomizing();
     }
   }
-  async function create(name: string) {
+  async function create(name: string, overwrite = false) {
+    const renaming = naming?.mode === "rename" && !unsaved;
+    // A rename is one step on the controller, so a failure leaves one dashboard, not two.
     const next: Dashboard = naming?.mode === "rename" ? { ...savedBoard, name } : { name, widgets: [] };
-    if (!(await run(() => save.mutateAsync(next)))) return;
-    if (naming?.mode === "rename" && !unsaved && !(await run(() => remove.mutateAsync(savedBoard.name)))) {
-      setProblem(`The renamed copy "${name}" was saved but the old dashboard "${savedBoard.name}" still exists: delete it by hand.`);
-      return;
-    }
+    const ok = renaming ? () => rename.mutateAsync({ from: savedBoard.name, to: name, revision: overwrite ? undefined : savedBoard.revision }) : () => save.mutateAsync(next);
+    if (!(await run(ok, renaming ? { rename: name } : {}))) return;
     setNaming(null);
     select(name);
     if (next.widgets.length === 0) setDraft(next);
@@ -241,7 +251,7 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
           actions={
             customizing ? (
               <>
-                <Button variant="primary" data-done onClick={done} loading={save.isPending}>
+                <Button variant="primary" data-done onClick={() => done()} loading={save.isPending}>
                   Done
                 </Button>
                 <Button onClick={() => setDraft(savedBoard)}>Reset</Button>
@@ -305,6 +315,27 @@ function Board({ stored: storedList }: { stored: Dashboard[] }) {
           </form>
         )}
         {problem && <ErrorState>{problem}</ErrorState>}
+        {stale && (
+          <div role="alert" className="mb-3 border border-warn p-3 text-sm">
+            <p>Someone else saved this dashboard while you were editing it. Your changes were not saved.</p>
+            <div className="mt-2 flex gap-2">
+              <Button size="sm" onClick={() => (stale.rename !== undefined ? create(stale.rename, true) : done(true))} loading={save.isPending || rename.isPending}>
+                Save anyway
+              </Button>
+              <Button
+                size="sm"
+                onClick={async () => {
+                  await qc.invalidateQueries({ queryKey: ["ui", "dashboards"] });
+                  stopCustomizing();
+                  setNaming(null);
+                  setStale(null);
+                }}
+              >
+                Load their version
+              </Button>
+            </div>
+          </div>
+        )}
         {customizing && (
           <div className="mb-3 flex flex-wrap items-end gap-2 border border-dashed border-line px-3 py-2">
             <FieldRow

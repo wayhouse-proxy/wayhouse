@@ -30,6 +30,11 @@ services:
     command:
       - --wayhouse-admin=http://127.0.0.1:9900
       - --caddy-admin=/run/caddy/admin.sock
+      # The console reads the sync's status here (Configure > Web sites). It is on the host network, so
+      # a non-loopback address needs the token below.
+      - --metrics-listen=0.0.0.0:9904
+      - --metrics-token-file=/run/secrets/web-sync-token
+    secrets: [web-sync-token]
     network_mode: host
     read_only: true
     cap_drop: [ALL]
@@ -38,6 +43,29 @@ services:
       - caddy-run:/run/caddy
     depends_on: [caddy]
     restart: unless-stopped
+
+  # The console shows the sync's last success. Compose replaces a `command` list whole, so this
+  # restates the ui service's flags from docker-compose.yml and adds the two --web-sync ones.
+  ui:
+    command:
+      - --listen=0.0.0.0:9903
+      - --ui-password-file=/run/secrets/ui-password
+      - --controller-url=http://controller:9901
+      - --allow-insecure-controller   # tokens cross the private compose network in plain http
+      - --controller-token-file=/run/secrets/controller-token
+      - --aggregator-url=http://aggregator:9902
+      - --aggregator-token-file=/run/secrets/aggregator-token
+      - --web-sync-url=http://host.docker.internal:9904
+      - --web-sync-token-file=/run/secrets/web-sync-token
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    secrets:
+      - ui-password
+      - { source: ui-token, target: controller-token }
+      - aggregator-token
+      - web-sync-token
+
+secrets:
+  web-sync-token: { environment: WAYHOUSE_WEB_SYNC_TOKEN }
 
 volumes:
   caddy-run:

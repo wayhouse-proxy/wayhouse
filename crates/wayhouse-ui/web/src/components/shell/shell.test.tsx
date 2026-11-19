@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { lazy } from "react";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -133,5 +134,31 @@ describe("inspector", () => {
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("complementary", { name: "Details" })).not.toBeInTheDocument();
     expect(row).toHaveFocus();
+  });
+});
+
+describe("a page chunk that cannot be loaded", () => {
+  it("shows a reload prompt in the page area and keeps the rail", async () => {
+    // After an upgrade an open tab asks for a hashed file that is gone.
+    const Gone = lazy(() => Promise.reject(new Error("Failed to fetch dynamically imported module")));
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(
+      <SessionProvider value={{ username: "ana", role: "admin" }}>
+        <MemoryRouter initialEntries={["/gone"]}>
+          <Routes>
+            <Route element={<Shell nav={NAV} onSignOut={() => {}} />}>
+              <Route path="/gone" element={<Gone />} />
+              <Route path="/fleet" element={<p>fleet page</p>} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </SessionProvider>,
+    );
+    expect(await screen.findByText(/could not be loaded/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
+    // Going to another page clears the error.
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Fleet" }));
+    expect(await screen.findByText("fleet page")).toBeInTheDocument();
+    err.mockRestore();
   });
 });

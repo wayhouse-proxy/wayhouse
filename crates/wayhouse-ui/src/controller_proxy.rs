@@ -111,6 +111,8 @@ pub fn admin_router() -> Router<AppState> {
         )
         // The plugins-file dry run: it prints the approval hashes to paste into the file.
         .route("/api/plugins/file/plan", get(plugins_file_plan))
+        .route("/api/plugins/secrets/keys", get(plugin_secret_keys))
+        .route("/api/plugins/secrets/rewrap", post(rewrap_plugin_secrets))
         .route("/api/plugins/{id}/secrets", get(list_plugin_secrets))
         .route(
             "/api/plugins/{id}/secrets/{slot}",
@@ -633,6 +635,33 @@ async fn plugins_file_plan(State(state): State<AppState>) -> Response {
         "/plugins/file/plan".to_string(),
         None,
         None,
+    )
+    .await
+}
+
+/// The key ids this controller and, under HA, every member holds (never key material).
+async fn plugin_secret_keys(State(state): State<AppState>) -> Response {
+    proxy(
+        &state,
+        Method::GET,
+        "/admin/plugins/secrets/keys".to_string(),
+        None,
+        None,
+    )
+    .await
+}
+
+/// Re-encrypts every plugin secret under the active key (step two of a key rotation).
+async fn rewrap_plugin_secrets(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+) -> Response {
+    proxy(
+        &state,
+        Method::POST,
+        "/admin/plugins/secrets/rewrap".to_string(),
+        None,
+        actor,
     )
     .await
 }
@@ -1579,6 +1608,9 @@ mod tests {
             ("DELETE", "/api/plugins/0123abcd/webhook"),
             // The plugins-file dry run: its own path, not an install id.
             ("GET", "/api/plugins/file/plan"),
+            // The key-rotation helper: the key ids per node and the rewrap, not install ids.
+            ("GET", "/api/plugins/secrets/keys"),
+            ("POST", "/api/plugins/secrets/rewrap"),
         ] {
             let resp = app
                 .clone()
@@ -1611,6 +1643,8 @@ mod tests {
                 "POST /plugins/0123abcd/webhook",
                 "DELETE /plugins/0123abcd/webhook",
                 "GET /plugins/file/plan",
+                "GET /admin/plugins/secrets/keys",
+                "POST /admin/plugins/secrets/rewrap",
             ]
         );
     }

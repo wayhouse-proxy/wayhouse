@@ -231,7 +231,7 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
   if ((r = m(/^\/api\/registries\/([^/]+)$/)) && method === "DELETE") { const i = REGISTRIES.findIndex((x) => x.id === r![1]); if (i > 0) REGISTRIES.splice(i, 1); return ok(""); }
 
   // plugins
-  if (path === "/api/plugin-routes") return ok({ routes: [], conflicts: [], port_routes: portRoutes, exhausted: [{ key: "srv-1099", backend: "10.20.4.99:25565", owner: "server-1099", plugin: "pelican-panel" }] });
+  if (path === "/api/plugin-routes") return ok({ routes: [{ host: "mc.example.com", backend: "10.20.4.10:25565", owner: "plugin:0000000000000001", plugin: "pelican-panel" }], conflicts: [], web_routes: [{ host: "panel.example.com", backend: "10.20.4.11:8080", owner: "plugin:0000000000000001", plugin: "pelican-panel" }], port_routes: portRoutes, exhausted: [{ key: "srv-1099", backend: "10.20.4.99:25565", owner: "server-1099", plugin: "pelican-panel" }] });
   if (path === "/api/plugins/file/plan") return ok({ applied: false, plugins: [{ name: "hcloud-autoscale", id: "p3", action: "unchanged" }, { name: "dyndns", id: null, action: "refused", reason: "the approval hash does not match", effective_sha256: MODULE_SHA.replace(/^9f/, "5d") }] });
   if (path === "/api/plugins/modules") { const n = (await req.arrayBuffer()).byteLength; return ok({ sha256: MODULE_SHA, size: n, abi: "0.2", capabilities: { ...PLUGIN_CAPS.pelican, http: null, secrets: [], port_routes: null }, manifest: PELICAN_MANIFEST }); }
   if (path === "/api/plugins" && method === "GET") return ok(plugins);
@@ -370,6 +370,14 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
     if (method === "GET") return layout ? ok(layout) : err(404, "no layout stored");
     if (method === "PUT") { try { layout = JSON.parse(await text()); } catch { return err(422, "The layout is not valid JSON."); } return ok(layout as object); }
     layout = null; return ok("");
+  }
+  if ((r = m(/^\/api\/ui\/dashboards\/([^/]+)\/rename$/))) {
+    const b = await json();
+    const d = dashboards.find((x: any) => x.name === decodeURIComponent(r![1]));
+    if (!d) return err(404, "no such record");
+    if (dashboards.some((x: any) => x.name === b.to)) return err(409, "a record with that name already exists");
+    d.name = b.to;
+    return ok({ name: b.to });
   }
   if ((r = m(/^\/api\/ui\/(filters|themes|dashboards)\/(.+)$/))) {
     const list = { filters, themes, dashboards }[r[1] as "filters"];

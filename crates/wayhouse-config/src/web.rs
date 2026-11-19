@@ -279,6 +279,12 @@ fn parse_trusted(raw: &str) -> Result<Cidr, ConfigError> {
 /// port, no scheme, no empty label, no trailing dot and no IP literal. The leading-dot suffix
 /// form accepted by route matchers is not accepted here. Hosts reach Caddy matchers and
 /// later ACME names, so a typo should fail at `--check`, not at render time.
+/// The key two sites would collide on, or why `h` is not a site host.
+pub(crate) fn web_host_key(h: &str) -> Result<String, String> {
+    check_web_host(h)?;
+    Ok(host_key(&parse_host_pattern(h)?))
+}
+
 fn check_web_host(h: &str) -> Result<(), String> {
     let h = h.trim().to_ascii_lowercase();
     let name = h.strip_prefix("*.").unwrap_or(&h);

@@ -17,6 +17,22 @@ pub const MAX_ROUTE_NETWORKS: usize = 16;
 /// Host ceiling on `routes.max_entries`.
 pub const MAX_ROUTE_ENTRIES: usize = 256;
 
+/// How a route is served: `tcp` is the SNI/sniffer listener route, `web` a site of the `web:`
+/// front door with the backend as its upstream (ABI 0.3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RouteKind {
+    #[default]
+    Tcp,
+    Web,
+}
+
+impl RouteKind {
+    fn is_tcp(&self) -> bool {
+        *self == Self::Tcp
+    }
+}
+
 /// What a plugin may route.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +43,9 @@ pub struct RouteCap {
     pub backends: Vec<String>,
     /// Most entries one route set may hold.
     pub max_entries: usize,
+    /// The kinds of route it may publish; empty means `["tcp"]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<RouteKind>,
 }
 
 /// One route: a hostname (or `*.suffix` pattern) and the backend it goes to.
@@ -35,6 +54,9 @@ pub struct RouteCap {
 pub struct RouteEntry {
     pub host: String,
     pub backend: String,
+    /// Absent means `tcp`, so a set written before ABI 0.3 reads back unchanged.
+    #[serde(default, skip_serializing_if = "RouteKind::is_tcp")]
+    pub kind: RouteKind,
 }
 
 /// A parsed `ip/prefix` network.
@@ -157,7 +179,21 @@ impl RouteCap {
                 "routes.max_entries must be 1 to {MAX_ROUTE_ENTRIES}"
             ));
         }
+        for (i, k) in self.kinds.iter().enumerate() {
+            if self.kinds[..i].contains(k) {
+                return Err(format!("routes.kinds lists {k:?} twice"));
+            }
+        }
         Ok(())
+    }
+
+    /// Whether this capability may publish routes of `kind`.
+    pub fn allows(&self, kind: RouteKind) -> bool {
+        if self.kinds.is_empty() {
+            kind == RouteKind::Tcp
+        } else {
+            self.kinds.contains(&kind)
+        }
     }
 
     /// Whether this declaration asks for nothing `approved` does not grant.
@@ -168,6 +204,9 @@ impl RouteCap {
             .filter_map(|n| Net::parse(n).ok())
             .collect();
         self.max_entries <= approved.max_entries
+            && [RouteKind::Tcp, RouteKind::Web]
+                .into_iter()
+                .all(|k| !self.allows(k) || approved.allows(k))
             && self
                 .hosts
                 .iter()
@@ -198,6 +237,12 @@ impl RouteCap {
         for e in set {
             if !valid_pattern(&e.host) {
                 return Err(format!("route host {:?} is not a valid hostname", e.host));
+            }
+            if !self.allows(e.kind) {
+                return Err(format!(
+                    "route {} is of kind {:?}, which was not approved",
+                    e.host, e.kind
+                ));
             }
             if !self.hosts.iter().any(|g| pattern_covers(g, &e.host)) {
                 return Err(format!(
@@ -235,6 +280,7 @@ mod tests {
             hosts: vec!["*.mc.example.com".into(), "play.example.com".into()],
             backends: vec!["10.0.0.0/16".into()],
             max_entries: 2,
+            kinds: vec![],
         }
     }
 
@@ -242,6 +288,7 @@ mod tests {
         RouteEntry {
             host: host.into(),
             backend: backend.into(),
+            kind: RouteKind::default(),
         }
     }
 

@@ -10,6 +10,7 @@
 //! crash-idempotent per Raft index. Slave controllers do not serve the plugin API.
 
 pub mod api;
+pub mod backend_health;
 pub mod declared;
 pub mod events;
 pub mod hooks;
@@ -2210,6 +2211,7 @@ mod tests {
         RouteEntry {
             host: host.into(),
             backend: backend.into(),
+            kind: wayhouse_plugin_host::routes::RouteKind::default(),
         }
     }
 

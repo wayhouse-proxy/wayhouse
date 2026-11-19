@@ -49,4 +49,5 @@ pub mod session;
 pub mod static_files;
 pub mod ui_data_proxy;
 pub mod users;
+pub mod web_sync_api;
 pub mod ws;

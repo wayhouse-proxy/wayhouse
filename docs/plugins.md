@@ -9,9 +9,9 @@ Plugins are not [sniffers](sniffers.md): sniffers run on the proxy data path.
 controller can store plugin installs behind an admin API and ticks the enabled ones
 (below); the web UI has a Plugins page on top of the install API (see "The Plugins page"). An HA tier replicates installs and state through Raft, serves the same API on every replica
 and ticks on the leader only, and the module bytes follow the installs to every replica (see
-"High availability"). Secrets, `http`, `routes`, webhooks and events are built; `backends` is not.
+"High availability"). Secrets, `http`, `routes`, `backends`, webhooks and events are built.
 
-## Module contract (ABI 0.2)
+## Module contract (ABI 0.3)
 
 Link `wayhouse-plugin-abi` (it stamps the `wayhouse.plugin-abi` section and exports
 `alloc`). The host accepts a module only when the section equals its own version (exact
@@ -191,6 +191,12 @@ The `routes` capability lets a plugin publish hostname routes:
 "routes": { "hosts": ["*.mc.example.com", "play.example.com"], "backends": ["10.0.0.0/16"], "max_entries": 64 }
 ```
 
+An entry may carry a `kind` (ABI 0.3): `tcp` (the default, a listener route as below) or `web`
+(a site of the `web:` front door with the backend as its upstream). The approval lists the kinds
+a plugin may publish in `kinds` (absent means `["tcp"]`), so a plugin approved for hostnames
+cannot start serving web sites without a new approval: `"routes": {…, "kinds": ["web"]}`. A set
+with an entry of a kind that was not approved is refused like any other entry outside the approval.
+
 `hosts` are the names (exact or `*.suffix`) the plugin may claim, `backends` the networks its
 backend addresses must be in, `max_entries` (1 to 256) the size of one set. A module cannot ask
 for more of any of these than was approved. `routes_set` replaces the plugin's whole set; the host
@@ -213,8 +219,18 @@ Rules:
   and is listed under `conflicts` in `GET /plugin-routes`, with `owner` (`plugin:<install id>`) and
   plugin name on every route.
 - Exact names match before `*.suffix` patterns, longer suffixes first.
-- Disabling or deleting an install withdraws its routes at once. A plugin whose ticks fail keeps its
-  last committed set, and so does one that stops calling `routes_set`: the set stays until the next successful tick replaces it or the install is deleted or disabled. (The spec's grace period with an alert is not built; see the follow-up issue.)
+- Disabling or deleting an install withdraws its routes at once. A plugin whose ticks fail keeps
+  its last committed set for a grace period, `max(10 x tick interval, 10 minutes)` after its last
+  successful tick (on a new leader the clock starts at takeover). After that the status shows
+  `routes_stale` (and a WARN is logged once). At twice the grace the leader commits an empty route
+  set: the routes leave `GET /plugin-routes` on every replica, while the plugin's state and port
+  assignments stay. A plugin that declares its routes on every tick gets them back with its next
+  successful tick; one that only calls `routes_set` when something changed should call it every
+  tick. A plugin that stops calling `routes_set` while its ticks succeed keeps its set.
+- Routes of kind `web` are listed under `web_routes` in the overlay (a separate list, so a proxy
+  that predates the kind never sees them). A proxy adds each as a site of its `web:` block
+  (`hosts: [host]`, one `addr` upstream) unless an operator site already has that host, which is
+  logged and skipped. Without a `web:` block they are ignored.
 - A controller started without `--plugins` answers `501` (`404` on an older build) and proxies drop
   the plugin routes at once, keeping their own config; a controller that is only unreachable leaves
   the last overlay in place. A proxy on a config file (no `--controller`) ignores the overlay
@@ -339,7 +355,33 @@ waiting per install), so a slow plugin loses events instead of building a backlo
 counted as `hooks_dropped` in the status. A restart, a failover (only the Raft leader delivers) or
 a lagging feed also loses some. The list of kinds only grows. A plugin that must not miss a change
 reconciles from the controller's state on its timer and treats an event as a reason to do it
-sooner. A backend-health event is not built yet.
+sooner. The `backend_health` kind (ABI 0.3, see "Backend health") goes only to installs whose approved `backends` networks hold the address.
+
+## Backend health (`backends`, ABI 0.3)
+
+The `backends` capability lets a plugin hear about backend health inside networks the operator
+approved:
+
+```json
+"backends": { "networks": ["10.0.0.0/16"], "max_entries": 256 },
+"triggers": { "on_timer": true, "on_event": ["backend_health"] }
+```
+
+`backends_get(out_ptr, out_cap) -> len` returns a JSON array of `{backend, up, since}` for the
+backends inside `networks` (at most `max_entries`, the most recently changed first); `-1` means
+the buffer was too small and `0` that nothing is known. The `backend_health` event carries one
+such object per change. Both only ever show backends inside the approved networks, so a plugin
+cannot learn the rest of the topology. Declaring the event needs the capability.
+
+**Where it comes from.** Each proxy that talks to the controller (`--controller`, or
+`--plugin-overlay-url`) posts its view of its backends to `POST /backend-health` (a full snapshot
+when something changed and at least once a minute). The leader keeps `(proxy, backend) -> up` in
+memory; a backend is **down when a majority of the proxies that reported it say down**, and a proxy
+not heard from for 3 minutes is forgotten. At most 256 proxy names can report at a time. A report names its proxy and the name is not verified: every holder of the proxy token is trusted like any fleet member, so a compromised proxy could skew a verdict, bounded by that cap. A change of verdict becomes one `backend_health` event
+through the bounded hook queue. Nothing is stored or replicated: after a failover the new leader
+starts empty and refills from the proxies' next reports, and a plugin that needs certainty
+reconciles with `backends_get` on its timer. Controllers at plugin support level 7 or higher only;
+a mixed cluster refuses to commit a plugin that needs it.
 
 ## ACME DNS-01 (`on_acme_dns`)
 

@@ -134,7 +134,12 @@ impl PluginsState {
 pub fn router(state: PluginsState) -> Router {
     // Component-facing: the proxies' stream of plugin routes.
     let component = wayhouse_http::protocol::gate(
-        Router::new().route("/plugin-routes/subscribe", get(super::routes::subscribe)),
+        Router::new()
+            .route("/plugin-routes/subscribe", get(super::routes::subscribe))
+            .route(
+                "/backend-health",
+                post(backend_health).layer(DefaultBodyLimit::max(512 * 1024)),
+            ),
         "controller",
     );
     Router::new()
@@ -175,12 +180,55 @@ pub fn router(state: PluginsState) -> Router {
         .with_state(state)
 }
 
+#[derive(Deserialize)]
+struct HealthReport {
+    proxy: String,
+    #[serde(default)]
+    full: bool,
+    backends: Vec<HealthItem>,
+}
+
+#[derive(Deserialize)]
+struct HealthItem {
+    addr: String,
+    up: bool,
+}
+
+/// `POST /backend-health`: a proxy's view of its backends (ABI 0.3). The leader keeps the
+/// board, so a follower forwards.
+async fn backend_health(
+    State(st): State<PluginsState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Some(forwarded) = st
+        .to_leader(Method::POST, "/backend-health", &headers, body.clone())
+        .await
+    {
+        return forwarded;
+    }
+    let report: HealthReport = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return err(StatusCode::BAD_REQUEST, format!("bad report: {e}")),
+    };
+    let items: Vec<(String, bool)> = report
+        .backends
+        .into_iter()
+        .map(|i| (i.addr, i.up))
+        .collect();
+    match st.runner.report_health(&report.proxy, report.full, &items) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(why) => err(StatusCode::BAD_REQUEST, why.to_string()),
+    }
+}
+
 /// The `/plugins` routes of a controller that does not serve plugins: 501 with a reason.
 pub fn disabled_router(reason: &'static str) -> Router {
     let refuse = move || async move { err(StatusCode::NOT_IMPLEMENTED, reason) };
     Router::new()
         .route("/plugin-routes", axum::routing::any(refuse))
         .route("/plugin-routes/subscribe", axum::routing::any(refuse))
+        .route("/backend-health", axum::routing::any(refuse))
         .route("/plugins", axum::routing::any(refuse))
         .route("/plugins/{*rest}", axum::routing::any(refuse))
 }
@@ -1551,7 +1599,7 @@ mod tests {
         let caps = caps.replace('"', "\\\"");
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (memory (export "memory") 1)
@@ -1630,7 +1678,7 @@ mod tests {
         let m = module(CAPS);
         let (status, v) = call(&app, "POST", "/plugins/modules", m.clone(), None).await;
         assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(v["abi"], "0.2");
+        assert_eq!(v["abi"], "0.3");
         assert_eq!(v["size"], m.len());
         assert_eq!(v["capabilities"]["log"], true);
         assert_eq!(v["capabilities"]["tick_interval_secs"], 30);
@@ -1642,7 +1690,7 @@ mod tests {
         let esc = |s: &str| s.replace('"', "\\\"");
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{}")
   (@custom "wayhouse.plugin-manifest" "{}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
@@ -2009,7 +2057,7 @@ mod tests {
         let (len, resp) = (resp.len(), resp.replace('"', "\\\""));
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (import "wayhouse" "webhook_respond" (func $respond (param i32 i32) (result i32)))
@@ -2045,6 +2093,36 @@ mod tests {
             )));
         let resp = app.clone().oneshot(req).await.unwrap();
         (resp.status(), resp.headers().clone())
+    }
+
+    #[tokio::test]
+    async fn a_backend_health_report_is_taken_and_a_bad_one_refused() {
+        let (st, _d) = state(None);
+        let app = router(st);
+        let post = |body: &'static [u8]| {
+            let mut req = Request::builder()
+                .method("POST")
+                .uri("/backend-health")
+                .header(
+                    wayhouse_http::protocol::HEADER,
+                    wayhouse_http::protocol::ProtocolVersion::current().to_string(),
+                )
+                .body(Body::from(body))
+                .unwrap();
+            req.extensions_mut()
+                .insert(axum::extract::ConnectInfo(wayhouse_http::tls::PeerAddr(
+                    "203.0.113.9:4000".parse().unwrap(),
+                )));
+            let app = app.clone();
+            async move { app.oneshot(req).await.unwrap().status() }
+        };
+        let ok = br#"{"proxy":"p1","full":true,"backends":[{"addr":"10.0.0.5:25565","up":false}]}"#;
+        assert_eq!(post(ok).await, StatusCode::NO_CONTENT);
+        assert_eq!(post(b"nope").await, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            post(br#"{"proxy":"","backends":[]}"#).await,
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[tokio::test]
@@ -2905,6 +2983,7 @@ mod tests {
         let set = [wayhouse_plugin_host::RouteEntry {
             host: "a.mc.example.com".into(),
             backend: "10.0.1.1:25565".into(),
+            kind: wayhouse_plugin_host::routes::RouteKind::default(),
         }];
         store
             .commit_state_routes(&id, 0, &std::collections::BTreeMap::new(), Some(&set))

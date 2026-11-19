@@ -651,7 +651,10 @@ mod tests {
         // Level 5 cannot decode `PluginSetSuspended`.
         let old = check_support_answers(&[(2, Ok(who(5)))]).unwrap_err();
         assert!(old.contains("node 2") && old.contains("upgrade"), "{old}");
-        assert_eq!(PLUGIN_SUPPORT, 6);
+        // Level 6 predates the `backends` capability and `web` route kind (ABI 0.3).
+        let old = check_support_answers(&[(2, Ok(who(6)))]).unwrap_err();
+        assert!(old.contains("node 2") && old.contains("upgrade"), "{old}");
+        assert_eq!(PLUGIN_SUPPORT, 7);
     }
 
     fn unreachable() -> WhoamiError {
@@ -711,7 +714,7 @@ mod tests {
     fn module(tag: &str) -> Vec<u8> {
         wat::parse_str(format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{{\"log\":true}}")
   (@custom "tag" "{tag}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))

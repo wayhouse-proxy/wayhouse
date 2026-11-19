@@ -643,6 +643,26 @@ export function clearFeatureOverride(name: string): Promise<void> {
   return requestJson(`/api/features/overrides/${encodeURIComponent(name)}`, { method: "DELETE" });
 }
 
+/** `GET /api/plugins/secrets/keys`: key ids only. `nodes` is empty on a standalone controller. */
+export interface PluginSecretKeys {
+  key_ids: string[];
+  active: string | null;
+  nodes: Record<string, string[] | { error: string }>;
+}
+export interface RewrapResult {
+  rewrapped: number;
+  skipped: string[];
+  unreadable: string[];
+  active_key_id: string | null;
+}
+export function getPluginSecretKeys(): Promise<PluginSecretKeys> {
+  return requestJson("/api/plugins/secrets/keys");
+}
+/** Step two of a key rotation: every plugin secret is re-sealed under the active key. */
+export function rewrapPluginSecrets(): Promise<RewrapResult> {
+  return requestJson("/api/plugins/secrets/rewrap", { method: "POST" });
+}
+
 export async function listClusterSecrets(): Promise<ClusterSecret[]> {
   return (await requestJson<{ items: ClusterSecret[] }>("/api/secrets")).items;
 }
@@ -692,4 +712,13 @@ export function confirmProcess(program: string, rev: number): Promise<ProcessFil
 
 export function undoProcess(program: string, rev: number): Promise<ProcessFile> {
   return requestJson(`/api/process/${encodeURIComponent(program)}/undo`, jsonInit("POST", { rev }));
+}
+
+/** `GET /api/web/sync`: what `wayhouse-web-sync` reports about itself, through the UI backend's `--web-sync-url`. */
+export type WebSyncStatus =
+  | { configured: false }
+  | { configured: true; reachable: false; error: string }
+  | { configured: true; reachable: true; last_ok_age_secs: number | null; loads: number; rejects: number; errors: { read: number; render: number; send: number } };
+export function getWebSyncStatus(): Promise<WebSyncStatus> {
+  return requestJson("/api/web/sync");
 }

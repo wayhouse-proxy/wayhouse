@@ -186,6 +186,11 @@ Modules (for example DNS-01) would mean building it with `xcaddy` instead; the D
   Lower the interval if that gap matters.
 - Metrics (`wayhouse_web_sync_*`) are in [06 Operations](06-operations-observability.md). Alert on
   `time() - wayhouse_web_sync_last_ok`.
+- The console's Configure > Web sites page shows the sync's last success, loads, refused documents and failed
+  cycles when `wayhouse-ui` runs with `--web-sync-url` (the sync's `--metrics-listen` address, as
+  `http://127.0.0.1:9904`) and, if the sync asks for a metrics token, `--web-sync-token-file` (credential
+  `web-sync-token`, or env `WAYHOUSE_WEB_SYNC_TOKEN`). It reads `GET /metrics`; without the flag the page says
+  so. `compose.web.yml` wires this up (the token is `WAYHOUSE_WEB_SYNC_TOKEN` in `.env`; the sync's metrics then listen on `0.0.0.0:9904` of the host, behind that token). The systemd bundle has no web sync unit.
 - `GET /web` on the Wayhouse admin API (404 without a `web:` section) is what the sync reads; use it to
   see what Wayhouse resolved.
 - The Caddy end-to-end test (`crates/wayhouse-fleet-tests/tests/web.rs`, CI job `web-e2e`) runs

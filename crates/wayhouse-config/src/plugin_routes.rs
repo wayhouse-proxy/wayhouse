@@ -131,6 +131,82 @@ fn bind_ports(l: &Value) -> Option<std::ops::RangeInclusive<u16>> {
     Some(first.port()..=last.port())
 }
 
+/// `text` with plugin `web` routes (`(host, backend)`) added as sites of the `web:` front
+/// door. A host an operator site already has is left to the operator and reported; so is an
+/// entry that is not a valid site host or an `ip:port` upstream. Without a `web:` block, or
+/// without routes, the text comes back byte for byte.
+pub fn merge_web_text(text: &str, routes: &[(String, String)]) -> Result<Merged, ConfigError> {
+    let unchanged = || Merged {
+        text: text.to_string(),
+        ..Merged::default()
+    };
+    if routes.is_empty() {
+        return Ok(unchanged());
+    }
+    let mut doc: Value = serde_norway::from_str(text)?;
+    let Some(web) = doc.get_mut("web").and_then(Value::as_mapping_mut) else {
+        return Ok(unchanged());
+    };
+    let sites = web
+        .entry(key("sites"))
+        .or_insert_with(|| Value::Sequence(vec![]));
+    let Some(sites) = sites.as_sequence_mut() else {
+        return Ok(unchanged());
+    };
+    let mut out = Merged::default();
+    let mut taken: BTreeSet<String> = sites
+        .iter()
+        .filter_map(|s| s.get("hosts").and_then(Value::as_sequence))
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|h| crate::web::web_host_key(h).ok())
+        .collect();
+    let operator_wild: Vec<String> = taken
+        .iter()
+        .filter(|k| k.starts_with("*."))
+        .cloned()
+        .collect();
+    for (host, backend) in routes {
+        let skip = |why: &str| format!("web route {host} -> {backend}: {why}");
+        let k = match crate::web::web_host_key(host) {
+            Ok(k) => k,
+            Err(e) => {
+                out.skipped.push(skip(&e));
+                continue;
+            }
+        };
+        if backend.parse::<std::net::SocketAddr>().is_err() {
+            out.skipped.push(skip("the backend is not an ip:port"));
+            continue;
+        }
+        // An operator wildcard owns every name under it, plugin patterns included.
+        if let Some(w) = operator_wild.iter().find(|w| k.ends_with(&w[1..])) {
+            out.skipped
+                .push(skip(&format!("the operator site {w} covers it")));
+            continue;
+        }
+        if !taken.insert(k) {
+            out.skipped.push(skip("the host already has a site"));
+            continue;
+        }
+        let mut up = Mapping::new();
+        up.insert(key("addr"), key(backend));
+        let mut site = Mapping::new();
+        site.insert(key("hosts"), Value::Sequence(vec![key(host)]));
+        site.insert(key("upstreams"), Value::Sequence(vec![Value::Mapping(up)]));
+        sites.push(Value::Mapping(site));
+        out.applied += 1;
+    }
+    if out.applied == 0 {
+        return Ok(Merged {
+            skipped: out.skipped,
+            ..unchanged()
+        });
+    }
+    out.text = serde_norway::to_string(&doc)?;
+    Ok(out)
+}
+
 /// `text` with `routes` appended to every opted-in listener. With no routes, or no opted-in
 /// listener, the text comes back byte for byte.
 pub fn merge_text(text: &str, routes: &[PluginRoute]) -> Result<Merged, ConfigError> {
@@ -590,5 +666,37 @@ listeners:
             .unwrap_err()
             .to_string()
             .contains("schema_version 2"));
+    }
+
+    #[test]
+    fn web_routes_become_sites_unless_the_operator_has_the_host() {
+        let text = "schema_version: 3\nweb:\n  sites:\n    - hosts: [Panel.example.com]\n      upstreams:\n        - addr: 10.0.0.9:8080\nlisteners:\n  - name: l\n    bind: \"0.0.0.0:1\"\n    protocol: tcp\n    pool: web\npools:\n  - name: web\n    targets: [\"10.9.0.1:1\"]\n    proxy_protocol: v2\n";
+        let routes = vec![
+            ("panel.example.com".to_string(), "10.1.0.1:80".to_string()),
+            ("app.example.com".to_string(), "10.1.0.2:80".to_string()),
+            ("bad host".to_string(), "10.1.0.3:80".to_string()),
+            ("x.example.com".to_string(), "not-an-addr".to_string()),
+        ];
+        let m = merge_web_text(text, &routes).unwrap();
+        assert_eq!(m.applied, 1);
+        assert_eq!(m.skipped.len(), 3, "{:?}", m.skipped);
+        assert!(m.text.contains("app.example.com") && m.text.contains("10.1.0.2:80"));
+        assert!(!m.text.contains("10.1.0.1:80"));
+        assert!(parse_str(&m.text).unwrap().web.unwrap().sites.len() == 2);
+        // An operator wildcard also covers exact names and narrower patterns under it.
+        let wild = text.replace("Panel.example.com", "\"*.example.com\"");
+        let under = vec![
+            ("a.example.com".to_string(), "10.1.0.2:80".to_string()),
+            ("*.eu.example.com".to_string(), "10.1.0.3:80".to_string()),
+            ("other.test".to_string(), "10.1.0.4:80".to_string()),
+        ];
+        let m = merge_web_text(&wild, &under).unwrap();
+        assert_eq!(m.applied, 1, "{:?}", m.skipped);
+        assert_eq!(m.skipped.len(), 2);
+        assert!(m.text.contains("other.test") && !m.text.contains("10.1.0.2:80"));
+        // No web block, or no routes: byte for byte.
+        let plain = "schema_version: 3\nlisteners: []\npools: []\n";
+        assert_eq!(merge_web_text(plain, &routes).unwrap().text, plain);
+        assert_eq!(merge_web_text(text, &[]).unwrap().text, text);
     }
 }

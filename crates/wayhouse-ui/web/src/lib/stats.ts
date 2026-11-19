@@ -63,7 +63,8 @@ export const fmtRate = (n: number) => `${trim(n)}/s`;
 export function fmtBytes(n: number): string {
   const units = ["B/s", "kB/s", "MB/s", "GB/s", "TB/s"];
   let i = 0;
-  while (n >= 1000 && i < units.length - 1) (n /= 1000), i++;
+  // Judge by the printed value, so 999.5 steps up instead of printing "1000 B/s".
+  while (Number(trim(n)) >= 1000 && i < units.length - 1) (n /= 1000), i++;
   return `${trim(n)} ${units[i]}`;
 }
 export const fmtClock = (ms: number) => new Date(ms).toISOString().slice(11, 16);

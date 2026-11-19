@@ -55,13 +55,13 @@ The config schema is now 4. Nothing changes for a document that does not use the
 section. To use it, set `schema_version: 4`, but only after every proxy that will receive the
 document runs 0.4.0 (an older proxy refuses it).
 
-## Plugin ABI 0.2 rebuilds
+## Plugin ABI 0.3 rebuilds
 
-The plugin ABI is now 0.2. The host requires an exact `major.minor` match while the major is 0, so
+The plugin ABI is now 0.3. The host requires an exact `major.minor` match while the major is 0, so
 a plugin built against ABI 0.1 is refused at upload:
 
 ```text
-the plugin declares ABI 0.1, this host speaks 0.2
+the plugin declares ABI 0.1, this host speaks 0.3
 ```
 
 1. In the plugin's `Cargo.toml`, point `wayhouse-plugin-abi` at a 0.4.0 revision and rebuild.
@@ -69,7 +69,7 @@ the plugin declares ABI 0.1, this host speaks 0.2
 2. Upload the rebuilt module and approve it again: approvals are recorded against the module's
    sha256, so a rebuilt module is a new module.
 3. Under HA, upgrade every controller before installing: the leader refuses plugin installs while
-   a member reports a plugin support level below 5. The same holds for editing an install's
+   a member reports a plugin support level below 7. The same holds for editing an install's
    config (`PUT /plugins/{id}/config`).
 
 Plugins that are already installed keep their stored 0.1 module, which no longer loads: the

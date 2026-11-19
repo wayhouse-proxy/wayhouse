@@ -54,6 +54,9 @@ pub struct PluginStatus {
     pub last_ok: Option<bool>,
     pub last_error: Option<String>,
     pub consecutive_failures: u32,
+    /// The plugin has published routes but has not ticked successfully for a grace period
+    /// (`max(10 x interval, 10 min)`); at twice that its routes are withdrawn.
+    pub routes_stale: bool,
     /// Why the plugin is not run on this node (a secret it needs cannot be read here), or
     /// `None`. A held plugin never ticks.
     pub held: Option<String>,
@@ -127,6 +130,22 @@ struct Schedule {
     inflight: std::collections::HashSet<String>,
     /// The term this node has been ticking in as leader (HA); a change resets the schedule.
     led_term: Option<u64>,
+    /// When this node took the lead: the route-expiry clock of an install that has not
+    /// ticked successfully since (conservative, it delays withdrawal by at most one grace).
+    led_since: Option<Instant>,
+    /// The last successful tick of each install, for route expiry.
+    ok_at: HashMap<String, Instant>,
+}
+
+/// How long an install's routes stay published after its last good tick before the status
+/// shows `routes_stale`; withdrawal comes at twice that (#290, keep-last-good).
+pub fn route_grace(tick_interval_secs: u64) -> Duration {
+    Duration::from_secs(
+        tick_interval_secs
+            .min(MAX_TICK_INTERVAL_SECS)
+            .saturating_mul(10)
+            .max(600),
+    )
 }
 
 pub struct Runner {
@@ -146,6 +165,8 @@ pub struct Runner {
     /// The install list and the store version it was read at: a scan re-lists only when
     /// the store's change counter moved.
     listed: Mutex<Option<(u64, Arc<Vec<InstallRecord>>)>>,
+    /// Backend health as the proxies report it (leader only; see `backend_health`).
+    board: super::backend_health::HealthBoard,
 }
 
 /// Releases a place in an install's hook queue.
@@ -234,6 +255,7 @@ impl Runner {
             locks: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             listed: Mutex::new(None),
+            board: super::backend_health::HealthBoard::default(),
         })
     }
 
@@ -275,9 +297,46 @@ impl Runner {
             loop {
                 every.tick().await;
                 while running.try_join_next().is_some() {}
+                self.announce(&self.board.sweep(Instant::now(), unix_now()));
                 self.scan(Instant::now(), &mut running).await;
             }
         })
+    }
+
+    /// Takes a proxy's backend-health report; plugins hear about every verdict that changed.
+    pub fn report_health(
+        self: &Arc<Self>,
+        proxy: &str,
+        full: bool,
+        items: &[(String, bool)],
+    ) -> Result<(), super::backend_health::Refused> {
+        let changed = self
+            .board
+            .report(proxy, full, items, Instant::now(), unix_now())?;
+        self.announce(&changed);
+        Ok(())
+    }
+
+    /// Sends a `backend_health` event for each change to the plugins whose approved networks
+    /// hold the backend. Only the leader holds a board, so only the leader delivers.
+    fn announce(self: &Arc<Self>, changed: &[wayhouse_plugin_host::BackendStatus]) {
+        for status in changed {
+            super::events::deliver_to(
+                self,
+                &self.store,
+                super::events::BACKEND_HEALTH,
+                &serde_json::json!({
+                    "backend": status.backend, "up": status.up, "since": status.since
+                }),
+                |rec| {
+                    rec.approved
+                        .backends
+                        .as_ref()
+                        .is_some_and(|c| c.covers(&status.backend))
+                        && !rec.suspended.contains("backends")
+                },
+            );
+        }
     }
 
     pub fn status(&self, id: &str) -> Option<PluginStatus> {
@@ -341,6 +400,7 @@ impl Runner {
             }
         };
         let mut due = Vec::new();
+        let mut expiring = Vec::new();
         {
             let mut sched = self.schedule.lock().await;
             if sched.led_term != term {
@@ -349,6 +409,7 @@ impl Runner {
                     ..Schedule::default()
                 };
             }
+            let led_since = *sched.led_since.get_or_insert(now);
             let live = |r: &&InstallRecord| r.enabled && r.approved.triggers.on_timer;
             // A plugin with only a webhook trigger is cached too, so each hook does not
             // compile the module and run `init` again (`on_event` needs `on_timer`).
@@ -367,6 +428,14 @@ impl Runner {
                 .collect();
             sched.loaded.retain(|id, _| cached.contains(&id.as_str()));
             sched.next_due.retain(|id, _| ids.contains(&id.as_str()));
+            sched.ok_at.retain(|id, _| ids.contains(&id.as_str()));
+            for rec in installs.iter().filter(live) {
+                let since = sched
+                    .ok_at
+                    .get(&rec.id)
+                    .map_or(led_since, |ok| (*ok).max(led_since));
+                expiring.push((rec.clone(), now.saturating_duration_since(since)));
+            }
             let all: Vec<&str> = installs.iter().map(|r| r.id.as_str()).collect();
             self.lock_status()
                 .retain(|id, _| all.contains(&id.as_str()));
@@ -389,6 +458,25 @@ impl Runner {
                 }
             }
         }
+        for (rec, age) in expiring {
+            let grace = route_grace(rec.approved.tick_interval_secs);
+            if age < grace {
+                self.set_stale(&rec.id, false);
+                continue;
+            }
+            if self.set_stale(&rec.id, true) {
+                tracing::warn!(
+                    install = %rec.id,
+                    "plugin has not ticked successfully for {}s; its routes are marked stale",
+                    age.as_secs()
+                );
+            }
+            if age >= grace * 2 {
+                let this = self.clone();
+                let id = rec.id.clone();
+                running.spawn(async move { this.withdraw_routes(&id, term).await });
+            }
+        }
         for (rec, at) in due {
             let this = self.clone();
             running.spawn(async move {
@@ -403,6 +491,42 @@ impl Runner {
                 }
                 this.schedule.lock().await.inflight.remove(&id);
             });
+        }
+    }
+
+    /// Sets `routes_stale` for an install that has routes to be stale about; returns whether
+    /// it just turned on.
+    fn set_stale(&self, id: &str, stale: bool) -> bool {
+        let has_routes = stale && self.store.routes(id).is_ok_and(|r| !r.is_empty());
+        let mut all = self.lock_status();
+        let st = all.entry(id.to_string()).or_default();
+        let now = stale && has_routes;
+        let turned_on = now && !st.routes_stale;
+        st.routes_stale = now;
+        turned_on
+    }
+
+    /// Takes the routes of an install that stopped ticking out of the overlay. State and
+    /// port assignments stay; the next tick that declares routes brings them back.
+    async fn withdraw_routes(&self, id: &str, term: Option<u64>) {
+        let _turn = self.install_lock(id).await;
+        if self.lead() != Some(term) || self.store.routes(id).is_ok_and(|r| r.is_empty()) {
+            return;
+        }
+        let read_id = id.to_string();
+        let Ok(Ok((rev, _))) = self
+            .blocking(move |store| store.state(&read_id).map_err(|e| e.to_string()))
+            .await
+        else {
+            return;
+        };
+        let fx = Effects {
+            routes: Some(Vec::new()),
+            ..Effects::default()
+        };
+        match self.commit(id, rev, &fx, term).await {
+            Ok(()) => tracing::warn!(install = id, "plugin routes withdrawn: no successful tick"),
+            Err(e) => tracing::warn!(install = id, error = %e, "could not withdraw stale routes"),
         }
     }
 
@@ -497,6 +621,9 @@ impl Runner {
             Ok(s) => s,
             Err(e) => return Outcome::Failed(e),
         };
+        if rec.approved.backends.is_some() {
+            plugin.set_backend_status(self.board.snapshot());
+        }
         if rec.approved.port_routes.is_some() {
             match self.store.port_routes(&rec.id) {
                 Ok(table) => plugin.set_port_assignments(Arc::new(
@@ -828,6 +955,13 @@ impl Runner {
                 return;
             }
         };
+        if result.is_ok() {
+            self.schedule
+                .lock()
+                .await
+                .ok_at
+                .insert(id.to_string(), Instant::now());
+        }
         let mut all = self.lock_status();
         let st = all.entry(id.to_string()).or_default();
         st.held = None;
@@ -835,6 +969,7 @@ impl Runner {
         st.last_tick_unix = Some(unix_now());
         match result {
             Ok(()) => {
+                st.routes_stale = false;
                 st.last_ok = Some(true);
                 st.last_error = None;
                 st.consecutive_failures = 0;
@@ -883,7 +1018,7 @@ mod tests {
 
     use wayhouse_plugin_host::{inspect, Limits, PluginHost};
 
-    const ABI: &str = "\\00\\00\\02\\00";
+    const ABI: &str = "\\00\\00\\03\\00";
     const TIMER: &str = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"state":{"max_bytes":64}}"#;
     const NO_TIMER: &str = r#"{"log":true}"#;
 
@@ -1425,6 +1560,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_install_list_is_read_again_only_after_the_store_changed() {
+        let (r, store, _d) = fixture(1, 4);
+        install(&store, "a", &counter());
+        let first = r.installs().await.unwrap();
+        let again = r.installs().await.unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "an unchanged store is not listed twice"
+        );
+        let id = first[0].id.clone();
+        store.set_enabled(&id, false).unwrap();
+        let after = r.installs().await.unwrap();
+        assert!(!Arc::ptr_eq(&first, &after));
+        assert!(!after[0].enabled, "a change shows in the next list");
+    }
+
+    #[tokio::test]
     async fn a_slow_tick_does_not_hold_up_the_scan_or_the_other_installs() {
         let (r, store, _d) = fixture(1, 4);
         install(&store, "a", &counter());
@@ -1575,6 +1727,58 @@ mod tests {
         assert!(r.run_hook(HID, Hook::Webhook(request())).await.is_ok());
     }
 
+    const HEALTHY: &str = r#"{"triggers":{"on_timer":true,"on_event":["backend_health"]},"tick_interval_secs":30,"log":true,"state":{"max_bytes":64},"backends":{"networks":["10.0.0.0/16"],"max_entries":8}}"#;
+
+    #[tokio::test]
+    async fn a_backend_going_down_reaches_only_plugins_whose_networks_hold_it() {
+        let (r, store, _d) = fixture(1, 4);
+        let module = guest(
+            HEALTHY,
+            r#"(func (export "init") (param i32 i32))
+               (func (export "on_timer"))
+               (func (export "on_event") (param i32 i32 i32 i32)
+                 (drop (call $get (i32.const 16) (i32.const 1) (i32.const 100) (i32.const 1)))
+                 (i32.store8 (i32.const 100)
+                   (i32.add (i32.load8_u (i32.const 100)) (i32.const 1)))
+                 (drop (call $put (i32.const 16) (i32.const 1) (i32.const 100) (i32.const 1))))"#,
+        );
+        let sha = "c".repeat(64);
+        store.put_blob(&sha, &module).unwrap();
+        store
+            .create(&InstallRecord {
+                id: HID.into(),
+                name: "health".into(),
+                sha256: sha,
+                size: module.len(),
+                approved: inspect(&module).unwrap().caps,
+                config: serde_json::json!({}),
+                enabled: true,
+                created_at: 2,
+                created_by: None,
+                webhook: None,
+                suspended: std::collections::BTreeSet::default(),
+            })
+            .unwrap();
+        // Outside the plugin's networks: it hears nothing.
+        r.report_health("p1", true, &[("192.168.0.9:25565".into(), false)])
+            .unwrap();
+        // Inside: one event.
+        r.report_health("p1", false, &[("10.0.0.5:25565".into(), false)])
+            .unwrap();
+        for _ in 0..200 {
+            if counter_value(&store, HID).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(counter_value(&store, HID), Some(1));
+        // The same word again is not news.
+        r.report_health("p1", false, &[("10.0.0.5:25565".into(), false)])
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(counter_value(&store, HID), Some(1));
+    }
+
     const EVENTED: &str = r#"{"triggers":{"on_timer":true,"on_event":["config_revision"]},"tick_interval_secs":30,"log":true,"state":{"max_bytes":64}}"#;
 
     #[tokio::test]
@@ -1671,6 +1875,39 @@ mod tests {
         store.set_enabled(AID, false).unwrap();
         assert!(store.overlay().unwrap().routes.is_empty());
     }
+    #[tokio::test]
+    async fn routes_go_stale_after_a_grace_and_are_withdrawn_at_twice_that() {
+        let (r, store, _d) = fixture(1, 4);
+        // Fails every tick, so the clock for its routes never restarts.
+        let m = guest(
+            ROUTE_TIMER,
+            r#"(func (export "init") (param i32 i32))
+               (func (export "on_timer") unreachable)"#,
+        );
+        install(&store, AID, &m);
+        let seeded = [wayhouse_plugin_host::RouteEntry {
+            host: "a.mc.example.com".into(),
+            backend: "10.0.1.2:25565".into(),
+            kind: wayhouse_plugin_host::routes::RouteKind::default(),
+        }];
+        store
+            .commit_state_routes(AID, 0, &BTreeMap::new(), Some(&seeded))
+            .unwrap();
+        let t0 = Instant::now();
+        r.run_due(t0).await;
+        // 30 s interval: grace is the 10 minute floor.
+        r.run_due(secs(t0, 599)).await;
+        assert!(!r.status(AID).unwrap().routes_stale);
+        r.run_due(secs(t0, 600)).await;
+        assert!(r.status(AID).unwrap().routes_stale);
+        assert_eq!(store.overlay().unwrap().routes.len(), 1, "still published");
+        r.run_due(secs(t0, 1199)).await;
+        assert_eq!(store.overlay().unwrap().routes.len(), 1);
+        r.run_due(secs(t0, 1200)).await;
+        assert!(store.overlay().unwrap().routes.is_empty(), "withdrawn");
+        assert!(store.routes(AID).unwrap().is_empty());
+    }
+
     const PORT_TIMER: &str = r#"{"triggers":{"on_timer":true},"tick_interval_secs":30,"log":true,"state":{"max_bytes":256},"port_routes":{"ports":["30000-30009"],"proto":["udp","tcp"],"backends":["10.0.0.0/16"],"max_entries":4}}"#;
 
     /// Declares `doc` on every tick, then stores whatever `port_routes_get` reports under `n`.

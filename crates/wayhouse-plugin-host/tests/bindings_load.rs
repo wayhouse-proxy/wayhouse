@@ -14,7 +14,7 @@ fn guest() -> Vec<u8> {
     let len = DOC.len();
     wat::parse_str(format!(
         r#"(module
-  (@custom "wayhouse.plugin-abi" "\00\00\02\00")
+  (@custom "wayhouse.plugin-abi" "\00\00\03\00")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (@custom "wayhouse.plugin-manifest" "{manifest}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))

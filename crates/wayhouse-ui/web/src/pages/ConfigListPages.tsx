@@ -1,4 +1,6 @@
 import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { getWebSyncStatus, type WebSyncStatus } from "../api";
 import { PoolLines, type BackendRow } from "../components/editors/PoolLines";
 import { Select } from "../components/ui/Input";
 import type { State } from "../components/ui/StatusMark";
@@ -144,6 +146,36 @@ const TLS_MODES = [
   { value: "ca", label: "HTTPS, verify against a CA file" },
 ] as const;
 
+const ago = (s: number) => (s < 120 ? `${s} s ago` : s < 7200 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`);
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** When the sync last left Caddy on the intended configuration, from the sync's own metrics (read-only). */
+function WebSyncPanel() {
+  const q = useQuery({ queryKey: ["web-sync"], queryFn: getWebSyncStatus, refetchInterval: 30_000, retry: false });
+  const st: WebSyncStatus | undefined = q.data;
+  let body: React.ReactNode = "Loading…";
+  if (q.error) body = (q.error as Error).message;
+  else if (st && !st.configured) body = <>The UI is not connected to a web sync. Start it with <code className="font-mono">--web-sync-url</code> pointing at the sync&apos;s metrics address to see its status here.</>;
+  else if (st && !st.reachable) body = st.error;
+  else if (st && st.reachable) {
+    const failed = st.errors.read + st.errors.render + st.errors.send;
+    body = (
+      <ul className="flex flex-col gap-0.5">
+        <li>{st.last_ok_age_secs === null ? "No successful sync yet." : `Last successful sync ${ago(st.last_ok_age_secs)}.`}</li>
+        <li>{plural(st.loads, "load")} accepted by Caddy since the sync started.</li>
+        {st.rejects > 0 && <li>Caddy refused {plural(st.rejects, "document")}: the rendered configuration was not accepted.</li>}
+        {failed > 0 && <li>{plural(failed, "cycle")} failed before reaching Caddy (read {st.errors.read}, render {st.errors.render}, send {st.errors.send}); the previous configuration keeps serving.</li>}
+      </ul>
+    );
+  }
+  return (
+    <section aria-label="Web sync" className="mt-6 max-w-(--measure) text-sm">
+      <h2 className="mb-1 text-lg font-semibold">Sync status</h2>
+      <div className="text-ink-muted">{body}</div>
+    </section>
+  );
+}
+
 /** Configure > Web sites: the sites the packaged Caddy serves (`web:`), and the gateway's own settings under them. */
 export function WebEditorPage() {
   return (
@@ -184,11 +216,14 @@ export function WebEditorPage() {
         );
       }}
       below={({ doc, layout, advanced, canWrite }) => (
+        <>
+        <WebSyncPanel />
         <section aria-label="Web gateway" className="mt-6">
           <h2 className="mb-1 text-lg font-semibold">Web gateway</h2>
           <p className="mb-2 max-w-(--measure) text-sm text-ink-muted">Where Caddy listens and which pool carries it; these apply to every site.</p>
           <SchemaForm schema={doc.schema!} value={doc.value} saved={doc.savedValue} onChange={doc.setValue} layout={layout} path={["web"]} page="web" only={["listen", "pool", "trusted_proxy", "internal_bind", "internal_ports"]} showAdvanced={advanced} readonly={!canWrite} />
         </section>
+        </>
       )}
     />
   );

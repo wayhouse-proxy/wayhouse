@@ -33,6 +33,8 @@ export interface FleetInstanceView {
   version?: string;
   /** Component wire protocol `major.minor`; empty from an older build. */
   protocol?: string;
+  /** The controller revision the instance applied; absent for a proxy that reads a file or an older build. */
+  config_revision?: number | null;
   /** Against the newest version in the fleet (the aggregator computes it). */
   skew?: "none" | "within-window" | "outside-window";
 }
@@ -166,6 +168,8 @@ export interface RegistrySnifferDetail {
   sniffer: RegistrySniffer;
   host_abi: string;
   min_proxy_checked: boolean;
+  /** Why it could not be checked, as a sentence (aggregator not configured, an error answer, no proxies, an old build). */
+  min_proxy_note?: string | null;
 }
 
 export interface InstallInstanceResult {
@@ -184,6 +188,9 @@ export interface InstallResponse {
   signed: boolean;
   risk: "official" | "external";
   sha256: string;
+  /** False when `min_proxy` was only checked against the proxies that report a version. */
+  min_proxy_checked?: boolean;
+  min_proxy_note?: string | null;
   results: InstallInstanceResult[];
   pinned_instances: { instance: string; pin: { name: string; sha256: string } }[];
 }
@@ -212,6 +219,7 @@ export interface UpdateCheckRow {
 export interface UpdateCheck {
   host_abi: string;
   min_proxy_checked: boolean;
+  min_proxy_note?: string | null;
   registries: { id: string; name: string; ok: boolean; error?: string }[];
   sniffers: UpdateCheckRow[];
   instance_errors: { instance: string; status: number; detail: string }[];
@@ -308,6 +316,8 @@ export interface PluginStatus {
   last_ok: boolean | null;
   last_error: string | null;
   consecutive_failures: number;
+  /** Routes published but no good tick for a grace period; withdrawn at twice that. */
+  routes_stale?: boolean;
   held: string | null;
   hook_calls?: number;
   hook_failures?: number;
@@ -333,9 +343,25 @@ export interface PluginExhaustedPort {
   plugin: string;
 }
 
+/** One hostname route a plugin published (`tcp` in `routes`, `web` in `web_routes`). */
+export interface PluginHostRoute {
+  host: string;
+  backend: string;
+  /** `plugin:<install id>`. */
+  owner: string;
+  plugin: string;
+}
+
+/** A claim that lost the hostname to an earlier install. */
+export interface PluginRouteConflict extends PluginHostRoute {
+  held_by: string;
+}
+
 export interface PluginRouteOverlay {
-  routes: unknown[];
-  conflicts: unknown[];
+  routes: PluginHostRoute[];
+  conflicts: PluginRouteConflict[];
+  /** Sites of the `web:` front door (ABI 0.3); absent from an older controller. */
+  web_routes?: PluginHostRoute[];
   port_routes?: PluginPortRoute[];
   exhausted?: PluginExhaustedPort[];
 }

@@ -160,6 +160,11 @@ struct CallState {
     /// The entry ports the host assigned this plugin, as `port_routes_get` reports them.
     port_assignments: Arc<BTreeMap<String, u16>>,
     port_doc: Vec<u8>,
+    /// The backend health the host holds, as `backends_get` reports it (filtered then).
+    backend_status: Arc<Vec<crate::backends::BackendStatus>>,
+    /// Built once per call: a guest looping on `backends_get` must not make the host
+    /// rebuild (and copy) the document outside the fuel meter.
+    backends_doc: Option<Arc<Vec<u8>>>,
     webhook: Option<crate::webhook::WebhookResponse>,
     acme_dns: Option<crate::acme_dns::AcmeDnsAnswer>,
     denied: Option<&'static str>,
@@ -259,6 +264,7 @@ impl PluginHost {
                         | "routes_set"
                         | "port_routes_set"
                         | "port_routes_get"
+                        | "backends_get"
                         | "webhook_respond"
                         | "acme_dns_result"
                 );
@@ -319,6 +325,7 @@ impl PluginHost {
             limits: self.limits.clone(),
             http: None,
             port_assignments: Mutex::default(),
+            backend_status: Mutex::default(),
             suspended: Mutex::default(),
             _alive: self.alive.clone(),
         };
@@ -341,6 +348,8 @@ pub struct Plugin {
     http: Option<Arc<HttpEngine>>,
     /// What `port_routes_get` reports; the controller sets it before each call.
     port_assignments: Mutex<Arc<BTreeMap<String, u16>>>,
+    /// What `backends_get` filters; the controller sets it before each call.
+    backend_status: Mutex<Arc<Vec<crate::backends::BackendStatus>>>,
     /// Capabilities the operator switched off ([`Capabilities::suspend`]); the controller
     /// sets it before each call. Not part of what was approved, so resuming needs no approval.
     suspended: Mutex<Vec<String>>,
@@ -362,6 +371,22 @@ impl Plugin {
             .suspended
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = names.into_iter().collect();
+    }
+
+    /// Sets the backend health the next calls read with `backends_get` (each plugin still
+    /// sees only the backends inside its approved networks).
+    pub fn set_backend_status(&self, status: Arc<Vec<crate::backends::BackendStatus>>) {
+        *self
+            .backend_status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = status;
+    }
+
+    fn backend_status(&self) -> Arc<Vec<crate::backends::BackendStatus>> {
+        self.backend_status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn port_assignments(&self) -> Arc<BTreeMap<String, u16>> {
@@ -461,6 +486,17 @@ impl Plugin {
         if !self.info.caps.triggers.on_event.iter().any(|k| k == kind) {
             return Err(CallError::CapabilityDenied("on_event"));
         }
+        // A suspended capability also silences the event that rides on it.
+        if kind == "backend_health"
+            && self
+                .suspended
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|n| n == "backends")
+        {
+            return Ok(Effects::default());
+        }
         self.run(state, |store, inst| {
             let args = write_args(store, inst, &[kind.as_bytes(), payload])?;
             inst.get_typed_func::<(i32, i32, i32, i32), ()>(&mut *store, "on_event")?
@@ -504,6 +540,8 @@ impl Plugin {
             port_routes: None,
             port_assignments: self.port_assignments(),
             port_doc: Vec::new(),
+            backend_status: self.backend_status(),
+            backends_doc: None,
             webhook: None,
             acme_dns: None,
             denied: None,
@@ -836,6 +874,41 @@ fn linker(engine: &Engine) -> Linker<CallState> {
             },
         )
         .expect("defining wayhouse.port_routes_get");
+    linker
+        .func_wrap(
+            "wayhouse",
+            "backends_get",
+            |mut caller: Caller<'_, CallState>,
+             out_ptr: i32,
+             out_cap: i32|
+             -> wasmtime::Result<i32> {
+                let Some(cap) = caller.data().caps.backends.clone() else {
+                    return Err(deny(&mut caller, "backends"));
+                };
+                let st = caller.data_mut();
+                if st.backends_doc.is_none() {
+                    let seen = cap.visible(&st.backend_status);
+                    let doc = if seen.is_empty() {
+                        Vec::new()
+                    } else {
+                        serde_json::to_vec(&seen)?
+                    };
+                    st.backends_doc = Some(Arc::new(doc));
+                }
+                let doc = st.backends_doc.clone().unwrap_or_default();
+                if doc.is_empty() {
+                    return Ok(0);
+                }
+                let len = i32::try_from(doc.len())?;
+                if len > out_cap {
+                    return Ok(-1);
+                }
+                let memory = caller_memory(&mut caller)?;
+                memory.write(&mut caller, out_ptr as u32 as usize, &doc)?;
+                Ok(len)
+            },
+        )
+        .expect("defining wayhouse.backends_get");
     linker
         .func_wrap(
             "wayhouse",

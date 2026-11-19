@@ -84,9 +84,19 @@ fn save(path: &std::path::Path, overrides: &Overrides) {
         .iter()
         .map(|(name, (value, exp))| serde_json::json!({"name": name, "value": value, "expires_at": exp}))
         .collect();
-    let tmp = path.with_extension("tmp");
+    // A tmp file of its own (two writers never share one) and an fsync before the rename, so a
+    // crash leaves the old file or the whole new one.
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     let doc = serde_json::json!({ "items": items }).to_string();
-    if let Err(e) = std::fs::write(&tmp, doc).and_then(|()| std::fs::rename(&tmp, path)) {
+    let write = || -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(doc.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_file(&tmp);
         tracing::warn!(path = %path.display(), error = %e, "feature overrides not saved");
     }
 }
@@ -233,6 +243,23 @@ mod tests {
 
     /// `OVERRIDES` is process-global; tests that touch it take turns.
     static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn saved_overrides_round_trip_and_leave_no_tmp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("overrides.json");
+        let mut o = Overrides::new();
+        o.insert("acl".into(), (false, Some(99)));
+        save(&path, &o);
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, ["overrides.json"], "no leftover tmp file");
+        let doc: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(doc["items"][0]["name"], "acl");
+    }
 
     #[test]
     fn one_bad_item_does_not_drop_the_rest_of_the_document() {

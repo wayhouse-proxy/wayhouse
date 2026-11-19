@@ -18,7 +18,7 @@
 /// the same version (while the major is 0 a minor bump may break the ABI).
 pub const ABI_MAJOR: u16 = 0;
 /// See [`ABI_MAJOR`].
-pub const ABI_MINOR: u16 = 2;
+pub const ABI_MINOR: u16 = 3;
 
 /// The payload of the [`ABI_SECTION`] custom section: major then minor, both u16 LE.
 pub const ABI_BYTES: [u8; 4] = {
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn abi_bytes_are_major_then_minor_le() {
-        assert_eq!(ABI_BYTES, [0, 0, 2, 0]);
+        assert_eq!(ABI_BYTES, [0, 0, 3, 0]);
     }
 
     #[test]

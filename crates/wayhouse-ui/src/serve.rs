@@ -116,6 +116,20 @@ struct Args {
     #[arg(skip)]
     aggregator_token: Option<String>,
 
+    /// `wayhouse-web-sync` metrics base URL (e.g. "http://127.0.0.1:9904"), read by the Web sites
+    /// page for the last sync. Omitted: the page says the sync is not connected.
+    #[arg(long)]
+    web_sync_url: Option<String>,
+
+    /// Bearer token the sync's `/metrics` asks for (`--metrics-token-file` of the sync).
+    #[arg(long, value_name = "PATH")]
+    web_sync_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--web-sync-token-file`, `$CREDENTIALS_DIRECTORY/web-sync-token` or `$WAYHOUSE_WEB_SYNC_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
+    web_sync_token: Option<String>,
+
     /// `wayhouse-controller` base URL (e.g. "http://127.0.0.1:9901") that
     /// structural-config actions proxy to. Omitted: those routes return 503.
     #[arg(long)]
@@ -194,6 +208,9 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
         args.aggregator_token_file.as_deref(),
     )
     .map_err(anyhow::Error::msg)?;
+    args.web_sync_token =
+        wayhouse_http::secret_arg::resolve("web-sync-token", args.web_sync_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
     args.controller_token = wayhouse_http::secret_arg::resolve(
         "controller-token",
         args.controller_token_file.as_deref(),
@@ -237,6 +254,7 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
             &args.aggregator_url,
             &args.aggregator_token,
         ),
+        ("--web-sync-url", &args.web_sync_url, &args.web_sync_token),
     ] {
         if let Some(url) = url {
             wayhouse_http::bearer::check_bearer_transport(
@@ -300,6 +318,9 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
     state = state.with_release_watch(release_watch);
     if let Some(dir) = &args.settings_dir {
         state = state.with_settings_dir(dir.clone());
+    }
+    if let Some(url) = args.web_sync_url {
+        state = state.with_web_sync(url, args.web_sync_token);
     }
     let mut feed_task = None;
     if let Some(aggregator_url) = args.aggregator_url {

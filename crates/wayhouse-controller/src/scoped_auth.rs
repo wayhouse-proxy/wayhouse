@@ -26,6 +26,7 @@ const PROXY: Allowed = &[
     (&Method::GET, "/peers/*"),
     (&Method::GET, "/features/overrides"),
     (&Method::POST, "/proxy-peers"),
+    (&Method::POST, "/backend-health"),
 ];
 
 const AGENT: Allowed = &[
@@ -72,6 +73,8 @@ const UI: Allowed = &[
     (&Method::DELETE, "/plugins/*/secrets/*"),
     (&Method::POST, "/plugins/*/webhook"),
     (&Method::DELETE, "/plugins/*/webhook"),
+    (&Method::GET, "/admin/plugins/secrets/keys"),
+    (&Method::POST, "/admin/plugins/secrets/rewrap"),
     (&Method::GET, "/acme/sites"),
     (&Method::PUT, "/acme/sites/*"),
     (&Method::DELETE, "/acme/sites/*"),
@@ -95,6 +98,7 @@ const UI: Allowed = &[
     (&Method::GET, "/ui/*/*"),
     (&Method::PUT, "/ui/*/*"),
     (&Method::DELETE, "/ui/*/*"),
+    (&Method::POST, "/ui/dashboards/*/rename"),
 ];
 
 /// What an enrolled origin's own token may call: the agent's list plus its tunnel key, which
@@ -306,6 +310,7 @@ mod tests {
             ("GET", "/peers/home"),
             ("GET", "/features/overrides"),
             ("POST", "/proxy-peers"),
+            ("POST", "/backend-health"),
         ] {
             assert_eq!(status(m, p, PROXY_T).await, StatusCode::OK, "{m} {p}");
         }
@@ -335,6 +340,9 @@ mod tests {
             ("GET", "/ui/dashboards"),
             ("PUT", "/ui/dashboards/ops"),
             ("DELETE", "/ui/dashboards/ops"),
+            ("GET", "/admin/plugins/secrets/keys"),
+            ("POST", "/admin/plugins/secrets/rewrap"),
+            ("POST", "/ui/dashboards/ops/rename"),
         ] {
             assert_eq!(status(m, p, UI_T).await, StatusCode::OK, "{m} {p}");
         }
@@ -351,6 +359,7 @@ mod tests {
             ("GET", "/proxy-peers/edge"),
             ("POST", "/peers"),
             ("POST", "/proxy-peers"),
+            ("POST", "/backend-health"),
             ("GET", "/config/subscribe"),
             ("GET", "/peers/subscribe"),
             ("GET", "/proxy-peers/subscribe"),

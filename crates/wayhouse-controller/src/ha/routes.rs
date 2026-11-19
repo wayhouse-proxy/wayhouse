@@ -89,10 +89,10 @@ pub const CONFIRM_SUPPORT: u32 = 2;
 /// be shut out of that while the fleet upgrades.
 pub const CONFIRM_DECODE_SUPPORT: u32 = 1;
 
-/// The UI data replication level this build speaks (`8` adds controller codes (node id, join proof), `7` adds per-origin tokens (`Kind::OriginToken`), `6` adds enrollment codes and `Redeem`, `5` adds the cluster secret rewrap, `4` adds cluster secrets, `3` adds operator node tags, `2` adds
+/// The UI data replication level this build speaks (`10` adds dashboard revisions and `RenameDashboard`, `9` adds pool controller codes, `8` adds controller codes (node id, join proof), `7` adds per-origin tokens (`Kind::OriginToken`), `6` adds enrollment codes and `Redeem`, `5` adds the cluster secret rewrap, `4` adds cluster secrets, `3` adds operator node tags, `2` adds
 /// feature-flag overrides; `1`: dashboards, themes, saved filters, the
 /// form layout override and the deployment defaults).
-pub const UI_SUPPORT: u32 = 9;
+pub const UI_SUPPORT: u32 = 10;
 
 /// The ACME replication level this build speaks (`1`: sites, account, certificates; `2` adds
 /// gateways, `3` adds `challenge_zone` on sites, `4` adds HTTP-01 sites and challenge answers,
@@ -104,9 +104,9 @@ pub const ACME_SUPPORT: u32 = 5;
 /// member): `1` replicated installs and state, `2`
 /// adds module blob replication (`/raft/plugin-blob`), `3` adds webhooks
 /// (`PluginSetWebhook`, `/raft/plugin-hook`), `4` adds port routes (`PluginState.port_routes` and the clock that
-/// quarantine counts from), `5` adds the plugin manifest and capability bindings (ABI 0.2) and `PluginSetConfig`, `6` adds `PluginSetSuspended`. A leader proposes a new plugin install, a
+/// quarantine counts from), `5` adds the plugin manifest and capability bindings (ABI 0.2) and `PluginSetConfig`, `6` adds `PluginSetSuspended`, `7` adds ABI 0.3 (route `kind` in the replicated route sets and the `backends` capability in approvals; an older node would refuse them). A leader proposes a new plugin install, a
 /// config edit or a webhook change, only when every member reports at least this.
-pub const PLUGIN_SUPPORT: u32 = 6;
+pub const PLUGIN_SUPPORT: u32 = 7;
 
 async fn whoami(State(ha): State<Arc<HaHandle>>) -> impl IntoResponse {
     Json(Whoami {
