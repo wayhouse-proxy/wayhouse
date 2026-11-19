@@ -39,6 +39,7 @@ static WEB_OVERLAY: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 #[derive(Deserialize)]
 struct Doc {
+    #[serde(default)]
     routes: Vec<Entry>,
     /// Entry-port routes; absent from a controller that predates them.
     #[serde(default)]
@@ -241,14 +242,16 @@ fn set(routes: Vec<PluginRoute>) -> bool {
     true
 }
 
-/// What `--plugin-overlay-file` holds: the routes and the `web` routes.
-type FileOverlay = (Vec<PluginRoute>, Vec<(String, String)>);
+/// What `--plugin-overlay-file` holds: the routes, the `web` routes, and how many entries this
+/// build left out (a typo like `hostt`, an unknown `proto`): the stream drops those quietly
+/// because a newer controller may add kinds, but a hand-written file should hear about them.
+type FileOverlay = (Vec<PluginRoute>, Vec<(String, String)>, usize);
 
 /// The overlay file's text as routes. A missing file is an empty overlay; text that is not the
-/// overlay document is an error, so a typo never silently withdraws every route.
+/// overlay document is an error, so a typo in the structure never silently withdraws every route.
 fn parse_file(text: Option<&str>) -> Result<FileOverlay, serde_json::Error> {
     let Some(text) = text else {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), 0));
     };
     let doc: Doc = serde_json::from_str(text)?;
     let web = doc
@@ -256,24 +259,52 @@ fn parse_file(text: Option<&str>) -> Result<FileOverlay, serde_json::Error> {
         .iter()
         .map(|w| (w.host.clone(), w.backend.clone()))
         .collect();
-    Ok((doc_routes(doc), web))
+    let entries = doc.routes.len() + doc.port_routes.len();
+    let routes = doc_routes(doc);
+    let dropped = entries - routes.len();
+    Ok((routes, web, dropped))
 }
 
+/// Most a hand-kept overlay file should ever be; a bigger one is a mistake, not routes.
+const MAX_FILE_BYTES: u64 = 1 << 20;
+
 fn read_file_text(path: &Path) -> anyhow::Result<Option<String>> {
-    match std::fs::read_to_string(path) {
+    let read = || {
+        let len = std::fs::metadata(path)?.len();
+        if len > MAX_FILE_BYTES {
+            return Err(std::io::Error::other(format!(
+                "{len} bytes is more than the {MAX_FILE_BYTES} an overlay file may hold"
+            )));
+        }
+        std::fs::read_to_string(path)
+    };
+    match read() {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
 }
 
-/// Reads the overlay file into the process-wide overlay; returns whether it changed. Used at
-/// start, where an unreadable or malformed file refuses the start like a bad config does.
-pub fn load_file(path: &Path) -> anyhow::Result<bool> {
+/// Reads the overlay file into the process-wide overlay; returns whether it changed. At start
+/// (`running` false) a missing file is no routes and an unreadable or malformed one refuses the
+/// start like a bad config does. Once running, a file that has gone missing is an error too, so
+/// the last good routes stay (an editor or a deploy may swap the file for a moment).
+pub fn load_file(path: &Path, running: bool) -> anyhow::Result<bool> {
     let text = read_file_text(path)?;
-    let (routes, web) =
+    if running && text.is_none() {
+        anyhow::bail!("{} is missing", path.display());
+    }
+    let (routes, web, dropped) =
         parse_file(text.as_deref()).with_context(|| format!("parsing {}", path.display()))?;
-    Ok(set(routes) | set_web(web))
+    let changed = set(routes) | set_web(web);
+    if dropped > 0 && (changed || !running) {
+        tracing::warn!(
+            file = %path.display(),
+            dropped,
+            "plugin overlay file: entries left out (a host or port with a backend, and a proto of tcp, udp or both, are needed)"
+        );
+    }
+    Ok(changed)
 }
 
 /// Runs forever: re-reads the overlay file and asks for a rebuild when its routes change. A bad
@@ -284,7 +315,7 @@ pub async fn run_file(path: std::path::PathBuf, handle: RuntimeHandle) {
     let mut last_error = String::new();
     loop {
         tokio::time::sleep(FILE_POLL).await;
-        match load_file(&path) {
+        match load_file(&path, true) {
             Ok(changed) => {
                 last_error.clear();
                 if changed {
@@ -391,6 +422,9 @@ async fn subscribe_once(
 mod tests {
     use super::*;
 
+    /// Tests that change the process-wide overlay take this, so they do not see each other's.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn a_data_event_yields_routes_and_a_keep_alive_does_not() {
         let r = parse_event(
@@ -477,6 +511,9 @@ mod tests {
 
     #[test]
     fn the_merge_applies_the_overlay_and_a_change_is_noticed() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let text = "schema_version: 2\npools:\n  - name: p\n    targets: [\"10.9.0.1:1\"]\nlisteners:\n  - name: l\n    bind: \"0.0.0.0:1\"\n    protocol: tcp\n    pool: p\n    plugin_routes: { type: sni }\n";
         assert!(set(vec![PluginRoute::host("a.example.com", "10.0.1.1:1")]));
         let merged = merge(text);
@@ -488,7 +525,7 @@ mod tests {
 
     #[test]
     fn an_overlay_file_gives_routes_port_routes_and_web_routes() {
-        let (routes, web) = parse_file(Some(
+        let (routes, web, dropped) = parse_file(Some(
             r#"{"routes":[{"host":"a.example.com","backend":"10.0.0.1:1"}],
                 "port_routes":[{"port":7000,"proto":"tcp","backend":"10.0.0.2:7000"}],
                 "web_routes":[{"host":"w.example.com","backend":"10.0.0.3:80"}]}"#,
@@ -497,11 +534,68 @@ mod tests {
         assert_eq!(routes.len(), 2);
         assert_eq!(routes[0], PluginRoute::host("a.example.com", "10.0.0.1:1"));
         assert_eq!(web, vec![("w.example.com".into(), "10.0.0.3:80".into())]);
+        assert_eq!(dropped, 0);
+    }
+
+    #[test]
+    fn entries_this_build_cannot_read_are_counted_not_silently_lost() {
+        let (routes, _, dropped) = parse_file(Some(
+            r#"{"routes":[{"hostt":"a.example.com","backend":"10.0.0.1:1"},{"host":"b.example.com","backend":"10.0.0.1:2"}],
+                "port_routes":[{"port":7000,"proto":"TCP","backend":"10.0.0.2:7000"}]}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            routes,
+            vec![PluginRoute::host("b.example.com", "10.0.0.1:2")]
+        );
+        assert_eq!(dropped, 2);
+        // A document with only a web list is fine.
+        assert!(parse_file(Some(r#"{"web_routes":[]}"#)).is_ok());
+    }
+
+    #[test]
+    fn a_file_over_the_size_cap_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = dir.path().join("big.json");
+        std::fs::write(&big, vec![b' '; (MAX_FILE_BYTES + 1) as usize]).unwrap();
+        assert!(read_file_text(&big).is_err());
+    }
+
+    #[test]
+    fn the_live_path_notices_changes_keeps_the_last_good_and_survives_a_missing_file() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("overlay.json");
+        let one = r#"{"routes":[{"host":"a.example.com","backend":"10.0.0.1:1"}]}"#;
+        std::fs::write(&path, one).unwrap();
+        assert!(load_file(&path, false).unwrap());
+        assert!(
+            !load_file(&path, true).unwrap(),
+            "same file, nothing changed"
+        );
+        let before = lock().clone();
+        assert_eq!(
+            before,
+            vec![PluginRoute::host("a.example.com", "10.0.0.1:1")]
+        );
+        // A bad edit is an error and leaves the overlay as it was.
+        std::fs::write(&path, "{ not json").unwrap();
+        assert!(load_file(&path, true).is_err());
+        assert_eq!(*lock(), before);
+        // So does a file that went missing while running ...
+        std::fs::remove_file(&path).unwrap();
+        assert!(load_file(&path, true).is_err());
+        assert_eq!(*lock(), before);
+        // ... while at start a missing file means no routes.
+        assert!(load_file(&path, false).unwrap());
+        assert!(lock().is_empty());
     }
 
     #[test]
     fn a_missing_overlay_file_is_empty_and_a_malformed_one_is_an_error() {
-        assert_eq!(parse_file(None).unwrap(), (Vec::new(), Vec::new()));
+        assert_eq!(parse_file(None).unwrap(), (Vec::new(), Vec::new(), 0));
         assert!(parse_file(Some("routes: nope")).is_err());
         assert!(parse_file(Some(r#"{"routes":"x"}"#)).is_err());
     }

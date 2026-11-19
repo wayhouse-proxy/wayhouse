@@ -449,7 +449,7 @@ async fn async_main(mut args: Args) -> anyhow::Result<()> {
         }
         None => {
             if let Some(file) = &args.plugin_overlay_file {
-                plugin_overlay::load_file(file)?;
+                plugin_overlay::load_file(file, false)?;
             }
             let cfg = plugin_overlay::load(&args.config)?;
             (ConfigSource::File(args.config.clone()), cfg, None)
