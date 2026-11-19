@@ -12,8 +12,11 @@
 //! - **Connection cap** ([`MAX_CONNECTIONS`]): the loop takes a permit before it accepts, so
 //!   past the cap new peers wait in the kernel's accept queue instead of costing a task.
 
+use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::extract::ConnectInfo;
@@ -23,6 +26,7 @@ use hyper::Request;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 use hyper_util::service::TowerToHyperService;
+use std::future::Future;
 use tokio::sync::Semaphore;
 use tower::ServiceExt as _;
 
@@ -30,7 +34,13 @@ use crate::tls::PeerAddr;
 
 /// The time a client has to send a whole HTTP/1 request head, and the time an idle
 /// keep-alive connection may wait for the next one.
-pub const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// 60 s, not 30: the fleet's agents poll every 30 s by default, and a shorter idle timer
+/// would make each poll pay a fresh handshake.
+pub const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// The time a new connection has to send its first byte. hyper-util's version detection
+/// reads those bytes with no timer of its own, so without this a silent peer holds a slot.
+pub const FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(30);
 /// An HTTP/2 connection is pinged this often...
 pub const H2_PING_EVERY: Duration = Duration::from_secs(30);
 /// ...and dropped when the ping is not answered within this.
@@ -43,6 +53,7 @@ pub const MAX_CONNECTIONS: usize = 4096;
 #[derive(Debug, Clone, Copy)]
 pub struct ConnLimits {
     pub header_read_timeout: Duration,
+    pub first_byte_timeout: Duration,
     pub max_connections: usize,
 }
 
@@ -50,6 +61,7 @@ impl Default for ConnLimits {
     fn default() -> Self {
         Self {
             header_read_timeout: HEADER_READ_TIMEOUT,
+            first_byte_timeout: FIRST_BYTE_TIMEOUT,
             max_connections: MAX_CONNECTIONS,
         }
     }
@@ -76,7 +88,7 @@ where
             .layer(Extension(ConnectInfo(PeerAddr(peer))))
             .map_request(|req: Request<Incoming>| req.map(axum::body::Body::new));
         let service = TowerToHyperService::new(service);
-        let io = TokioIo::new(io);
+        let io = TokioIo::new(FirstByte::new(io, limits.first_byte_timeout));
         tokio::spawn(async move {
             // Held for the life of the connection.
             let _permit = permit;
@@ -94,5 +106,80 @@ where
                 .enable_connect_protocol();
             let _ = builder.serve_connection_with_upgrades(io, service).await;
         });
+    }
+}
+
+/// An accepted stream whose reads fail with `TimedOut` if no byte has arrived by the
+/// deadline, or if the bytes so far are still only the start of the HTTP/2 preface. Once the
+/// protocol is clear the timer is off for good (the header-read timeout and the HTTP/2 pings
+/// take over).
+struct FirstByte<Io> {
+    inner: Io,
+    sleep: Option<Pin<Box<tokio::time::Sleep>>>,
+    /// What has been read while the timer runs; only ever a prefix of [`H2_PREFACE`].
+    head: Vec<u8>,
+}
+
+/// hyper-util keeps reading until the bytes either differ from this or complete it, so a
+/// peer that stops partway through it is the one case a plain "first byte" timer misses.
+const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+impl<Io> FirstByte<Io> {
+    fn new(inner: Io, limit: Duration) -> Self {
+        Self {
+            inner,
+            sleep: Some(Box::pin(tokio::time::sleep(limit))),
+            head: Vec::new(),
+        }
+    }
+}
+
+impl<Io: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for FirstByte<Io> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        match Pin::new(&mut self.inner).poll_read(cx, buf) {
+            Poll::Ready(r) => {
+                if self.sleep.is_some() {
+                    let me = &mut *self;
+                    me.head.extend_from_slice(&buf.filled()[before..]);
+                    // Done once the bytes are no longer a proper prefix of the preface.
+                    if !H2_PREFACE.starts_with(&me.head) || me.head.len() >= H2_PREFACE.len() {
+                        me.sleep = None;
+                    }
+                }
+                Poll::Ready(r)
+            }
+            Poll::Pending => {
+                let expired = match self.sleep.as_mut() {
+                    Some(sleep) => sleep.as_mut().poll(cx).is_ready(),
+                    None => false,
+                };
+                if expired {
+                    Poll::Ready(Err(io::ErrorKind::TimedOut.into()))
+                } else {
+                    Poll::Pending
+                }
+            }
+        }
+    }
+}
+
+impl<Io: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for FirstByte<Io> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        b: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, b)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }

@@ -38,6 +38,7 @@ async fn start(limits: ConnLimits) -> SocketAddr {
 fn limits(header_ms: u64, max: usize) -> ConnLimits {
     ConnLimits {
         header_read_timeout: Duration::from_millis(header_ms),
+        first_byte_timeout: Duration::from_millis(header_ms),
         max_connections: max,
     }
 }
@@ -124,4 +125,45 @@ async fn past_the_cap_a_new_connection_waits_for_a_free_slot() {
         .await
         .expect("served after a slot frees");
     assert!(got.starts_with("HTTP/1.1 200"), "{got}");
+}
+
+/// A peer that connects and sends nothing is cut off by the first-byte timer, and its
+/// slot comes back (hyper's protocol detection has no timer of its own).
+#[tokio::test]
+async fn a_silent_connection_is_cut_off_and_frees_its_slot() {
+    let addr = start(ConnLimits {
+        header_read_timeout: Duration::from_secs(30),
+        first_byte_timeout: Duration::from_millis(300),
+        max_connections: 1,
+    })
+    .await;
+    let mut silent = TcpStream::connect(addr).await.unwrap();
+    let mut buf = [0u8; 16];
+    let n = tokio::time::timeout(Duration::from_secs(3), silent.read(&mut buf))
+        .await
+        .expect("server closes the silent connection")
+        .unwrap_or(0);
+    assert_eq!(n, 0);
+    let mut next = TcpStream::connect(addr).await.unwrap();
+    get_path(&mut next, "/peer").await;
+    assert!(read_some(&mut next, Duration::from_secs(3)).await.is_some());
+}
+
+/// One byte ("P") is not a request: the connection still ends once the header timer runs out.
+#[tokio::test]
+async fn one_byte_then_silence_is_cut_off() {
+    let addr = start(ConnLimits {
+        header_read_timeout: Duration::from_secs(30),
+        first_byte_timeout: Duration::from_millis(300),
+        max_connections: 4,
+    })
+    .await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(b"P").await.unwrap();
+    let mut buf = [0u8; 16];
+    let n = tokio::time::timeout(Duration::from_secs(3), s.read(&mut buf))
+        .await
+        .expect("server closes the connection")
+        .unwrap_or(0);
+    assert_eq!(n, 0);
 }
