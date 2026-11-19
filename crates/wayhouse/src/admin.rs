@@ -24,6 +24,8 @@ use wayhouse_core::pool::AdminState as BackendState;
 use wayhouse_core::sniff::Sniffers;
 use wayhouse_core::RuntimeHandle;
 
+use crate::config_file::ConfigFile;
+
 #[derive(Clone)]
 struct AdminState {
     runtime: RuntimeHandle,
@@ -44,6 +46,8 @@ struct AdminState {
     /// Vets an uploaded module before it is written. `None` when this build or
     /// instance cannot load sniffers at all.
     sniffer_validator: Option<SnifferValidator>,
+    /// The config file this proxy runs from (`None` under `--controller`), for `/config/file`.
+    config_file: Option<ConfigFile>,
 }
 
 pub type SnifferPins =
@@ -78,6 +82,12 @@ fn router(state: AdminState) -> Router {
         .route("/config", get(config))
         .route("/config/schema", get(config_schema))
         .route("/config/validate", post(validate_config))
+        .route(
+            "/config/file",
+            get(get_config_file)
+                .put(put_config_file)
+                .layer(DefaultBodyLimit::max(1 << 20)),
+        )
         .route("/web", get(web))
         .route("/features", get(features))
         .route("/sessions", get(sessions))
@@ -185,6 +195,7 @@ pub async fn serve(
     sniffers: std::sync::Arc<Sniffers>,
     sniffer_pins: SnifferPins,
     sniffer_validator: Option<SnifferValidator>,
+    config_file: Option<ConfigFile>,
 ) {
     let app = router(AdminState {
         runtime,
@@ -194,6 +205,7 @@ pub async fn serve(
         sniffers,
         sniffer_pins,
         sniffer_validator,
+        config_file,
     });
 
     // HTTPS with `settings.admin.tls`, plain HTTP otherwise. A bind failure
@@ -284,6 +296,141 @@ async fn validate_config(body: String) -> Response {
             axum::Json(serde_json::json!({"error": e.to_string()})),
         )
             .into_response(),
+    }
+}
+
+/// The answer for `/config/file` on a proxy with no config file (`--controller` has none to show).
+fn no_config_file() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        axum::Json(serde_json::json!({"error": "this proxy does not run from a config file"})),
+    )
+        .into_response()
+}
+
+/// `GET /config/file`: the config file as written, with its etag (`?previous=1`: the copy a write
+/// kept of the file before it). Always on; the file may hold secret references but never secrets.
+async fn get_config_file(
+    State(s): State<AdminState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let Some(file) = s.config_file.as_ref() else {
+        return no_config_file();
+    };
+    let previous = q.get("previous").is_some_and(|v| v == "1" || v == "true");
+    let path = if previous {
+        crate::config_file::prev_path(&file.path)
+    } else {
+        file.path.clone()
+    };
+    match std::fs::read(&path) {
+        Ok(bytes) => (
+            [
+                ("Content-Type", "text/yaml; charset=utf-8".to_string()),
+                ("ETag", crate::config_file::etag(&bytes)),
+                (
+                    "X-Config-Revision",
+                    crate::config_file::revision(&bytes).to_string(),
+                ),
+                (
+                    "X-Config-Schema-Version",
+                    wayhouse_config::version::CONFIG_SCHEMA_VERSION.to_string(),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && previous => (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "no earlier version is kept yet"})),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot read the config file for /config/file");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": "cannot read the config file"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `PUT /config/file`: replace the config file (raw YAML body) if it is still the version named by
+/// `If-Match`; the proxy then reloads it like any edit. Off unless `--allow-config-write`.
+async fn put_config_file(
+    State(s): State<AdminState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
+    body: String,
+) -> Response {
+    let Some(file) = s.config_file.as_ref() else {
+        return no_config_file();
+    };
+    let json_error = |status: StatusCode, error: &str, code: Option<&str>| {
+        let mut body = serde_json::json!({ "error": error });
+        if let Some(code) = code {
+            body["code"] = code.into();
+        }
+        (status, axum::Json(body)).into_response()
+    };
+    if !file.allow_write {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "config writes are switched off: start the proxy with --allow-config-write",
+            None,
+        );
+    }
+    // The version being edited: `If-Match` with the ETag of a read, or `?base=` with its
+    // `X-Config-Revision` (what the web editor keeps).
+    let base = match (
+        headers.get("if-match").and_then(|v| v.to_str().ok()),
+        q.get("base"),
+    ) {
+        (Some(tag), _) => Some(tag.to_string()),
+        (None, Some(n)) if n.parse::<u64>().is_ok() => None,
+        _ => return json_error(
+            StatusCode::PRECONDITION_REQUIRED,
+            "send If-Match with the ETag of the version you edited, or ?base= with its revision",
+            None,
+        ),
+    };
+    let path = file.path.clone();
+    let revision = q.get("base").and_then(|n| n.parse::<u64>().ok());
+    let written = tokio::task::spawn_blocking(move || {
+        let base = match (&base, revision) {
+            (Some(tag), _) => crate::config_file::Base::Etag(tag),
+            (None, Some(n)) => crate::config_file::Base::Revision(n),
+            (None, None) => return Err(crate::config_file::WriteError::Stale),
+        };
+        crate::config_file::write(&path, base, &body)
+    })
+    .await
+    .unwrap_or_else(|e| Err(crate::config_file::WriteError::Io(e.to_string())));
+    match written {
+        Ok((etag, revision)) => {
+            s.runtime.request_reload();
+            axum::Json(
+                serde_json::json!({"ok": true, "etag": etag, "revision": revision, "applying": true}),
+            )
+                .into_response()
+        }
+        Err(crate::config_file::WriteError::Stale) => json_error(
+            StatusCode::CONFLICT,
+            "the config file changed since you read it",
+            Some("stale"),
+        ),
+        Err(crate::config_file::WriteError::Invalid(e)) => {
+            json_error(StatusCode::UNPROCESSABLE_ENTITY, &e, None)
+        }
+        Err(crate::config_file::WriteError::Io(e)) => {
+            tracing::warn!(error = %e, "config file write failed");
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the config file could not be written",
+                None,
+            )
+        }
     }
 }
 
@@ -1028,6 +1175,15 @@ mod tests {
         auth_token: Option<&str>,
         sniffers_dir: Option<std::path::PathBuf>,
     ) -> (String, Runtime) {
+        spawn_admin_config(yaml, auth_token, sniffers_dir, None).await
+    }
+
+    async fn spawn_admin_config(
+        yaml: &str,
+        auth_token: Option<&str>,
+        sniffers_dir: Option<std::path::PathBuf>,
+        config_file: Option<ConfigFile>,
+    ) -> (String, Runtime) {
         let cfg = wayhouse_config::parse_str(yaml).unwrap();
         let runtime = Runtime::start(Snapshot::from_config(&cfg), std::sync::Arc::default(), 1);
         let prometheus = PrometheusBuilder::new().build_recorder().handle();
@@ -1039,6 +1195,7 @@ mod tests {
             sniffers: std::sync::Arc::new(wayhouse_core::sniff::Sniffers::default()),
             sniffer_pins: std::sync::Arc::new(Vec::new),
             sniffer_validator: None,
+            config_file,
         });
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1455,6 +1612,7 @@ mod tests {
                 sniffer_validator: Some(Arc::new(move |b: &[u8]| {
                     loader.validate(b, 1 << 20).map_err(|e| e.to_string())
                 })),
+                config_file: None,
             });
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
@@ -2103,6 +2261,158 @@ mod tests {
         assert_eq!(bad.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
         let v: serde_json::Value = bad.json().await.unwrap();
         assert!(v["error"].as_str().is_some_and(|e| !e.is_empty()), "{v}");
+    }
+
+    const FILE_YAML: &str = "pools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\n\
+                             listeners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    pool: p\n";
+
+    async fn spawn_with_file(allow_write: bool) -> (String, Runtime, tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wayhouse.yaml");
+        std::fs::write(&path, FILE_YAML).unwrap();
+        let (base, runtime) = spawn_admin_config(
+            FILE_YAML,
+            Some("tok"),
+            None,
+            Some(ConfigFile {
+                path: path.clone(),
+                allow_write,
+            }),
+        )
+        .await;
+        (base, runtime, dir, path)
+    }
+
+    #[tokio::test]
+    async fn the_config_file_is_readable_with_an_etag_and_a_controller_proxy_has_none() {
+        let (base, _runtime, _dir, _path) = spawn_with_file(false).await;
+        let http = reqwest::Client::new();
+        let r = http
+            .get(format!("{base}/config/file"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let r = http
+            .get(format!("{base}/config/file"))
+            .bearer_auth("tok")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            r.headers()["etag"],
+            crate::config_file::etag(FILE_YAML.as_bytes()).as_str()
+        );
+        assert_eq!(r.text().await.unwrap(), FILE_YAML);
+        // No earlier version yet.
+        let r = http
+            .get(format!("{base}/config/file?previous=1"))
+            .bearer_auth("tok")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::NOT_FOUND);
+        // A proxy with no config file (it follows a controller) answers 404.
+        let (base, _runtime) = spawn_admin_with_token(FILE_YAML, Some("tok")).await;
+        let r = http
+            .get(format!("{base}/config/file"))
+            .bearer_auth("tok")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_config_file_cannot_be_written_unless_the_proxy_allows_it() {
+        let (base, _runtime, _dir, path) = spawn_with_file(false).await;
+        let http = reqwest::Client::new();
+        let r = http
+            .put(format!("{base}/config/file"))
+            .bearer_auth("tok")
+            .header("If-Match", crate::config_file::etag(FILE_YAML.as_bytes()))
+            .body(FILE_YAML.replace("127.0.0.1:1", "127.0.0.1:2"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::FORBIDDEN);
+        assert_eq!(std::fs::read_to_string(path).unwrap(), FILE_YAML);
+    }
+
+    #[tokio::test]
+    async fn a_config_file_write_needs_the_etag_is_checked_and_keeps_the_previous_file() {
+        let (base, _runtime, _dir, path) = spawn_with_file(true).await;
+        let http = reqwest::Client::new();
+        let put = |tag: Option<String>, body: String| {
+            let mut req = http
+                .put(format!("{base}/config/file"))
+                .bearer_auth("tok")
+                .body(body);
+            if let Some(tag) = tag {
+                req = req.header("If-Match", tag);
+            }
+            req.send()
+        };
+        let newer = FILE_YAML.replace("127.0.0.1:1", "127.0.0.1:2");
+        // No If-Match: refused before anything is read.
+        assert_eq!(
+            put(None, newer.clone()).await.unwrap().status(),
+            reqwest::StatusCode::PRECONDITION_REQUIRED
+        );
+        // A config this build refuses.
+        let tag = crate::config_file::etag(FILE_YAML.as_bytes());
+        let r = put(Some(tag.clone()), "listeners: nope".into())
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), FILE_YAML);
+        // The real write.
+        let r = put(Some(tag.clone()), newer.clone()).await.unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::OK);
+        let v: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(
+            v["etag"],
+            crate::config_file::etag(newer.as_bytes()).as_str()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+        // The old tag is stale now, with the code the UI looks for.
+        let r = put(Some(tag), FILE_YAML.into()).await.unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::CONFLICT);
+        let v: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(v["code"], "stale");
+        // The web editor names the version by its revision number instead.
+        let third = newer.replace("127.0.0.1:2", "127.0.0.1:4");
+        let rev = crate::config_file::revision(newer.as_bytes());
+        let r = http
+            .put(format!("{base}/config/file?base={}", rev + 1))
+            .bearer_auth("tok")
+            .body(third.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::CONFLICT);
+        let r = http
+            .put(format!("{base}/config/file?base={rev}"))
+            .bearer_auth("tok")
+            .body(third.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::OK);
+        let v: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(
+            v["revision"],
+            crate::config_file::revision(third.as_bytes())
+        );
+        // The previous version can be read back (now the second one).
+        let r = http
+            .get(format!("{base}/config/file?previous=1"))
+            .bearer_auth("tok")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.text().await.unwrap(), newer);
     }
 
     #[tokio::test]

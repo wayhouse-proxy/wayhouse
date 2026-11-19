@@ -6,6 +6,7 @@
 
 mod admin;
 mod aggregator_client;
+mod config_file;
 mod controller_client;
 mod discovery;
 #[cfg(feature = "dns-srv")]
@@ -116,6 +117,13 @@ struct Args {
         conflicts_with_all = ["controller", "plugin_overlay_url"]
     )]
     plugin_overlay_file: Option<std::path::PathBuf>,
+
+    /// Let the admin API replace the config file (`PUT /config/file`, with the ETag of the
+    /// version being edited; the previous file is kept as `<file>.prev`). Off by default: with
+    /// it, whoever holds the admin token can rewrite listeners and TLS paths. Reads of the file
+    /// (`GET /config/file`) are always on. Has no effect with `--controller`.
+    #[arg(long, conflicts_with = "controller")]
+    allow_config_write: bool,
 
     /// Bearer token for `--plugin-overlay-url`, if the controller requires one.
     #[arg(long, value_name = "PATH", requires = "plugin_overlay_url")]
@@ -596,6 +604,7 @@ async fn async_main(mut args: Args) -> anyhow::Result<()> {
         args.feature_overrides_file,
         args.plugin_overlay_url.zip(Some(args.plugin_overlay_token)),
         args.plugin_overlay_file,
+        args.allow_config_write,
     )
     .await
 }
@@ -617,6 +626,7 @@ async fn run(
     feature_overrides_file: PathBuf,
     file_mode_overlay: Option<(String, Option<String>)>,
     overlay_file: Option<PathBuf>,
+    allow_config_write: bool,
 ) -> anyhow::Result<()> {
     let prometheus = metrics_exporter_prometheus::PrometheusBuilder::new().install_recorder()?;
 
@@ -729,6 +739,13 @@ async fn run(
         sniffers.clone(),
         sniffer_pins,
         sniffer_validator,
+        match &config_source {
+            ConfigSource::File(path) => Some(config_file::ConfigFile {
+                path: path.clone(),
+                allow_write: allow_config_write,
+            }),
+            ConfigSource::Controller(..) => None,
+        },
     ));
     let aggregator = aggregator_push.map(|push_cfg| {
         tracing::info!(
