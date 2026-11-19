@@ -73,6 +73,11 @@ All steps run **before** buffer/session allocation.
 - Secrets (admin token, mTLS keys) via env/file with `0600`, not in the YAML.
 - Bind the admin API and metrics to a separate internal interface; never on the public
   listener IPs.
+- The HTTP servers of the fleet binaries (controller, aggregator, UI backend) close a client that
+  does not finish its request head within 30 s (this also ends idle keep-alive connections), ping
+  HTTP/2 peers every 30 s and drop one that does not answer within 20 s, and hold at most 4096
+  connections at once; past that, new peers wait in the kernel's accept queue. Streams that are
+  already running (SSE, WebSocket) are not affected.
 - Rate-limit and ACL state is per instance; behind anycast HA, size it per node (an
   attack is spread across all nodes).
 

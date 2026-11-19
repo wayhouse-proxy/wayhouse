@@ -5100,6 +5100,8 @@ dependencies = [
  "axum",
  "clap",
  "http",
+ "hyper",
+ "hyper-util",
  "metrics",
  "metrics-exporter-prometheus",
  "reqwest",
