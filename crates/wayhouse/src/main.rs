@@ -494,6 +494,12 @@ async fn async_main(mut args: Args) -> anyhow::Result<()> {
     )
     .await?;
     check_admin_auth(&cfg, args.insecure_no_auth)?;
+    // A config write over an API with no token would be a write for anyone who can reach it.
+    if args.allow_config_write && admin_token(&cfg)?.is_none() {
+        anyhow::bail!(
+            "--allow-config-write needs settings.admin.auth_token: the admin API would otherwise let anyone who reaches it rewrite the config"
+        );
+    }
     check_gossip_feature(&cfg)?;
 
     // A configured GeoIP DB must load, both for `--check` and at startup.

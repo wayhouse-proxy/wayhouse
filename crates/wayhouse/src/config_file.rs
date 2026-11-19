@@ -32,6 +32,8 @@ pub enum WriteError {
     Invalid(String),
     /// The disk refused.
     Io(String),
+    /// The directory or file cannot be written (a read-only mount, a permission).
+    NotWritable,
 }
 
 /// The strong etag of some file content.
@@ -87,7 +89,9 @@ fn normalise(tag: &str) -> Option<String> {
     Some(format!("\"{}\"", t.trim_matches('"')))
 }
 
-/// Replaces the file with `text` if it still has the content `base` names. Returns the new etag and revision.
+/// Replaces the file with `text` if it still has the content `base` names. `text` may carry the
+/// masks [`redact`] put in a read (the file's own values come back), and is checked the way a
+/// reload parses it: with the plugin routes merged in. Returns the new etag and revision.
 pub fn write(path: &Path, base: Base<'_>, text: &str) -> Result<(String, u64), WriteError> {
     let _guard = WRITE_LOCK
         .lock()
@@ -97,16 +101,34 @@ pub fn write(path: &Path, base: Base<'_>, text: &str) -> Result<(String, u64), W
     if !base.is(&current) {
         return Err(WriteError::Stale);
     }
-    let cfg = wayhouse_config::parse_str(text).map_err(|e| WriteError::Invalid(e.to_string()))?;
+    let text = restore(text, &String::from_utf8_lossy(&current));
+    let cfg = wayhouse_config::parse_str(&crate::plugin_overlay::merge(&text))
+        .map_err(|e| WriteError::Invalid(e.to_string()))?;
     cfg.check_secret_strength()
         .map_err(|e| WriteError::Invalid(e.to_string()))?;
-    swap(path, &current, text).map_err(|e| WriteError::Io(e.to_string()))?;
+    // `--allow-config-write` needs the admin API closed to strangers (the start refuses without a
+    // token); a save that removes the token would lock the proxy out at its next start.
+    if cfg.admin_auth_token.is_none() {
+        return Err(WriteError::Invalid(
+            "settings.admin.auth_token is required while --allow-config-write is on".into(),
+        ));
+    }
+    swap(path, &current, &text).map_err(|e| {
+        if matches!(
+            e.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+        ) {
+            WriteError::NotWritable
+        } else {
+            WriteError::Io(e.to_string())
+        }
+    })?;
     Ok((etag(text.as_bytes()), revision(text.as_bytes())))
 }
 
-fn swap(path: &Path, current: &[u8], text: &str) -> std::io::Result<()> {
+/// Writes `bytes` to a new temp file next to `path`, with `path`'s permissions, and syncs it.
+fn stage(path: &Path, tag: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
     use std::io::Write;
-    std::fs::write(prev_path(path), current)?;
     let dir = path
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
@@ -114,7 +136,7 @@ fn swap(path: &Path, current: &[u8], text: &str) -> std::io::Result<()> {
     let name = path
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let tmp = dir.join(format!(".{name}.{}.{tag}.tmp", std::process::id()));
     // A stale temp file of an earlier crash would make `create_new` fail for ever.
     let _ = std::fs::remove_file(&tmp);
     let result = (|| {
@@ -123,21 +145,77 @@ fn swap(path: &Path, current: &[u8], text: &str) -> std::io::Result<()> {
             .create_new(true)
             .open(&tmp)?;
         f.set_permissions(std::fs::metadata(path)?.permissions())?;
-        f.write_all(text.as_bytes())?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, path)
+        f.write_all(bytes)?;
+        f.sync_all()
     })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    match result {
+        Ok(()) => Ok(tmp),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
+/// New file and previous file are both staged before either name changes, so a full disk or a
+/// permission error leaves the config and its `.prev` exactly as they were.
+fn swap(path: &Path, current: &[u8], text: &str) -> std::io::Result<()> {
+    let new = stage(path, "new", text.as_bytes())?;
+    let prev = match stage(path, "prev", current) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = std::fs::remove_file(&new);
+            return Err(e);
+        }
+    };
+    let result = std::fs::rename(&prev, prev_path(path)).and_then(|()| std::fs::rename(&new, path));
+    for tmp in [&new, &prev] {
+        let _ = std::fs::remove_file(tmp);
     }
     result
+}
+
+const TOKEN_MASK: &str = "__wayhouse_redacted_admin_token__";
+const PSK_MASK: &str = "__wayhouse_redacted_gossip_psk__";
+
+/// The inline secrets of a config text, each with its mask. A reference (`{ secret: name }`) is not
+/// a secret in the file and is left alone; text that does not parse has none to find.
+fn inline_secrets(text: &str) -> Vec<(&'static str, String)> {
+    let Ok(cfg) = wayhouse_config::parse_str(text) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    if let Some(wayhouse_config::SecretOr::Plain(v)) = &cfg.admin_auth_token {
+        found.push((TOKEN_MASK, v.clone()));
+    }
+    if let Some(g) = &cfg.gossip {
+        if let wayhouse_config::SecretOr::Plain(v) = &g.psk {
+            found.push((PSK_MASK, v.clone()));
+        }
+    }
+    found.retain(|(_, v)| !v.is_empty());
+    found
+}
+
+/// `text` with its inline secrets replaced by masks, for a read.
+pub fn redact(text: &str) -> String {
+    inline_secrets(text)
+        .into_iter()
+        .fold(text.to_string(), |t, (mask, v)| t.replace(&v, mask))
+}
+
+/// `text` (an edit of a redacted read) with each mask replaced by the value `current` holds.
+fn restore(text: &str, current: &str) -> String {
+    inline_secrets(current)
+        .into_iter()
+        .fold(text.to_string(), |t, (mask, v)| t.replace(mask, &v))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const GOOD: &str = "pools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\nlisteners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    pool: p\n";
+    const GOOD: &str = "settings:\n  admin:\n    auth_token: \"0123456789abcdef0123\"\npools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\nlisteners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    pool: p\n";
 
     fn file(text: &str) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -244,5 +322,52 @@ mod tests {
             &GOOD.replace("127.0.0.1:1", "127.0.0.1:2")
         )
         .is_ok());
+    }
+
+    #[test]
+    fn a_read_hides_inline_secrets_and_a_save_of_that_text_keeps_them() {
+        let (_d, path) = file(GOOD);
+        let shown = redact(GOOD);
+        assert!(!shown.contains("0123456789abcdef0123"), "{shown}");
+        assert!(shown.contains(TOKEN_MASK));
+        // The editor saves what it was shown, with an unrelated edit.
+        let edited = shown.replace("127.0.0.1:1", "127.0.0.1:2");
+        write(&path, Base::Etag(&etag(GOOD.as_bytes())), &edited).unwrap();
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(on_disk.contains("0123456789abcdef0123"), "{on_disk}");
+        assert!(!on_disk.contains(TOKEN_MASK));
+        assert!(on_disk.contains("127.0.0.1:2"));
+        // A reference is not a secret in the file: nothing to hide.
+        let by_ref = GOOD.replace("\"0123456789abcdef0123\"", "{ secret: admin-token }");
+        assert_eq!(redact(&by_ref), by_ref);
+    }
+
+    #[test]
+    fn a_save_that_drops_the_admin_token_is_refused() {
+        let (_d, path) = file(GOOD);
+        let no_token = "pools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\nlisteners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    pool: p\n";
+        let err = write(&path, Base::Etag(&etag(GOOD.as_bytes())), no_token).unwrap_err();
+        assert!(
+            matches!(&err, WriteError::Invalid(m) if m.contains("auth_token")),
+            "{err:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), GOOD);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_previous_file_has_the_mode_of_the_file_it_copies() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, path) = file(GOOD);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write(
+            &path,
+            Base::Etag(&etag(GOOD.as_bytes())),
+            &GOOD.replace("127.0.0.1:1", "127.0.0.1:2"),
+        )
+        .unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&prev_path(&path)), 0o600);
+        assert_eq!(mode(&path), 0o600);
     }
 }

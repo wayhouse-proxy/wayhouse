@@ -239,17 +239,23 @@ carried in the PROXY v2 TLV if the backend should correlate it.
   {"ok":true,"schema_version":N}`, or `422 {"error":...}`; nothing is applied). Same shapes as the
   controller's, so a UI can work against a file-config proxy with no controller.
 - `GET /config/file` and `PUT /config/file` – the config file of a proxy that runs from `--config`
-  (`404` under `--controller`). `GET` returns the YAML as written with `ETag` (a hash of the
-  content) and `X-Config-Revision` (the same hash as a number the web editor keeps);
-  `?previous=1` returns the copy the last write kept. `PUT` takes the raw YAML and replaces the file
-  only if it is still the version you read: send `If-Match: <ETag>`, or `?base=<revision>`. A
-  changed file answers `409 {"code":"stale"}`, a document this build refuses `422`, no version
-  `428`. The new text is checked like a reload, written to a temp file and renamed over the file
-  (permissions kept), the old one stays as `<file>.prev`, and the proxy then reloads it like any
-  edit (the answer says `applying`, not that it applied: a reload that fails keeps the running
-  config and logs why). **Off unless the proxy starts with `--allow-config-write`** (`403`
-  otherwise): the admin token can then rewrite listeners and TLS paths, not only backends. Reads
-  stay on. `wayhouse-ui --proxy-url <admin URL>` (with `--proxy-token-file`, and no
+  (`404` under `--controller`). `GET` returns the YAML with `ETag` (a hash of the real content) and
+  `X-Config-Revision` (the same hash as a number the web editor keeps); `?previous=1` returns the
+  copy the last write kept. **Inline secrets are masked in the body** (`settings.admin.auth_token`
+  and `settings.gossip.psk` written as plain text), so a viewer reading the file does not get the
+  admin token; a `PUT` of the text you were shown keeps the real values. `PUT` takes the raw YAML and
+  replaces the file only if it is still the version you read: send `If-Match: <ETag>`, or
+  `?base=<revision>`. A changed file answers `409 {"code":"stale"}`, a document this build refuses
+  (parsed with the plugin routes merged in, as a reload does; a missing admin token too) `422`, no
+  version `428`, an unwritable directory `503`. The new text and the old one are both staged as temp
+  files first, so a full disk changes nothing; then the old file becomes `<file>.prev` (same
+  permissions) and the new one is renamed over the config. The proxy then reloads it like any edit,
+  and the answer waits up to five seconds to see the reload take it: `applied: true`, or `applied:
+  false` with a note that it is saved but not confirmed (a reload that fails, a bad certificate
+  path or a port in use, keeps the running config and logs why). **Off unless the proxy starts with
+  `--allow-config-write`** (`403` otherwise), and that flag refuses to start without
+  `settings.admin.auth_token`: the admin token can then rewrite listeners and TLS paths, not only
+  backends. Reads stay on. `wayhouse-ui --proxy-url <admin URL>` (with `--proxy-token-file`, and no
   `--controller-url`) points the config editor at this: it shows and saves that file, with no
   revision history, canary stage or confirm window.
 - `GET /web` – the resolved `web:` section as JSON for `wayhouse-web-sync`: `pool`,

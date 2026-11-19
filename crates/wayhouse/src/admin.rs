@@ -308,8 +308,8 @@ fn no_config_file() -> Response {
         .into_response()
 }
 
-/// `GET /config/file`: the config file as written, with its etag (`?previous=1`: the copy a write
-/// kept of the file before it). Always on; the file may hold secret references but never secrets.
+/// `GET /config/file`: the config file, with its etag (`?previous=1`: the copy a write
+/// kept of the file before it). Always on. Inline secrets are masked in the body.
 async fn get_config_file(
     State(s): State<AdminState>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -324,6 +324,8 @@ async fn get_config_file(
         file.path.clone()
     };
     match std::fs::read(&path) {
+        // The tags describe the file as it is; the body hides inline secrets (a viewer may read
+        // this), and a save of the shown text keeps them.
         Ok(bytes) => (
             [
                 ("Content-Type", "text/yaml; charset=utf-8".to_string()),
@@ -337,7 +339,7 @@ async fn get_config_file(
                     wayhouse_config::version::CONFIG_SCHEMA_VERSION.to_string(),
                 ),
             ],
-            bytes,
+            crate::config_file::redact(&String::from_utf8_lossy(&bytes)),
         )
             .into_response(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && previous => (
@@ -355,6 +357,12 @@ async fn get_config_file(
         }
     }
 }
+
+/// How long a save waits to see the reload take the new file.
+#[cfg(not(test))]
+const APPLY_WAIT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const APPLY_WAIT: Duration = Duration::from_millis(300);
 
 /// `PUT /config/file`: replace the config file (raw YAML body) if it is still the version named by
 /// `If-Match`; the proxy then reloads it like any edit. Off unless `--allow-config-write`.
@@ -397,6 +405,7 @@ async fn put_config_file(
     };
     let path = file.path.clone();
     let revision = q.get("base").and_then(|n| n.parse::<u64>().ok());
+    let before = s.runtime.current();
     let written = tokio::task::spawn_blocking(move || {
         let base = match (&base, revision) {
             (Some(tag), _) => crate::config_file::Base::Etag(tag),
@@ -410,10 +419,22 @@ async fn put_config_file(
     match written {
         Ok((etag, revision)) => {
             s.runtime.request_reload();
-            axum::Json(
-                serde_json::json!({"ok": true, "etag": etag, "revision": revision, "applying": true}),
-            )
-                .into_response()
+            // The reload swaps the live snapshot when it accepts the file and keeps the old one
+            // when it does not (a bad TLS path, a port in use), so a new snapshot is the proof.
+            let applied = tokio::time::timeout(APPLY_WAIT, async {
+                while std::sync::Arc::ptr_eq(&before, &s.runtime.current()) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            })
+            .await
+            .is_ok();
+            let mut answer = serde_json::json!({
+                "ok": true, "saved": true, "applied": applied, "etag": etag, "revision": revision,
+            });
+            if !applied {
+                answer["note"] = "saved, but not confirmed applied: the proxy may still be reloading, or it refused the file and keeps the running config (see its log); GET /config/file?previous=1 returns the version before".into();
+            }
+            axum::Json(answer).into_response()
         }
         Err(crate::config_file::WriteError::Stale) => json_error(
             StatusCode::CONFLICT,
@@ -423,6 +444,11 @@ async fn put_config_file(
         Err(crate::config_file::WriteError::Invalid(e)) => {
             json_error(StatusCode::UNPROCESSABLE_ENTITY, &e, None)
         }
+        Err(crate::config_file::WriteError::NotWritable) => json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the config file or its directory is not writable (a read-only mount, or the proxy's user lacks permission)",
+            None,
+        ),
         Err(crate::config_file::WriteError::Io(e)) => {
             tracing::warn!(error = %e, "config file write failed");
             json_error(
@@ -2263,7 +2289,7 @@ mod tests {
         assert!(v["error"].as_str().is_some_and(|e| !e.is_empty()), "{v}");
     }
 
-    const FILE_YAML: &str = "pools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\n\
+    const FILE_YAML: &str = "settings:\n  admin:\n    auth_token: \"0123456789abcdef0123\"\npools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\n\
                              listeners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    pool: p\n";
 
     async fn spawn_with_file(allow_write: bool) -> (String, Runtime, tempfile::TempDir, PathBuf) {
@@ -2304,7 +2330,10 @@ mod tests {
             r.headers()["etag"],
             crate::config_file::etag(FILE_YAML.as_bytes()).as_str()
         );
-        assert_eq!(r.text().await.unwrap(), FILE_YAML);
+        // Inline secrets are masked in the body; the tags describe the real file.
+        let body = r.text().await.unwrap();
+        assert!(!body.contains("0123456789abcdef0123"), "{body}");
+        assert_eq!(body, crate::config_file::redact(FILE_YAML));
         // No earlier version yet.
         let r = http
             .get(format!("{base}/config/file?previous=1"))
@@ -2375,6 +2404,10 @@ mod tests {
             v["etag"],
             crate::config_file::etag(newer.as_bytes()).as_str()
         );
+        // No reload task runs in this test, so the save cannot be confirmed applied, and says so.
+        assert_eq!(v["saved"], true);
+        assert_eq!(v["applied"], false);
+        assert!(v["note"].as_str().unwrap().contains("previous=1"), "{v}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
         // The old tag is stale now, with the code the UI looks for.
         let r = put(Some(tag), FILE_YAML.into()).await.unwrap();
@@ -2412,7 +2445,7 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(r.text().await.unwrap(), newer);
+        assert_eq!(r.text().await.unwrap(), crate::config_file::redact(&newer));
     }
 
     #[tokio::test]

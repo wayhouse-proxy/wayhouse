@@ -165,11 +165,19 @@ fn a_plugin_overlay_file_goes_with_a_config_file_and_a_bad_one_refuses_to_start(
 }
 
 #[test]
-fn allowing_config_writes_goes_with_a_config_file_not_a_controller() {
+fn allowing_config_writes_needs_an_admin_token_and_a_config_file_not_a_controller() {
+    // No admin token: refused, with the reason (the API would let anyone rewrite the config).
     let out = check(BASE, &["--allow-config-write"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("auth_token"), "{}", stderr(&out));
+    let with_token =
+        format!("settings:\n  admin:\n    auth_token: \"0123456789abcdef0123\"\n{BASE}");
+    let out = check(&with_token, &["--allow-config-write"]);
     assert!(out.status.success(), "{}", stderr(&out));
+    // Without the flag, nothing changes for a proxy with no token.
+    assert!(check(BASE, &[]).status.success());
     let out = check(
-        BASE,
+        &with_token,
         &["--allow-config-write", "--controller", "http://127.0.0.1:9"],
     );
     assert!(!out.status.success());
