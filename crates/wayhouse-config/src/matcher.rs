@@ -1,5 +1,6 @@
 //! Route matchers, the match context, and TLS SNI extraction.
 
+use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::ops::RangeInclusive;
 
@@ -165,9 +166,9 @@ impl Matcher {
 
 /// Where the ClientHello at the start of a buffer stands.
 #[derive(Debug, PartialEq, Eq)]
-pub enum HelloState {
+pub enum HelloState<'a> {
     /// The whole handshake message is buffered; its bytes are returned joined across records.
-    Complete(Vec<u8>),
+    Complete(Cow<'a, [u8]>),
     /// A handshake record starts here but the message is not all there yet: more bytes could
     /// complete it.
     NeedMore,
@@ -178,25 +179,33 @@ pub enum HelloState {
 /// Collect the ClientHello at the start of `buf`. A client may split one handshake message
 /// across several consecutive TLS records (RFC 8446 §5.1), so this joins the payloads of the
 /// leading `0x16` records until the message length its 4-byte header announces is reached.
-pub fn client_hello_state(buf: &[u8]) -> HelloState {
+pub fn client_hello_state(buf: &[u8]) -> HelloState<'_> {
+    // The common case is a hello in one record: borrow it. Only a split hello is copied.
+    let mut first: &[u8] = &[];
     let mut joined: Vec<u8> = Vec::new();
+    let mut records = 0usize;
     let mut pos = 0usize;
     loop {
+        let view: &[u8] = if records <= 1 { first } else { &joined };
         // The message type is known from the first byte, its length from the first four: check
         // them, then see whether the message is whole.
-        if joined.first().is_some_and(|&t| t != 0x01) {
+        if view.first().is_some_and(|&t| t != 0x01) {
             return HelloState::Invalid; // not a ClientHello
         }
-        if joined.len() >= 4 {
-            let hs_len = u32::from_be_bytes([0, joined[1], joined[2], joined[3]]) as usize;
-            if joined.len() >= 4 + hs_len {
-                return HelloState::Complete(joined);
+        if view.len() >= 4 {
+            let hs_len = u32::from_be_bytes([0, view[1], view[2], view[3]]) as usize;
+            if view.len() >= 4 + hs_len {
+                return HelloState::Complete(if records <= 1 {
+                    Cow::Borrowed(first)
+                } else {
+                    Cow::Owned(joined)
+                });
             }
         }
-        let Some(&first) = buf.get(pos) else {
+        let Some(&lead) = buf.get(pos) else {
             return HelloState::NeedMore;
         };
-        if first != 0x16 {
+        if lead != 0x16 {
             return HelloState::Invalid; // the message ends before its announced length
         }
         let Some(head) = buf.get(pos..pos + 5) else {
@@ -206,7 +215,15 @@ pub fn client_hello_state(buf: &[u8]) -> HelloState {
         let Some(payload) = buf.get(pos + 5..pos + 5 + rec_len) else {
             return HelloState::NeedMore; // the record is cut short
         };
-        joined.extend_from_slice(payload);
+        match records {
+            0 => first = payload,
+            1 => {
+                joined.extend_from_slice(first);
+                joined.extend_from_slice(payload);
+            }
+            _ => joined.extend_from_slice(payload),
+        }
+        records += 1;
         pos += 5 + rec_len;
     }
 }
