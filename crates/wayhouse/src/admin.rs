@@ -326,6 +326,11 @@ async fn get_config_file(
     match std::fs::read(&path) {
         // The tags describe the file as it is; the body hides inline secrets (a viewer may read
         // this), and a save of the shown text keeps them.
+        Ok(bytes) if crate::config_file::redact(&String::from_utf8_lossy(&bytes)).is_none() => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            axum::Json(serde_json::json!({"error": "the config file does not parse, so its secrets cannot be hidden; fix it on the host"})),
+        )
+            .into_response(),
         Ok(bytes) => (
             [
                 ("Content-Type", "text/yaml; charset=utf-8".to_string()),
@@ -339,7 +344,7 @@ async fn get_config_file(
                     wayhouse_config::version::CONFIG_SCHEMA_VERSION.to_string(),
                 ),
             ],
-            crate::config_file::redact(&String::from_utf8_lossy(&bytes)),
+            crate::config_file::redact(&String::from_utf8_lossy(&bytes)).unwrap_or_default(),
         )
             .into_response(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && previous => (
@@ -2333,7 +2338,7 @@ mod tests {
         // Inline secrets are masked in the body; the tags describe the real file.
         let body = r.text().await.unwrap();
         assert!(!body.contains("0123456789abcdef0123"), "{body}");
-        assert_eq!(body, crate::config_file::redact(FILE_YAML));
+        assert_eq!(body, crate::config_file::redact(FILE_YAML).unwrap());
         // No earlier version yet.
         let r = http
             .get(format!("{base}/config/file?previous=1"))
@@ -2445,7 +2450,10 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(r.text().await.unwrap(), crate::config_file::redact(&newer));
+        assert_eq!(
+            r.text().await.unwrap(),
+            crate::config_file::redact(&newer).unwrap()
+        );
     }
 
     #[tokio::test]
