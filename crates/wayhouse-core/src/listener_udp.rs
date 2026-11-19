@@ -920,7 +920,9 @@ async fn route_sniffed(
     local: SocketAddr,
     first: &[u8],
 ) -> Result<Routed, &'static str> {
-    let hit = crate::sniff::sniff_first_blocking(&cfg.sniffers, sniffers, first).await;
+    let hit = crate::sniff::sniff_first_blocking(&cfg.sniffers, sniffers, first)
+        .await
+        .map_err(|crate::sniff::SnifferFailed| "sniffer_error")?;
     match route_with_hit(cfg, snapshot, hints, client, local, first, hit)? {
         Prepared::Routed(r) => Ok(r),
         Prepared::Resolve(hit) => {

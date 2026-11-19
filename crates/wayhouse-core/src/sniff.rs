@@ -660,4 +660,132 @@ listeners:
             .shutdown_with_grace(std::time::Duration::from_millis(100))
             .await;
     }
+
+    /// Starts a runtime with one UDP echo backend and two UDP listeners on it: `slow` routes
+    /// on the sniffer `slow-or-boom` (whichever `sniffers` registers under that name) and
+    /// `plain` has no sniffer. Returns the runtime and the two listener addresses.
+    async fn udp_pair(
+        sniffers: Sniffers,
+    ) -> (crate::Runtime, std::net::SocketAddr, std::net::SocketAddr) {
+        use tokio::net::{TcpListener, UdpSocket};
+        let backend = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut b = [0u8; 1024];
+            while let Ok((n, from)) = backend.recv_from(&mut b).await {
+                let _ = backend.send_to(&b[..n], from).await;
+            }
+        });
+        let free = || async {
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap()
+        };
+        let (slow, plain) = (free().await, free().await);
+        let yaml = format!(
+            r#"
+pools:
+  - name: p
+    targets: ["{backend_addr}"]
+    health_check: {{ type: none }}
+listeners:
+  - name: slow
+    bind: "{slow}"
+    protocol: udp
+    routes:
+      - match: {{ type: sniffer, sniffer: slow-or-boom }}
+        action: {{ pool: p }}
+      - match: {{ type: always }}
+        action: {{ pool: p }}
+  - name: plain
+    bind: "{plain}"
+    protocol: udp
+    routes:
+      - match: {{ type: always }}
+        action: {{ pool: p }}
+"#
+        );
+        let cfg = wayhouse_config::parse_str(&yaml).unwrap();
+        let runtime = crate::Runtime::start_with_sniffers(
+            crate::Snapshot::from_config(&cfg),
+            Arc::default(),
+            None,
+            Arc::new(sniffers),
+            1,
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        (runtime, slow, plain)
+    }
+
+    async fn udp_roundtrip(to: std::net::SocketAddr, wait_ms: u64) -> Option<Vec<u8>> {
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client.connect(to).await.unwrap();
+        client.send(b"hello").await.unwrap();
+        let mut buf = [0u8; 64];
+        let n = tokio::time::timeout(
+            std::time::Duration::from_millis(wait_ms),
+            client.recv(&mut buf),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        Some(buf[..n].to_vec())
+    }
+
+    struct SlowNamed;
+    impl Sniffer for SlowNamed {
+        fn name(&self) -> &'static str {
+            "slow-or-boom"
+        }
+        fn sniff(&self, _first: &[u8]) -> Option<RouteHint> {
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            None
+        }
+    }
+
+    struct BoomNamed;
+    impl Sniffer for BoomNamed {
+        fn name(&self) -> &'static str {
+            "slow-or-boom"
+        }
+        fn sniff(&self, _first: &[u8]) -> Option<RouteHint> {
+            panic!("module trapped");
+        }
+    }
+
+    /// A slow sniffer on one UDP listener must not hold up another listener's traffic on the
+    /// same single-worker runtime, and its own datagram is still delivered afterwards.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_slow_udp_sniffer_does_not_stall_other_sessions() {
+        let sniffers = Sniffers::new();
+        sniffers.register(Arc::new(SlowNamed));
+        let (runtime, slow, plain) = udp_pair(sniffers).await;
+
+        let slow_task = tokio::spawn(udp_roundtrip(slow, 3000));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let started = std::time::Instant::now();
+        assert_eq!(
+            udp_roundtrip(plain, 400).await.as_deref(),
+            Some(&b"hello"[..])
+        );
+        assert!(started.elapsed() < std::time::Duration::from_millis(400));
+        // The slow listener still answers once the module returns.
+        assert_eq!(slow_task.await.unwrap().as_deref(), Some(&b"hello"[..]));
+
+        runtime
+            .shutdown_with_grace(std::time::Duration::from_millis(100))
+            .await;
+    }
+
+    /// A UDP sniffer that panics opens no session and draws no reply.
+    #[tokio::test]
+    async fn a_panicking_udp_sniffer_drops_the_datagram() {
+        let sniffers = Sniffers::new();
+        sniffers.register(Arc::new(BoomNamed));
+        let (runtime, slow, _plain) = udp_pair(sniffers).await;
+        assert_eq!(udp_roundtrip(slow, 400).await, None);
+
+        runtime
+            .shutdown_with_grace(std::time::Duration::from_millis(100))
+            .await;
+    }
 }
