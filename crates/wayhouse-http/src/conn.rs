@@ -15,7 +15,7 @@
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -92,7 +92,7 @@ where
             return Ok(());
         };
         let (io, peer) = listener.accept().await;
-        let inflight = Arc::new(AtomicUsize::new(0));
+        let inflight = Arc::new(Activity::default());
         let router = app
             .clone()
             .layer(Extension(ConnectInfo(PeerAddr(peer))))
@@ -216,14 +216,26 @@ impl<Io: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for FirstByte<Io> 
     }
 }
 
-/// Resolves once `inflight` has been zero for `limit`. Checked a few times per `limit`.
-async fn idle_watch(inflight: &AtomicUsize, limit: Duration) {
+/// What the idle watchdog looks at: requests in flight now, and a counter bumped whenever one
+/// starts or ends, so a request that came and went between two checks still counts as activity.
+#[derive(Default)]
+struct Activity {
+    inflight: AtomicUsize,
+    events: AtomicU64,
+}
+
+/// Resolves once the connection has had no request in flight, and no request start or end,
+/// for `limit`. Checked a few times per `limit`.
+async fn idle_watch(activity: &Activity, limit: Duration) {
     let tick = (limit / 4).max(Duration::from_millis(10));
     let mut idle_since = tokio::time::Instant::now();
+    let mut seen = activity.events.load(Ordering::Acquire);
     loop {
         tokio::time::sleep(tick).await;
-        if inflight.load(Ordering::Acquire) > 0 {
+        let now_seen = activity.events.load(Ordering::Acquire);
+        if activity.inflight.load(Ordering::Acquire) > 0 || now_seen != seen {
             idle_since = tokio::time::Instant::now();
+            seen = now_seen;
         } else if idle_since.elapsed() >= limit {
             return;
         }
@@ -231,18 +243,20 @@ async fn idle_watch(inflight: &AtomicUsize, limit: Duration) {
 }
 
 /// One request in flight on a connection; dropping it ends the count.
-struct InFlight(Arc<AtomicUsize>);
+struct InFlight(Arc<Activity>);
 
 impl InFlight {
-    fn new(n: Arc<AtomicUsize>) -> Self {
-        n.fetch_add(1, Ordering::AcqRel);
-        Self(n)
+    fn new(a: Arc<Activity>) -> Self {
+        a.inflight.fetch_add(1, Ordering::AcqRel);
+        a.events.fetch_add(1, Ordering::AcqRel);
+        Self(a)
     }
 }
 
 impl Drop for InFlight {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
+        self.0.inflight.fetch_sub(1, Ordering::AcqRel);
+        self.0.events.fetch_add(1, Ordering::AcqRel);
     }
 }
 

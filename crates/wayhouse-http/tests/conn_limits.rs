@@ -294,3 +294,24 @@ async fn an_upgraded_connection_survives_the_idle_timeout() {
         "upgraded stream was cut off: {all:?}"
     );
 }
+
+/// Short requests on one keep-alive connection, each finished between two watchdog checks, still
+/// count as activity: the connection outlives several idle timeouts.
+#[tokio::test]
+async fn a_busy_keep_alive_connection_is_not_closed() {
+    let addr = start(idle_limits()).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    let end = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut answered = 0;
+    while tokio::time::Instant::now() < end {
+        get_path(&mut s, "/peer").await;
+        let reply = read_some(&mut s, Duration::from_secs(1)).await;
+        assert!(
+            reply.is_some(),
+            "connection closed after {answered} requests"
+        );
+        answered += 1;
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(answered >= 6, "only {answered} requests");
+}
