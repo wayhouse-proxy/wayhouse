@@ -106,6 +106,17 @@ struct Args {
     #[arg(long, value_name = "URL", conflicts_with = "controller")]
     plugin_overlay_url: Option<String>,
 
+    /// File holding plugin routes while running from `--config`, in the document the controller
+    /// serves on `/plugin-routes` (`routes`, `port_routes`, `web_routes`); merged into listeners
+    /// that opt in with `plugin_routes:` (docs/plugins.md "Routes"). A missing file means no
+    /// routes; a malformed one refuses to start, and a bad edit keeps the last good routes.
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = ["controller", "plugin_overlay_url"]
+    )]
+    plugin_overlay_file: Option<std::path::PathBuf>,
+
     /// Bearer token for `--plugin-overlay-url`, if the controller requires one.
     #[arg(long, value_name = "PATH", requires = "plugin_overlay_url")]
     plugin_overlay_token_file: Option<std::path::PathBuf>,
@@ -437,6 +448,9 @@ async fn async_main(mut args: Args) -> anyhow::Result<()> {
             )
         }
         None => {
+            if let Some(file) = &args.plugin_overlay_file {
+                plugin_overlay::load_file(file, false)?;
+            }
             let cfg = plugin_overlay::load(&args.config)?;
             (ConfigSource::File(args.config.clone()), cfg, None)
         }
@@ -581,6 +595,7 @@ async fn async_main(mut args: Args) -> anyhow::Result<()> {
         admin_tls,
         args.feature_overrides_file,
         args.plugin_overlay_url.zip(Some(args.plugin_overlay_token)),
+        args.plugin_overlay_file,
     )
     .await
 }
@@ -601,6 +616,7 @@ async fn run(
     admin_tls: Option<Arc<wayhouse_http::tls::ReloadingCert>>,
     feature_overrides_file: PathBuf,
     file_mode_overlay: Option<(String, Option<String>)>,
+    overlay_file: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let prometheus = metrics_exporter_prometheus::PrometheusBuilder::new().install_recorder()?;
 
@@ -754,8 +770,15 @@ async fn run(
     let health_report = overlay_source
         .clone()
         .map(|(url, token)| tokio::spawn(health_report::run(url, token, handle.clone())));
-    let plugin_overlay = overlay_source
-        .map(|(url, token)| tokio::spawn(plugin_overlay::run(url, token, handle.clone())));
+    let plugin_overlay = match (overlay_source, overlay_file) {
+        (Some((url, token)), _) => Some(tokio::spawn(plugin_overlay::run(
+            url,
+            token,
+            handle.clone(),
+        ))),
+        (None, Some(file)) => Some(tokio::spawn(plugin_overlay::run_file(file, handle.clone()))),
+        (None, None) => None,
+    };
     let feature_overrides = if let ConfigSource::Controller(url, token) = &config_source {
         Some(tokio::spawn(features::run(
             url.clone(),

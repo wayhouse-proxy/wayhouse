@@ -133,6 +133,38 @@ fn a_plugin_overlay_url_goes_with_a_config_file_and_its_token_needs_it() {
 }
 
 #[test]
+fn a_plugin_overlay_file_goes_with_a_config_file_and_a_bad_one_refuses_to_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = dir.path().join("good.json");
+    std::fs::write(
+        &good,
+        r#"{"routes":[{"host":"a.example.com","backend":"10.0.0.1:1"}]}"#,
+    )
+    .unwrap();
+    let good = good.to_str().unwrap().to_string();
+    let out = check(BASE, &["--plugin-overlay-file", &good]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // A missing file is no routes, not a refusal.
+    let missing = dir.path().join("none.json");
+    let out = check(BASE, &["--plugin-overlay-file", missing.to_str().unwrap()]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // Not the overlay document: refused, naming the file.
+    let bad = dir.path().join("bad.json");
+    std::fs::write(&bad, "routes: nope").unwrap();
+    let out = check(BASE, &["--plugin-overlay-file", bad.to_str().unwrap()]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("bad.json"), "{}", stderr(&out));
+    // Not together with another overlay source or a controller.
+    for other in [
+        ["--plugin-overlay-url", "http://127.0.0.1:9"],
+        ["--controller", "http://127.0.0.1:9"],
+    ] {
+        let out = check(BASE, &["--plugin-overlay-file", &good, other[0], other[1]]);
+        assert!(!out.status.success(), "{other:?}");
+    }
+}
+
+#[test]
 fn a_plugin_overlay_url_is_checked_at_startup() {
     // No scheme (the typo that would otherwise only show up as "no plugin routes").
     let out = check(BASE, &["--plugin-overlay-url", "controller:9901"]);
