@@ -13,11 +13,52 @@ use std::sync::Mutex;
 
 use sha2::{Digest, Sha256};
 
+/// The config files the admin APIs of this process serve, by [`ConfigFile::id`]. A handler holds
+/// only the id: the location is the operator's `--config`, and keeping it out of the request
+/// state means nothing a request carries can name a path.
+static LOCATIONS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
 /// The config file this proxy runs from, and whether the admin API may replace it.
 #[derive(Clone)]
 pub struct ConfigFile {
-    pub path: PathBuf,
+    id: usize,
     pub allow_write: bool,
+}
+
+impl ConfigFile {
+    pub fn new(path: PathBuf, allow_write: bool) -> Self {
+        let mut all = LOCATIONS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        all.push(path);
+        Self {
+            id: all.len() - 1,
+            allow_write,
+        }
+    }
+
+    fn path(&self) -> PathBuf {
+        LOCATIONS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(self.id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The file's bytes, or the copy a write kept (`previous`).
+    pub fn read(&self, previous: bool) -> std::io::Result<Vec<u8>> {
+        if previous {
+            std::fs::read(prev_path(&self.path()))
+        } else {
+            std::fs::read(self.path())
+        }
+    }
+
+    /// [`write`] on this file.
+    pub fn write(&self, base: Base<'_>, text: &str) -> Result<(String, u64), WriteError> {
+        write(&self.path(), base, text)
+    }
 }
 
 /// One write at a time: the compare, the backup and the rename are one step.

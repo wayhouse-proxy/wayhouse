@@ -318,12 +318,7 @@ async fn get_config_file(
         return no_config_file();
     };
     let previous = q.get("previous").is_some_and(|v| v == "1" || v == "true");
-    let path = if previous {
-        crate::config_file::prev_path(&file.path)
-    } else {
-        file.path.clone()
-    };
-    match std::fs::read(&path) {
+    match file.read(previous) {
         // The tags describe the file as it is; the body hides inline secrets (a viewer may read
         // this), and a save of the shown text keeps them.
         Ok(bytes) if crate::config_file::redact(&String::from_utf8_lossy(&bytes)).is_none() => (
@@ -408,7 +403,7 @@ async fn put_config_file(
             None,
         ),
     };
-    let path = file.path.clone();
+    let file = file.clone();
     let revision = q.get("base").and_then(|n| n.parse::<u64>().ok());
     let before = s.runtime.current();
     let written = tokio::task::spawn_blocking(move || {
@@ -417,7 +412,7 @@ async fn put_config_file(
             (None, Some(n)) => crate::config_file::Base::Revision(n),
             (None, None) => return Err(crate::config_file::WriteError::Stale),
         };
-        crate::config_file::write(&path, base, &body)
+        file.write(base, &body)
     })
     .await
     .unwrap_or_else(|e| Err(crate::config_file::WriteError::Io(e.to_string())));
@@ -2305,10 +2300,7 @@ mod tests {
             FILE_YAML,
             Some("tok"),
             None,
-            Some(ConfigFile {
-                path: path.clone(),
-                allow_write,
-            }),
+            Some(ConfigFile::new(path.clone(), allow_write)),
         )
         .await;
         (base, runtime, dir, path)

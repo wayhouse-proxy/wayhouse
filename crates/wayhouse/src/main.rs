@@ -746,10 +746,10 @@ async fn run(
         sniffer_pins,
         sniffer_validator,
         match &config_source {
-            ConfigSource::File(path) => Some(config_file::ConfigFile {
-                path: path.clone(),
-                allow_write: allow_config_write,
-            }),
+            ConfigSource::File(path) => Some(config_file::ConfigFile::new(
+                path.clone(),
+                allow_config_write,
+            )),
             ConfigSource::Controller(..) => None,
         },
     ));
