@@ -449,6 +449,15 @@ and prints what the host saw, including which capabilities were used. It exits 1
 host would reject the module, a call fails, or the plugin used a capability it did not
 declare. Plugin repo CI is meant to run it on every build.
 
+
+**Official plugins in this repository's CI.** `plugins.lock` pins a commit of
+`wayhouse-proxy/plugins`. The `sniffers e2e` job builds the plugins at that commit and runs
+`wayhouse-plugin-check` (built from the checkout under test) on each module, so a host change
+that breaks an official plugin fails here and not at the next plugin release. A plugin built
+for another ABI minor than the checkout's cannot load while the major is 0: that case is a CI
+warning, which is what an ABI bump looks like until `plugins.lock` moves to the plugins
+commit that re-pinned the ABI crate. Move the lock in a follow-up after the plugins PR merges.
+
 ## Installing a plugin (controller API)
 
 Start a controller with `--plugins` (off by default; standalone or with `--ha-peers`). With
