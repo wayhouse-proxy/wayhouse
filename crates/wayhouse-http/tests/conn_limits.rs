@@ -23,6 +23,46 @@ async fn start(limits: ConnLimits) -> SocketAddr {
             ),
         )
         .route(
+            "/stream",
+            get(|| async {
+                // A response that keeps streaming for longer than the idle timeouts below.
+                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                tokio::spawn(async move {
+                    for i in 0..4u8 {
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                        if tx
+                            .send(Ok::<_, std::convert::Infallible>(format!("c{i};")))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+                let chunks = tokio_stream::wrappers::ReceiverStream::new(rx);
+                axum::body::Body::from_stream(chunks)
+            }),
+        )
+        .route(
+            "/upgrade",
+            get(|mut req: axum::extract::Request| async move {
+                let on = hyper::upgrade::on(&mut req);
+                tokio::spawn(async move {
+                    let up = on.await.unwrap();
+                    let mut io = hyper_util::rt::TokioIo::new(up);
+                    io.write_all(b"hello").await.unwrap();
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    let _ = io.write_all(b"later").await;
+                });
+                axum::response::Response::builder()
+                    .status(101)
+                    .header("connection", "upgrade")
+                    .header("upgrade", "test")
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
             "/slow",
             get(|| async {
                 tokio::time::sleep(Duration::from_millis(700)).await;
@@ -200,4 +240,57 @@ async fn an_idle_connection_is_closed_but_a_busy_one_is_not() {
         .expect("server closes the idle connection")
         .unwrap_or(0);
     assert_eq!(n, 0);
+}
+
+fn idle_limits() -> ConnLimits {
+    ConnLimits {
+        header_read_timeout: Duration::from_secs(30),
+        first_byte_timeout: Duration::from_secs(30),
+        idle_timeout: Duration::from_millis(400),
+        max_connections: 4,
+    }
+}
+
+/// A response still streaming after several idle timeouts is delivered whole.
+#[tokio::test]
+async fn a_response_streaming_past_the_idle_timeout_survives() {
+    let addr = start(idle_limits()).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    get_path(&mut s, "/stream").await;
+    let mut all = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    while !all.contains("c3;") && tokio::time::Instant::now() < deadline {
+        if let Some(part) = read_some(&mut s, Duration::from_secs(2)).await {
+            all.push_str(&part);
+        } else {
+            break;
+        }
+    }
+    assert!(all.contains("c0;") && all.contains("c3;"), "got: {all:?}");
+}
+
+/// An upgraded connection (WebSocket-style) is not touched by the idle watchdog even though
+/// its 101 response body ended at once.
+#[tokio::test]
+async fn an_upgraded_connection_survives_the_idle_timeout() {
+    let addr = start(idle_limits()).await;
+    let mut s = TcpStream::connect(addr).await.unwrap();
+    s.write_all(
+        b"GET /upgrade HTTP/1.1\r\nHost: t\r\nConnection: upgrade\r\nUpgrade: test\r\n\r\n",
+    )
+    .await
+    .unwrap();
+    let mut all = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    while !all.contains("later") && tokio::time::Instant::now() < deadline {
+        match read_some(&mut s, Duration::from_secs(3)).await {
+            Some(part) => all.push_str(&part),
+            None => break,
+        }
+    }
+    assert!(all.contains("101") && all.contains("hello"), "got: {all:?}");
+    assert!(
+        all.contains("later"),
+        "upgraded stream was cut off: {all:?}"
+    );
 }
