@@ -101,7 +101,7 @@ pub fn write(path: &Path, base: Base<'_>, text: &str) -> Result<(String, u64), W
     if !base.is(&current) {
         return Err(WriteError::Stale);
     }
-    let text = restore(text, &String::from_utf8_lossy(&current));
+    let text = restore(text, &String::from_utf8_lossy(&current))?;
     let cfg = wayhouse_config::parse_str(&crate::plugin_overlay::merge(&text))
         .map_err(|e| WriteError::Invalid(e.to_string()))?;
     cfg.check_secret_strength()
@@ -197,18 +197,86 @@ fn inline_secrets(text: &str) -> Vec<(&'static str, String)> {
     found
 }
 
-/// `text` with its inline secrets replaced by masks, for a read.
+/// `text` with its inline secrets replaced by masks, for a read. Text that does not parse is
+/// masked line by line (`auth_token:` and `psk:` values that are not a reference), so a broken
+/// file never reads back with a secret in it.
 pub fn redact(text: &str) -> String {
+    if wayhouse_config::parse_str(text).is_err() {
+        return text
+            .lines()
+            .map(|l| redact_line(l).unwrap_or_else(|| l.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + if text.ends_with('\n') { "\n" } else { "" };
+    }
     inline_secrets(text)
         .into_iter()
         .fold(text.to_string(), |t, (mask, v)| t.replace(&v, mask))
 }
 
-/// `text` (an edit of a redacted read) with each mask replaced by the value `current` holds.
-fn restore(text: &str, current: &str) -> String {
-    inline_secrets(current)
+fn redact_line(line: &str) -> Option<String> {
+    let (key, mask) = [("auth_token", TOKEN_MASK), ("psk", PSK_MASK)]
         .into_iter()
-        .fold(text.to_string(), |t, (mask, v)| t.replace(mask, &v))
+        .find(|(k, _)| {
+            line.trim_start()
+                .trim_start_matches("- ")
+                .starts_with(&format!("{k}:"))
+        })?;
+    let at = line.find(&format!("{key}:"))? + key.len() + 1;
+    let value = line[at..].trim();
+    if value.is_empty() || value.starts_with('{') || value.starts_with('#') {
+        return None;
+    }
+    Some(format!("{} {mask}", &line[..at]))
+}
+
+/// A YAML alias (`*name`) anywhere in `text`.
+fn has_alias(text: &str) -> bool {
+    text.as_bytes().windows(2).enumerate().any(|(i, w)| {
+        w[0] == b'*'
+            && w[1].is_ascii_alphanumeric()
+            && (i == 0 || b" \t[{,:-".contains(&text.as_bytes()[i - 1]))
+    })
+}
+
+/// `text` (an edit of a redacted read) with each mask replaced by the value `current` holds. A
+/// mask counts only as the whole value of its own field (`admin.auth_token`, `gossip.psk`), once:
+/// anywhere else it would copy a secret into a field the caller can read back. A mask that has no
+/// secret to stand for (the file holds a reference, or does not parse) is refused too, since it
+/// would otherwise be saved as the secret itself.
+fn restore(text: &str, current: &str) -> Result<String, WriteError> {
+    let bad = |m: &str| WriteError::Invalid(m.to_string());
+    let masks = [TOKEN_MASK, PSK_MASK];
+    if !masks.iter().any(|m| text.contains(m)) {
+        return Ok(text.to_string());
+    }
+    let cfg = wayhouse_config::parse_str(&crate::plugin_overlay::merge(text))
+        .map_err(|e| WriteError::Invalid(e.to_string()))?;
+    let is_mask = |f: Option<&wayhouse_config::SecretOr>, m: &str| matches!(f, Some(wayhouse_config::SecretOr::Plain(v)) if v == m);
+    let psk = cfg.gossip.as_ref().map(|g| &g.psk);
+    let fields = [
+        is_mask(cfg.admin_auth_token.as_ref(), TOKEN_MASK),
+        is_mask(psk, PSK_MASK),
+    ];
+    for (mask, in_field) in masks.iter().zip(fields) {
+        let n = text.matches(mask).count();
+        if n != usize::from(in_field) || (n > 0 && has_alias(text)) {
+            return Err(bad(
+                "a redacted-secret placeholder may only be the whole value of its own field (admin.auth_token or gossip.psk)",
+            ));
+        }
+    }
+    let known = inline_secrets(current);
+    let mut out = text.to_string();
+    for (mask, v) in &known {
+        out = out.replace(mask, v);
+    }
+    if masks.iter().any(|m| out.contains(m)) {
+        return Err(bad(
+            "a redacted-secret placeholder has no secret to stand for in the current file; write the value in",
+        ));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -340,6 +408,68 @@ mod tests {
         // A reference is not a secret in the file: nothing to hide.
         let by_ref = GOOD.replace("\"0123456789abcdef0123\"", "{ secret: admin-token }");
         assert_eq!(redact(&by_ref), by_ref);
+    }
+
+    const PSK_FILE: &str = "settings:\n  admin:\n    auth_token: \"0123456789abcdef0123\"\n  gossip:\n    bind: \"127.0.0.1:7946\"\n    psk: \"fedcba9876543210fedcba\"\npools:\n  - name: p\n    targets: [\"127.0.0.1:1\"]\nlisteners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    pool: p\n";
+
+    #[test]
+    fn a_mask_outside_its_own_field_is_refused_and_leaks_nothing() {
+        let (_d, path) = file(PSK_FILE);
+        let base = etag(PSK_FILE.as_bytes());
+        let shown = redact(PSK_FILE);
+        assert!(
+            shown.contains(PSK_MASK) && shown.contains(TOKEN_MASK),
+            "{shown}"
+        );
+        for bad in [
+            shown
+                .replace("name: p\n", &format!("name: {PSK_MASK}\n"))
+                .replace("pool: p", &format!("pool: {PSK_MASK}")),
+            shown
+                .replace("name: p\n", &format!("name: {PSK_MASK}\n"))
+                .replace("pool: p", &format!("pool: {PSK_MASK}"))
+                .replace(
+                    &format!("psk: \"{PSK_MASK}\""),
+                    &format!("psk: \"{TOKEN_MASK}\""),
+                ),
+        ] {
+            assert!(matches!(
+                write(&path, Base::Etag(&base), &bad),
+                Err(WriteError::Invalid(_))
+            ));
+        }
+        let swapped = shown
+            .replace(&format!("psk: \"{PSK_MASK}\""), "psk: __T__")
+            .replace(
+                &format!("auth_token: \"{TOKEN_MASK}\""),
+                &format!("auth_token: \"{PSK_MASK}\""),
+            )
+            .replace("psk: __T__", &format!("psk: \"{TOKEN_MASK}\""));
+        assert!(matches!(
+            write(&path, Base::Etag(&base), &swapped),
+            Err(WriteError::Invalid(_))
+        ));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), PSK_FILE);
+    }
+
+    #[test]
+    fn a_mask_with_no_secret_behind_it_is_never_saved_as_the_secret() {
+        let by_ref = GOOD.replace("\"0123456789abcdef0123\"", "{ secret: admin-token }");
+        let (_d, path) = file(&by_ref);
+        let masked = GOOD.replace("0123456789abcdef0123", TOKEN_MASK);
+        let err = write(&path, Base::Etag(&etag(by_ref.as_bytes())), &masked).unwrap_err();
+        assert!(matches!(err, WriteError::Invalid(_)), "{err:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), by_ref);
+    }
+
+    #[test]
+    fn a_file_that_does_not_parse_still_reads_without_its_secrets() {
+        let broken = format!("{GOOD}\nlisteners: [\n");
+        let shown = redact(&broken);
+        assert!(!shown.contains("0123456789abcdef0123"), "{shown}");
+        assert!(shown.contains(TOKEN_MASK));
+        let by_ref = "settings:\n  admin:\n    auth_token: { secret: t }\nx: [\n";
+        assert_eq!(redact(by_ref), by_ref);
     }
 
     #[test]
