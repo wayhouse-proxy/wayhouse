@@ -481,18 +481,14 @@ async fn peek_routing_bytes<'b>(stream: &TcpStream, buf: &'b mut [u8], want: usi
 }
 
 /// Whether `buf` already holds everything routing could learn by waiting for
-/// more bytes. True unless `buf` is the start of a TLS handshake record whose
-/// declared length is not yet fully buffered.
+/// more bytes. True unless `buf` is the start of a TLS ClientHello whose handshake message
+/// (possibly split across several TLS records) is not fully buffered yet.
 fn routing_bytes_complete(buf: &[u8]) -> bool {
     match buf.first() {
-        // TLS handshake record: byte 0 = 0x16, bytes 3..5 = record length.
-        Some(&0x16) => {
-            let Some(len_bytes) = buf.get(3..5) else {
-                return false; // not even the 5-byte record header yet
-            };
-            let rec_len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
-            buf.len() >= 5 + rec_len
-        }
+        Some(&0x16) => !matches!(
+            wayhouse_config::client_hello_state(buf),
+            wayhouse_config::HelloState::NeedMore
+        ),
         _ => true,
     }
 }
@@ -584,13 +580,29 @@ mod tests {
         assert!(!routing_bytes_complete(&[
             0x16, 0x03, 0x01, 0x00, 0x0a, 1, 2, 3
         ]));
-        // Header says 3 body bytes and all 3 are present.
+        // A whole (empty) ClientHello message in one record is complete...
+        let tiny = [0x16, 0x03, 0x01, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00];
+        assert!(routing_bytes_complete(&tiny));
+        // ... and trailing bytes past it are still "complete".
+        let mut more = tiny.to_vec();
+        more.extend_from_slice(&[4, 5]);
+        assert!(routing_bytes_complete(&more));
+        // A handshake record that is not a ClientHello has nothing more to wait for.
         assert!(routing_bytes_complete(&[
-            0x16, 0x03, 0x01, 0x00, 0x03, 1, 2, 3
+            0x16, 0x03, 0x01, 0x00, 0x03, 0x02, 2, 3
         ]));
-        // ... and trailing bytes past the first record are still "complete".
-        assert!(routing_bytes_complete(&[
-            0x16, 0x03, 0x01, 0x00, 0x03, 1, 2, 3, 4, 5
-        ]));
+    }
+
+    #[test]
+    fn a_client_hello_split_across_records_is_complete_only_with_the_last_one() {
+        // First record: handshake header announcing 8 bytes, with 2 of them.
+        let mut hello = vec![
+            0x16, 0x03, 0x01, 0x00, 0x06, 0x01, 0x00, 0x00, 0x08, 0xaa, 0xbb,
+        ];
+        assert!(!routing_bytes_complete(&hello)); // nothing after the first record yet
+        hello.extend_from_slice(&[0x16, 0x03, 0x01, 0x00, 0x06, 1, 2, 3]);
+        assert!(!routing_bytes_complete(&hello)); // second record cut short
+        hello.extend_from_slice(&[4, 5, 6]);
+        assert!(routing_bytes_complete(&hello)); // 2 + 6 = 8: whole
     }
 }

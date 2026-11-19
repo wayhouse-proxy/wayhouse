@@ -32,7 +32,10 @@ pub use json_schema::json_schema;
 /// and checked in; a test fails when it drifts. Served by the controller.
 pub const CONFIG_JSON_SCHEMA: &str = include_str!("../schema/config.schema.json");
 pub use keys::base64_decode_32;
-pub use matcher::{extract_sni, HostPattern, MatchContext, Matcher, RouteHint, PEEK_MAX};
+pub use matcher::{
+    client_hello_state, extract_sni, HelloState, HostPattern, MatchContext, Matcher, RouteHint,
+    PEEK_MAX,
+};
 pub use resolved::{
     Action, Balancer, CacheConfig, CacheKeyPart, Config, GlobalLimits, GossipConfig, HashOn,
     HealthCheck, HealthCheckKind, ListenerConfig, OnError, PerSourceLimit, PoolConfig, Protocol,
