@@ -23,8 +23,12 @@ export function AboutSection() {
             </a>
           )}
         </p>
+      ) : data.checked_at === null ? (
+        <p className="text-sm text-ink-muted">Not checked yet.</p>
       ) : (
-        <p className="text-sm text-ink-muted">No newer stable release is known.</p>
+        <p className="text-sm text-ink-muted">
+          No newer stable release (checked {new Date(data.checked_at * 1000).toLocaleString()}).
+        </p>
       )}
     </section>
   );

@@ -55,6 +55,13 @@ describe("AboutSection", () => {
     expect(screen.getByText(/Latest stable 0\.4\.1 \(2026-12-01\)/)).toBeInTheDocument();
   });
 
+  it("says it has not checked yet, instead of claiming nothing is newer", async () => {
+    api.getRelease.mockResolvedValue({ current: "0.4.0", enabled: true, latest: null, checked_at: null });
+    view(<AboutSection />);
+    expect(await screen.findByText("Not checked yet.")).toBeInTheDocument();
+    expect(screen.queryByText(/No newer stable release/)).toBeNull();
+  });
+
   it("says when the check is off", async () => {
     api.getRelease.mockResolvedValue(status(null, false));
     view(<AboutSection />);

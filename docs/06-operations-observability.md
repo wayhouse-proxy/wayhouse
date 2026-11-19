@@ -367,7 +367,7 @@ release exists. It fetches the signed `release-feed.json` from the project's Git
 assets (`--release-feed-url`; an empty value turns the check off, for air-gapped installs),
 verifies the minisign signature against the release key compiled into the binary, and shows
 a dismissible note in the header and the version under Settings. The request carries no
-instance identity and no version. It only reports; nothing is downloaded or installed. A
+instance identity; the server sees the protocol version header and the caller's IP address. It only reports; nothing is downloaded or installed. A
 failed or badly signed feed is ignored.
 
 ### `wayhouse-controller` — structural config distribution

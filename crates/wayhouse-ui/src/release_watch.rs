@@ -220,4 +220,37 @@ mod tests {
                 .enabled
         );
     }
+
+    /// The whole fetch path against a local server: a feed signed by some other key is fetched
+    /// fine but refused against the compiled-in release key, and nothing is recorded.
+    #[tokio::test]
+    async fn refresh_rejects_a_feed_signed_by_another_key() {
+        use axum::{routing::get, Router};
+        let bytes = feed(&["0.4.1"]);
+        let (_key, sig) = sign(&bytes);
+        let body = bytes.clone();
+        let app = Router::new()
+            .route(
+                "/release-feed.json",
+                get(move || async move { body.clone() }),
+            )
+            .route(
+                "/release-feed.json.minisig",
+                get(move || async move { sig.clone() }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let w = ReleaseWatch::new(
+            "0.4.0",
+            Some("https://registry.test/release-feed.json".into()),
+        );
+        let client = RegistryClient::for_tests().with_rewrite(&base);
+        let err = w.refresh(&client).await.unwrap_err();
+        assert!(!err.is_empty());
+        let s = w.status();
+        assert_eq!(s.latest, None);
+        assert_eq!(s.checked_at, None);
+    }
 }
