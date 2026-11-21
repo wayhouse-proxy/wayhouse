@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use wayhouse_config::features::PER_SOURCE;
@@ -31,12 +32,15 @@ struct Counts {
 #[derive(Debug)]
 pub struct SourceLimiter {
     counts: Mutex<Counts>,
+    /// Whether any cap is set, so an uncapped listener's accepts never share the lock.
+    capped: AtomicBool,
 }
 
 impl SourceLimiter {
     pub fn new(cfg: Option<&PerSourceLimit>) -> Arc<Self> {
         let l = Arc::new(Self {
             counts: Mutex::new(Counts::default()),
+            capped: AtomicBool::new(false),
         });
         l.reconfigure(cfg);
         l
@@ -48,18 +52,19 @@ impl SourceLimiter {
         let mut c = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
         c.max_ip = cfg.and_then(|c| c.max_per_ip);
         c.max_net = cfg.and_then(|c| c.max_per_net);
+        self.capped
+            .store(c.max_ip.is_some() || c.max_net.is_some(), Ordering::Release);
     }
 
     pub fn is_enabled(&self) -> bool {
-        let c = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
-        c.max_ip.is_some() || c.max_net.is_some()
+        self.capped.load(Ordering::Acquire)
     }
 
     /// Reserve a live slot for a connection / session from `ip`. `Err(reason)`
     /// when a cap is already reached (nothing is reserved); `Ok(guard)` releases
     /// the slot on drop.
     pub fn acquire(self: &Arc<Self>, ip: IpAddr) -> Result<SourceGuard, &'static str> {
-        if !crate::flags::on(PER_SOURCE) {
+        if !crate::flags::on(PER_SOURCE) || !self.capped.load(Ordering::Acquire) {
             return Ok(SourceGuard { limiter: None });
         }
         let key = NetKey::of(ip);
@@ -136,6 +141,19 @@ mod tests {
             max_per_ip: ip,
             max_per_net: net,
         }
+    }
+
+    #[test]
+    fn an_uncapped_limiter_admits_without_touching_the_shared_lock() {
+        let l = SourceLimiter::new(None);
+        // Hold the lock, as a busy listener's other accepts would: an uncapped accept must not wait for it.
+        let _held = l.counts.lock().unwrap();
+        let l2 = l.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(l2.acquire("192.0.2.1".parse().unwrap()).is_ok());
+        });
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(2)), Ok(true));
     }
 
     #[test]
