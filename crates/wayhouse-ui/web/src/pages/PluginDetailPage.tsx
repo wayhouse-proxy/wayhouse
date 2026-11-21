@@ -24,6 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/Tabs"
 import { CapabilityList } from "../lib/plugins/capabilities";
 import { optionsForm } from "../lib/plugins/options";
 import { useCan } from "../lib/session";
+import { sameJson } from "../lib/sameJson";
 import { managedByFile } from "../lib/plugins/managed";
 
 const errorText = (err: unknown) => (err instanceof ApiError ? err.message : String(err));
@@ -112,7 +113,7 @@ function OptionsTab({ plugin, onSaved }: { plugin: PluginDetail; onSaved: () => 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [needs, setNeeds] = useState<{ approved: PluginCapabilities; effective: PluginCapabilities } | null>(null);
-  const changes = JSON.stringify(config) === JSON.stringify(saved) ? 0 : 1;
+  const changes = sameJson(config, saved) ? 0 : 1;
 
   async function save(approved?: PluginCapabilities) {
     setBusy(true);
