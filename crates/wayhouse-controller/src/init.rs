@@ -36,8 +36,8 @@ use zeroize::Zeroizing;
 /// Bytes of randomness in a token (48 hex characters) and in the UI password (24).
 const TOKEN_BYTES: usize = 24;
 const PASSWORD_BYTES: usize = 12;
-/// How long the CA and its leaves are valid. There is no renewal command yet; a leaf is replaced
-/// by issuing a new one under the same CA (the CA key stays in the `tls` directory).
+/// How long the CA and its leaves are valid. A leaf is replaced by `wayhouse-controller cert`,
+/// which issues a new one under the same CA (the CA key stays in the `tls` directory).
 const CA_VALID_DAYS: i64 = 3650;
 const LEAF_VALID_DAYS: i64 = 1825;
 
@@ -124,7 +124,7 @@ pub enum InitError {
     Cert(#[from] rcgen::Error),
 }
 
-fn io(path: &Path) -> impl FnOnce(std::io::Error) -> InitError + '_ {
+pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> InitError + '_ {
     move |source| InitError::Io {
         path: path.to_owned(),
         source,
@@ -195,11 +195,13 @@ fn name(cn: &str) -> DistinguishedName {
     dn
 }
 
-fn leaf(
+/// `until` caps the expiry (a leaf that outlives its CA is useless); `None` is the full term.
+pub(crate) fn leaf(
     cn: &str,
     sans: &[String],
     ca: &Issuer<'_, &KeyPair>,
     what: &'static str,
+    until: Option<time::OffsetDateTime>,
 ) -> Result<Leaf, InitError> {
     for s in sans {
         if !valid_name(s) {
@@ -215,6 +217,9 @@ fn leaf(
     params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     validity(&mut params, LEAF_VALID_DAYS);
+    if let Some(until) = until {
+        params.not_after = params.not_after.min(until);
+    }
     let key = KeyPair::generate()?;
     let cert = params.signed_by(&key, ca)?;
     Ok(Leaf {
@@ -266,14 +271,26 @@ impl Tls {
         Ok(Self {
             ca_pem: ca_cert.pem(),
             ca_key_pem: Zeroizing::new(ca_key.serialize_pem()),
-            controller: leaf("wayhouse-controller", controller_names, &issuer, "--san")?,
-            aggregator: leaf("wayhouse-aggregator", aggregator_names, &issuer, "--san")?,
+            controller: leaf(
+                "wayhouse-controller",
+                controller_names,
+                &issuer,
+                "--san",
+                None,
+            )?,
+            aggregator: leaf(
+                "wayhouse-aggregator",
+                aggregator_names,
+                &issuer,
+                "--san",
+                None,
+            )?,
         })
     }
 }
 
 /// `localhost`, the loopback addresses and `own`, then the operator's `--san`s, without repeats.
-fn names(own: &[String], extra: &[String]) -> Vec<String> {
+pub(crate) fn names(own: &[String], extra: &[String]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     ["localhost", "127.0.0.1", "::1"]
         .into_iter()
