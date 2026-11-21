@@ -237,6 +237,16 @@ Rules:
   unless it is started with `--plugin-overlay-url <controller URL>` (and `--plugin-overlay-token`
   when the controller needs one): the same stream, merged into the file's `plugin_routes:` listeners
   on every reload. The two flags exclude `--controller`.
+- A proxy with no controller at all can take the routes from a file instead:
+  `--plugin-overlay-file <path>` holds the document the controller serves on `/plugin-routes`
+  (`routes`, `port_routes`, `web_routes`; see the shape above), for example one a script keeps
+  current, or to try `plugin_routes:` listeners without plugins. A missing file at start means no
+  routes; a file that is not that document, or is over 1 MiB, refuses the start (`--check` too). Once
+  running, an edit that is not that document, or a file that goes missing, keeps the last good routes
+  and logs one line. Entries the proxy cannot read (a misspelt `host`, a `proto` that is not `tcp`,
+  `udp` or `both`) are left out and counted in a warning. The proxy re-reads the file every two
+  seconds and rebuilds when its routes changed. It excludes `--controller` and
+  `--plugin-overlay-url`.
 
 ## Port routes
 
@@ -448,6 +458,14 @@ its own declaration as the approved set, calls `init` and, if declared, `on_time
 and prints what the host saw, including which capabilities were used. It exits 1 when the
 host would reject the module, a call fails, or the plugin used a capability it did not
 declare. Plugin repo CI is meant to run it on every build.
+
+**Official plugins in this repository's CI.** `plugins.lock` pins a commit of
+`wayhouse-proxy/plugins`. The `sniffers e2e` job builds the plugins at that commit and runs
+`wayhouse-plugin-check` (built from the checkout under test) on each module, so a host change
+that breaks an official plugin fails here and not at the next plugin release. A plugin built
+for another ABI minor than the checkout's cannot load while the major is 0: that case is a CI
+warning, which is what an ABI bump looks like until `plugins.lock` moves to the plugins
+commit that re-pinned the ABI crate. Move the lock in a follow-up after the plugins PR merges.
 
 ## Installing a plugin (controller API)
 

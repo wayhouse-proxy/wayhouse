@@ -5,6 +5,7 @@ import { ErrorState, Loading } from "../components/shell/States";
 import { Switch } from "../components/ui/Switch";
 import { useSharedConfigDoc } from "../lib/config/SharedConfigDoc";
 import { useFormLayout } from "../lib/form/useFormLayout";
+import { AboutSection } from "../components/shell/AboutSection";
 import { useState } from "react";
 import { useCan } from "../lib/session";
 
@@ -35,6 +36,7 @@ export function SettingsPage() {
         <SchemaForm schema={doc.schema} value={doc.value} saved={doc.savedValue} onChange={doc.setValue} layout={layout} page="global" showAdvanced={advanced} readonly={!canWrite} />
       )}
       <ConfigSaveBar doc={doc} />
+      <AboutSection />
     </div>
   );
 }

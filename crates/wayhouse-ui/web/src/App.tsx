@@ -16,6 +16,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { SourcePage } from "./pages/SourcePage";
 import { SharedConfigDoc } from "./lib/config/SharedConfigDoc";
 import { TrialBar } from "./components/config/TrialBar";
+import { ReleaseBadge } from "./components/shell/ReleaseBadge";
 import { AppearancePage } from "./pages/AppearancePage";
 import { LayoutPage } from "./pages/LayoutPage";
 import { SniffersPage } from "./pages/SniffersPage";
@@ -60,7 +61,7 @@ export function App() {
     <ThemeSync />
     <Routes>
       <Route element={<SharedConfigDoc />}>
-      <Route element={<Shell banner={<TrialBar />} onSignOut={() => logout().finally(() => setSession(null))} />}>
+      <Route element={<Shell banner={<><ReleaseBadge /><TrialBar /></>} onSignOut={() => logout().finally(() => setSession(null))} />}>
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<DashboardPage />} />
         <Route path="/overview" element={<OverviewPage />} />

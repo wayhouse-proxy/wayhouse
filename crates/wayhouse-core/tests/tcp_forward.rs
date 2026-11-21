@@ -890,6 +890,64 @@ async fn reload_adds_removes_and_rebinds_listeners_at_runtime() {
         .await;
 }
 
+/// A parked listener (`enabled: false`) is not run and does not take its bind, so a live
+/// listener can use the same address; parking a running one stops it, and unparking brings
+/// it back.
+#[tokio::test]
+async fn a_parked_listener_is_not_run_and_unparking_starts_it() {
+    const MARK: u8 = b'Y';
+    let a = marker_backend(MARK).await;
+    let port = free_port().await;
+    let doc = |parked: &str, live: &str| {
+        parse_str(&format!(
+            "schema_version: 4\npools:\n  - name: p\n    targets: [\"{a}\"]\n\
+             listeners:\n  - name: l1\n    bind: \"{port}\"\n    pool: p\n{parked}\
+             \x20 - name: l2\n    bind: \"{port}\"\n    pool: p\n{live}"
+        ))
+        .unwrap()
+    };
+    let hit = |addr: std::net::SocketAddr| async move {
+        let mut c = TcpStream::connect(addr).await.ok()?;
+        let mut m = [0u8; 1];
+        c.read_exact(&mut m).await.ok()?;
+        Some(m[0])
+    };
+
+    // l1 is parked and l2 is live on the same bind: l2 serves.
+    let cfg = doc("    enabled: false\n", "");
+    let runtime = Runtime::start(Snapshot::from_config(&cfg), Arc::default(), 1);
+    let handle = runtime.handle();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        hit(port).await,
+        Some(MARK),
+        "the live listener holds the bind"
+    );
+
+    // Park l2 as well: nothing listens any more.
+    handle.store(Snapshot::from_config(&doc(
+        "    enabled: false\n",
+        "    enabled: false\n",
+    )));
+    handle.reconcile_listeners().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_ne!(
+        hit(port).await,
+        Some(MARK),
+        "both parked: the port is closed"
+    );
+
+    // Unpark l1: it takes the bind.
+    handle.store(Snapshot::from_config(&doc("", "    enabled: false\n")));
+    handle.reconcile_listeners().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(hit(port).await, Some(MARK), "unparked listener serves");
+
+    runtime
+        .shutdown_with_grace(std::time::Duration::from_millis(100))
+        .await;
+}
+
 const ONE_LISTENER: &str = "pools:\n  - name: p\n    targets: [\"{a}\"]\n\
      listeners:\n  - name: l1\n    bind: \"{bind}\"\n    pool: p\n";
 

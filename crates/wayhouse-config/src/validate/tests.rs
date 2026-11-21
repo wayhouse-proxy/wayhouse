@@ -723,6 +723,67 @@ fn extract_sni_reads_the_client_hello() {
     assert_eq!(extract_sni(&[0u8; 200]), None); // not a handshake
 }
 
+/// `hello` re-cut into handshake records of the given payload sizes (the last takes the rest).
+fn split_records(hello: &[u8], sizes: &[usize]) -> Vec<u8> {
+    let payload = &hello[5..];
+    let (mut out, mut at) = (Vec::new(), 0usize);
+    for (i, size) in sizes
+        .iter()
+        .copied()
+        .chain(std::iter::once(usize::MAX))
+        .enumerate()
+    {
+        let end = if i == sizes.len() {
+            payload.len()
+        } else {
+            (at + size).min(payload.len())
+        };
+        out.extend_from_slice(&[0x16, 0x03, 0x01]);
+        out.extend_from_slice(&((end - at) as u16).to_be_bytes());
+        out.extend_from_slice(&payload[at..end]);
+        at = end;
+    }
+    out
+}
+
+#[test]
+fn extract_sni_joins_a_client_hello_split_across_records() {
+    let hello = client_hello("split.example.com");
+    // Two records, three, a split inside the 4-byte handshake header, and a 1-byte first record.
+    for sizes in [vec![20], vec![10, 30], vec![2], vec![1], vec![3, 1, 5]] {
+        assert_eq!(
+            extract_sni(&split_records(&hello, &sizes)).as_deref(),
+            Some("split.example.com"),
+            "{sizes:?}"
+        );
+    }
+}
+
+#[test]
+fn a_split_client_hello_is_not_read_until_every_record_is_there() {
+    let hello = client_hello("split.example.com");
+    let whole = split_records(&hello, &[20, 20]);
+    assert!(matches!(
+        client_hello_state(&whole),
+        HelloState::Complete(_)
+    ));
+    // Cut anywhere before the end: more bytes are needed, and there is no SNI yet.
+    for cut in [0, 3, 5, 10, 25, 30, whole.len() - 1] {
+        assert_eq!(
+            client_hello_state(&whole[..cut]),
+            HelloState::NeedMore,
+            "cut {cut}"
+        );
+        assert_eq!(extract_sni(&whole[..cut]), None, "cut {cut}");
+    }
+    // A non-handshake record in the middle of the message ends it: nothing to wait for.
+    let mut broken = split_records(&hello, &[20]);
+    let second = broken.len() - (hello.len() - 5 - 20) - 5;
+    broken[second] = 0x17;
+    assert_eq!(client_hello_state(&broken), HelloState::Invalid);
+    assert_eq!(extract_sni(&broken), None);
+}
+
 #[test]
 fn sni_matcher_exact_and_suffix() {
     let yaml = r#"
