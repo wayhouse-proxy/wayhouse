@@ -71,6 +71,10 @@ fn sweep_values(doc: &Value) -> Vec<String> {
 /// Whether either secret in `yaml` was scrubbed.
 #[must_use]
 pub fn has_redacted_secret(yaml: &str) -> bool {
+    // Most configs hold no marker; skip the parse for them.
+    if !yaml.contains(REDACTED) {
+        return false;
+    }
     let Ok(doc) = serde_norway::from_str::<Value>(yaml) else {
         return false;
     };

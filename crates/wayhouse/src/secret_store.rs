@@ -135,11 +135,13 @@ pub fn set(path: &Path, keyring: &Keyring, name: &str, value: &[u8]) -> Result<(
         .map_err(|e| StoreError::Seal(e.to_string()))?;
     // A key typed wrong would start a store that no one key opens: refuse it while the file
     // still holds a secret to check against.
-    if let Some((existing, sealed)) = store.iter().next() {
+    // The entry being replaced does not count: it may be the one under a retired key.
+    if let Some((existing, sealed)) = store.iter().find(|(n, _)| n.as_str() != name) {
         if keyring.open_cluster(existing, sealed).is_err() {
-            return Err(StoreError::Seal(
-                "this key opens none of the secrets already stored; check --secret-key-file".into(),
-            ));
+            return Err(StoreError::Seal(format!(
+                "this key does not open the stored secret `{existing}`; check --secret-key-file, \
+                 or clear a secret sealed under a retired key with --secret-delete {existing}"
+            )));
         }
     }
     store.insert(name.to_owned(), sealed);
@@ -315,6 +317,23 @@ mod tests {
             Err(StoreError::Seal(_))
         ));
         assert_eq!(std::fs::read(&p).unwrap(), before, "nothing was written");
+    }
+
+    #[test]
+    fn a_secret_under_a_retired_key_can_be_replaced_or_deleted_to_clear_the_way() {
+        let d = dir();
+        let p = d.path().join("s.json");
+        set(&p, &Keyring::parse(KEY_A).unwrap(), "old", VALUE).unwrap();
+        let b = Keyring::parse(KEY_B).unwrap();
+        // The only entry is the one being replaced: nothing else to check the key against.
+        set(&p, &b, "old", VALUE).unwrap();
+        let q = d.path().join("t.json");
+        set(&q, &Keyring::parse(KEY_A).unwrap(), "stale", VALUE).unwrap();
+        // "stale" is under a retired key; a new name is refused, and the message says how out.
+        let Err(StoreError::Seal(msg)) = set(&q, &b, "new", VALUE) else {
+            panic!("expected a refusal")
+        };
+        assert!(msg.contains("--secret-delete"), "{msg}");
     }
 
     #[test]
