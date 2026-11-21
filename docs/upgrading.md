@@ -48,7 +48,7 @@ its row. Use `unreleased` for the product column until the release is tagged.
 
 | Release    | Protocol | Config schema | Store format | Sniffer ABI |
 | ---------- | -------- | ------------- | ------------ | ----------- |
-| unreleased | 1.3      | 4             | 1            | 0.1         |
+| unreleased | 1.3      | 4             | 2            | 0.1         |
 | 0.3.0      | 1.2      | 3             | 1            | 0.1         |
 | 0.2.0      | 1.1      | 2             | 1            | 0.1         |
 | 0.1.0      | 1.0      | 1             | 1            | 0.1         |
@@ -88,6 +88,19 @@ that will receive the document runs 0.4.0; an older proxy refuses the document.
 An older proxy refuses a document that uses a reference, so the same rule applies. One more
 change for existing documents: an all-digit or `true`/`false` token or PSK written without quotes
 (`auth_token: 1234567890123456`) is now refused with a "must be quoted" error; put quotes around it.
+
+**Plaintext secrets in old revisions** (store format 2). A controller that opens a format 1 store
+scrubs `settings.admin.auth_token` and `settings.gossip.psk` out of every config revision that a
+newer one has replaced (they read `[redacted]`), out of the entries of its Raft log and its
+saved snapshot that carry those revisions, and then keeps doing so as revisions retire. It runs
+at every start, so a crash part-way just repeats it. A revision keeps its secret while it is the
+live one, the fallback of a trial, or the newest promoted revision of its config schema (an older
+proxy still starts on it); `POST /config/rollback/{revision}` to a scrubbed revision answers `409`.
+Nothing about the wire changes, so a mixed fleet keeps working, but an older controller keeps its
+plaintext history until it is upgraded and can still send it in a log catch-up or snapshot (the
+upgraded node scrubs what it applies). Freed database pages, backups and logs outside the process
+are out of reach, and a build older than this one refuses a format 2 store. **Rotate any token or
+PSK that was ever stored in plaintext in a config.**
 
 The cluster secret store (`PUT /secrets/{name}`, the UI data level is now 4) follows the
 same rule: upgrade every controller before the first secret write; the leader answers `409`

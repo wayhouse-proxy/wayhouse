@@ -394,48 +394,88 @@ impl AppState {
         Ok(revision)
     }
 
+    /// The revisions that keep their plaintext although a newer one is live: the fallback of a
+    /// live trial, and the newest promoted revision of each declared config schema (a proxy that
+    /// only parses an older schema starts on it, see [`Self::current_for_group`]). The next
+    /// pass looks only at what is new above the watermark and at the persisted set from the last.
+    fn retained_revisions(&self, live: u64) -> Result<Vec<u64>, StoreError> {
+        let mut keep: Vec<u64> = self
+            .pending()?
+            .map(|p| p.trial.revert_to)
+            .into_iter()
+            .collect();
+        let mut candidates = self.store.kept()?;
+        candidates.extend(self.store.rewritten_below()?.max(1)..=live);
+        candidates.sort_unstable();
+        candidates.dedup();
+        let mut schemas = std::collections::HashSet::new();
+        for rev in candidates.into_iter().rev() {
+            if !self.stage_of(rev).promoted {
+                continue;
+            }
+            let Some(bytes) = self.store.get(rev)? else {
+                continue;
+            };
+            // A scrubbed revision is no one's fallback, whatever schema it declares.
+            let text = String::from_utf8_lossy(&bytes);
+            if wayhouse_config::has_redacted_secret(&text) {
+                continue;
+            }
+            if schemas.insert(wayhouse_config::version::declared_schema_version(&text)) {
+                keep.push(rev);
+            }
+        }
+        Ok(keep)
+    }
+
     /// Strips the plaintext secrets out of every revision that can no longer be the live one:
-    /// older than the newest revision promoted for everyone, and not the fallback of a live
-    /// trial (#474). Runs in apply, so every replica does the same. A failure is logged, not
-    /// returned: the write it follows has landed, and the next one retries from the watermark.
-    pub fn redact_retired(&self) {
+    /// older than the newest revision promoted for everyone, and not [retained]. Runs in apply,
+    /// so every replica does the same. A failure is logged, not returned: the write it follows
+    /// has landed, and the next one retries from the watermark. Returns how many it scrubbed.
+    ///
+    /// [retained]: Self::retained_revisions
+    pub fn redact_retired(&self) -> usize {
         let result = (|| -> Result<usize, StoreError> {
             let Some((live, _)) = self.current_for_group(None, None)? else {
                 return Ok(0);
             };
-            // Kept: the fallback of a live trial, and the newest promoted revision of each
-            // declared schema, so a proxy that only parses an older schema keeps a config to
-            // start on (`current_for_group` walks down to it).
-            let mut keep: Vec<u64> = self
-                .pending()?
-                .map(|p| p.trial.revert_to)
-                .into_iter()
-                .collect();
-            let mut schemas = std::collections::HashSet::new();
-            for rev in (self.store.rewritten_below()?.max(1)..=live).rev() {
-                if !self.stage_of(rev).promoted {
-                    continue;
-                }
-                let Some(bytes) = self.store.get(rev)? else {
-                    continue;
-                };
-                let schema = wayhouse_config::version::declared_schema_version(
-                    &String::from_utf8_lossy(&bytes),
-                );
-                if schemas.insert(schema) {
-                    keep.push(rev);
-                }
-            }
+            let keep = self.retained_revisions(live)?;
             self.store.rewrite_below(live, &keep, |bytes| {
                 let text = std::str::from_utf8(bytes).ok()?;
                 wayhouse_config::redact_secrets(text).map(String::into_bytes)
             })
         })();
         match result {
-            Ok(0) => {}
-            Ok(n) => tracing::info!(revisions = n, "redacted secrets in retired revisions"),
-            Err(e) => tracing::error!(error = %e, "redacting retired revisions failed"),
+            Ok(0) => 0,
+            Ok(n) => {
+                tracing::info!(revisions = n, "redacted secrets in retired revisions");
+                n
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "redacting retired revisions failed");
+                0
+            }
         }
+    }
+
+    /// The exact bytes of every config revision that still holds its plaintext on purpose: the
+    /// live one and everything newer (a staged revision a group still waits for), and the retained
+    /// older ones. Copies of any other revision, in the Raft log or a snapshot, are scrubbed
+    /// (`ha::state_machine`).
+    pub fn kept_bytes(&self) -> Result<Vec<Vec<u8>>, StoreError> {
+        let Some((live, _)) = self.current_for_group(None, None)? else {
+            return Ok(Vec::new());
+        };
+        let mut out: Vec<Vec<u8>> = self
+            .store
+            .revisions_after(live - 1)?
+            .into_iter()
+            .map(|(_, bytes)| bytes)
+            .collect();
+        for revision in self.retained_revisions(live)? {
+            out.extend(self.store.get(revision)?);
+        }
+        Ok(out)
     }
 
     /// The record that puts `revision` on `trial`.

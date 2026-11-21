@@ -23,6 +23,11 @@ const PATHS: [[&str; 3]; 2] = [
 /// unrelated text, and the controller has not accepted one this short since the strength rule.
 const MIN_SWEEP: usize = 4;
 
+/// A bare (non-string) token is swept only from this length on, and only as a whole token: a
+/// secret passes the strength rule at 16 bytes, so a shorter token is not one, and a short one
+/// (`true`, `8080`) would hit unrelated settings.
+const MIN_TOKEN_SWEEP: usize = 8;
+
 fn lookup<'a>(doc: &'a Value, path: &[&str]) -> Option<&'a Value> {
     path.iter().try_fold(doc, |v, k| v.get(*k))
 }
@@ -48,6 +53,21 @@ fn plaintext(doc: &Value) -> Vec<String> {
         .collect()
 }
 
+/// What the last pass searches for besides the key's own line: the text of each string secret
+/// (anywhere it repeats, a comment or an alias's copy). A secret that is not a string (a bare
+/// number, say) has no text of its own to search for here: its normalized form (`1.5e3` is
+/// `1500`) does not appear in the document, and a short one (`true`) would rewrite unrelated
+/// matches. Those are swept by the raw token the line edit saw instead ([`edit_in_place`]).
+fn sweep_values(doc: &Value) -> Vec<String> {
+    PATHS
+        .iter()
+        .filter_map(|p| match lookup(doc, p)? {
+            Value::String(s) if s != REDACTED => Some(s.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Whether either secret in `yaml` was scrubbed.
 #[must_use]
 pub fn has_redacted_secret(yaml: &str) -> bool {
@@ -64,11 +84,17 @@ pub fn has_redacted_secret(yaml: &str) -> bool {
 #[must_use]
 pub fn redact_secrets(yaml: &str) -> Option<String> {
     let doc: Value = serde_norway::from_str(yaml).ok()?;
-    let values = plaintext(&doc);
-    if values.is_empty() {
+    if plaintext(&doc).is_empty() {
         return None;
     }
-    let mut out = edit_in_place(yaml).filter(|t| scrubbed(t)).or_else(|| {
+    let mut values = sweep_values(&doc);
+    let edited = edit_in_place(yaml).filter(|(t, _)| scrubbed(t));
+    let mut raw_tokens = Vec::new();
+    let mut out = edited.map(|(t, raw)| {
+        raw_tokens = raw;
+        t
+    });
+    let mut out = out.take().or_else(|| {
         let mut doc = doc;
         for p in PATHS {
             if let Some(v) = path_mut(&mut doc, &p) {
@@ -80,12 +106,37 @@ pub fn redact_secrets(yaml: &str) -> Option<String> {
         serde_norway::to_string(&doc).ok()
     })?;
     // Whatever else repeats the value (a comment, an anchor's copy) goes too.
-    for v in values.iter().filter(|v| v.len() >= MIN_SWEEP) {
+    values.retain(|v| v.len() >= MIN_SWEEP);
+    for v in &values {
         if out.contains(v.as_str()) {
             out = out.replace(v.as_str(), REDACTED);
         }
     }
+    for token in raw_tokens.iter().filter(|t| t.len() >= MIN_TOKEN_SWEEP) {
+        out = replace_token(&out, token);
+    }
     Some(out)
+}
+
+/// `text` with each whole-token occurrence of `token` (not part of a longer word) replaced.
+fn replace_token(text: &str, token: &str) -> String {
+    let word = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.');
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(token) {
+        let before_ok = at == 0 || !word(rest.as_bytes()[at - 1]);
+        let end = at + token.len();
+        let after_ok = end == rest.len() || !word(rest.as_bytes()[end]);
+        out.push_str(&rest[..at]);
+        out.push_str(if before_ok && after_ok {
+            REDACTED
+        } else {
+            token
+        });
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn path_mut<'a>(doc: &'a mut Value, path: &[&str]) -> Option<&'a mut Value> {
@@ -98,11 +149,12 @@ fn scrubbed(text: &str) -> bool {
 }
 
 /// Replaces the value on each secret key's own line, keeping everything else byte for byte.
-/// `None` when no line could be edited.
-fn edit_in_place(yaml: &str) -> Option<String> {
+/// `None` when no line could be edited. Also returns the raw text of each bare value it replaced.
+fn edit_in_place(yaml: &str) -> Option<(String, Vec<String>)> {
     let mut stack: Vec<(usize, String)> = Vec::new();
     let mut out = String::with_capacity(yaml.len());
     let mut edited = false;
+    let mut raw = Vec::new();
     for line in yaml.split_inclusive('\n') {
         let body = line.trim_end_matches(['\n', '\r']);
         let trimmed = body.trim_start();
@@ -115,7 +167,8 @@ fn edit_in_place(yaml: &str) -> Option<String> {
             stack.push((indent, key.to_owned()));
             let path: Vec<&str> = stack.iter().map(|(_, k)| k.as_str()).collect();
             if PATHS.iter().any(|p| p[..] == path[..]) {
-                if let Some(value_end) = replace_scalar(rest) {
+                if let Some((value_end, token)) = replace_scalar(rest) {
+                    raw.extend(token);
                     let value_start = body.len() - rest.len();
                     out.push_str(&body[..value_start]);
                     out.push_str(&value_end);
@@ -129,7 +182,7 @@ fn edit_in_place(yaml: &str) -> Option<String> {
             out.push_str(line);
         }
     }
-    edited.then_some(out)
+    edited.then_some((out, raw))
 }
 
 /// `key: rest` for a plain mapping key, else `None` (comments, list items, anything odd).
@@ -153,7 +206,7 @@ fn split_key(trimmed: &str) -> Option<(&str, &str)> {
 /// For the text after `key:`, the same text with its scalar replaced; `None` when the value is
 /// not a quoted or bare scalar on this line (a reference, a block scalar, a value on the next
 /// line, an alias).
-fn replace_scalar(rest: &str) -> Option<String> {
+fn replace_scalar(rest: &str) -> Option<(String, Option<String>)> {
     let value = rest.trim_start();
     let lead = &rest[..rest.len() - value.len()];
     let first = value.chars().next()?;
@@ -198,9 +251,10 @@ fn replace_scalar(rest: &str) -> Option<String> {
     } else {
         (bare_trim, &value[bare_trim..end])
     };
-    Some(format!(
-        "{lead}\"{REDACTED}\"{gap}{}",
-        &value[scalar_end.max(end)..]
+    let token = (first != '"' && first != '\'').then(|| value[..scalar_end].to_owned());
+    Some((
+        format!("{lead}\"{REDACTED}\"{gap}{}", &value[scalar_end.max(end)..]),
+        token,
     ))
 }
 
@@ -306,6 +360,28 @@ mod tests {
             assert!(has_redacted_secret(&out), "{value} -> {out}");
             assert_eq!(redact_secrets(&out), None, "{value}: idempotent");
         }
+    }
+
+    #[test]
+    fn an_alias_copy_of_a_bare_number_is_swept_by_its_raw_text_and_short_tokens_are_not() {
+        // A hex number normalises to something that is not in the text (`0x1234567890abcdef` is
+        // `1311768467294899695`); the raw token is.
+        let yaml = format!(
+            "{}# was 0x1234567890abcdef\nlimits:\n  retries: true\n  note: 0x1234567890abcdefx\n",
+            doc("  admin:\n    auth_token: 0x1234567890abcdef\n")
+        );
+        let out = redact_secrets(&yaml).unwrap();
+        assert!(!out.contains("# was 0x1234567890abcdef"), "{out}");
+        assert!(
+            out.contains("0x1234567890abcdefx"),
+            "a longer word is not the token: {out}"
+        );
+        let short = doc("  admin:\n    auth_token: true\n");
+        let out = redact_secrets(&format!("{short}flag: true\n")).unwrap();
+        assert!(
+            out.contains("flag: true"),
+            "a short token is not swept: {out}"
+        );
     }
 
     #[test]
