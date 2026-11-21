@@ -38,6 +38,7 @@ pub struct Runtime {
     /// `SourceFactory` was supplied (i.e. tests / no discovery configured).
     sources: Option<Arc<SourceManager>>,
     reload_requested: Arc<Notify>,
+    parked: Arc<AtomicBool>,
     gossip: Option<crate::gossip::GossipHandle>,
     shutdown_tx: watch::Sender<bool>,
     /// The health-checker task. Listener tasks live in `listeners`, discovery
@@ -59,6 +60,9 @@ pub struct RuntimeHandle {
     listeners: Arc<ListenerManager>,
     sources: Option<Arc<SourceManager>>,
     reload_requested: Arc<Notify>,
+    /// Whether the last snapshot had every listener parked, so the warning fires on the
+    /// transition rather than on every reload.
+    parked: Arc<AtomicBool>,
     gossip: Option<crate::gossip::GossipHandle>,
 }
 
@@ -144,7 +148,7 @@ impl RuntimeHandle {
     /// [`Reconciled::failed`] and keeps its previous group running.
     pub async fn reconcile_listeners(&self) -> Reconciled {
         let snap = self.snapshot.load_full();
-        warn_if_all_parked(&snap);
+        warn_if_all_parked(&snap, &self.parked);
         self.listeners.reconcile(&snap).await
     }
 
@@ -297,7 +301,8 @@ impl Runtime {
             sniffers,
             worker_count,
         );
-        warn_if_all_parked(&initial);
+        let parked = Arc::new(AtomicBool::new(false));
+        warn_if_all_parked(&initial, &parked);
         listeners.start_all(&initial)?;
 
         // Spawned before the health task so it can hand `sweep` a
@@ -334,6 +339,7 @@ impl Runtime {
             listeners,
             sources,
             reload_requested,
+            parked,
             gossip: gossip_handle,
             shutdown_tx,
             tasks,
@@ -351,6 +357,7 @@ impl Runtime {
             listeners: self.listeners.clone(),
             sources: self.sources.clone(),
             reload_requested: self.reload_requested.clone(),
+            parked: self.parked.clone(),
             gossip: self.gossip.clone(),
         }
     }
@@ -405,12 +412,32 @@ impl Runtime {
     }
 }
 
+/// True only when `now` flips the flag from not-parked to parked.
+fn park_transition(prev: &AtomicBool, now: bool) -> bool {
+    prev.swap(now, Ordering::AcqRel) != now && now
+}
+
 /// Validation refuses a config with no listeners at all, so an empty set here is every one
 /// parked with `enabled: false`: nothing accepts connections and `ready()` stays false.
-fn warn_if_all_parked(snap: &Snapshot) {
-    if snap.listeners.is_empty() {
+fn warn_if_all_parked(snap: &Snapshot, parked: &AtomicBool) {
+    if park_transition(parked, snap.listeners.is_empty()) {
         tracing::warn!(
             "every listener is parked (enabled: false); this instance answers nothing and is not ready"
         );
+    }
+}
+
+#[cfg(test)]
+mod park_tests {
+    use super::*;
+
+    #[test]
+    fn the_parked_warning_fires_once_per_transition() {
+        let f = AtomicBool::new(false);
+        assert!(!park_transition(&f, false));
+        assert!(park_transition(&f, true));
+        assert!(!park_transition(&f, true), "still parked: no repeat");
+        assert!(!park_transition(&f, false));
+        assert!(park_transition(&f, true), "parked again after a recovery");
     }
 }

@@ -1657,9 +1657,11 @@ mod tests {
             .unwrap();
         let resp = app.clone().oneshot(get()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(resp.headers().contains_key("retry-after"));
         drop(held);
         let resp = app.clone().oneshot(get()).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(SUBSCRIBERS.available_permits(), MAX_SUBSCRIBERS - 1);
         drop(resp);
         for _ in 0..100 {
             if SUBSCRIBERS.available_permits() == MAX_SUBSCRIBERS {
