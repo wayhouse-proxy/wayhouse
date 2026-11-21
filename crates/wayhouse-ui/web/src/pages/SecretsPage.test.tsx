@@ -10,6 +10,8 @@ const api = vi.hoisted(() => ({
   deleteClusterSecret: vi.fn(),
   getPluginSecretKeys: vi.fn(),
   rewrapPluginSecrets: vi.fn(),
+  rewrapClusterSecrets: vi.fn(),
+  rewrapAcmeKeys: vi.fn(),
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
 
@@ -111,10 +113,37 @@ describe("SecretsPage", () => {
     expect(await screen.findByText(/Re-encrypted 3 plugin secrets under k2/)).toBeInTheDocument();
   });
 
+  it("re-encrypts the cluster secrets and the certificate keys with their own buttons", async () => {
+    api.getPluginSecretKeys.mockResolvedValue({ key_ids: ["k1", "k2"], active: "k2", nodes: {} });
+    api.rewrapClusterSecrets.mockResolvedValue({ rewrapped: 1, skipped: ["gossip-psk"], unreadable: [], active_key_id: "k2" });
+    api.rewrapAcmeKeys.mockResolvedValue({ rewrapped: 2, skipped: [], unreadable: [], active_key_id: "k2" });
+    const user = userEvent.setup();
+    page();
+    await screen.findByRole("table", { name: "Keys per node" });
+    await user.click(screen.getByRole("button", { name: "Re-encrypt cluster secrets" }));
+    expect(api.rewrapClusterSecrets).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/Re-encrypted 1 cluster secret under k2\. 1 could not be re-encrypted: gossip-psk/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Re-encrypt certificate keys" }));
+    expect(await screen.findByText(/Re-encrypted 2 certificate keys under k2/)).toBeInTheDocument();
+    expect(api.rewrapPluginSecrets).not.toHaveBeenCalled();
+  });
+
+  it("says so when the controller runs without ACME", async () => {
+    api.getPluginSecretKeys.mockResolvedValue({ key_ids: ["k1", "k2"], active: "k2", nodes: {} });
+    api.rewrapAcmeKeys.mockRejectedValue(new ApiError(404, "not found"));
+    const user = userEvent.setup();
+    page();
+    await screen.findByRole("table", { name: "Keys per node" });
+    await user.click(screen.getByRole("button", { name: "Re-encrypt certificate keys" }));
+    expect(await screen.findByText(/no certificate keys to re-encrypt/)).toBeInTheDocument();
+  });
+
   it("will not re-encrypt while a node lacks the active key", async () => {
     page();
     await screen.findByRole("table", { name: "Keys per node" });
-    expect(screen.getByRole("button", { name: "Re-encrypt plugin secrets" })).toHaveAttribute("aria-disabled", "true");
+    for (const name of ["Re-encrypt plugin secrets", "Re-encrypt cluster secrets", "Re-encrypt certificate keys"]) {
+      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-disabled", "true");
+    }
   });
 
   it("shows no key rotation when the controller has no plugins (404)", async () => {
