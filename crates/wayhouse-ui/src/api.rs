@@ -96,7 +96,7 @@ pub struct AppState {
     pub login_limiter: Arc<LoginLimiter>,
     /// Reverse proxies whose `X-Forwarded-For` the login throttle believes
     /// ([`crate::login_limit::client_ip`]); empty means the socket peer is the client.
-    pub trusted_proxies: Arc<Vec<IpAddr>>,
+    pub trusted_proxies: Arc<Vec<crate::login_limit::TrustedProxy>>,
     /// Bounds concurrent Argon2 verifications, so a flood of logins can't
     /// occupy every blocking thread.
     pub verify_permits: Arc<tokio::sync::Semaphore>,
@@ -205,7 +205,7 @@ impl AppState {
         self
     }
 
-    pub fn with_trusted_proxies(mut self, proxies: Vec<IpAddr>) -> Self {
+    pub fn with_trusted_proxies(mut self, proxies: Vec<crate::login_limit::TrustedProxy>) -> Self {
         self.trusted_proxies = Arc::new(proxies);
         self
     }

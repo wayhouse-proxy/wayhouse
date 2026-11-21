@@ -711,10 +711,10 @@ different address. Attempts at one name from all addresses together are held to 
 burst of 10, then one per 3 s, so a guesser spread over many addresses still gets at
 most one try per 3 s per name. An IPv6 /64 counts as one address, so rotating inside it
 does not help. Behind a reverse proxy every client has the proxy's
-address, so pass `--trusted-proxy <proxy address>` (repeat or comma-separate for several):
+address, so pass `--trusted-proxy <proxy address or CIDR block>` (repeat or comma-separate for several):
 requests from those addresses are throttled under the client in the right-most
 `X-Forwarded-For` entry that is not itself a trusted proxy. Without the flag the header is
-ignored, because any client could spoof it. Proxies are trusted by exact address (no CIDR ranges), and an `X-Forwarded-For` entry written as `ip:port` is not understood, so such a request is throttled under the proxy's address. The delay
+ignored, because any client could spoof it. A bare address trusts exactly that address (never its /64); a block such as `10.0.0.0/8` or `fd00::/8` trusts everything inside it, and `/0` is refused. An `X-Forwarded-For` entry written as `ip:port` is not understood, so such a request is throttled under the proxy's address. The delay
 is kept in memory on each controller replica (a restart or another replica
 starts fresh), and names share a fixed set of 1024 slots, so it neither leaks
 which accounts exist nor grows with attacker-chosen names.
