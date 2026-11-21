@@ -5,7 +5,7 @@
 //! owner-only; `--secret-set` reads the value from stdin so it never touches argv or history.
 
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
@@ -84,10 +84,38 @@ fn lock(path: &Path) -> Result<std::fs::File, StoreError> {
         .create(true)
         .truncate(false)
         .mode(0o600)
+        .custom_flags(nix::libc::O_NOFOLLOW)
         .open(path.with_file_name(name))
         .map_err(fail)?;
     f.lock().map_err(|e| StoreError::Write(e.to_string()))?;
     Ok(f)
+}
+
+/// The longest value a secret may have (the controller's store takes the same).
+const MAX_VALUE: usize = wayhouse_secrets::MAX_SECRET_BYTES;
+
+/// The secret a person typed or piped: at most [`MAX_VALUE`] bytes, minus one final line ending
+/// (`\n` or `\r\n`), in a buffer that is wiped on drop.
+pub fn read_value(
+    mut input: impl std::io::Read,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, StoreError> {
+    let mut buf = zeroize::Zeroizing::new(Vec::new());
+    (&mut input)
+        .take(MAX_VALUE as u64 + 3)
+        .read_to_end(&mut buf)
+        .map_err(|e| StoreError::Read(e.to_string()))?;
+    if buf.ends_with(b"\n") {
+        buf.pop();
+        if buf.ends_with(b"\r") {
+            buf.pop();
+        }
+    }
+    if buf.len() > MAX_VALUE {
+        return Err(StoreError::Seal(format!(
+            "a secret is at most {MAX_VALUE} bytes"
+        )));
+    }
+    Ok(buf)
 }
 
 /// Seals `value` under `name` (replacing any earlier value) and stores it.
@@ -100,6 +128,15 @@ pub fn set(path: &Path, keyring: &Keyring, name: &str, value: &[u8]) -> Result<(
         .map_err(|e| StoreError::Seal(e.to_string()))?;
     let _lock = lock(path)?;
     let mut store = read(path)?;
+    // A key typed wrong would start a store that no one key opens: refuse it while the file
+    // still holds a secret to check against.
+    if let Some((existing, sealed)) = store.iter().next() {
+        if keyring.open_cluster(existing, sealed).is_err() {
+            return Err(StoreError::Seal(
+                "this key opens none of the secrets already stored; check --secret-key-file".into(),
+            ));
+        }
+    }
     store.insert(name.to_owned(), sealed);
     write(path, &store)
 }
@@ -182,6 +219,20 @@ mod tests {
     }
 
     #[test]
+    fn a_planted_symlink_is_never_opened_as_the_lock() {
+        let d = dir();
+        let p = d.path().join("s.json");
+        let victim = d.path().join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        std::os::unix::fs::symlink(&victim, d.path().join("s.json.lock")).unwrap();
+        assert!(matches!(
+            set(&p, &Keyring::parse(KEY_A).unwrap(), "gossip-psk", VALUE),
+            Err(StoreError::Write(_))
+        ));
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+    }
+
+    #[test]
     fn parallel_sets_keep_every_update() {
         let d = dir();
         let p = d.path().join("s.json");
@@ -232,6 +283,33 @@ mod tests {
         assert!(remove(&p, "x1").unwrap());
         assert!(!remove(&p, "x1").unwrap());
         assert!(read(&p).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_value_from_stdin_loses_one_line_ending_and_is_capped() {
+        let v = read_value(&b"correct-horse\r\n"[..]).unwrap();
+        assert_eq!(&*v, b"correct-horse");
+        let v = read_value(&b"no-newline"[..]).unwrap();
+        assert_eq!(&*v, b"no-newline");
+        let v = read_value(&b"two\n\n"[..]).unwrap();
+        assert_eq!(&*v, b"two\n", "only the final line ending goes");
+        let big = vec![b'a'; MAX_VALUE + 1];
+        assert!(matches!(read_value(&big[..]), Err(StoreError::Seal(_))));
+        assert!(read_value(&big[..MAX_VALUE]).is_ok());
+    }
+
+    #[test]
+    fn a_key_that_opens_none_of_the_stored_secrets_is_refused() {
+        let d = dir();
+        let p = d.path().join("s.json");
+        set(&p, &Keyring::parse(KEY_A).unwrap(), "first", VALUE).unwrap();
+        let before = std::fs::read(&p).unwrap();
+        let wrong = Keyring::parse(KEY_B).unwrap();
+        assert!(matches!(
+            set(&p, &wrong, "second", VALUE),
+            Err(StoreError::Seal(_))
+        ));
+        assert_eq!(std::fs::read(&p).unwrap(), before, "nothing was written");
     }
 
     #[test]

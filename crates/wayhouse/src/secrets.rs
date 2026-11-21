@@ -184,6 +184,24 @@ pub struct Live {
     pub admin: Option<std::sync::Arc<wayhouse_http::rotating::RotatingSecret>>,
 }
 
+/// Why [`Live::prepare`] refused a config.
+#[derive(Debug)]
+pub enum Prepare {
+    /// A secret could not be read (an outage, a missing secret): the same config may apply later.
+    Unavailable(anyhow::Error),
+    /// The config itself is not acceptable (a weak value, a dropped admin token): asking again
+    /// changes nothing.
+    Refused(anyhow::Error),
+}
+
+impl std::fmt::Display for Prepare {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable(e) | Self::Refused(e) => e.fmt(f),
+        }
+    }
+}
+
 impl Live {
     /// Turns the new config's references into values and checks them, before anything is
     /// applied. An error rejects the whole reload and the old secrets keep working: a missing
@@ -192,14 +210,22 @@ impl Live {
     pub async fn prepare(
         &self,
         cfg: wayhouse_config::Config,
-    ) -> anyhow::Result<wayhouse_config::Config> {
-        let cfg = self.source.resolve(cfg).await?;
+    ) -> Result<wayhouse_config::Config, Prepare> {
+        let cfg = self
+            .source
+            .resolve(cfg)
+            .await
+            .map_err(Prepare::Unavailable)?;
         cfg.check_secret_strength()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        if self.admin.is_some() && crate::admin_token(&cfg)?.is_none() {
-            anyhow::bail!(
+            .map_err(|e| Prepare::Refused(anyhow::anyhow!("{e}")))?;
+        if self.admin.is_some()
+            && crate::admin_token(&cfg)
+                .map_err(Prepare::Refused)?
+                .is_none()
+        {
+            return Err(Prepare::Refused(anyhow::anyhow!(
                 "settings.admin.auth_token is gone from the new config; removing the admin token (which opens the API) needs a restart"
-            );
+            )));
         }
         Ok(cfg)
     }
@@ -225,6 +251,12 @@ impl Live {
                 "settings.admin.auth_token was added on a reload, but the admin API started without one and stays open until a restart"
             ),
             _ => {}
+        }
+        if cfg.gossip.is_some() != handle.runs_gossip() {
+            tracing::warn!(
+                source = source_desc,
+                "settings.gossip was added or removed on a reload; the mesh keeps running as it started until a restart"
+            );
         }
         let psk = cfg.gossip.as_ref().and_then(|g| g.psk.resolve(None).ok());
         if psk.is_some_and(|psk| handle.rotate_gossip_psk(&psk, OVERLAP)) {

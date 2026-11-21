@@ -72,6 +72,11 @@ impl RuntimeHandle {
             .is_some_and(|g| g.rotate_psk(new, overlap))
     }
 
+    /// Whether this instance runs a gossip mesh.
+    pub fn runs_gossip(&self) -> bool {
+        self.gossip.is_some()
+    }
+
     pub fn snapshot(&self) -> arc_swap::Guard<Arc<Snapshot>> {
         self.snapshot.load()
     }

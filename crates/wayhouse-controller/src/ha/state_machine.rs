@@ -50,6 +50,8 @@ use crate::registry::RegistrySnapshot;
 use crate::store::SiblingWrite;
 
 const SM_META_KEY: &[u8] = b"sm_meta";
+/// Log index below which every config entry is scrubbed ([`AppState::purge_secrets`]).
+const LOG_SCRUB_MARK_KEY: &[u8] = b"log_scrub_mark";
 /// Keys of the `raft_snapshot` tree: the current snapshot's
 /// [`SnapshotMeta`] (JSON) and its serialized [`SnapshotContent`].
 const SNAPSHOT_META_KEY: &[u8] = b"meta";
@@ -209,6 +211,28 @@ impl StateMachineStore {
         Ok(state)
     }
 
+    /// The Raft log index below which every config entry is already scrubbed (0 when unknown).
+    fn log_scrub_mark(&self) -> u64 {
+        self.meta
+            .get(LOG_SCRUB_MARK_KEY)
+            .ok()
+            .flatten()
+            .and_then(|v| <[u8; 8]>::try_from(v.as_ref()).ok())
+            .map_or(0, u64::from_be_bytes)
+    }
+
+    /// Only ever raised, and a failed write only means the next pass reads more.
+    fn set_log_scrub_mark(&self, next: u64) {
+        if next > self.log_scrub_mark() {
+            if let Err(e) = self
+                .meta
+                .insert(LOG_SCRUB_MARK_KEY, next.to_be_bytes().as_slice())
+            {
+                tracing::warn!(error = %e, "saving the log scrub mark failed; the next pass rescans");
+            }
+        }
+    }
+
     /// Scrubs the plaintext secrets out of every retained copy of a retired config revision that
     /// this node holds outside the config store: the already-applied entries of the Raft log
     /// and the persisted snapshot. What stays whole is exactly what the config store keeps
@@ -240,8 +264,13 @@ impl StateMachineStore {
         let mut scrubbed = 0;
         // Nothing applied yet means no applied entry to scrub.
         if let Some(applied) = applied {
-            match super::log_store::redact_applied(&self.log, applied, &kept) {
-                Ok(n) => scrubbed += n,
+            // The log below the saved mark is already scrubbed: a pass reads only what is new.
+            let from = self.log_scrub_mark();
+            match super::log_store::redact_applied(&self.log, from, applied, &kept) {
+                Ok((n, next)) => {
+                    scrubbed += n;
+                    self.set_log_scrub_mark(next);
+                }
                 Err(e) => {
                     ok = false;
                     tracing::error!(error = %e, "scrubbing the raft log failed");
@@ -3117,8 +3146,14 @@ mod tests {
             )
             .unwrap();
         assert!(log_text(&sm, 1).contains(TOKEN));
+        // The mark only moves after a pass, so a crash before it leaves the old entry in range.
+        sm.meta.remove(LOG_SCRUB_MARK_KEY).unwrap();
         assert!(sm.purge_secrets());
         assert!(!log_text(&sm, 1).contains(TOKEN));
+        assert!(
+            sm.log_scrub_mark() > 1,
+            "the next pass starts above what is done"
+        );
         assert!(
             sm.purge_secrets(),
             "a second run finds nothing and succeeds"

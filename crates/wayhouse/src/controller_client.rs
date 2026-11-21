@@ -180,20 +180,16 @@ async fn subscribe_once(
     let mut buf = wayhouse_http::sse::EventBuffer::new();
     // A revision whose secrets could not be read is not counted as seen: if nothing newer
     // arrives, the stream is dropped after `SECRETS_RETRY` and the reconnect asks for it again.
-    let mut secrets_pending = false;
+    let mut retry_at: Option<tokio::time::Instant> = None;
 
     loop {
-        let wait = if secrets_pending {
-            SECRETS_RETRY
-        } else {
-            wayhouse_http::sse::IDLE_TIMEOUT
-        };
+        let wait = stream_wait(retry_at, tokio::time::Instant::now());
         let chunk = tokio::time::timeout(wait, resp.chunk())
             .await
             .map_err(|_| {
                 anyhow::anyhow!(
                     "subscribe stream from {base_url} sent nothing for {wait:?}{}; reconnecting",
-                    if secrets_pending {
+                    if retry_at.is_some() {
                         " after a revision whose secrets could not be read, to retry it"
                     } else {
                         ""
@@ -219,13 +215,24 @@ async fn subscribe_once(
             if let Some((revision, retry)) =
                 apply_sse_event(&event, handle, resolvers, sniffer_loader, sniffers, live).await
             {
-                secrets_pending = retry;
-                if !retry {
+                // One deadline from the first failure: a keep-alive must not push it back.
+                if retry {
+                    retry_at.get_or_insert_with(|| tokio::time::Instant::now() + SECRETS_RETRY);
+                } else {
+                    retry_at = None;
                     *cursor = revision;
                 }
             }
         }
     }
+}
+
+/// How long the stream may stay quiet: the idle timeout, or what is left until the retry of a
+/// revision whose secrets could not be read.
+fn stream_wait(retry_at: Option<tokio::time::Instant>, now: tokio::time::Instant) -> Duration {
+    retry_at.map_or(wayhouse_http::sse::IDLE_TIMEOUT, |at| {
+        at.saturating_duration_since(now)
+    })
 }
 
 struct SseRevision {
@@ -404,6 +411,23 @@ async fn apply_sse_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_retry_deadline_counts_down_whatever_arrives_meanwhile() {
+        let t0 = tokio::time::Instant::now();
+        assert_eq!(stream_wait(None, t0), wayhouse_http::sse::IDLE_TIMEOUT);
+        let at = t0 + SECRETS_RETRY;
+        assert_eq!(stream_wait(Some(at), t0), SECRETS_RETRY);
+        // Ten seconds on, after a keep-alive: five seconds are left, not a fresh fifteen.
+        assert_eq!(
+            stream_wait(Some(at), t0 + Duration::from_secs(10)),
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            stream_wait(Some(at), at + Duration::from_secs(1)),
+            Duration::ZERO
+        );
+    }
 
     #[test]
     fn subscribe_url_announces_the_supported_config_schema() {

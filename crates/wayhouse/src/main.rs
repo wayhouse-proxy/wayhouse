@@ -319,10 +319,8 @@ fn manage_secrets(args: &Args) -> anyhow::Result<bool> {
         let Some(ring) = secrets::load_keyring(args.secret_key_file.as_deref())? else {
             anyhow::bail!("--secret-set needs a key: give --secret-key-file or set WAYHOUSE_PLUGIN_SECRET_KEY");
         };
-        let mut value = String::new();
-        std::io::Read::read_to_string(&mut std::io::stdin(), &mut value)?;
-        let value = value.strip_suffix('\n').unwrap_or(&value);
-        secret_store::set(path, &ring, name, value.as_bytes())?;
+        let value = secret_store::read_value(std::io::stdin())?;
+        secret_store::set(path, &ring, name, &value)?;
         eprintln!("sealed the secret into {}", path.display());
     } else if let Some(name) = &args.secret_delete {
         let gone = secret_store::remove(path, name)?;
