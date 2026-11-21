@@ -155,10 +155,8 @@ where
                 }))
             }
         }));
-        let io = TokioIo::new(FirstByte::new(io, limits.first_byte_timeout));
+        let io = TokioIo::new(FirstByte::new(io, limits.first_byte_timeout, permit));
         tokio::spawn(async move {
-            // Held for the life of the connection.
-            let _permit = permit;
             let mut builder = Builder::new(TokioExecutor::new());
             builder
                 .http1()
@@ -193,6 +191,10 @@ struct FirstByte<Io> {
     sleep: Option<Pin<Box<tokio::time::Sleep>>>,
     /// What has been read while the timer runs; only ever a prefix of [`H2_PREFACE`].
     head: Vec<u8>,
+    /// The connection's slot in the cap. It lives in the stream, not in the task that serves
+    /// the connection: hyper's connection future ends at an upgrade (a WebSocket), but the
+    /// upgraded stream still holds this one, so the slot is freed when the socket is.
+    _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
 /// hyper-util keeps reading until the bytes either differ from this or complete it, so a
@@ -200,11 +202,12 @@ struct FirstByte<Io> {
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 impl<Io> FirstByte<Io> {
-    fn new(inner: Io, limit: Duration) -> Self {
+    fn new(inner: Io, limit: Duration, slot: tokio::sync::OwnedSemaphorePermit) -> Self {
         Self {
             inner,
             sleep: Some(Box::pin(tokio::time::sleep(limit))),
             head: Vec::new(),
+            _slot: slot,
         }
     }
 }
