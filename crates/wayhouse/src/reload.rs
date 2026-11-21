@@ -601,4 +601,53 @@ mod tests {
             .shutdown_with_grace(Duration::from_millis(100))
             .await;
     }
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Capture;
+        fn make_writer(&'a self) -> Capture {
+            self.clone()
+        }
+    }
+
+    /// No log line of a reload carries a secret value: not on a rotation, not when the new value
+    /// is refused as too short, not when the secret is gone.
+    #[tokio::test]
+    async fn no_reload_log_line_carries_a_secret_value() {
+        let log = Capture::default();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(log.clone())
+                .with_ansi(false)
+                .finish(),
+        );
+        let r = rig();
+        seal(&r.store, "admin-token", SECOND);
+        assert!(reload(&r, SEALED).await);
+        seal(&r.store, "admin-token", "only-ten-b");
+        assert!(!reload(&r, SEALED).await);
+        std::fs::remove_file(&r.store).unwrap();
+        assert!(!reload(&r, SEALED).await);
+        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert!(text.contains("rotated"), "the rotation was logged: {text}");
+        for secret in [FIRST, SECOND, "only-ten-b"] {
+            assert!(!text.contains(secret), "a log line carries a secret value");
+        }
+        r.runtime
+            .shutdown_with_grace(Duration::from_millis(100))
+            .await;
+    }
 }
