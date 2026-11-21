@@ -697,7 +697,7 @@ async fn run(
     );
     // Saved kill switches apply before the first listener accepts a connection.
     if matches!(config_source, ConfigSource::Controller(..))
-        && features::restore(&feature_overrides_file)
+        && features::restore(&feature_overrides_file, &cfg.features)
     {
         tracing::info!(path = %feature_overrides_file.display(), "feature overrides restored");
     }

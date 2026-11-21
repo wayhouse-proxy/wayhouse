@@ -888,11 +888,12 @@ mod tests {
     #[tokio::test]
     async fn pruning_refuses_when_the_aggregator_lists_nothing_and_a_typo_never_deletes() {
         let (empty, _) = spawn_logging(StatusCode::OK, r#"{"count":0,"instances":[]}"#).await;
-        let (ctl, _) = tag_controller().await;
+        let (ctl, refused) = tag_controller().await;
         let (app, op) = app_with(empty, Some(ctl), crate::role::Role::Operator);
         let uri = "/api/fleet/node-tags/prune";
         let r = send(&app, &op, "POST", uri, r#"{"names":["gone"]}"#).await;
         assert_eq!(r.status(), StatusCode::CONFLICT);
+        assert!(refused.lock().unwrap().is_empty(), "nothing was deleted");
         let (agg, _) = spawn_logging(StatusCode::OK, r#"{"count":1,"instances":["fra-1"]}"#).await;
         let (ctl, deleted) = tag_controller().await;
         let (app, op) = app_with(agg, Some(ctl), crate::role::Role::Operator);

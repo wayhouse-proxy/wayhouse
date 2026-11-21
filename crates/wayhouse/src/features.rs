@@ -105,7 +105,7 @@ fn save(path: &std::path::Path, overrides: &Overrides) {
 ///
 /// `main` calls this before the listeners start, so the first connections already see the saved
 /// kill switches; [`run`] does not restore again.
-pub fn restore(path: &std::path::Path) -> bool {
+pub fn restore(path: &std::path::Path, config: &BTreeMap<String, bool>) -> bool {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
@@ -119,6 +119,11 @@ pub fn restore(path: &std::path::Path) -> bool {
         return false;
     };
     set_overrides(saved);
+    // The flags the data path reads, before the first listener binds (`publish` runs only after).
+    let rows = effective(config);
+    wayhouse_core::flags::set_all(|name| {
+        rows.iter().find(|r| r.name == name).is_none_or(|r| r.value)
+    });
     true
 }
 
@@ -283,12 +288,15 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("overrides.json");
-        assert!(!restore(&file), "no file, nothing to restore");
+        assert!(
+            !restore(&file, &BTreeMap::new()),
+            "no file, nothing to restore"
+        );
         let soon = unix_now() + 600;
         let live = BTreeMap::from([("acl".to_string(), (false, Some(soon)))]);
         save(&file, &live);
         set_overrides(BTreeMap::new());
-        assert!(restore(&file));
+        assert!(restore(&file, &BTreeMap::new()));
         assert_eq!(overrides().get("acl"), Some(&false));
         // An override that ran out while the proxy was down is not revived.
         save(
@@ -296,10 +304,13 @@ mod tests {
             &BTreeMap::from([("acl".to_string(), (false, Some(1)))]),
         );
         set_overrides(BTreeMap::new());
-        restore(&file);
+        restore(&file, &BTreeMap::new());
         assert!(overrides().is_empty());
         std::fs::write(&file, b"garbage").unwrap();
-        assert!(!restore(&file), "an unreadable file is ignored");
+        assert!(
+            !restore(&file, &BTreeMap::new()),
+            "an unreadable file is ignored"
+        );
         set_overrides(BTreeMap::new());
     }
 

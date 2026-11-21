@@ -40,14 +40,18 @@ pub struct FeatureRollup {
 pub fn rollup(states: &[InstanceState]) -> FeatureRollup {
     let mut flags: BTreeMap<&str, FlagRollup> = BTreeMap::new();
     // The names kept past the cap are the first by name, not the first reported, so the answer
-    // does not depend on the order of the instances.
-    let listed: std::collections::BTreeSet<&str> = states
+    // does not depend on the order of the instances, and the set never holds more than the cap
+    // plus one name however many an instance reports.
+    let mut listed: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for name in states
         .iter()
         .flat_map(|s| s.payload.features.iter().map(|f| f.name.as_str()))
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .take(MAX_FLAGS)
-        .collect();
+    {
+        listed.insert(name);
+        if listed.len() > MAX_FLAGS {
+            listed.pop_last();
+        }
+    }
     let mut reporting = 0;
     for s in states {
         let p = &s.payload;
