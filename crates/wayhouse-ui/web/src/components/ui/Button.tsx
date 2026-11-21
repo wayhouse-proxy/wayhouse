@@ -26,6 +26,9 @@ const button = cva(
   },
 );
 
+/** The button look for a link, so a navigation styled as a button matches the real ones. */
+export const buttonClass = (o?: VariantProps<typeof button>) => button(o);
+
 export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> &
   VariantProps<typeof button> & { loading?: boolean };
 
