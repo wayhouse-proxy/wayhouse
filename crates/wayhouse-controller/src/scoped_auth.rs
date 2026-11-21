@@ -75,6 +75,8 @@ const UI: Allowed = &[
     (&Method::DELETE, "/plugins/*/webhook"),
     (&Method::GET, "/admin/plugins/secrets/keys"),
     (&Method::POST, "/admin/plugins/secrets/rewrap"),
+    (&Method::POST, "/admin/acme/rewrap"),
+    (&Method::POST, "/secrets/rewrap"),
     (&Method::GET, "/acme/sites"),
     (&Method::PUT, "/acme/sites/*"),
     (&Method::DELETE, "/acme/sites/*"),
@@ -342,6 +344,8 @@ mod tests {
             ("DELETE", "/ui/dashboards/ops"),
             ("GET", "/admin/plugins/secrets/keys"),
             ("POST", "/admin/plugins/secrets/rewrap"),
+            ("POST", "/admin/acme/rewrap"),
+            ("POST", "/secrets/rewrap"),
             ("POST", "/ui/dashboards/ops/rename"),
         ] {
             assert_eq!(status(m, p, UI_T).await, StatusCode::OK, "{m} {p}");

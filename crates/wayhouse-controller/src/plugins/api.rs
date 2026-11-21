@@ -1551,6 +1551,14 @@ async fn rewrap_secrets(State(st): State<PluginsState>, headers: HeaderMap) -> R
             },
         }
     };
+    tracing::warn!(
+        actor = ?actor(&headers).as_deref().unwrap_or("-"),
+        rewrapped = total - skipped.len(),
+        skipped = skipped.len(),
+        unreadable = unreadable.len(),
+        key_id = %active,
+        "plugin secrets rewrapped"
+    );
     Json(serde_json::json!({
         "rewrapped": total - skipped.len(),
         "skipped": skipped,

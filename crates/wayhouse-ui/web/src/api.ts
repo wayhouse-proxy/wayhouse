@@ -663,6 +663,15 @@ export function rewrapPluginSecrets(): Promise<RewrapResult> {
   return requestJson("/api/plugins/secrets/rewrap", { method: "POST" });
 }
 
+/** Step two for the cluster secrets (`{ secret: name }` values). */
+export function rewrapClusterSecrets(): Promise<RewrapResult> {
+  return requestJson("/api/secrets/rewrap", { method: "POST" });
+}
+/** Step two for the ACME account key and certificate keys; 404 when the controller runs without ACME. */
+export function rewrapAcmeKeys(): Promise<RewrapResult> {
+  return requestJson("/api/acme/rewrap", { method: "POST" });
+}
+
 export async function listClusterSecrets(): Promise<ClusterSecret[]> {
   return (await requestJson<{ items: ClusterSecret[] }>("/api/secrets")).items;
 }

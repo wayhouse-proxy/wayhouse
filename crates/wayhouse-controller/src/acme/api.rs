@@ -439,7 +439,16 @@ async fn rewrap(State(st): State<AcmeState>, headers: HeaderMap) -> Response {
         }
     }
     let total = usize::from(account.is_some()) + certs.len();
+    let who = crate::ui_data::api::actor(&headers);
     let done = |skipped: Vec<String>| {
+        tracing::warn!(
+            actor = ?who.as_deref().unwrap_or("-"),
+            rewrapped = total - skipped.len(),
+            skipped = skipped.len(),
+            unreadable = unreadable.len(),
+            key_id = %active,
+            "acme keys rewrapped"
+        );
         Json(serde_json::json!({
             "rewrapped": total - skipped.len(),
             "skipped": skipped,
