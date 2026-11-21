@@ -2,7 +2,6 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { FleetInstanceView } from "../types";
 import type { FleetNode, NodePage, Rollup, SavedFilter } from "../lib/fleet/nodes";
 
 const REGIONS = ["eu", "us", "ap"];
@@ -69,13 +68,12 @@ const api = vi.hoisted(() => ({
   patchBackend: vi.fn(),
   addBackend: vi.fn(),
   routeHint: vi.fn(),
+  getNodePools: vi.fn(),
 }));
 vi.mock("../api", async (orig) => ({ ...(await orig<typeof import("../api")>()), ...api }));
 
-const live = vi.hoisted(() => ({ instances: [] as FleetInstanceView[] }));
-vi.mock("../useFleetSocket", () => ({ useFleetSocket: () => ({ instances: live.instances, connected: true }) }));
-
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ApiError } from "../api";
 import { SessionProvider, type Role } from "../lib/session";
 import { ToastProvider } from "../components/ui/Toast";
 import { InspectorPanel, InspectorProvider } from "../components/shell/Inspector";
@@ -104,7 +102,7 @@ const where = () => new URLSearchParams(screen.getByTestId("where").textContent!
 
 beforeEach(() => {
   vi.resetAllMocks();
-  live.instances = [];
+  api.getNodePools.mockResolvedValue({ instance: "", last_seen_ms_ago: 0, pools: [] });
   api.getFleetNodes.mockImplementation(async (q: string) => pageOf(q));
   api.resolveFleetNodes.mockImplementation(async (q: string) => {
     const ns = select(q);
@@ -240,15 +238,11 @@ describe("Fleet page with 500 nodes", () => {
 describe("Fleet page inspector", () => {
   const row = () => screen.findByRole("row", { name: /n001/ });
   beforeEach(() => {
-    live.instances = [
-      {
-        instance: "n001",
-        last_seen_ms_ago: 800,
-        stale: false,
-        sessions: { tcp: 2, udp: 1 },
-        pools: [{ name: "lobby", balancer: "rr", backends: [{ addr: "10.0.0.5:7777", healthy: true, state: "enabled", active: 2 }] }],
-      },
-    ];
+    api.getNodePools.mockImplementation(async (instance: string) => ({
+      instance,
+      last_seen_ms_ago: 800,
+      pools: [{ name: "lobby", balancer: "rr", backends: [{ addr: "10.0.0.5:7777", healthy: true, state: "enabled", active: 2 }] }],
+    }));
   });
 
   it("opens a node from its row, keeps it in the URL and closes on Escape", async () => {
@@ -262,6 +256,19 @@ describe("Fleet page inspector", () => {
     await userEvent.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Details" })).toBeNull());
     expect(where().get("sel")).toBeNull();
+  });
+
+  it("reads the selected node's pools alone, not the fleet", async () => {
+    show("admin", "/fleet?q=n00&sel=n001");
+    expect(await screen.findByText("10.0.0.5:7777")).toBeInTheDocument();
+    expect(api.getNodePools).toHaveBeenCalledWith("n001");
+    expect(new Set(api.getNodePools.mock.calls.map((c) => c[0]))).toEqual(new Set(["n001"]));
+  });
+
+  it("says so when the node's pools cannot be read", async () => {
+    api.getNodePools.mockRejectedValue(new ApiError(404, "no such instance"));
+    show("admin", "/fleet?q=n00&sel=n001");
+    expect(await screen.findByText(/The pools could not be loaded: no such instance/)).toBeInTheDocument();
   });
 
   it("opens straight from ?sel=", async () => {

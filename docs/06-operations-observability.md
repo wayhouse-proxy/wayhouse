@@ -575,7 +575,10 @@ un-namespaced names.
   silence, `degraded` while any backend is unhealthy. Sorting by `state` puts the
   worst first. `POST /fleet/nodes/resolve` takes the same filters (paging keys
   are ignored) and answers `{count, instances}`, so a bulk action can show how many
-  nodes it will touch before the operator confirms. Read-only.
+  nodes it will touch before the operator confirms. `GET /fleet/nodes/{instance}/pools`
+  answers one node's `{instance, last_seen_ms_ago, pools, group}` (`404` for a node that never
+  pushed), which is what the UI's node inspector reads; the UI serves it as `GET
+  /api/fleet/nodes/{instance}/pools`. Read-only.
 - Region and tags are what an instance reports: `wayhouse --region eu-west --tag
   env=prod --tag gpu=a100` (at most 16 tags; keys are lowercase letters, digits,
   `.`, `_`, `-`; values and the region use letters, digits and `. _ - : / @ +`, at

@@ -38,6 +38,7 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/fleet/features", get(get_features))
         .route("/api/fleet/nodes", get(get_nodes))
         .route("/api/fleet/nodes/resolve", post(resolve_nodes))
+        .route("/api/fleet/nodes/{instance}/pools", get(get_node_pools))
         .route(
             "/api/fleet/instances/{instance}/sniffers",
             get(get_instance_sniffers),
@@ -424,6 +425,23 @@ fn with_query(path: &str, query: Option<String>) -> String {
         Some(q) => format!("{path}?{q}"),
         None => path.to_string(),
     }
+}
+
+/// `GET /api/fleet/nodes/{instance}/pools`: one node's pools and backend state (the fleet inspector), so the
+/// browser need not read the whole fleet.
+async fn get_node_pools(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(instance): Path<String>,
+) -> Response {
+    proxy_segments(
+        &state,
+        Method::GET,
+        &["nodes", &instance, "pools"],
+        None,
+        actor,
+    )
+    .await
 }
 
 async fn get_instance_sniffers(
@@ -1056,6 +1074,7 @@ mod tests {
         for name in hostile {
             for (method, path) in [
                 ("GET", format!("/api/fleet/instances/{name}/sniffers")),
+                ("GET", format!("/api/fleet/nodes/{name}/pools")),
                 ("POST", format!("/api/fleet/instances/{name}/drain")),
                 ("DELETE", format!("/api/fleet/sniffers/{name}")),
                 ("POST", format!("/api/fleet/sniffers/{name}/rollback")),
@@ -1083,6 +1102,7 @@ mod tests {
         for uri in seen.lock().unwrap().iter() {
             assert!(
                 uri.starts_with("/fleet/instances/")
+                    || uri.starts_with("/fleet/nodes/")
                     || uri.starts_with("/fleet/sniffers/")
                     || uri.starts_with("/fleet/pools/"),
                 "escaped to {uri}"
