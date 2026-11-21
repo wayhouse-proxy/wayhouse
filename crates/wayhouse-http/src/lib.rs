@@ -29,6 +29,8 @@ pub const MAX_SNIFFER_MODULE_BYTES: usize = 8 * 1024 * 1024;
 pub const LONG_VERSION: &str = env!("WAYHOUSE_LONG_VERSION");
 
 pub mod bearer;
+#[cfg(feature = "server")]
+pub mod conn;
 pub mod labels;
 #[cfg(feature = "server")]
 pub mod metrics;
@@ -37,6 +39,7 @@ pub mod peers;
 pub mod policy;
 pub mod protocol;
 pub mod public_ip;
+pub mod rotating;
 pub mod secret_arg;
 pub mod sse;
 #[cfg(feature = "server")]

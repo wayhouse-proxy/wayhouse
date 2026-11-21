@@ -196,6 +196,101 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 }
 
+/// Scrubs the plaintext secrets out of the retained, already-applied `Config` and `RelayConfig`
+/// entries of `entries` (the `raft_log` tree), except an entry whose config is one of `keep` (the
+/// exact bytes of a revision that holds its plaintext on purpose, see
+/// `AppState::kept_bytes`). Returns how many entries it rewrote.
+///
+/// A purely local rewrite, never replicated: openraft matches log entries on term and index,
+/// never on payload, so the entry keeps its place and a follower that replays it stores a
+/// scrubbed copy of a revision that is retired on the leader anyway. Entries above `up_to` (not
+/// applied here yet) are never touched, so this node can still apply them.
+///
+/// Each rewrite is checked against the entry as it was read, inside one transaction: a purge or a
+/// truncation that removed the entry meanwhile is not undone, and one that replaced it wins.
+pub fn redact_applied(
+    entries: &crate::kv::Tree,
+    up_to: u64,
+    keep: &[Vec<u8>],
+) -> Result<usize, crate::kv::Error> {
+    let changes = plan_redaction(entries, up_to, keep)?;
+    commit_redaction(entries, &changes)
+}
+
+/// One planned rewrite: the key, the entry as read, and its scrubbed form.
+type Change = (Vec<u8>, Vec<u8>, Vec<u8>);
+
+fn plan_redaction(
+    entries: &crate::kv::Tree,
+    up_to: u64,
+    keep: &[Vec<u8>],
+) -> Result<Vec<Change>, crate::kv::Error> {
+    use super::WriteRequest;
+    use openraft::EntryPayload;
+
+    let mut changes: Vec<Change> = Vec::new();
+    for item in entries.range::<[u8; 8], _>((Bound::Unbounded, Bound::Included(encode_idx(up_to))))
+    {
+        let (key, raw) = item?;
+        // Most entries are not configs; skip the JSON decode for those.
+        if !raw.windows(6).any(|w| w == b"Config") {
+            continue;
+        }
+        let Ok(mut entry) = serde_json::from_slice::<openraft::Entry<TypeConfig>>(&raw) else {
+            continue;
+        };
+        let EntryPayload::Normal(
+            WriteRequest::Config { bytes, .. } | WriteRequest::RelayConfig { bytes, .. },
+        ) = &mut entry.payload
+        else {
+            continue;
+        };
+        if keep.contains(bytes) {
+            continue;
+        }
+        let Some(text) = std::str::from_utf8(bytes).ok() else {
+            continue;
+        };
+        let Some(scrubbed) = wayhouse_config::redact_secrets(text) else {
+            continue;
+        };
+        *bytes = scrubbed.into_bytes();
+        let new = serde_json::to_vec(&entry).expect("a log entry serializes");
+        changes.push((key.to_vec(), raw.to_vec(), new));
+    }
+    Ok(changes)
+}
+
+fn commit_redaction(
+    entries: &crate::kv::Tree,
+    changes: &[Change],
+) -> Result<usize, crate::kv::Error> {
+    if changes.is_empty() {
+        return Ok(0);
+    }
+    let written = entries
+        .transaction(|t| {
+            let mut n = 0;
+            for (key, old, new) in changes {
+                if t.get(key)?
+                    .is_some_and(|now| now.as_ref() == old.as_slice())
+                {
+                    t.insert(key, new)?;
+                    n += 1;
+                }
+            }
+            Ok::<_, crate::kv::transaction::ConflictableTransactionError<std::convert::Infallible>>(
+                n,
+            )
+        })
+        .map_err(|e| match e {
+            crate::kv::transaction::TransactionError::Storage(e) => e,
+            crate::kv::transaction::TransactionError::Abort(never) => match never {},
+        })?;
+    entries.flush()?;
+    Ok(written)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +365,98 @@ mod tests {
 
         let state = store.get_log_state().await.unwrap();
         assert_eq!(state.last_purged_log_id.unwrap().index, 2);
+    }
+
+    const TOKEN: &str = "plain-admin-token-0123456789";
+
+    fn config_text(extra: &str) -> Vec<u8> {
+        format!("settings:\n  admin:\n    auth_token: \"{TOKEN}\"\n{extra}").into_bytes()
+    }
+
+    fn config_entry(index: u64, bytes: Vec<u8>) -> openraft::Entry<TypeConfig> {
+        Entry {
+            log_id: LogId::new(CommittedLeaderId::new(1, 0), index),
+            payload: EntryPayload::Normal(super::super::WriteRequest::Config {
+                bytes,
+                stage: crate::api::Stage::promoted(),
+                actor: Some("ops".into()),
+                trial: None,
+            }),
+        }
+    }
+
+    fn payload_bytes(e: &openraft::Entry<TypeConfig>) -> Vec<u8> {
+        match &e.payload {
+            EntryPayload::Normal(super::super::WriteRequest::Config { bytes, .. }) => bytes.clone(),
+            other => panic!("not a config entry: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn retired_config_entries_are_scrubbed_in_place_and_the_rest_is_left_alone() {
+        let (mut store, _dir) = open();
+        let (old, live, unapplied) = (
+            config_text("# one\n"),
+            config_text("# two\n"),
+            config_text("# three\n"),
+        );
+        seed(
+            &store,
+            &[
+                entry(1),
+                config_entry(2, old),
+                config_entry(3, live.clone()),
+                config_entry(4, unapplied.clone()),
+            ],
+        );
+        // Entries 1..=3 are applied here; `live` is a revision that keeps its plaintext.
+        let n = redact_applied(&store.entries, 3, std::slice::from_ref(&live)).unwrap();
+        assert_eq!(n, 1);
+        let all = store.try_get_log_entries(..).await.unwrap();
+        assert_eq!(all.len(), 4);
+        assert!(!String::from_utf8(payload_bytes(&all[1]))
+            .unwrap()
+            .contains(TOKEN));
+        assert!(String::from_utf8(payload_bytes(&all[1]))
+            .unwrap()
+            .contains("# one"));
+        assert_eq!(
+            payload_bytes(&all[2]),
+            live,
+            "a kept revision's entry is whole"
+        );
+        assert_eq!(
+            payload_bytes(&all[3]),
+            unapplied,
+            "an entry not applied here is untouched"
+        );
+        // Same term and index, so the log still matches the leader's; a repeat does nothing.
+        assert_eq!(*all[1].get_log_id(), *config_entry(2, vec![]).get_log_id());
+        assert_eq!(redact_applied(&store.entries, 3, &[live]).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_rewrite_never_resurrects_a_purged_entry_or_replaces_a_newer_one() {
+        let (mut store, _dir) = open();
+        seed(
+            &store,
+            &[
+                config_entry(1, config_text("# one\n")),
+                config_entry(2, config_text("# two\n")),
+            ],
+        );
+        // Planned from what was read; then entry 1 is purged and entry 2 is replaced.
+        let plan = plan_redaction(&store.entries, 2, &[]).unwrap();
+        assert_eq!(plan.len(), 2);
+        store.purge(*entry(1).get_log_id()).await.unwrap();
+        let newer = serde_json::to_vec(&config_entry(2, config_text("# newer\n"))).unwrap();
+        store.entries.insert(encode_idx(2), &newer).unwrap();
+
+        assert_eq!(commit_redaction(&store.entries, &plan).unwrap(), 0);
+        assert!(store.entries.get(encode_idx(1)).unwrap().is_none());
+        assert_eq!(
+            store.entries.get(encode_idx(2)).unwrap().unwrap().to_vec(),
+            newer
+        );
     }
 }

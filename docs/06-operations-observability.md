@@ -238,6 +238,26 @@ carried in the PROXY v2 TLV if the backend should correlate it.
   (`X-Config-Schema-Version` header) and a dry-run check of a raw YAML document (`200
   {"ok":true,"schema_version":N}`, or `422 {"error":...}`; nothing is applied). Same shapes as the
   controller's, so a UI can work against a file-config proxy with no controller.
+- `GET /config/file` and `PUT /config/file` – the config file of a proxy that runs from `--config`
+  (`404` under `--controller`). `GET` returns the YAML with `ETag` (a hash of the real content) and
+  `X-Config-Revision` (the same hash as a number the web editor keeps); `?previous=1` returns the
+  copy the last write kept. **Inline secrets are masked in the body** (`settings.admin.auth_token`
+  and `settings.gossip.psk` written as plain text), so a viewer reading the file does not get the
+  admin token; a `PUT` of the text you were shown keeps the real values. `PUT` takes the raw YAML and
+  replaces the file only if it is still the version you read: send `If-Match: <ETag>`, or
+  `?base=<revision>`. A changed file answers `409 {"code":"stale"}`, a document this build refuses
+  (parsed with the plugin routes merged in, as a reload does; a missing admin token too) `422`, no
+  version `428`, an unwritable directory `503`. The new text and the old one are both staged as temp
+  files first, so a full disk changes nothing; then the old file becomes `<file>.prev` (same
+  permissions) and the new one is renamed over the config. The proxy then reloads it like any edit,
+  and the answer waits up to five seconds to see the reload take it: `applied: true`, or `applied:
+  false` with a note that it is saved but not confirmed (a reload that fails, a bad certificate
+  path or a port in use, keeps the running config and logs why). **Off unless the proxy starts with
+  `--allow-config-write`** (`403` otherwise), and that flag refuses to start without
+  `settings.admin.auth_token`: the admin token can then rewrite listeners and TLS paths, not only
+  backends. Reads stay on. `wayhouse-ui --proxy-url <admin URL>` (with `--proxy-token-file`, and no
+  `--controller-url`) points the config editor at this: it shows and saves that file, with no
+  revision history, canary stage or confirm window.
 - `GET /web` – the resolved `web:` section as JSON for `wayhouse-web-sync`: `pool`,
   `listen.{http,https}`, `trusted_proxy`, `internal_bind`, and per site its `hosts` and
   `upstreams` in final form (`{addr}`, `{pool, via: "direct"}`, or `{pool, via: "wayhouse",
@@ -362,6 +382,14 @@ scraper cannot hold the UI's browser session. A `wayhouse-ui` with a login confi
 open. Per-request or per-store metrics for these binaries are not built; the
 per-instance proxy surface stays on each `wayhouse`.
 
+`wayhouse-ui` also checks once a day (with up to an hour of spread) whether a newer stable
+release exists. It fetches the signed `release-feed.json` from the project's GitHub release
+assets (`--release-feed-url`; an empty value turns the check off, for air-gapped installs),
+verifies the minisign signature against the release key compiled into the binary, and shows
+a dismissible note in the header and the version under Settings. The request carries no
+instance identity; the server sees the protocol version header and the caller's IP address. It only reports; nothing is downloaded or installed. A
+failed or badly signed feed is ignored.
+
 ### `wayhouse-controller` — structural config distribution
 
 One `--auth-token`-gated (optional) surface, backed by an embedded `redb`
@@ -385,7 +413,14 @@ store that never forgets a revision (ADR 20):
   against `current` or another revision.
 - `POST /config/rollback/{revision}` — re-submits that revision's exact bytes
   through the same validate-then-store path `POST /config` uses; rollback
-  never rewrites history, it creates a new revision with old content.
+  never rewrites history, it creates a new revision with old content. Once a
+  newer revision has been promoted for everyone, an older revision loses its
+  plaintext `settings.admin.auth_token` and `settings.gossip.psk` (they read
+  `[redacted]`); rolling back to such a revision answers `409`, so submit the
+  config with the secret again. The fallback of a live trial keeps its secrets
+  until the trial ends, and so does the newest promoted revision of each config
+  schema (an older proxy still has a config it can parse). Freed disk pages, backups and replicas that have not
+  upgraded are out of reach: rotate any secret that was ever stored in plain text.
 - `POST /config[?confirm_within=<secs>]`, `GET /config/pending`,
   `POST /config/confirm/{revision}`, `POST /config/revert` — **confirm and
   revert**, the guard against locking yourself out. A revision submitted with
@@ -547,7 +582,10 @@ un-namespaced names.
   silence, `degraded` while any backend is unhealthy. Sorting by `state` puts the
   worst first. `POST /fleet/nodes/resolve` takes the same filters (paging keys
   are ignored) and answers `{count, instances}`, so a bulk action can show how many
-  nodes it will touch before the operator confirms. Read-only.
+  nodes it will touch before the operator confirms. `GET /fleet/nodes/{instance}/pools`
+  answers one node's `{instance, last_seen_ms_ago, pools, group}` (`404` for a node that never
+  pushed), which is what the UI's node inspector reads; the UI serves it as `GET
+  /api/fleet/nodes/{instance}/pools`. Read-only.
 - Region and tags are what an instance reports: `wayhouse --region eu-west --tag
   env=prod --tag gpu=a100` (at most 16 tags; keys are lowercase letters, digits,
   `.`, `_`, `-`; values and the region use letters, digits and `. _ - : / @ +`, at
@@ -767,8 +805,9 @@ line prints a value. A config revision holds the name only.
 
 Every call is audited with a `warn` line (secret name, key id, actor). A controller with a key
 refuses to listen on plain HTTP on a non-loopback address unless `--allow-insecure-secrets` is
-given, because the `PUT` body is the value. To rotate: `PUT` the new value, then restart the
-proxies that use it (the admin token and gossip key are read at start). During a rolling upgrade
+given, because the `PUT` body is the value. To rotate: `PUT` the new value, then send each
+proxy that uses it `SIGHUP` (the admin token and gossip key are swapped in place; the old value
+works for 5 minutes (the gossip key for 10), see `docs/05` Secrets). During a rolling upgrade
 of an HA tier, upgrade every controller before the first `PUT`.
 
 ### Fronting layer: anycast vs. L4 load balancer

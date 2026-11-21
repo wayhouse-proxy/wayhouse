@@ -21,6 +21,14 @@ export interface SessionCounts {
   udp: number;
 }
 
+/** One node's pools, from `GET /api/fleet/nodes/{instance}/pools`. */
+export interface FleetNodePools {
+  instance: string;
+  last_seen_ms_ago: number;
+  pools: PoolSummary[];
+  group?: string | null;
+}
+
 export interface FleetInstanceView {
   instance: string;
   last_seen_ms_ago: number;
@@ -583,4 +591,12 @@ export interface MintedEnrollment {
   uses: number;
   /** A controller replica code: the Raft node id the replica will have. */
   node_id?: number;
+}
+
+/** `GET /api/release`: what the daily release feed says about this UI's own version. */
+export interface ReleaseStatus {
+  current: string;
+  enabled: boolean;
+  latest: { version: string; date: string; notes_url: string } | null;
+  checked_at: number | null;
 }

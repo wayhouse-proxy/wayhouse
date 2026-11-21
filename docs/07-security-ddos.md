@@ -37,8 +37,13 @@ All steps run **before** buffer/session allocation.
   `tcp_synack_retries`.
 - `accept` backpressure: when a worker is overloaded, throttle the accept rate instead
   of letting the queue explode.
-- **Peek timeout** (`peek_timeout_ms`): anyone who sends nothing after connecting is
-  dropped before a backend connect happens.
+- **Peek wait** (fixed at 250 ms, not configurable): a TCP client that sends nothing in the
+  first 250 ms is routed on empty bytes, not dropped. Routes that need the first bytes (`sni`,
+  `first_bytes`, sniffers) do not match, and an `always` route still applies, because
+  server-speaks-first protocols must keep working. So a silent client costs one accepted
+  connection for 250 ms and then reaches whatever the default route points at; the per-source
+  caps (`per_source`), `max_connections` and the idle timeout bound that. A listener with no
+  `always` route closes it. Drop silent clients by not giving the listener an `always` route.
 - **Min-progress watchdog**: a connection with no byte progress beyond `idle_timeout`
   → close.
 - Optional per-source concurrent cap: `per_source: { max_per_ip, max_per_net }`
@@ -73,6 +78,11 @@ All steps run **before** buffer/session allocation.
 - Secrets (admin token, mTLS keys) via env/file with `0600`, not in the YAML.
 - Bind the admin API and metrics to a separate internal interface; never on the public
   listener IPs.
+- The HTTP servers of the fleet binaries (controller, aggregator, UI backend) close a client that
+  does not finish its request head within 30 s (this also ends idle keep-alive connections), ping
+  HTTP/2 peers every 30 s and drop one that does not answer within 20 s, and hold at most 4096
+  connections at once; past that, new peers wait in the kernel's accept queue. Streams that are
+  already running (SSE, WebSocket) are not affected.
 - Rate-limit and ACL state is per instance; behind anycast HA, size it per node (an
   attack is spread across all nodes).
 

@@ -16,17 +16,28 @@ use axum::http::{header, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
+use crate::rotating::RotatingSecret;
+
 /// The expected token (if any) plus the body sent with the `401`.
 #[derive(Clone)]
 pub struct BearerAuth {
-    expected: Option<Arc<str>>,
+    expected: Option<Arc<RotatingSecret>>,
     body: &'static str,
 }
 
 impl BearerAuth {
     pub fn new(token: Option<&str>) -> Self {
         Self {
-            expected: token.map(Arc::from),
+            expected: token.map(|t| Arc::new(RotatingSecret::new(t))),
+            body: "unauthorized",
+        }
+    }
+
+    /// A token that can be rotated while the server runs: every request checks the value
+    /// `live` holds at that moment.
+    pub fn rotating(live: Arc<RotatingSecret>) -> Self {
+        Self {
+            expected: Some(live),
             body: "unauthorized",
         }
     }
@@ -48,7 +59,7 @@ pub async fn require_bearer(State(auth): State<BearerAuth>, req: Request, next: 
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
     match presented {
-        Some(token) if crate::token_eq(token, expected) => next.run(req).await,
+        Some(token) if expected.accepts(token) => next.run(req).await,
         _ => (StatusCode::UNAUTHORIZED, auth.body).into_response(),
     }
 }
@@ -101,6 +112,45 @@ mod tests {
                 (StatusCode::UNAUTHORIZED, "unauthorized".into())
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_rotated_token_works_at_once_and_the_old_one_until_its_window_ends() {
+        let live = Arc::new(crate::rotating::RotatingSecret::new("old-token"));
+        let auth = BearerAuth::rotating(live.clone());
+        assert_eq!(
+            call(auth.clone(), Some("Bearer old-token")).await.0,
+            StatusCode::OK
+        );
+        live.rotate(
+            "new-token",
+            std::time::Duration::from_secs(3600),
+            std::time::Duration::from_secs(3600),
+        );
+        // The same `BearerAuth` a running router holds sees the swap.
+        assert_eq!(
+            call(auth.clone(), Some("Bearer new-token")).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(auth.clone(), Some("Bearer old-token")).await.0,
+            StatusCode::OK
+        );
+        live.rotate(
+            "newer-token",
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+        );
+        for revoked in ["Bearer old-token", "Bearer new-token"] {
+            assert_eq!(
+                call(auth.clone(), Some(revoked)).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(
+            call(auth, Some("Bearer newer-token")).await.0,
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]

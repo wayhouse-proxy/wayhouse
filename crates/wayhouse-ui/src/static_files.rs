@@ -21,6 +21,8 @@ const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 /// A path that names a file (its last segment has an extension) is a file or a 404; only a page path
 /// gets the app. Otherwise a stale `/assets/index-OLDHASH.js` after an upgrade would be served the
 /// app as `text/html` with status 200.
+///
+/// Client routes have no dot today; a route with one (`/nodes/10.0.0.1`) would 404, so keep that in mind when adding routes.
 fn names_a_file(path: &str) -> bool {
     path.rsplit('/')
         .next()

@@ -8,7 +8,7 @@
 //! spreads the increase over the minutes it spans, so a silent instance never
 //! shows as a spike. Series are aggregates only (listener, pool, region, fleet);
 //! there is no per-node series, so the buckets do not grow with the fleet (only the
-//! one counter baseline per instance does, bounded by the instance limit). A bucket
+//! one counter baseline per instance does; baselines of silent instances are pruned only after `MAX_SPREAD_MS`, so heavy instance-name churn can briefly hold more than the instance limit). A bucket
 //! holds at most 1,024 series of each kind; past that new names are dropped, and the
 //! fleet total, the sum of the listener series, undercounts until the names age out.
 //! Gauges (pool backends, sessions) are sampled once per instance per minute,

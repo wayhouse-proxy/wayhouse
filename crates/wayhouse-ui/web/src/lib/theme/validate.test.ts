@@ -9,8 +9,11 @@ const tokensCss = readFileSync(`${import.meta.dirname}/../../tokens.css`, "utf8"
 const docsTokens = readFileSync(`${import.meta.dirname}/../../../../../../docs/design-system/tokens.css`, "utf8");
 
 describe("theme validator", () => {
-  it.each(fixtures)("$name", ({ theme, failedChecks: want }) => {
-    expect(failedChecks(validateTheme(theme as Theme))).toEqual(want);
+  it.each(fixtures)("$name", ({ theme, failedChecks: want, messages }) => {
+    const failures = validateTheme(theme as Theme);
+    expect(failedChecks(failures)).toEqual(want);
+    // The messages carry the ratios to two decimals; the Rust port must print the same text.
+    expect(failures.map((f) => f.message).sort()).toEqual(messages);
   });
 
   it("names the token pair and the ratio", () => {

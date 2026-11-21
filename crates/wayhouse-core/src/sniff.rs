@@ -108,6 +108,73 @@ pub fn sniff_first<'a>(
     })
 }
 
+/// How many sniffer calls may run on the blocking pool at once. The pool is shared (DNS
+/// lookups use it too), so a flood of connections with a slow module must not take it all:
+/// the rest wait for a permit.
+const MAX_BLOCKING_SNIFFS: usize = 32;
+
+static BLOCKING_SNIFFS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> =
+    std::sync::OnceLock::new();
+/// Unix seconds of the last panic log line: a module that panics on every datagram would
+/// otherwise write one error line per packet.
+static LAST_PANIC_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A sniffer call that died (it panicked). The caller drops the connection or datagram, as
+/// it did when the call ran inline and a panic ended the task: a `reject` sniffer that
+/// crashes must not let the traffic through.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SnifferFailed;
+
+/// [`sniff_first`] for the async accept path: a loaded sniffer is a module that runs
+/// arbitrary code for up to its own budget, so it runs on the blocking pool (at most
+/// [`MAX_BLOCKING_SNIFFS`] at a time) and never stalls the runtime thread that serves other
+/// connections. With no sniffer configured (or the feature off) nothing is spawned.
+///
+/// # Errors
+/// [`SnifferFailed`] when the call panicked; it is logged, and the listener counts the
+/// drop as `result="sniffer_error"`.
+pub async fn sniff_first_blocking(
+    names: &[String],
+    sniffers: &Arc<Sniffers>,
+    first: &[u8],
+) -> Result<Option<(String, RouteHint)>, SnifferFailed> {
+    if names.is_empty() || !crate::flags::on(SNIFFERS) {
+        return Ok(None);
+    }
+    let permit = BLOCKING_SNIFFS
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_BLOCKING_SNIFFS)))
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| SnifferFailed)?;
+    let names = names.to_vec();
+    let sniffers = sniffers.clone();
+    let first = first.to_vec();
+    // The permit moves into the closure: it is released when the call really ends, even if
+    // the task awaiting it is dropped meanwhile (a blocking call cannot be cancelled), so the
+    // limit counts running calls, not waiting callers.
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        sniff_first(&names, &sniffers, &first).map(|(n, h)| (n.to_string(), h))
+    })
+    .await
+    .map_err(|e| {
+        log_panic(&e);
+        SnifferFailed
+    })
+}
+
+/// One error line per second at most; every panic still drops its connection.
+fn log_panic(e: &tokio::task::JoinError) {
+    use std::sync::atomic::Ordering;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if LAST_PANIC_LOG.swap(now, Ordering::Relaxed) != now {
+        tracing::error!(error = %e, "sniffer call panicked; dropping the connection (logged once a second at most)");
+    }
+}
+
 /// Log a warning for each sniffer name `listener` routes on that resolves to
 /// nothing in `sniffers` — those routes can never match until the sniffer is
 /// loaded.
@@ -166,6 +233,93 @@ pub(crate) mod tests {
         fn sniff(&self, first: &[u8]) -> Option<RouteHint> {
             first.starts_with(b"TAG").then(RouteHint::default)
         }
+    }
+
+    /// Blocks its thread for a while, like a module that burns its whole call budget.
+    struct Slow;
+    impl Sniffer for Slow {
+        fn name(&self) -> &'static str {
+            "slow"
+        }
+        fn sniff(&self, _first: &[u8]) -> Option<RouteHint> {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            Some(RouteHint::default())
+        }
+    }
+
+    /// A slow sniffer must not stall the runtime thread: on a single-threaded runtime a
+    /// timer still fires while it runs, and the hint still arrives.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_slow_sniffer_does_not_block_the_runtime() {
+        let sniffers = Arc::new(Sniffers::new());
+        sniffers.register(Arc::new(Slow));
+        let names = vec!["slow".to_string()];
+        let ticks = async {
+            let mut n = 0u32;
+            for _ in 0..5 {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                n += 1;
+            }
+            n
+        };
+        let (hit, n) = tokio::join!(sniff_first_blocking(&names, &sniffers, b"x"), ticks);
+        assert_eq!(hit.unwrap().map(|(name, _)| name), Some("slow".to_string()));
+        assert_eq!(n, 5, "timers kept running while the sniffer blocked");
+    }
+
+    #[tokio::test]
+    async fn blocking_variant_matches_the_plain_one() {
+        let sniffers = Arc::new(test_registry());
+        let names = vec!["test-reject".to_string(), "test-host".to_string()];
+        let hit = sniff_first_blocking(&names, &sniffers, b"HOST:A\n").await;
+        assert_eq!(hit.unwrap().unwrap().1.host.as_deref(), Some("a"));
+        assert!(sniff_first_blocking(&[], &sniffers, b"HOST:A\n")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// Dropping the task that awaits a sniffer call does not give its permit back while the
+    /// module is still running: the limit counts running calls.
+    #[tokio::test]
+    async fn an_aborted_caller_keeps_its_permit_until_the_call_ends() {
+        let sniffers = Arc::new(Sniffers::new());
+        sniffers.register(Arc::new(Slow));
+        let names = vec!["slow".to_string()];
+        let task = tokio::spawn(async move { sniff_first_blocking(&names, &sniffers, b"x").await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        task.abort();
+        let _ = task.await;
+        let free = BLOCKING_SNIFFS.get().unwrap().available_permits();
+        assert!(
+            free < MAX_BLOCKING_SNIFFS,
+            "the running call still holds its permit"
+        );
+    }
+
+    /// Panics, like a module that traps.
+    struct Boom;
+    impl Sniffer for Boom {
+        fn name(&self) -> &'static str {
+            "boom"
+        }
+        fn sniff(&self, _first: &[u8]) -> Option<RouteHint> {
+            panic!("module trapped");
+        }
+    }
+
+    /// A panicking sniffer is an error the caller acts on (drop the connection), not "no hit".
+    #[tokio::test]
+    async fn a_panicking_sniffer_is_reported_not_swallowed() {
+        let sniffers = Arc::new(Sniffers::new());
+        sniffers.register(Arc::new(Boom));
+        let names = vec!["boom".to_string()];
+        assert_eq!(
+            sniff_first_blocking(&names, &sniffers, b"x")
+                .await
+                .unwrap_err(),
+            SnifferFailed
+        );
     }
 
     /// A registry with the test sniffers (`test-host`, `test-reject`, `test-tag`).
@@ -538,6 +692,169 @@ listeners:
             tokio::time::timeout(std::time::Duration::from_millis(400), client.recv(&mut buf))
                 .await;
         assert!(got.is_err(), "a rejected datagram must draw no reply");
+
+        runtime
+            .shutdown_with_grace(std::time::Duration::from_millis(100))
+            .await;
+    }
+
+    /// Starts a runtime with one UDP echo backend and two UDP listeners on it: `slow` routes
+    /// on the sniffer `slow-or-boom` (whichever `sniffers` registers under that name) and
+    /// `plain` has no sniffer. Returns the runtime and the two listener addresses.
+    async fn udp_pair(
+        sniffers: Sniffers,
+    ) -> (crate::Runtime, std::net::SocketAddr, std::net::SocketAddr) {
+        use tokio::net::{TcpListener, UdpSocket};
+        let backend = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let backend_addr = backend.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut b = [0u8; 1024];
+            while let Ok((n, from)) = backend.recv_from(&mut b).await {
+                let _ = backend.send_to(&b[..n], from).await;
+            }
+        });
+        let free = || async {
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap()
+        };
+        let (slow, plain) = (free().await, free().await);
+        let yaml = format!(
+            r#"
+pools:
+  - name: p
+    targets: ["{backend_addr}"]
+    health_check: {{ type: none }}
+listeners:
+  - name: slow
+    bind: "{slow}"
+    protocol: udp
+    routes:
+      - match: {{ type: sniffer, sniffer: slow-or-boom }}
+        action: {{ pool: p }}
+      - match: {{ type: always }}
+        action: {{ pool: p }}
+  - name: plain
+    bind: "{plain}"
+    protocol: udp
+    routes:
+      - match: {{ type: always }}
+        action: {{ pool: p }}
+"#
+        );
+        let cfg = wayhouse_config::parse_str(&yaml).unwrap();
+        let runtime = crate::Runtime::start_with_sniffers(
+            crate::Snapshot::from_config(&cfg),
+            Arc::default(),
+            None,
+            Arc::new(sniffers),
+            1,
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        (runtime, slow, plain)
+    }
+
+    async fn udp_send(to: std::net::SocketAddr, payload: &[u8], wait_ms: u64) -> Option<Vec<u8>> {
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client.connect(to).await.unwrap();
+        client.send(payload).await.unwrap();
+        let mut buf = [0u8; 64];
+        let n = tokio::time::timeout(
+            std::time::Duration::from_millis(wait_ms),
+            client.recv(&mut buf),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        Some(buf[..n].to_vec())
+    }
+
+    struct SlowNamed;
+    impl Sniffer for SlowNamed {
+        fn name(&self) -> &'static str {
+            "slow-or-boom"
+        }
+        fn sniff(&self, first: &[u8]) -> Option<RouteHint> {
+            if first.starts_with(b"slow") {
+                std::thread::sleep(std::time::Duration::from_millis(600));
+            }
+            None
+        }
+    }
+
+    struct BoomNamed;
+    impl Sniffer for BoomNamed {
+        fn name(&self) -> &'static str {
+            "slow-or-boom"
+        }
+        fn sniff(&self, _first: &[u8]) -> Option<RouteHint> {
+            panic!("module trapped");
+        }
+    }
+
+    /// One UDP listener whose sniffer is slow only for some payloads: a fast client on the
+    /// same listener, sending while the slow one is still in the module, is answered at once.
+    /// (With the sniffer inline on the receive loop it waited out the 600 ms.)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_slow_udp_sniff_does_not_hold_up_the_same_listener() {
+        let sniffers = Sniffers::new();
+        sniffers.register(Arc::new(SlowNamed));
+        let (runtime, slow, _plain) = udp_pair(sniffers).await;
+
+        let slow_client = tokio::spawn(udp_send(slow, b"slow", 3000));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let started = std::time::Instant::now();
+        assert_eq!(
+            udp_send(slow, b"fast", 400).await.as_deref(),
+            Some(&b"fast"[..])
+        );
+        assert!(started.elapsed() < std::time::Duration::from_millis(400));
+        // The slow one is still delivered once the module returns.
+        assert_eq!(slow_client.await.unwrap().as_deref(), Some(&b"slow"[..]));
+
+        runtime
+            .shutdown_with_grace(std::time::Duration::from_millis(100))
+            .await;
+    }
+
+    /// Datagrams that arrive while a session's route is still being decided are forwarded in
+    /// the order they came.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn datagrams_sent_while_the_sniffer_runs_arrive_in_order() {
+        let sniffers = Sniffers::new();
+        sniffers.register(Arc::new(SlowNamed));
+        let (runtime, slow, _plain) = udp_pair(sniffers).await;
+
+        let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client.connect(slow).await.unwrap();
+        for msg in [&b"slow-1"[..], b"two", b"three"] {
+            client.send(msg).await.unwrap();
+        }
+        let mut got = Vec::new();
+        let mut buf = [0u8; 64];
+        for _ in 0..3 {
+            let n = tokio::time::timeout(std::time::Duration::from_secs(3), client.recv(&mut buf))
+                .await
+                .expect("a reply")
+                .unwrap();
+            got.push(buf[..n].to_vec());
+        }
+        assert_eq!(
+            got,
+            vec![b"slow-1".to_vec(), b"two".to_vec(), b"three".to_vec()]
+        );
+
+        runtime
+            .shutdown_with_grace(std::time::Duration::from_millis(100))
+            .await;
+    }
+
+    /// A UDP sniffer that panics opens no session and draws no reply.
+    #[tokio::test]
+    async fn a_panicking_udp_sniffer_drops_the_datagram() {
+        let sniffers = Sniffers::new();
+        sniffers.register(Arc::new(BoomNamed));
+        let (runtime, slow, _plain) = udp_pair(sniffers).await;
+        assert_eq!(udp_send(slow, b"hello", 400).await, None);
 
         runtime
             .shutdown_with_grace(std::time::Duration::from_millis(100))

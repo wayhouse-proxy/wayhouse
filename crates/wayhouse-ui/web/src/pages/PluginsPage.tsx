@@ -9,7 +9,7 @@ import { Badge } from "../components/ui/Badge";
 import { useCan } from "../lib/session";
 import { PageHeader } from "../components/shell/Page";
 import { EmptyState, ErrorState, Loading } from "../components/shell/States";
-import { Button } from "../components/ui/Button";
+import { Button, buttonClass } from "../components/ui/Button";
 import { Table, TBody, TD, TH, THead, TR } from "../components/ui/Table";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 
@@ -139,7 +139,7 @@ export function PluginsPage() {
               )}
               <Link
                 to="/plugins/new"
-                className="inline-flex min-h-(--control-height) items-center rounded-sm border border-primary bg-primary px-[11px] text-sm font-semibold text-primary-ink hover:opacity-90"
+                className={buttonClass({ variant: "primary" })}
               >
                 Install plugin
               </Link>

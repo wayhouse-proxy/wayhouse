@@ -164,3 +164,60 @@ listeners:
         "reload waited {took:?} on a worker that keeps its port"
     );
 }
+
+/// A parked listener (`enabled: false`) holds no port; switching it on binds it, parking it again
+/// frees the port. Reload-level, so it covers what config validation alone does not.
+#[tokio::test]
+async fn a_parked_listener_binds_nothing_until_it_is_switched_on() {
+    let (a, b) = (free_tcp_addr(), free_tcp_addr());
+    let config = |a_enabled: bool| {
+        parse_str(&format!(
+            r#"
+schema_version: 4
+pools:
+  - name: p
+    targets: ["127.0.0.1:9"]
+    health_check:
+      type: none
+listeners:
+  - name: a
+    bind: "{a}"
+    pool: p
+    enabled: {a_enabled}
+  - name: b
+    bind: "{b}"
+    pool: p
+"#
+        ))
+        .unwrap()
+    };
+    let runtime = Runtime::start(
+        Snapshot::from_config(&config(false)),
+        std::sync::Arc::default(),
+        1,
+    );
+    let handle = runtime.handle();
+    let bindable = |addr| std::net::TcpListener::bind(addr).is_ok();
+    assert!(bindable(a), "a parked listener must not hold its port");
+    assert!(!bindable(b), "the other listener runs");
+
+    for (enabled, want_free) in [(true, false), (false, true)] {
+        handle.store(Snapshot::build_with_overlay(
+            &config(enabled),
+            Some(&handle.current()),
+            handle.backend_overlay(),
+        ));
+        let reconciled = handle.reconcile_listeners().await;
+        assert!(reconciled.failed.is_empty(), "{:?}", reconciled.failed);
+        let mut ok = false;
+        for _ in 0..40 {
+            if bindable(a) == want_free {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(ok, "enabled={enabled}: port free should be {want_free}");
+    }
+    runtime.shutdown().await;
+}

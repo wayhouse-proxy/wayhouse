@@ -2087,7 +2087,16 @@ listeners:
         let handle = runtime.handle();
         let sniffers = Sniffers::default();
         let resolvers = wayhouse_core::Resolvers::default();
-        crate::reload::apply_config(first, &handle, &resolvers, Some(&l), &sniffers, "test").await;
+        crate::reload::apply_config(
+            first,
+            &handle,
+            &resolvers,
+            Some(&l),
+            &sniffers,
+            &crate::secrets::Live::default(),
+            "test",
+        )
+        .await;
         assert_eq!(sniffers.names(), ["good"]);
         assert_eq!(handle.snapshot().listeners[0].name, "old");
 
@@ -2096,7 +2105,16 @@ listeners:
         let mut repinned = cfg(&dir);
         pin(&mut repinned, "good", b"not what is on disk");
         second.sniffers = Some(repinned);
-        crate::reload::apply_config(second, &handle, &resolvers, Some(&l), &sniffers, "test").await;
+        crate::reload::apply_config(
+            second,
+            &handle,
+            &resolvers,
+            Some(&l),
+            &sniffers,
+            &crate::secrets::Live::default(),
+            "test",
+        )
+        .await;
 
         assert_eq!(
             handle.snapshot().listeners[0].name,

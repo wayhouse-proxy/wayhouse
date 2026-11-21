@@ -17,6 +17,10 @@ impl GossipHandle {
         match *self {}
     }
 
+    pub fn rotate_psk(&self, _new: &str, _overlap: std::time::Duration) -> bool {
+        match *self {}
+    }
+
     pub fn quorum_down(&self, _addr: std::net::SocketAddr, _quorum_fraction: f64) -> bool {
         match *self {}
     }

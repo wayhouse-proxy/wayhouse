@@ -54,7 +54,7 @@ function lengthText({ min, max }: { min?: number; max?: number }): string {
   return "";
 }
 
-export function describeRoute(route: Json): string {
+export function describeMatch(route: Json): string {
   const m = route.match ?? {};
   const list = (v: unknown) => (Array.isArray(v) ? v.join(", ") : "");
   const what: Record<string, string> = {
@@ -66,6 +66,10 @@ export function describeRoute(route: Json): string {
     sni: `SNI ${list(m.host)}`,
     sniffer: `sniffer ${m.sniffer ?? ""}${m.host?.length ? ` ${list(m.host)}` : ""}`,
   };
+  return (what[m.type] ?? `${m.type}`).trim();
+}
+
+export function describeRoute(route: Json): string {
   const t = routeTarget(route);
-  return `${(what[m.type] ?? `${m.type}`).trim()} to ${t ? `${t.kind} ${t.name}` : "nothing yet"}`;
+  return `${describeMatch(route)} to ${t ? `${t.kind} ${t.name}` : "nothing yet"}`;
 }

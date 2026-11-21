@@ -450,7 +450,8 @@ with a key an eavesdropper who records it today cannot recover later.
   `GET /enrollments` lists codes and their state, never the code.
 - Revoking a spent single-name agent code also revokes the token and tunnel keys it issued, unless
   the host enrolled again with a newer code (those credentials are the newer code's). Any other
-  spent code only disappears: its node keeps working until you delete the origin
+  spent code only disappears (a spent controller code stays as a `revoked` tombstone so its node id
+  stays reserved): its node keeps working until you delete the origin
   (`DELETE /peers/{name}`). The revoke runs before the code is deleted, so if it fails the answer is
   an error and a retry finishes the job. Under HA a follower reads its own replica, so a revoked
   token can still pass on a lagging follower for a moment.

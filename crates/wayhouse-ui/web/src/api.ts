@@ -13,6 +13,7 @@ import type {
   FanoutResponse,
   InstallResponse,
   PluginDetail,
+  FleetNodePools,
   PluginInstall,
   PluginSecretSlot,
   PluginFetchResult,
@@ -34,6 +35,7 @@ import type {
   RevisionSummary,
   SnifferInfo,
   UpdateCheck,
+  ReleaseStatus,
   TunnelAddresses,
   EnrollmentCode,
   MintedEnrollment,
@@ -245,6 +247,11 @@ export function rollbackSniffer(name: string): Promise<FanoutResponse> {
   return requestJson(`/api/fleet/sniffers/${encodeURIComponent(name)}/rollback`, {
     method: "POST",
   });
+}
+
+/** What the signed release feed says; it only reports, nothing is installed. */
+export function getRelease(): Promise<ReleaseStatus> {
+  return requestJson("/api/release");
 }
 
 /** On demand only: refetches every registry and asks each proxy what it runs. */
@@ -574,6 +581,11 @@ export function deleteLayoutOverride(): Promise<void> {
 
 // --- fleet nodes (paged on the aggregator) ---
 
+/** One node's pools and backend state (`GET /api/fleet/nodes/{instance}/pools`), what the fleet inspector shows. */
+export function getNodePools(instance: string): Promise<FleetNodePools> {
+  return requestJson(`/api/fleet/nodes/${encodeURIComponent(instance)}/pools`);
+}
+
 export async function getFleetNodes(query: string): Promise<NodePage> {
   const p = new URLSearchParams(query);
   p.set("group_by", "region");
@@ -655,6 +667,15 @@ export function getPluginSecretKeys(): Promise<PluginSecretKeys> {
 /** Step two of a key rotation: every plugin secret is re-sealed under the active key. */
 export function rewrapPluginSecrets(): Promise<RewrapResult> {
   return requestJson("/api/plugins/secrets/rewrap", { method: "POST" });
+}
+
+/** Step two for the cluster secrets (`{ secret: name }` values). */
+export function rewrapClusterSecrets(): Promise<RewrapResult> {
+  return requestJson("/api/secrets/rewrap", { method: "POST" });
+}
+/** Step two for the ACME account key and certificate keys; 404 when the controller runs without ACME. */
+export function rewrapAcmeKeys(): Promise<RewrapResult> {
+  return requestJson("/api/acme/rewrap", { method: "POST" });
 }
 
 export async function listClusterSecrets(): Promise<ClusterSecret[]> {

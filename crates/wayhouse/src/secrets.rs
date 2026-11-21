@@ -144,6 +144,95 @@ pub async fn resolve_config(
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
+/// Where a running proxy finds sealed secrets again on a reload: the same store and key file
+/// it started with.
+#[derive(Default, Clone)]
+pub struct SecretSource {
+    /// The controller URL and the token to reach it with.
+    pub controller: Option<(String, Option<String>)>,
+    /// `--secrets-file`, for a file-config proxy.
+    pub file: Option<std::path::PathBuf>,
+    pub key_file: Option<std::path::PathBuf>,
+}
+
+impl SecretSource {
+    pub async fn resolve(
+        &self,
+        cfg: wayhouse_config::Config,
+    ) -> anyhow::Result<wayhouse_config::Config> {
+        let store = match (&self.controller, &self.file) {
+            (Some((url, token)), _) => Store::Controller(url, token.as_deref()),
+            (None, Some(path)) => Store::File(path),
+            (None, None) => Store::None,
+        };
+        resolve_config(cfg, store, self.key_file.as_deref()).await
+    }
+}
+
+/// How long a rotated gossip key is signed with next to its replacement (and accepted for twice
+/// that), and how long the old admin token is still accepted. HA replicas reload at different
+/// moments, so for this long a replica that has not reloaded yet can still talk to one that has.
+/// Restart the process to drop the old value at once.
+pub const OVERLAP: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The secrets a running proxy can swap on a reload: the live admin token the admin API checks
+/// (`None` when the API started without one) and the source to read the new values from. The
+/// gossip key is reached through the runtime handle.
+#[derive(Default)]
+pub struct Live {
+    pub source: SecretSource,
+    pub admin: Option<std::sync::Arc<wayhouse_http::rotating::RotatingSecret>>,
+}
+
+impl Live {
+    /// Turns the new config's references into values and checks them, before anything is
+    /// applied. An error rejects the whole reload and the old secrets keep working: a missing
+    /// or unreadable secret, a value that is too short, or a config that drops the admin token
+    /// (that would open the API, and takes a restart).
+    pub async fn prepare(
+        &self,
+        cfg: wayhouse_config::Config,
+    ) -> anyhow::Result<wayhouse_config::Config> {
+        let cfg = self.source.resolve(cfg).await?;
+        cfg.check_secret_strength()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if self.admin.is_some() && crate::admin_token(&cfg)?.is_none() {
+            anyhow::bail!(
+                "settings.admin.auth_token is gone from the new config; removing the admin token (which opens the API) needs a restart"
+            );
+        }
+        Ok(cfg)
+    }
+
+    /// Swaps the new values in, after the reload was accepted. Logs which secret changed, never
+    /// its value.
+    pub fn rotate(
+        &self,
+        cfg: &wayhouse_config::Config,
+        handle: &wayhouse_core::RuntimeHandle,
+        source_desc: &str,
+    ) {
+        let overlap = OVERLAP.as_secs();
+        let token = crate::admin_token(cfg).ok().flatten();
+        match (&self.admin, token) {
+            (Some(live), Some(token)) => {
+                if live.rotate(&token, OVERLAP, OVERLAP) {
+                    tracing::info!(source = source_desc, overlap_sec = overlap, "settings.admin.auth_token rotated; the previous token keeps working for the overlap window");
+                }
+            }
+            (None, Some(_)) => tracing::warn!(
+                source = source_desc,
+                "settings.admin.auth_token was added on a reload, but the admin API started without one and stays open until a restart"
+            ),
+            _ => {}
+        }
+        let psk = cfg.gossip.as_ref().and_then(|g| g.psk.resolve(None).ok());
+        if psk.is_some_and(|psk| handle.rotate_gossip_psk(&psk, OVERLAP)) {
+            tracing::info!(source = source_desc, overlap_sec = overlap, "settings.gossip.psk rotated; the previous key keeps working for the overlap window");
+        }
+    }
+}
+
 /// How long one sealed-secret fetch may take, connect to last byte. Without it a controller
 /// that accepts and then hangs stalls the caller (the tunnel-peer loop) until restart.
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);

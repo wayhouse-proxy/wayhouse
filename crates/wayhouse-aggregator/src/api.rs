@@ -35,7 +35,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Extension, Query, RawQuery, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Extension, Path, Query, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -172,6 +172,7 @@ pub fn router(state: AppState) -> Router {
         .route("/fleet/healthz", get(fleet_healthz))
         .route("/fleet/stats", get(fleet_stats))
         .route("/fleet/nodes", get(fleet_nodes))
+        .route("/fleet/nodes/{instance}/pools", get(fleet_node_pools))
         .route("/fleet/features", get(fleet_features))
         .route(
             "/fleet/nodes/query",
@@ -271,6 +272,31 @@ async fn fleet_pools(State(state): State<AppState>) -> Response {
         })
         .collect();
     (StatusCode::OK, Json(out)).into_response()
+}
+
+/// `GET /fleet/nodes/{instance}/pools` — one instance's pools and backend state, so a UI that looks at
+/// one node does not have to read the whole fleet. `404` for an instance that never pushed. The name
+/// only keys a map lookup; it is never put into a URL.
+async fn fleet_node_pools(State(state): State<AppState>, Path(instance): Path<String>) -> Response {
+    match state.store.get(&instance) {
+        Some(s) => (
+            StatusCode::OK,
+            Json(FleetPools {
+                last_seen_ms_ago: unix_ms().saturating_sub(s.received_at_ms),
+                instance: s.payload.instance,
+                pools: s.payload.pools,
+                group: s.payload.group,
+            }),
+        )
+            .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "no such instance".into(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Serialize)]
@@ -753,6 +779,44 @@ mod tests {
         assert_eq!(list[0]["pools"][0]["name"], "local");
         assert_eq!(list[0]["pools"][0]["backends"][0]["addr"], "127.0.0.1:9001");
         assert!(list[0]["last_seen_ms_ago"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn fleet_node_pools_reads_one_instance_and_404s_for_an_unknown_one() {
+        let state = test_state();
+        state.store.ingest(full_payload("proxy-1"));
+        state.store.ingest(full_payload("proxy-2"));
+        let app = router(state);
+        let get = |path: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::get(path)
+                        .header(wayhouse_http::protocol::HEADER, "1.0")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let resp = get("/fleet/nodes/proxy-2/pools").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let one = body_json(resp).await;
+        assert_eq!(one["instance"], "proxy-2");
+        assert_eq!(one["pools"][0]["backends"][0]["addr"], "127.0.0.1:9001");
+        assert!(one["last_seen_ms_ago"].as_u64().is_some());
+        // One object, not the fleet list.
+        assert!(one.is_object());
+        assert_eq!(
+            get("/fleet/nodes/nope/pools").await.status(),
+            StatusCode::NOT_FOUND
+        );
+        // The literal names of the sibling routes still reach them.
+        assert_eq!(
+            get("/fleet/nodes/query/pools").await.status(),
+            StatusCode::NOT_FOUND
+        );
     }
 
     #[tokio::test]
@@ -1348,6 +1412,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn the_query_takes_a_thousand_nodes_with_sixteen_longest_tags_each() {
+        // The controller keeps at most 1000 tag records of 16 tags (32-character keys,
+        // 64-character values); the overlay it sends must fit `NODE_TAGS_BODY_LIMIT` (#525).
+        let tags: serde_json::Map<_, _> = (0..16)
+            .map(|i| (format!("{i:k<32}"), serde_json::json!("v".repeat(64))))
+            .collect();
+        let by_node: serde_json::Map<_, _> = (0..1000)
+            .map(|i| (format!("{i:n<64}"), serde_json::Value::Object(tags.clone())))
+            .collect();
+        let body = serde_json::json!({ "operator_tags": by_node }).to_string();
+        assert!(body.len() < NODE_TAGS_BODY_LIMIT, "{} bytes", body.len());
+        let state = test_state();
+        state
+            .store
+            .ingest(labelled("a", Some("eu"), &[("env", "prod")]));
+        let resp = router(state)
+            .oneshot(
+                Request::post("/fleet/nodes/query")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

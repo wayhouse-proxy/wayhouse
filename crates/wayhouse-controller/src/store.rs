@@ -50,11 +50,20 @@ pub enum StoreError {
 /// is refused on open; one with no marker (created before it existed, or
 /// brand new) is adopted as this format. Bump it, and migrate older formats
 /// in `Store::open`, when the layout of any tree changes incompatibly.
-pub const STORE_FORMAT: u32 = 1;
+///
+/// Format 2 (#474): retired config revisions, the Raft log and the persisted snapshot hold no
+/// plaintext secret. Nothing is laid out differently; the bump makes a build that predates the
+/// scrub refuse a store that has had it. The one-time work runs on every start (it is
+/// idempotent and cheap once done), so the marker can be written first.
+pub const STORE_FORMAT: u32 = 2;
 const FORMAT_KEY: &[u8] = b"format";
 
 const CURRENT_KEY: &[u8] = b"current";
 const APPLIED_INDEX_KEY: &[u8] = b"applied_index";
+/// Every revision below this number has been through [`Store::rewrite_below`] already.
+const REWRITTEN_BELOW_KEY: &[u8] = b"rewritten_below";
+/// The revisions the last [`Store::rewrite_below`] pass kept below the watermark (JSON array).
+const KEPT_KEY: &[u8] = b"rewrite_kept";
 
 /// Outcome of [`Store::put_applied`] / [`Store::put_applied_with`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +211,91 @@ impl Store {
         self.revisions.apply_batch(batch)?;
         self.db.flush()?;
         Ok(dropped.len())
+    }
+
+    /// Rewrites revisions numbered below `below` in place with `rewrite` (which returns the new
+    /// bytes, or `None` to leave a revision alone), except the revisions in `keep`. Numbers never
+    /// change, only the stored bytes. One atomic batch, so a crash leaves either all of a pass or
+    /// none of it, and a repeat is harmless when `rewrite` is idempotent.
+    ///
+    /// Two records in `meta` keep a pass cheap: a watermark (every revision below it has been
+    /// through a pass) and the `keep` set of the last pass (the revisions the watermark stepped
+    /// over). A pass reads only the revisions from the watermark up, plus the kept ones that are
+    /// no longer kept, so a revision that stays kept for a long time costs nothing per pass.
+    /// Returns how many were rewritten. Used to scrub secrets out of revisions a newer one has
+    /// replaced (#474).
+    pub fn rewrite_below(
+        &self,
+        below: u64,
+        keep: &[u64],
+        rewrite: impl Fn(&[u8]) -> Option<Vec<u8>>,
+    ) -> Result<usize, StoreError> {
+        use std::ops::Bound;
+
+        let from = self.rewritten_below()?;
+        let was_kept = self.kept()?;
+        let mut batch = crate::kv::Batch::default();
+        let mut rewritten = 0;
+        let mut visit = |revision: u64, bytes: &[u8], batch: &mut crate::kv::Batch| {
+            if keep.contains(&revision) {
+                return;
+            }
+            if let Some(new) = rewrite(bytes) {
+                batch.insert(encode_rev(revision), new);
+                rewritten += 1;
+            }
+        };
+        let range = (
+            Bound::Included(encode_rev(from)),
+            Bound::Excluded(encode_rev(below)),
+        );
+        for item in self.revisions.range::<[u8; 8], _>(range) {
+            let (k, v) = item?;
+            visit(decode_rev(&k), &v, &mut batch);
+        }
+        // Kept at the last pass, below the watermark, kept no more.
+        for revision in was_kept.iter().filter(|r| **r < from && !keep.contains(r)) {
+            if let Some(bytes) = self.get(*revision)? {
+                visit(*revision, &bytes, &mut batch);
+            }
+        }
+        if rewritten > 0 {
+            self.revisions.apply_batch(batch)?;
+        }
+        let mut now_kept: Vec<u64> = keep.iter().copied().filter(|r| *r < below).collect();
+        now_kept.sort_unstable();
+        now_kept.dedup();
+        let moved = below > from;
+        if moved || now_kept != was_kept {
+            if moved {
+                self.meta.insert(REWRITTEN_BELOW_KEY, encode_rev(below))?;
+            }
+            self.meta.insert(
+                KEPT_KEY,
+                serde_json::to_vec(&now_kept).expect("revision numbers serialize"),
+            )?;
+        }
+        if rewritten > 0 || moved || now_kept != was_kept {
+            self.db.flush()?;
+        }
+        Ok(rewritten)
+    }
+
+    /// How far [`Self::rewrite_below`] has got: revisions under it have been through a pass.
+    pub fn rewritten_below(&self) -> Result<u64, StoreError> {
+        Ok(self
+            .meta
+            .get(REWRITTEN_BELOW_KEY)?
+            .map_or(0, |v| decode_rev(&v)))
+    }
+
+    /// The revisions the last [`Self::rewrite_below`] pass left alone below its watermark, sorted.
+    pub fn kept(&self) -> Result<Vec<u64>, StoreError> {
+        Ok(self
+            .meta
+            .get(KEPT_KEY)?
+            .and_then(|v| serde_json::from_slice(&v).ok())
+            .unwrap_or_default())
     }
 
     /// Accepts a new revision: assigns the next monotonic number, persists
@@ -436,6 +530,9 @@ impl Store {
                     Some(i) => meta.insert(APPLIED_INDEX_KEY, encode_rev(i))?,
                     None => meta.remove(APPLIED_INDEX_KEY)?,
                 };
+                // The installed revisions may carry secrets again: the next pass starts over.
+                meta.remove(REWRITTEN_BELOW_KEY)?;
+                meta.remove(KEPT_KEY)?;
                 for (w, slot) in writes.iter().zip(&slots) {
                     match &w.value {
                         Some(v) => views[*slot].insert(w.key.as_slice(), v.as_slice())?,
@@ -535,6 +632,9 @@ fn check_format(path: &Path, meta: &crate::kv::Tree) -> Result<(), StoreError> {
                     found,
                     max: STORE_FORMAT,
                 });
+            }
+            if found < STORE_FORMAT {
+                meta.insert(FORMAT_KEY, STORE_FORMAT.to_be_bytes())?;
             }
         }
     }
@@ -655,7 +755,21 @@ mod tests {
     }
 
     #[test]
-    fn pre_marker_store_with_revisions_is_adopted_as_format_1() {
+    fn a_format_1_store_is_upgraded_in_place_and_keeps_its_revisions() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = Store::open(dir.path()).unwrap();
+            store.put(b"cfg".to_vec()).unwrap();
+            store.meta.insert(FORMAT_KEY, 1u32.to_be_bytes()).unwrap();
+            store.db.flush().unwrap();
+        }
+        let store = open_retrying(dir.path()).unwrap();
+        assert_eq!(marker(&store), Some(STORE_FORMAT.to_be_bytes().to_vec()));
+        assert_eq!(store.current().unwrap().unwrap().1, b"cfg".to_vec());
+    }
+
+    #[test]
+    fn pre_marker_store_with_revisions_is_adopted_as_the_current_format() {
         let dir = tempfile::tempdir().unwrap();
         {
             let store = Store::open(dir.path()).unwrap();
@@ -975,10 +1089,90 @@ mod tests {
         let side_keys: Vec<_> = side.iter().keys().map(|k| k.unwrap().to_vec()).collect();
         assert_eq!(side_keys, vec![6u64.to_be_bytes().to_vec()]);
 
+        store.rewrite_below(6, &[], scrub_secret).unwrap();
+        assert_eq!(store.rewritten_below().unwrap(), 6);
+        store.replace_all(&revisions, Some(9)).unwrap();
+        assert_eq!(
+            store.rewritten_below().unwrap(),
+            0,
+            "an installed snapshot is scrubbed again"
+        );
+
         // An empty snapshot empties the store and forgets the index.
         store.replace_all(&[], None).unwrap();
         assert!(store.all_revisions().unwrap().is_empty());
         assert_eq!(store.current_revision().unwrap(), None);
         assert_eq!(store.applied_index().unwrap(), None);
+    }
+
+    fn scrub_secret(bytes: &[u8]) -> Option<Vec<u8>> {
+        let t = std::str::from_utf8(bytes).ok()?;
+        t.contains("SECRET")
+            .then(|| t.replace("SECRET", "[x]").into_bytes())
+    }
+
+    #[test]
+    fn rewriting_older_revisions_keeps_numbers_skips_the_one_named_and_resumes_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        for text in ["a SECRET", "b SECRET", "c SECRET", "d SECRET"] {
+            store.put(text.as_bytes().to_vec()).unwrap();
+        }
+        // Revisions 1..=3 are older than 4; 2 is the fallback of a live trial.
+        assert_eq!(store.rewrite_below(4, &[2], scrub_secret).unwrap(), 2);
+        assert_eq!(store.get(1).unwrap().unwrap(), b"a [x]");
+        assert_eq!(
+            store.get(2).unwrap().unwrap(),
+            b"b SECRET",
+            "the fallback is untouched"
+        );
+        assert_eq!(store.get(3).unwrap().unwrap(), b"c [x]");
+        assert_eq!(
+            store.get(4).unwrap().unwrap(),
+            b"d SECRET",
+            "the newest is never touched"
+        );
+        assert_eq!(store.current_revision().unwrap(), Some(4));
+        // The trial ends: the fallback is no longer protected and is picked up next time.
+        assert_eq!(store.rewrite_below(4, &[], scrub_secret).unwrap(), 1);
+        assert_eq!(store.get(2).unwrap().unwrap(), b"b [x]");
+        assert_eq!(
+            store.rewrite_below(4, &[], scrub_secret).unwrap(),
+            0,
+            "idempotent"
+        );
+        assert!(store.kept().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_revision_that_stays_kept_is_not_read_again_until_it_is_not_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        for text in ["a SECRET", "b SECRET", "c SECRET"] {
+            store.put(text.as_bytes().to_vec()).unwrap();
+        }
+        let reads = std::cell::Cell::new(0);
+        let counting = |b: &[u8]| {
+            reads.set(reads.get() + 1);
+            scrub_secret(b)
+        };
+        assert_eq!(store.rewrite_below(3, &[1], counting).unwrap(), 1);
+        assert_eq!(
+            (store.rewritten_below().unwrap(), store.kept().unwrap()),
+            (3, vec![1])
+        );
+        for text in ["d SECRET", "e SECRET"] {
+            store.put(text.as_bytes().to_vec()).unwrap();
+        }
+        reads.set(0);
+        // Only 3 and 4 are new; 1 stays kept and is not looked at.
+        assert_eq!(store.rewrite_below(5, &[1], counting).unwrap(), 2);
+        assert_eq!(reads.get(), 2);
+        assert_eq!(store.get(1).unwrap().unwrap(), b"a SECRET");
+        // Once 1 is not kept it is picked up, and nothing else is read.
+        reads.set(0);
+        assert_eq!(store.rewrite_below(5, &[], counting).unwrap(), 1);
+        assert_eq!(reads.get(), 1);
+        assert_eq!(store.get(1).unwrap().unwrap(), b"a [x]");
     }
 }

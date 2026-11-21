@@ -1,8 +1,8 @@
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { ApiError, deleteBackend, drainInstance, patchBackend, undrainInstance } from "../../api";
+import { ApiError, deleteBackend, drainInstance, getNodePools, patchBackend, undrainInstance } from "../../api";
 import type { FleetNode } from "../../lib/fleet/nodes";
 import { useCan } from "../../lib/session";
-import type { FleetInstanceView } from "../../types";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { useConfirm } from "../ui/ConfirmDialog";
@@ -15,20 +15,18 @@ type BackendState = "enabled" | "draining" | "disabled";
 
 /**
  * What the inspector shows for one node: its details, its tags (each one a filter), drain and undrain,
- * and, from the live socket, its pools with backend state and remove. `node` is the page row (absent when
- * the node is not on this page), `live` the socket's view of the same instance.
+ * and its pools with backend state and remove, read for this node alone (`GET /api/fleet/nodes/{instance}/pools`,
+ * every 5 s). `node` is the page row (absent when the node is not on this page).
  */
 export function NodeInspector({
   instance,
   node,
-  live,
   onTag,
   tagsUnavailable,
   latest,
 }: {
   instance: string;
   node?: FleetNode;
-  live?: FleetInstanceView;
   onTag: (tag: string) => void;
   tagsUnavailable?: boolean;
   latest?: () => Promise<{ node?: FleetNode; unavailable?: boolean } | undefined>;
@@ -39,12 +37,17 @@ export function NodeInspector({
   const [busy, setBusy] = useState(false);
   const off = busy || !canOperate;
 
+  const poolsQuery = useQuery({ queryKey: ["fleet", "node-pools", instance], queryFn: () => getNodePools(instance), refetchInterval: 5000 });
+
   function run(label: string, p: Promise<unknown>) {
     setBusy(true);
-    p.then(() => toast(`${label}: done`)).catch((e) => toast(`${label} failed: ${e instanceof ApiError ? e.message : e}`, "down")).finally(() => setBusy(false));
+    p.then(() => toast(`${label}: done`)).catch((e) => toast(`${label} failed: ${e instanceof ApiError ? e.message : e}`, "down")).finally(() => {
+        setBusy(false);
+        void poolsQuery.refetch();
+      });
   }
 
-  const pools = live?.pools ?? [];
+  const pools = poolsQuery.data?.pools ?? [];
   return (
     <div className="flex flex-col gap-4 text-sm">
       {node ? (
@@ -99,8 +102,10 @@ export function NodeInspector({
 
       <section aria-label="Pools">
         <h3 className="mb-1 font-semibold">Pools</h3>
-        {pools.length === 0 ? (
-          <p className="text-ink-muted">No pools reported.</p>
+        {poolsQuery.isError && !poolsQuery.data ? (
+          <p role="status" className="text-bad">The pools could not be loaded: {poolsQuery.error instanceof ApiError ? poolsQuery.error.message : String(poolsQuery.error)}</p>
+        ) : pools.length === 0 ? (
+          <p className="text-ink-muted">{poolsQuery.isPending ? "Loading pools…" : "No pools reported."}</p>
         ) : (
           <>
             <p className="mb-2 text-xs text-ink-muted">Backend state and remove apply fleet-wide: every instance with the same pool and address applies the change.</p>

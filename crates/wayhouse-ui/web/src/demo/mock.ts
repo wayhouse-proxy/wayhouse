@@ -187,6 +187,10 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
   // fleet
   if (path === "/api/fleet/nodes/resolve") { const l = nodePage(new URLSearchParams(`${p}&size=1000`)); return ok({ count: l.total, instances: l.items.map((n) => n.instance) }); }
   if (path === "/api/fleet/nodes") return ok(nodePage(p));
+  if ((r = m(/^\/api\/fleet\/nodes\/([^/]+)\/pools$/))) {
+    const v = fleetView().find((x) => x.instance === decodeURIComponent(r![1]));
+    return v ? ok({ instance: v.instance, last_seen_ms_ago: v.last_seen_ms_ago, pools: v.pools, group: v.group }) : err(404, "no such instance");
+  }
   if ((r = m(/^\/api\/fleet\/nodes\/([^/]+)\/tags$/))) {
     const n = nodes.find((x) => x.instance === decodeURIComponent(r![1]));
     if (!n) return err(404, "unknown node");
@@ -207,6 +211,8 @@ async function route(method: string, url: URL, req: Request): Promise<Response> 
     return ok(fanout());
   }
   if (path === "/api/fleet/route-hint" || path.startsWith("/api/fleet/pools/")) return ok(fanout());
+
+  if (path === "/api/release") return ok({ current: "0.4.0", enabled: true, latest: null, checked_at: null });
 
   // sniffer registries
   if (path === "/api/registries" && method === "GET") return ok({ registries: REGISTRIES, persistent: false });

@@ -117,10 +117,10 @@ shown again. To use it:
    the proxy opens it. A proxy on a file config keeps its own store instead:
    `--secrets-file <path>` with `--secret-set NAME` (value on stdin), `--secret-delete NAME` and
    `--secret-list`.
-3. Reference it: `auth_token: { secret: admin-token }`. The value is read once at start, so a
-   rotated secret applies at the next restart. A reference that cannot be resolved stops the
-   start with a message naming the secret; a reload does not check that it exists, so `PUT` the
-   secret first and run `--check`.
+3. Reference it: `auth_token: { secret: admin-token }`. The value is read at start and on every
+   reload, so a rotated secret applies on `SIGHUP` without a restart (the old value works for 5
+   more minutes, the old gossip key for 10). A reference that cannot be resolved stops the start, or rejects the reload,
+   with a message naming the secret.
 
 Plaintext values still work and are warned about. An unquoted all-digit or `true`/`false` token
 (`auth_token: 1234567890123456`) is now refused with a "must be quoted" error: add quotes.

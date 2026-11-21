@@ -633,6 +633,7 @@ impl TlsListener {
                         continue;
                     }
                 };
+                crate::conn::harden(&stream);
                 // The lock is never held across a spawn, an abort or an `.await`:
                 // either can drop a task's future (and its `Slot`) inline.
                 let admitted = {
@@ -873,8 +874,9 @@ impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TcpL
 /// Serve `app` on `addr` until the server fails: HTTPS through [`TlsListener`]
 /// (with the files re-read every [`RELOAD_EVERY`]) when `cert` is set, plain
 /// HTTP otherwise (`limits` bound the TLS handshakes). `name` is the binary, for
-/// the startup log line. Handlers can
-/// read the peer address through `axum::extract::ConnectInfo<PeerAddr>`.
+/// the startup log line. Connections get a header-read timeout and a global cap
+/// ([`crate::conn`]). Handlers can read the peer address through
+/// `axum::extract::ConnectInfo<PeerAddr>`.
 pub async fn serve(
     addr: SocketAddr,
     app: axum::Router,
@@ -887,20 +889,12 @@ pub async fn serve(
             let listener = TlsListener::bind_with(addr, cert.clone(), limits).await?;
             let _reloader = AbortOnDrop(spawn_reloader(cert, RELOAD_EVERY));
             tracing::info!(listen = %addr, "{name} serving HTTPS");
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<PeerAddr>(),
-            )
-            .await
+            crate::conn::serve_listener(listener, app, crate::conn::ConnLimits::default()).await
         }
         None => {
-            let listener = TcpListener::bind(addr).await?;
+            let listener = crate::conn::HardenedListener(TcpListener::bind(addr).await?);
             tracing::info!(listen = %addr, "{name} listening");
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<PeerAddr>(),
-            )
-            .await
+            crate::conn::serve_listener(listener, app, crate::conn::ConnLimits::default()).await
         }
     }
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, deleteClusterSecret, getPluginSecretKeys, listClusterSecrets, putClusterSecret, rewrapPluginSecrets, type PluginSecretKeys } from "../api";
+import { ApiError, deleteClusterSecret, getPluginSecretKeys, listClusterSecrets, putClusterSecret, rewrapAcmeKeys, rewrapClusterSecrets, rewrapPluginSecrets, type PluginSecretKeys, type RewrapResult } from "../api";
 import type { ClusterSecret } from "../types";
 import { PageHeader } from "../components/shell/Page";
 import { ErrorState, Loading } from "../components/shell/States";
@@ -165,12 +165,17 @@ function AddDialog({ taken, onClose }: { taken: Set<string>; onClose: (saved: bo
   );
 }
 
-/** Key rotation for the plugin secrets: which key ids each controller holds, and the re-encrypt step once all hold the active one. */
+function omit(d: Record<string, string>, key: string): Record<string, string> {
+  return Object.fromEntries(Object.entries(d).filter(([k]) => k !== key));
+}
+
+/** Key rotation: which key ids each controller holds, and the re-encrypt steps (plugin secrets, cluster secrets, certificate keys) once all hold the active one. */
 function KeyRotation() {
   const [keys, setKeys] = useState<PluginSecretKeys | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  // The last result per kind, so all three stay visible while an operator works through them.
+  const [done, setDone] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
   // A controller without plugins has no plugin secrets to rotate: show nothing, not an error.
   const [absent, setAbsent] = useState(false);
 
@@ -187,18 +192,22 @@ function KeyRotation() {
     load();
   }, [load]);
 
-  async function rewrap() {
-    setBusy(true);
-    setDone(null);
+  async function rewrap(what: string, run: () => Promise<RewrapResult>) {
+    setBusy(what);
+    setDone((d) => omit(d, what));
     try {
-      const r = await rewrapPluginSecrets();
+      const r = await run();
       const left = r.skipped.length + r.unreadable.length;
-      setDone(`Re-encrypted ${r.rewrapped} plugin secret${r.rewrapped === 1 ? "" : "s"} under ${r.active_key_id ?? "the active key"}.${left ? ` ${left} could not be re-encrypted: ${[...r.skipped, ...r.unreadable].join(", ")}.` : ""}`);
+      const text = `Re-encrypted ${r.rewrapped} ${what}${r.rewrapped === 1 ? "" : "s"} under ${r.active_key_id ?? "the active key"}.`;
+      setDone((d) => ({ ...d, [what]: left ? `${text} ${left} could not be re-encrypted (${[...r.skipped, ...r.unreadable].join(", ")}): keep the old key until they are.` : text }));
       await load();
     } catch (err) {
-      setProblem(errorText(err));
+      // Only an ACME-less controller answers 501: it has no certificate keys. Any other failure,
+      // a 404 included, is an error: "nothing to re-encrypt" could get the old key removed too early.
+      if (what === "certificate key" && err instanceof ApiError && err.status === 501) setDone((d) => ({ ...d, [what]: "This controller has no certificate keys to re-encrypt." }));
+      else setProblem(`${what}: ${errorText(err)}`);
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -209,7 +218,7 @@ function KeyRotation() {
     <section aria-label="Key rotation" className="mt-8">
       <h2 className="mb-1 text-lg font-semibold">Key rotation</h2>
       <p className="mb-2 max-w-(--measure) text-sm text-ink-muted">
-        Plugin secrets are sealed under the controller key. To rotate: add the new key to every controller&apos;s key file, restart them, check below that every node holds the active key, then re-encrypt. Remove the old key only after that.
+        Plugin secrets, cluster secrets and ACME keys are sealed under the controller key. To rotate: add the new key to every controller&apos;s key file, restart them, check below that every node holds the active key, then re-encrypt each kind below. Remove the old key only after all three. Nodes that are unreachable are skipped: check the table above before you remove it.
       </p>
       {problem && <ErrorState onRetry={load}>{problem}</ErrorState>}
       {keys && (
@@ -235,14 +244,22 @@ function KeyRotation() {
           Node {n} does not hold the active key {keys!.active}. Re-encrypting now would leave it unable to read its plugin secrets.
         </p>
       ))}
-      {done && (
-        <p role="status" className="mt-2 text-sm">
-          {done}
+      {Object.entries(done).map(([what, text]) => (
+        <p key={what} role="status" className="mt-2 text-sm">
+          {text}
         </p>
-      )}
-      <Button className="mt-2" loading={busy} disabled={!keys || lacking.length > 0} onClick={rewrap}>
-        Re-encrypt plugin secrets
-      </Button>
+      ))}
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button loading={busy === "plugin secret"} disabled={!keys || lacking.length > 0 || busy !== null} onClick={() => rewrap("plugin secret", rewrapPluginSecrets)}>
+          Re-encrypt plugin secrets
+        </Button>
+        <Button loading={busy === "cluster secret"} disabled={!keys || lacking.length > 0 || busy !== null} onClick={() => rewrap("cluster secret", rewrapClusterSecrets)}>
+          Re-encrypt cluster secrets
+        </Button>
+        <Button loading={busy === "certificate key"} disabled={!keys || lacking.length > 0 || busy !== null} onClick={() => rewrap("certificate key", rewrapAcmeKeys)}>
+          Re-encrypt certificate keys
+        </Button>
+      </div>
     </section>
   );
 }

@@ -813,7 +813,7 @@ async fn put_suspended(
             tracing::info!(
                 target: "wayhouse_controller::plugins::audit",
                 what = "suspended set", install = %id, suspended = ?req.suspended,
-                actor = ?actor(&headers).as_deref(),
+                actor = ?actor(&headers).as_deref().unwrap_or("-"),
                 "plugin capabilities suspended or resumed"
             );
             match blocking(&st, {
@@ -1014,7 +1014,7 @@ pub(super) async fn put_config_inner(
             tracing::info!(
                 target: "wayhouse_controller::plugins::audit",
                 what = "config changed", install = %id, approval_changed = changed,
-                actor = ?actor(headers).as_deref(), "plugin config changed"
+                actor = ?actor(headers).as_deref().unwrap_or("-"), "plugin config changed"
             );
             match blocking(st, {
                 let id = id.to_string();
@@ -1145,7 +1145,7 @@ async fn enable_webhook(
         Ok(Applied::Done(_)) => {
             tracing::info!(
                 target: "wayhouse_controller::plugins::audit",
-                what = "webhook enabled", install = %id, actor = ?actor(&headers).as_deref(),
+                what = "webhook enabled", install = %id, actor = ?actor(&headers).as_deref().unwrap_or("-"),
                 "plugin webhook changed"
             );
             Json(serde_json::json!({ "token": token, "path": format!("/plugins/{id}/hook") }))
@@ -1197,7 +1197,7 @@ async fn revoke_webhook(
         Ok(Applied::Done(_)) => {
             tracing::info!(
                 target: "wayhouse_controller::plugins::audit",
-                what = "webhook revoked", install = %id, actor = ?actor(&headers).as_deref(),
+                what = "webhook revoked", install = %id, actor = ?actor(&headers).as_deref().unwrap_or("-"),
                 "plugin webhook changed"
             );
             StatusCode::NO_CONTENT.into_response()
@@ -1339,7 +1339,7 @@ async fn put_secret(
                 tracing::info!(
                     target: "wayhouse_controller::plugins::audit",
                     what = "set", install = %id, slot = %slot, key_id = %sealed.key_id,
-                    actor = actor.as_deref(), "plugin secret changed"
+                    actor = ?actor.as_deref().unwrap_or("-"), "plugin secret changed"
                 );
                 Ok(())
             }
@@ -1402,7 +1402,7 @@ async fn delete_secret(
         Ok(true) => {
             tracing::info!(
                 target: "wayhouse_controller::plugins::audit",
-                what = "delete", install = %id, slot = %slot, actor = ?actor(&headers).as_deref(),
+                what = "delete", install = %id, slot = %slot, actor = ?actor(&headers).as_deref().unwrap_or("-"),
                 "plugin secret changed"
             );
             StatusCode::NO_CONTENT.into_response()
@@ -1551,6 +1551,14 @@ async fn rewrap_secrets(State(st): State<PluginsState>, headers: HeaderMap) -> R
             },
         }
     };
+    tracing::warn!(
+        actor = ?actor(&headers).as_deref().unwrap_or("-"),
+        rewrapped = total - skipped.len(),
+        skipped = skipped.len(),
+        unreadable = unreadable.len(),
+        key_id = %active,
+        "plugin secrets rewrapped"
+    );
     Json(serde_json::json!({
         "rewrapped": total - skipped.len(),
         "skipped": skipped,
@@ -1629,6 +1637,37 @@ mod tests {
             },
             dir,
         )
+    }
+
+    /// The only test that opens `/plugin-routes/subscribe`, so holding every slot cannot disturb
+    /// another.
+    #[tokio::test]
+    async fn route_subscribers_past_the_cap_are_refused_and_a_closed_stream_frees_its_slot() {
+        use super::super::routes::{MAX_SUBSCRIBERS, SUBSCRIBERS};
+        let (st, _d) = state(None);
+        let app = router(st);
+        let get = || {
+            Request::get("/plugin-routes/subscribe")
+                .header(wayhouse_http::protocol::HEADER, "1.0")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let held = SUBSCRIBERS
+            .try_acquire_many(MAX_SUBSCRIBERS as u32)
+            .unwrap();
+        let resp = app.clone().oneshot(get()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        drop(held);
+        let resp = app.clone().oneshot(get()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        drop(resp);
+        for _ in 0..100 {
+            if SUBSCRIBERS.available_permits() == MAX_SUBSCRIBERS {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the slot of a closed stream was not given back");
     }
 
     async fn call(
@@ -2236,6 +2275,33 @@ mod tests {
         assert_eq!(
             hit(&hooks, &path, Some(&rotated), vec![]).await.0,
             StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn the_webhook_budgets_follow_the_flags() {
+        let (st, _d) = state(None);
+        let hooks = super::super::hooks::router(
+            super::super::hooks::HookState::new(st.store.clone(), st.runner.clone(), None)
+                .with_rates((1.0, 2.0), (10.0, 20.0)),
+        );
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.push(
+                hit(&hooks, "/plugins/p-x/hook", Some("whk_guess"), vec![])
+                    .await
+                    .0,
+            );
+        }
+        // A burst of 2: two refused tokens, then the source budget answers.
+        assert_eq!(
+            seen,
+            [
+                StatusCode::UNAUTHORIZED,
+                StatusCode::UNAUTHORIZED,
+                StatusCode::TOO_MANY_REQUESTS,
+                StatusCode::TOO_MANY_REQUESTS
+            ]
         );
     }
 
