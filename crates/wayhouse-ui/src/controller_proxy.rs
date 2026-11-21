@@ -175,8 +175,8 @@ async fn put_acme_site(
     let Some(segment) = crate::proxy_util::path_segment(&name) else {
         return bad_acme_name();
     };
-    tracing::info!(actor = actor.as_deref().unwrap_or("-"), site = ?name, "acme: put site");
-    proxy_typed(
+    let who = actor.clone();
+    let resp = proxy_typed(
         &state,
         Method::PUT,
         format!("/acme/sites/{segment}"),
@@ -184,7 +184,9 @@ async fn put_acme_site(
         Some("application/json"),
         actor,
     )
-    .await
+    .await;
+    audit_acme("put site", who.as_deref(), &name, &resp);
+    resp
 }
 
 /// `DELETE /api/acme/sites/{name}`: removes the site, its certificates and its retry state.
@@ -196,15 +198,17 @@ async fn delete_acme_site(
     let Some(segment) = crate::proxy_util::path_segment(&name) else {
         return bad_acme_name();
     };
-    tracing::info!(actor = actor.as_deref().unwrap_or("-"), site = ?name, "acme: delete site");
-    proxy(
+    let who = actor.clone();
+    let resp = proxy(
         &state,
         Method::DELETE,
         format!("/acme/sites/{segment}"),
         None,
         actor,
     )
-    .await
+    .await;
+    audit_acme("delete site", who.as_deref(), &name, &resp);
+    resp
 }
 
 /// `POST /api/acme/gateways`: registers a gateway; the answer carries its token, once, and is passed
@@ -214,12 +218,10 @@ async fn create_acme_gateway(
     Extension(Actor(actor)): Extension<Actor>,
     body: Bytes,
 ) -> Response {
-    // Only the actor: the body is a name, but the answer carries the token and is never logged.
-    tracing::info!(
-        actor = actor.as_deref().unwrap_or("-"),
-        "acme: register gateway"
-    );
-    proxy_typed(
+    // The request body is only a name; the answer carries the token and is never logged.
+    let name = gateway_name(&body);
+    let who = actor.clone();
+    let resp = proxy_typed(
         &state,
         Method::POST,
         "/acme/gateways".to_string(),
@@ -227,7 +229,9 @@ async fn create_acme_gateway(
         Some("application/json"),
         actor,
     )
-    .await
+    .await;
+    audit_acme("register gateway", who.as_deref(), &name, &resp);
+    resp
 }
 
 /// `POST /api/enrollments`: mints a one-time enrollment code. The body may carry the step-up
@@ -395,15 +399,31 @@ async fn revoke_acme_gateway(
     let Some(segment) = crate::proxy_util::path_segment(&name) else {
         return bad_acme_name();
     };
-    tracing::info!(actor = actor.as_deref().unwrap_or("-"), gateway = ?name, "acme: revoke gateway");
-    proxy(
+    let who = actor.clone();
+    let resp = proxy(
         &state,
         Method::DELETE,
         format!("/acme/gateways/{segment}"),
         None,
         actor,
     )
-    .await
+    .await;
+    audit_acme("revoke gateway", who.as_deref(), &name, &resp);
+    resp
+}
+
+/// The `name` of a register-gateway body, for the audit line; empty when the body has none (the controller then refuses it).
+fn gateway_name(body: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("name").and_then(|n| n.as_str().map(str::to_owned)))
+        .unwrap_or_default()
+}
+
+/// One audit line per ACME write, after the controller answered, so it says what happened and not only what was tried.
+/// `subject` is a site or gateway name, never a token.
+fn audit_acme(what: &str, actor: Option<&str>, subject: &str, resp: &Response) {
+    tracing::info!(actor = actor.unwrap_or("-"), subject = ?subject, status = resp.status().as_u16(), "acme: {what}");
 }
 
 fn bad_acme_name() -> Response {
@@ -1086,6 +1106,13 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
+
+    #[test]
+    fn gateway_name_is_read_for_the_audit_line_and_empty_when_absent() {
+        assert_eq!(gateway_name(br#"{"name":"edge-1"}"#), "edge-1");
+        assert_eq!(gateway_name(br#"{"nom":"x"}"#), "");
+        assert_eq!(gateway_name(b"not json"), "");
+    }
 
     fn app_with_controller(url: String, token: Option<String>) -> Router {
         let state = crate::api::AppState::new(None).with_controller(url, token);
