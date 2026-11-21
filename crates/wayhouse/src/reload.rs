@@ -133,6 +133,17 @@ async fn apply(
     }
 }
 
+/// What [`apply_config`] did with a config.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Applied {
+    Yes,
+    /// The config itself was refused; sending it again changes nothing.
+    Rejected,
+    /// Its secrets could not be read or are unusable (say a transient fetch failure): the same
+    /// config may apply later, so a caller that can ask again should.
+    SecretsUnavailable,
+}
+
 /// Rebuilds the snapshot from an already-parsed-and-validated [`wayhouse_config::Config`]
 /// and reconciles everything that reads it — the shared tail of a file
 /// reload (`apply`, above) and a controller-pushed revision
@@ -148,7 +159,7 @@ pub(crate) async fn apply_config(
     sniffers: &Sniffers,
     live: &Live,
     source_desc: &str,
-) -> bool {
+) -> Applied {
     for w in cfg.warnings() {
         tracing::warn!(source = source_desc, "{w}");
     }
@@ -164,7 +175,7 @@ pub(crate) async fn apply_config(
                 error = %e,
                 "secrets could not be applied; reload rejected, keeping the current configuration and secrets"
             );
-            return false;
+            return Applied::SecretsUnavailable;
         }
     };
     // Scan first: if a pinned module no longer validates, keep the previous config
@@ -179,7 +190,7 @@ pub(crate) async fn apply_config(
                 error = %e,
                 "sniffer rescan failed; reload rejected, keeping the current configuration and sniffer set"
             );
-            return false;
+            return Applied::Rejected;
         }
     };
     let prev = handle.current();
@@ -235,7 +246,7 @@ pub(crate) async fn apply_config(
         rebuild_resolvers(&cfg, resolvers);
     }
     tracing::info!(source = %source_desc, "configuration reloaded");
-    true
+    Applied::Yes
 }
 
 /// Rebuild the external-resolver clients from the new `resolvers:` and swap the
@@ -528,6 +539,10 @@ mod tests {
     }
 
     async fn reload(r: &Rig, yaml: &str) -> bool {
+        reload_as(r, yaml).await == Applied::Yes
+    }
+
+    async fn reload_as(r: &Rig, yaml: &str) -> Applied {
         let cfg = wayhouse_config::parse_str(yaml).unwrap();
         apply_config(
             cfg,

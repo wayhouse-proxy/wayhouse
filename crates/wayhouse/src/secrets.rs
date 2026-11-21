@@ -169,9 +169,9 @@ impl SecretSource {
     }
 }
 
-/// How long a rotated admin token or gossip key keeps working next to its replacement. HA
-/// replicas reload at different moments, so for this long a replica that has not reloaded yet
-/// can still talk to one that has. Restart the process to drop the old value at once.
+/// How long a rotated admin token or gossip key is signed with next to its replacement; it is
+/// accepted for twice that. HA replicas reload at different moments, so for this long a replica
+/// that has not reloaded yet can still talk to one that has. Restart the process to drop the old value at once.
 pub const OVERLAP: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// The secrets a running proxy can swap on a reload: the live admin token the admin API checks

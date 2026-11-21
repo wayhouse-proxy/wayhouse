@@ -1,8 +1,11 @@
 //! A shared secret that can be rotated while the process runs.
 //!
 //! A rotation keeps the old value usable for an overlap window, because the parties holding
-//! a secret (HA replicas, the clients of the admin API) reload at different moments. After the
-//! window only the new value is accepted. Restarting the process drops the old value at once.
+//! a secret (HA replicas, the clients of the admin API) reload at different moments. The old
+//! value is *signed with* for one window and *accepted* for two: a replica that reloads late
+//! still signs with the old value after an early one has switched, and the early one must keep
+//! accepting it for as long as that can last. After that only the new value is accepted.
+//! Restarting the process drops the old value at once.
 
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, Instant};
@@ -11,8 +14,8 @@ use crate::token_eq;
 
 struct State {
     current: Arc<str>,
-    /// The value this one replaced, and when it stops being accepted.
-    previous: Option<(Arc<str>, Instant)>,
+    /// The value this one replaced, when we stop signing with it, and when we stop accepting it.
+    previous: Option<(Arc<str>, Instant, Instant)>,
 }
 
 pub struct RotatingSecret(RwLock<State>);
@@ -26,7 +29,8 @@ impl RotatingSecret {
         }))
     }
 
-    /// Makes `new` the current value and keeps the old one acceptable for `overlap`. Returns
+    /// Makes `new` the current value, keeps signing with the old one for `overlap` and accepting
+    /// it for twice that. Returns
     /// `false`, changing nothing, when `new` is already the current value.
     pub fn rotate(&self, new: &str, overlap: Duration) -> bool {
         self.rotate_at(new, overlap, Instant::now())
@@ -38,7 +42,7 @@ impl RotatingSecret {
             return false;
         }
         let old = std::mem::replace(&mut s.current, Arc::from(new));
-        s.previous = (!overlap.is_zero()).then(|| (old, now + overlap));
+        s.previous = (!overlap.is_zero()).then(|| (old, now + overlap, now + overlap * 2));
         true
     }
 
@@ -46,9 +50,13 @@ impl RotatingSecret {
     /// has not reloaded yet still accepts it, and the new one after.
     #[must_use]
     pub fn signing(&self) -> Arc<str> {
+        self.signing_at(Instant::now())
+    }
+
+    fn signing_at(&self, now: Instant) -> Arc<str> {
         let s = self.0.read().unwrap_or_else(PoisonError::into_inner);
         match &s.previous {
-            Some((old, until)) if Instant::now() < *until => old.clone(),
+            Some((old, sign_until, _)) if now < *sign_until => old.clone(),
             _ => s.current.clone(),
         }
     }
@@ -62,8 +70,8 @@ impl RotatingSecret {
     fn accepted_at(&self, now: Instant) -> Vec<Arc<str>> {
         let s = self.0.read().unwrap_or_else(PoisonError::into_inner);
         let mut v = vec![s.current.clone()];
-        if let Some((old, until)) = &s.previous {
-            if now < *until {
+        if let Some((old, _, accept_until)) = &s.previous {
+            if now < *accept_until {
                 v.push(old.clone());
             }
         }
@@ -94,12 +102,29 @@ mod tests {
         assert!(s.rotate_at(NEW, Duration::from_secs(60), t0));
         assert_eq!(s.accepted_at(t0).len(), 2);
         assert!(s
-            .accepted_at(t0 + Duration::from_secs(59))
+            .accepted_at(t0 + Duration::from_secs(119))
             .iter()
             .any(|k| &**k == OLD));
-        let later = s.accepted_at(t0 + Duration::from_secs(60));
+        let later = s.accepted_at(t0 + Duration::from_secs(120));
         assert_eq!(later.len(), 1);
         assert_eq!(&*later[0], NEW);
+    }
+
+    /// A replica that reloads late signs with the old value for a window after its own reload,
+    /// which can be a whole window after an early replica rotated; the early one still accepts it.
+    #[test]
+    fn the_old_value_is_signed_with_for_one_window_but_accepted_for_two() {
+        let s = RotatingSecret::new(OLD);
+        let t0 = Instant::now();
+        s.rotate_at(NEW, Duration::from_secs(60), t0);
+        assert_eq!(&*s.signing_at(t0 + Duration::from_secs(59)), OLD);
+        assert_eq!(&*s.signing_at(t0 + Duration::from_secs(60)), NEW);
+        // At the end of the signing window a replica that reloaded just then still signs with OLD
+        // for 60 more seconds, so OLD must be acceptable until twice the window.
+        assert!(s
+            .accepted_at(t0 + Duration::from_secs(60))
+            .iter()
+            .any(|k| &**k == OLD));
     }
 
     #[test]

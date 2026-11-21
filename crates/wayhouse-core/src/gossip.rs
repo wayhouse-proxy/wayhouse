@@ -1001,7 +1001,10 @@ mod tests {
     }
 
     /// A pair where `a` has rotated to a new key and `b` still has the old one.
-    async fn join_after_a_rotated(window: std::time::Duration) -> (usize, usize) {
+    async fn join_after_a_rotated(
+        window: std::time::Duration,
+        expect_join: bool,
+    ) -> (usize, usize) {
         let free = || async {
             let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
             s.local_addr().unwrap()
@@ -1031,8 +1034,24 @@ mod tests {
             inbox_b,
             shutdown_rx,
         ));
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-        let counts = (handle_a.member_count(), handle_b.member_count());
+        // Joining: wait until both see each other (up to 10 s). Not joining: nothing to wait
+        // for, so give the mesh a fixed time to prove it stays apart.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let apart = std::time::Duration::from_millis(1500);
+        let start = tokio::time::Instant::now();
+        let counts = loop {
+            let counts = (handle_a.member_count(), handle_b.member_count());
+            let joined = counts.0 >= 1 && counts.1 >= 1;
+            let done = if expect_join {
+                joined || tokio::time::Instant::now() > deadline
+            } else {
+                start.elapsed() >= apart
+            };
+            if done {
+                break counts;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
         let _ = shutdown_tx.send(true);
         let _ = ta.await;
         let _ = tb.await;
@@ -1041,13 +1060,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_replica_that_rotated_still_talks_to_one_that_has_not_inside_the_window() {
-        let (a, b) = join_after_a_rotated(std::time::Duration::from_secs(3600)).await;
+        let (a, b) = join_after_a_rotated(std::time::Duration::from_secs(3600), true).await;
         assert!(a >= 1 && b >= 1, "a={a} b={b}");
     }
 
     #[tokio::test]
     async fn after_the_window_a_replica_on_the_old_key_is_shut_out() {
-        let (a, b) = join_after_a_rotated(std::time::Duration::ZERO).await;
+        let (a, b) = join_after_a_rotated(std::time::Duration::ZERO, false).await;
         assert_eq!((a, b), (0, 0));
     }
 

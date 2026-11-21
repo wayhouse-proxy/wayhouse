@@ -22,6 +22,7 @@ use wayhouse_core::metrics_defs as m;
 use wayhouse_core::sniff::Sniffers;
 use wayhouse_core::{Resolvers, RuntimeHandle};
 
+use crate::reload::Applied;
 use crate::secrets::Live;
 use crate::sniffer_loader::SnifferLoader;
 
@@ -177,14 +178,26 @@ async fn subscribe_once(
     tracing::info!(controller = %base_url, since, "subscribed to controller config updates");
 
     let mut buf = wayhouse_http::sse::EventBuffer::new();
+    // A revision whose secrets could not be read is not counted as seen: if nothing newer
+    // arrives, the stream is dropped after `SECRETS_RETRY` and the reconnect asks for it again.
+    let mut secrets_pending = false;
 
     loop {
-        let chunk = tokio::time::timeout(wayhouse_http::sse::IDLE_TIMEOUT, resp.chunk())
+        let wait = if secrets_pending {
+            SECRETS_RETRY
+        } else {
+            wayhouse_http::sse::IDLE_TIMEOUT
+        };
+        let chunk = tokio::time::timeout(wait, resp.chunk())
             .await
             .map_err(|_| {
                 anyhow::anyhow!(
-                    "subscribe stream from {base_url} sent nothing for {:?}; reconnecting",
-                    wayhouse_http::sse::IDLE_TIMEOUT
+                    "subscribe stream from {base_url} sent nothing for {wait:?}{}; reconnecting",
+                    if secrets_pending {
+                        " after a revision whose secrets could not be read, to retry it"
+                    } else {
+                        ""
+                    }
                 )
             })?
             .map_err(|e| {
@@ -203,10 +216,13 @@ async fn subscribe_once(
         // keep-alive is a comment block with no `data:` line and is simply
         // ignored by `apply_sse_event`.
         while let Some(event) = buf.next_event() {
-            if let Some(revision) =
+            if let Some((revision, retry)) =
                 apply_sse_event(&event, handle, resolvers, sniffer_loader, sniffers, live).await
             {
-                *cursor = revision;
+                secrets_pending = retry;
+                if !retry {
+                    *cursor = revision;
+                }
             }
         }
     }
@@ -241,6 +257,10 @@ fn parse_sse_event(event: &str) -> Option<SseRevision> {
 /// replayed forever on every reconnect, the same way a bad file reload
 /// doesn't retry itself, it just waits for the next trigger. Returns `None`
 /// for anything that wasn't a data event at all (see [`parse_sse_event`]).
+/// How long a revision whose secrets could not be read waits for a newer one before the stream
+/// is reconnected to fetch it again.
+const SECRETS_RETRY: Duration = Duration::from_secs(15);
+
 /// Debounce window, mirrors `reload::DEBOUNCE` — coalesces a burst of
 /// `request_reload()` calls (e.g. several intent ops landing close together)
 /// into one re-fetch instead of one per call.
@@ -330,7 +350,7 @@ pub async fn watch_admin_reloads(
                     "admin-triggered overlay change",
                 )
                 .await;
-                if applied {
+                if applied == Applied::Yes {
                     note_applied(revision);
                 }
             }
@@ -349,7 +369,7 @@ async fn apply_sse_event(
     sniffer_loader: Option<&SnifferLoader>,
     sniffers: &Sniffers,
     live: &Live,
-) -> Option<u64> {
+) -> Option<(u64, bool)> {
     let SseRevision { revision, config } = parse_sse_event(event)?;
 
     match wayhouse_config::parse_str(&crate::plugin_overlay::merge(&config)) {
@@ -364,8 +384,10 @@ async fn apply_sse_event(
                 &format!("controller revision {revision}"),
             )
             .await;
-            if applied {
-                note_applied(revision);
+            match applied {
+                Applied::Yes => note_applied(revision),
+                Applied::Rejected => {}
+                Applied::SecretsUnavailable => return Some((revision, true)),
             }
         }
         Err(e) => {
@@ -376,7 +398,7 @@ async fn apply_sse_event(
             );
         }
     }
-    Some(revision)
+    Some((revision, false))
 }
 
 #[cfg(test)]
@@ -452,5 +474,48 @@ mod tests {
     fn a_data_event_missing_a_required_field_is_ignored() {
         assert!(parse_sse_event(r#"data: {"revision":1}"#).is_none());
         assert!(parse_sse_event(r#"data: {"config":"x"}"#).is_none());
+    }
+
+    fn event(revision: u64, yaml: &str) -> String {
+        format!(
+            "data: {}",
+            serde_json::json!({ "revision": revision, "config": yaml })
+        )
+    }
+
+    /// A revision whose secret cannot be read is not counted as seen (the caller must not move the
+    /// cursor, so a reconnect asks for it again); a plain refusal of the config is.
+    #[tokio::test]
+    async fn a_revision_with_unreadable_secrets_is_flagged_for_retry_and_a_refused_one_is_not() {
+        let cfg = wayhouse_config::parse_str(
+            "pools:\n  - name: p\n    targets: [\"127.0.0.1:9\"]\n    health_check:\n      type: none\nlisteners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    pool: p\n",
+        )
+        .unwrap();
+        let runtime = wayhouse_core::Runtime::start(
+            wayhouse_core::Snapshot::from_config(&cfg),
+            Arc::default(),
+            1,
+        );
+        let handle = runtime.handle();
+        let apply = |yaml: String| {
+            let handle = handle.clone();
+            async move {
+                apply_sse_event(
+                    &event(7, &yaml),
+                    &handle,
+                    &Resolvers::default(),
+                    None,
+                    &Sniffers::default(),
+                    &Live::default(),
+                )
+                .await
+            }
+        };
+        let sealed = "schema_version: 4\nsettings:\n  admin:\n    auth_token: { secret: admin-token }\npools:\n  - name: p\n    targets: [\"127.0.0.1:9\"]\n    health_check:\n      type: none\nlisteners:\n  - name: l\n    bind: \"127.0.0.1:0\"\n    pool: p\n";
+        assert_eq!(apply(sealed.to_owned()).await, Some((7, true)));
+        assert_eq!(apply("pools: [".to_owned()).await, Some((7, false)));
+        runtime
+            .shutdown_with_grace(Duration::from_millis(100))
+            .await;
     }
 }
