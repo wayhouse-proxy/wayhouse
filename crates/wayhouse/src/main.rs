@@ -737,6 +737,7 @@ async fn run(
         source: secret_source,
         admin: admin_token(&cfg)?
             .map(|t| Arc::new(wayhouse_http::rotating::RotatingSecret::new(&t))),
+        ..Default::default()
     });
     let (sniffer_pins, sniffer_validator): (admin::SnifferPins, Option<admin::SnifferValidator>) =
         match (&sniffer_loader, &cfg.sniffers) {

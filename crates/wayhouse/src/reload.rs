@@ -529,6 +529,7 @@ mod tests {
                 key_file: Some(keys),
             },
             admin: Some(admin.clone()),
+            ..Default::default()
         };
         let cfg = wayhouse_config::parse_str(SEALED).unwrap();
         let runtime = wayhouse_core::Runtime::start(Snapshot::from_config(&cfg), Arc::default(), 1);

@@ -446,7 +446,7 @@ async fn rewrap_secrets(st: &UiState, headers: &HeaderMap) -> Response {
         Ok(a) => a,
         Err(e) => return internal(e),
     };
-    let (mut total, mut skipped, mut unreadable) = (0, Vec::new(), Vec::new());
+    let (mut rewrapped, mut skipped, mut unreadable) = (0, Vec::new(), Vec::new());
     // Whatever happens in the loop, the entries already rewrapped are logged below.
     let failed: Option<Response> = async {
         for (name, mut record) in stored {
@@ -465,7 +465,6 @@ async fn rewrap_secrets(st: &UiState, headers: &HeaderMap) -> Response {
                 unreadable.push(name);
                 continue;
             };
-            total += 1;
             record["key_id"] = new.key_id.into();
             record["nonce"] = new.nonce.into();
             record["ciphertext"] = new.ciphertext.into();
@@ -485,7 +484,7 @@ async fn rewrap_secrets(st: &UiState, headers: &HeaderMap) -> Response {
                 }
             };
             match applied {
-                Ok(Applied::Done) => {}
+                Ok(Applied::Done) => rewrapped += 1,
                 Ok(Applied::Stale | Applied::NotFound) => skipped.push(name),
                 Ok(other) => return Some(internal(format!("unexpected answer {other:?}"))),
                 Err(e) => return Some(internal(e)),
@@ -494,12 +493,12 @@ async fn rewrap_secrets(st: &UiState, headers: &HeaderMap) -> Response {
         None
     }
     .await;
-    if let (Some(ha), true) = (&st.ha, total > skipped.len()) {
+    if let (Some(ha), true) = (&st.ha, rewrapped > 0) {
         crate::plugins::peer::request_purge(ha);
     }
     tracing::warn!(
         actor = ?actor(headers).as_deref().unwrap_or("-"),
-        rewrapped = total - skipped.len(),
+        rewrapped,
         skipped = skipped.len(),
         unreadable = unreadable.len(),
         key_id = %active,
@@ -510,7 +509,7 @@ async fn rewrap_secrets(st: &UiState, headers: &HeaderMap) -> Response {
         return response;
     }
     Json(json!({
-        "rewrapped": total - skipped.len(),
+        "rewrapped": rewrapped,
         "skipped": skipped,
         "unreadable": unreadable,
         "active_key_id": active,

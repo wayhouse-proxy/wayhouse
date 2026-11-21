@@ -182,6 +182,9 @@ pub const OVERLAP: std::time::Duration = std::time::Duration::from_secs(300);
 pub struct Live {
     pub source: SecretSource,
     pub admin: Option<std::sync::Arc<wayhouse_http::rotating::RotatingSecret>>,
+    /// Set once the "gossip needs a restart" warning was logged, so it is not repeated on every
+    /// reload (a mesh that is configured but failed to start would otherwise warn each time).
+    pub gossip_warned: std::sync::atomic::AtomicBool,
 }
 
 /// Why [`Live::prepare`] refused a config.
@@ -252,10 +255,14 @@ impl Live {
             ),
             _ => {}
         }
-        if cfg.gossip.is_some() != handle.runs_gossip() {
+        if cfg.gossip.is_some() != handle.runs_gossip()
+            && !self
+                .gossip_warned
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
             tracing::warn!(
                 source = source_desc,
-                "settings.gossip was added or removed on a reload; the mesh keeps running as it started until a restart"
+                "settings.gossip was added or removed on a reload; the mesh keeps running as it started; that needs a restart"
             );
         }
         let psk = cfg.gossip.as_ref().and_then(|g| g.psk.resolve(None).ok());
