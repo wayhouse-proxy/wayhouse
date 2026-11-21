@@ -238,6 +238,26 @@ carried in the PROXY v2 TLV if the backend should correlate it.
   (`X-Config-Schema-Version` header) and a dry-run check of a raw YAML document (`200
   {"ok":true,"schema_version":N}`, or `422 {"error":...}`; nothing is applied). Same shapes as the
   controller's, so a UI can work against a file-config proxy with no controller.
+- `GET /config/file` and `PUT /config/file` – the config file of a proxy that runs from `--config`
+  (`404` under `--controller`). `GET` returns the YAML with `ETag` (a hash of the real content) and
+  `X-Config-Revision` (the same hash as a number the web editor keeps); `?previous=1` returns the
+  copy the last write kept. **Inline secrets are masked in the body** (`settings.admin.auth_token`
+  and `settings.gossip.psk` written as plain text), so a viewer reading the file does not get the
+  admin token; a `PUT` of the text you were shown keeps the real values. `PUT` takes the raw YAML and
+  replaces the file only if it is still the version you read: send `If-Match: <ETag>`, or
+  `?base=<revision>`. A changed file answers `409 {"code":"stale"}`, a document this build refuses
+  (parsed with the plugin routes merged in, as a reload does; a missing admin token too) `422`, no
+  version `428`, an unwritable directory `503`. The new text and the old one are both staged as temp
+  files first, so a full disk changes nothing; then the old file becomes `<file>.prev` (same
+  permissions) and the new one is renamed over the config. The proxy then reloads it like any edit,
+  and the answer waits up to five seconds to see the reload take it: `applied: true`, or `applied:
+  false` with a note that it is saved but not confirmed (a reload that fails, a bad certificate
+  path or a port in use, keeps the running config and logs why). **Off unless the proxy starts with
+  `--allow-config-write`** (`403` otherwise), and that flag refuses to start without
+  `settings.admin.auth_token`: the admin token can then rewrite listeners and TLS paths, not only
+  backends. Reads stay on. `wayhouse-ui --proxy-url <admin URL>` (with `--proxy-token-file`, and no
+  `--controller-url`) points the config editor at this: it shows and saves that file, with no
+  revision history, canary stage or confirm window.
 - `GET /web` – the resolved `web:` section as JSON for `wayhouse-web-sync`: `pool`,
   `listen.{http,https}`, `trusted_proxy`, `internal_bind`, and per site its `hosts` and
   `upstreams` in final form (`{addr}`, `{pool, via: "direct"}`, or `{pool, via: "wayhouse",
@@ -361,6 +381,14 @@ scraper cannot hold the UI's browser session. A `wayhouse-ui` with a login confi
 `--metrics-token` does not serve `/metrics` at all; an open UI (no login) serves it
 open. Per-request or per-store metrics for these binaries are not built; the
 per-instance proxy surface stays on each `wayhouse`.
+
+`wayhouse-ui` also checks once a day (with up to an hour of spread) whether a newer stable
+release exists. It fetches the signed `release-feed.json` from the project's GitHub release
+assets (`--release-feed-url`; an empty value turns the check off, for air-gapped installs),
+verifies the minisign signature against the release key compiled into the binary, and shows
+a dismissible note in the header and the version under Settings. The request carries no
+instance identity; the server sees the protocol version header and the caller's IP address. It only reports; nothing is downloaded or installed. A
+failed or badly signed feed is ignored.
 
 ### `wayhouse-controller` — structural config distribution
 
