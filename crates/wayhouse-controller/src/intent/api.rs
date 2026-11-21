@@ -9,7 +9,6 @@
 //! log — see [`crate::intent::relay`] (phase 12 slice 4), the intent-log
 //! counterpart to [`crate::parent_client`]'s config relay.
 
-use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
@@ -21,7 +20,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::StreamExt;
 
 use super::IntentOp;
 use crate::role::{Role, RoleHandle};
@@ -270,22 +269,50 @@ struct SubscribeParams {
 async fn subscribe(
     State(state): State<IntentState>,
     Query(params): Query<SubscribeParams>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+) -> Response {
+    let Ok(permit) = SUBSCRIBERS.try_acquire() else {
+        tracing::warn!(
+            max = MAX_SUBSCRIBERS,
+            "intent subscriber cap reached; refusing a stream"
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(axum::http::header::RETRY_AFTER, "5")],
+            Json(serde_json::json!({"error": "too many subscribers; retry shortly"})),
+        )
+            .into_response();
+    };
+    // The slot is held by the stream's worker and given back when it ends, even by a panic.
+    permit.forget();
+    let slot = Slot;
     let (tx, rx) = mpsc::channel(16);
     let updates = state.updates.subscribe();
-    tokio::spawn(subscribe_worker(
-        state.store,
-        updates,
-        params.since.unwrap_or(0),
-        tx,
-    ));
+    tokio::spawn(async move {
+        let _slot = slot;
+        subscribe_worker(state.store, updates, params.since.unwrap_or(0), tx).await;
+    });
 
     let events = ReceiverStream::new(rx).map(|(revision, bytes)| {
         let op = String::from_utf8_lossy(&bytes).into_owned();
         let payload = serde_json::json!({ "revision": revision, "op": serde_json::from_str::<serde_json::Value>(&op).unwrap_or(serde_json::Value::Null) });
-        Ok(Event::default().data(payload.to_string()))
+        Ok::<_, std::convert::Infallible>(Event::default().data(payload.to_string()))
     });
-    Sse::new(events).keep_alive(KeepAlive::default())
+    Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+/// Most live `GET /intent/subscribe` streams at once, like the config and registry streams.
+const MAX_SUBSCRIBERS: usize = 1024;
+static SUBSCRIBERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_SUBSCRIBERS);
+
+/// A taken subscriber slot; dropping it gives the slot back.
+struct Slot;
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        SUBSCRIBERS.add_permits(1);
+    }
 }
 
 async fn subscribe_worker(
@@ -301,7 +328,12 @@ async fn subscribe_worker(
     }
 
     loop {
-        match updates.recv().await {
+        // A client that went away frees its slot at once, not at the next update.
+        let received = tokio::select! {
+            () = tx.closed() => return,
+            r = updates.recv() => r,
+        };
+        match received {
             Ok(revision) if revision <= last_sent => {}
             // Replay from the cursor rather than fetching just `revision`: a
             // snapshot install wakes once, for its newest revision, and the
@@ -372,6 +404,39 @@ mod tests {
             IntentState::new(store, RoleHandle::new(Role::Standalone), None),
             dir,
         )
+    }
+
+    /// The only test that opens `/intent/subscribe`, so holding every slot cannot disturb another.
+    #[tokio::test]
+    async fn subscribers_past_the_cap_are_refused_and_a_closed_stream_frees_its_slot() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        let get = || {
+            Request::get("/intent/subscribe")
+                .header(wayhouse_http::protocol::HEADER, "1.0")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let held = SUBSCRIBERS
+            .try_acquire_many(MAX_SUBSCRIBERS as u32)
+            .unwrap();
+        let resp = app.clone().oneshot(get()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(resp.headers().contains_key("retry-after"));
+        drop(held);
+        let resp = app.clone().oneshot(get()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(SUBSCRIBERS.available_permits(), MAX_SUBSCRIBERS - 1);
+        // The client goes away: the worker notices at its next send or when the log ends, and the
+        // slot comes back.
+        drop(resp);
+        for _ in 0..100 {
+            if SUBSCRIBERS.available_permits() == MAX_SUBSCRIBERS {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("the slot of a closed stream was not given back");
     }
 
     #[tokio::test]
