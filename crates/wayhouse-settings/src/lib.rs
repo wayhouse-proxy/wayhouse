@@ -130,29 +130,62 @@ fn file_mode(pdir: &Path) -> u32 {
 /// a group the UI backend's user belongs to, and nothing here changes it.
 pub fn ensure_dir(dir: &Path, program: &str) -> std::io::Result<PathBuf> {
     let pdir = program_dir(dir, program);
-    if !pdir.is_dir() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-            let group = std::fs::metadata(dir).is_ok_and(|m| m.permissions().mode() & 0o020 != 0);
-            let mode = if group { 0o770 } else { 0o700 };
-            match std::fs::DirBuilder::new().mode(mode).create(&pdir) {
-                Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
-                _ => {}
-            }
-            // The creation mode is masked by the umask; the group bit is the point.
-            std::fs::set_permissions(&pdir, std::fs::Permissions::from_mode(mode))?;
-        }
-        #[cfg(not(unix))]
-        std::fs::create_dir_all(&pdir)?;
+    // A symlink (or anything but a directory) in this place is refused, not followed: the
+    // directory is shared with other users, and a link could point the writes elsewhere.
+    let existing = |p: &Path| match std::fs::symlink_metadata(p) {
+        Ok(m) if m.is_dir() => Ok(true),
+        Ok(_) => Err(std::io::Error::other(format!(
+            "{} is not a directory (a symlink or a file is refused)",
+            p.display()
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    };
+    if existing(&pdir)? {
+        return Ok(pdir);
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let group = std::fs::metadata(dir).is_ok_and(|m| m.permissions().mode() & 0o020 != 0);
+        let mode = if group { 0o770 } else { 0o700 };
+        match std::fs::DirBuilder::new().mode(mode).create(&pdir) {
+            // Only a directory this call made gets its mode set: never one that appeared
+            // meanwhile, whoever made it.
+            Ok(()) => std::fs::set_permissions(&pdir, std::fs::Permissions::from_mode(mode))?,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                existing(&pdir)?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(&pdir)?;
     Ok(pdir)
+}
+
+/// The most a settings or schema file may hold. They are a few KiB; a file the UI backend reads
+/// is written by another user, so it is bounded.
+const MAX_FILE_BYTES: u64 = 1 << 20;
+
+fn read_capped(p: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(p)?
+        .take(MAX_FILE_BYTES + 1)
+        .read_to_string(&mut text)?;
+    if text.len() as u64 > MAX_FILE_BYTES {
+        return Err(std::io::Error::other(format!(
+            "larger than {MAX_FILE_BYTES} bytes"
+        )));
+    }
+    Ok(text)
 }
 
 /// The file, or `None` when there is none yet.
 pub fn read(dir: &Path, program: &str) -> Result<Option<File>, String> {
     let p = path(dir, program);
-    let text = match std::fs::read_to_string(&p) {
+    let text = match read_capped(&p) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("{}: {e}", p.display())),
@@ -183,6 +216,7 @@ fn lock(dir: &Path, program: &str) -> Result<std::fs::File, String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(nix::libc::O_NOFOLLOW);
         opts.mode(file_mode(&pdir));
     }
     let f = opts.open(&p).map_err(|e| format!("{}: {e}", p.display()))?;
@@ -248,7 +282,7 @@ struct SchemaFile {
 
 /// The flags the program last wrote, or `None` when it never started with this directory.
 pub fn read_schema(dir: &Path, program: &str) -> Option<Vec<Flag>> {
-    let text = std::fs::read_to_string(schema_path(dir, program)).ok()?;
+    let text = read_capped(&schema_path(dir, program)).ok()?;
     serde_json::from_str::<SchemaFile>(&text)
         .ok()
         .map(|f| f.flags)
@@ -583,6 +617,13 @@ pub fn layer(program: &str, cmd: &Command, argv: Vec<OsString>) -> Layered {
     let Some(dir) = flag_value(&argv, "settings-dir") else {
         return none(argv, notes);
     };
+    if dir.join(format!("{program}.json")).exists() {
+        warn(format!(
+            "{} is from the flat layout and is ignored; settings now live in {}",
+            dir.join(format!("{program}.json")).display(),
+            path(&dir, program).display()
+        ));
+    }
     // Held for the whole boot read-modify-write, so a confirm or undo cannot interleave with it.
     // Best effort: a directory that cannot hold the lock file is a directory that cannot be written.
     let _lock = lock(&dir, program).ok();
@@ -1372,6 +1413,48 @@ mod tests {
         assert_eq!(
             std::fs::metadata(&pd).unwrap().permissions().mode() & 0o7777,
             0o2770
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_program_directory_or_lock_is_refused_and_a_big_file_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("a")).unwrap();
+        assert!(ensure_dir(dir.path(), "a").is_err());
+        assert!(write(dir.path(), "a", &File::default()).is_err());
+        assert!(std::fs::read_dir(elsewhere.path())
+            .unwrap()
+            .next()
+            .is_none());
+
+        let pd = ensure_dir(dir.path(), "b").unwrap();
+        std::os::unix::fs::symlink(elsewhere.path().join("target"), pd.join(".lock")).unwrap();
+        assert!(lock(dir.path(), "b").is_err());
+        assert!(!elsewhere.path().join("target").exists());
+
+        std::fs::write(
+            path(dir.path(), "b"),
+            vec![b' '; (MAX_FILE_BYTES + 1) as usize],
+        )
+        .unwrap();
+        assert!(read(dir.path(), "b").is_err());
+        assert!(read_schema(dir.path(), "b").is_none());
+    }
+
+    #[test]
+    fn a_legacy_flat_file_is_reported_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("demo.json"), "{}").unwrap();
+        let d = dir.path().to_str().unwrap();
+        let l = layer("demo", &cmd(), argv(&["--settings-dir", d, "--listen=x"]));
+        assert!(
+            l.notes
+                .iter()
+                .any(|n| n.warn && n.text.contains("flat layout")),
+            "{:?}",
+            l.notes.iter().map(|n| &n.text).collect::<Vec<_>>()
         );
     }
 

@@ -253,11 +253,11 @@ ways to arrange that:
   the files `0600`.
 - **One user per program** (a program cannot read or change another program's flags): create
   `DIR/<program>/` yourself, owned by that program's user, with a group the UI backend's user
-  belongs to (and no other program does), mode `2770` (the setgid bit hands the group to new
+  belongs to (and no other program does), mode `2770`; the program's own user must be the owner or in that group too (the setgid bit hands the group to new
   files). When a program directory is group-writable its files are written `0660`, whatever the
   umask. The UI user is then the only one besides the program that can change that program's
   flags. A systemd tmpfiles line does it: `d /var/lib/wayhouse/settings/controller 2770 wayhouse-controller wayhouse-settings-ui -`.
-  If `DIR` itself is group-writable the program directories are created `0770` when missing.
+  If `DIR` itself is group-writable the program directories are created `0770` when missing; that alone does not isolate the programs from each other (anyone in `DIR`'s group can rename or replace a program directory), so for per-program isolation make `DIR` writable only by its owner and pre-create the program directories. A symlink in place of a program directory or its lock is refused, and a settings file over 1 MiB is not read. A flat `DIR/<program>.json` from the old layout is ignored with a warning.
 
 Across hosts each program needs its own directory and the UI cannot reach it (use the command line
 there). The shipped systemd units use `ProtectSystem=strict`: give each unit `ReadWritePaths=` (or
