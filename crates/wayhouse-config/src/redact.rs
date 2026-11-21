@@ -27,13 +27,24 @@ fn lookup<'a>(doc: &'a Value, path: &[&str]) -> Option<&'a Value> {
     path.iter().try_fold(doc, |v, k| v.get(*k))
 }
 
+/// A scalar's text: a string, a number or a bool, through any tag (`!!str`). A secret an
+/// operator wrote as `auth_token: 12345678` is still a secret.
+fn scalar_text(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Tagged(t) => scalar_text(&t.value),
+        _ => None,
+    }
+}
+
 /// The plaintext values `doc` carries (a `{ secret: name }` reference is not one).
 fn plaintext(doc: &Value) -> Vec<String> {
     PATHS
         .iter()
-        .filter_map(|p| lookup(doc, p)?.as_str())
-        .filter(|v| *v != REDACTED)
-        .map(str::to_owned)
+        .filter_map(|p| scalar_text(lookup(doc, p)?))
+        .filter(|v| v != REDACTED)
         .collect()
 }
 
@@ -45,7 +56,7 @@ pub fn has_redacted_secret(yaml: &str) -> bool {
     };
     PATHS
         .iter()
-        .any(|p| lookup(&doc, p).and_then(Value::as_str) == Some(REDACTED))
+        .any(|p| lookup(&doc, p).and_then(scalar_text).as_deref() == Some(REDACTED))
 }
 
 /// `yaml` with its plaintext secrets replaced by [`REDACTED`], or `None` when it holds none (or is
@@ -61,7 +72,7 @@ pub fn redact_secrets(yaml: &str) -> Option<String> {
         let mut doc = doc;
         for p in PATHS {
             if let Some(v) = path_mut(&mut doc, &p) {
-                if v.is_string() {
+                if scalar_text(v).is_some() {
                     *v = Value::String(REDACTED.to_owned());
                 }
             }
@@ -273,6 +284,27 @@ mod tests {
             let out = redact_secrets(&doc(&layout)).unwrap_or_else(|| panic!("{layout}"));
             assert!(!leaks(&out), "{layout} -> {out}");
             assert!(has_redacted_secret(&out), "{layout} -> {out}");
+        }
+    }
+
+    #[test]
+    fn numbers_bools_and_tagged_scalars_are_secrets_too() {
+        for value in [
+            "1234567890123456",
+            "!!str 1234567890123456",
+            "!!str s3cr3t-0123456789",
+            "\"1234567890123456\"",
+            "true",
+            "1.5e3",
+        ] {
+            let yaml = doc(&format!("  admin:\n    auth_token: {value}\n"));
+            let out = redact_secrets(&yaml).unwrap_or_else(|| panic!("{value}"));
+            assert!(
+                !out.contains("1234567890123456") && !out.contains("s3cr3t-0123456789"),
+                "{value} -> {out}"
+            );
+            assert!(has_redacted_secret(&out), "{value} -> {out}");
+            assert_eq!(redact_secrets(&out), None, "{value}: idempotent");
         }
     }
 

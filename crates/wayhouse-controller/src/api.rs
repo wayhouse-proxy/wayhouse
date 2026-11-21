@@ -285,6 +285,7 @@ impl AppState {
             Err(e) => return Err(e),
         };
         let _ = self.updates.send(new);
+        self.redact_retired();
         Ok(Some(new))
     }
 
@@ -402,8 +403,30 @@ impl AppState {
             let Some((live, _)) = self.current_for_group(None, None)? else {
                 return Ok(0);
             };
-            let fallback = self.pending()?.map(|p| p.trial.revert_to);
-            self.store.rewrite_below(live, fallback, |bytes| {
+            // Kept: the fallback of a live trial, and the newest promoted revision of each
+            // declared schema, so a proxy that only parses an older schema keeps a config to
+            // start on (`current_for_group` walks down to it).
+            let mut keep: Vec<u64> = self
+                .pending()?
+                .map(|p| p.trial.revert_to)
+                .into_iter()
+                .collect();
+            let mut schemas = std::collections::HashSet::new();
+            for rev in (self.store.rewritten_below()?.max(1)..=live).rev() {
+                if !self.stage_of(rev).promoted {
+                    continue;
+                }
+                let Some(bytes) = self.store.get(rev)? else {
+                    continue;
+                };
+                let schema = wayhouse_config::version::declared_schema_version(
+                    &String::from_utf8_lossy(&bytes),
+                );
+                if schemas.insert(schema) {
+                    keep.push(rev);
+                }
+            }
+            self.store.rewrite_below(live, &keep, |bytes| {
                 let text = std::str::from_utf8(bytes).ok()?;
                 wayhouse_config::redact_secrets(text).map(String::into_bytes)
             })
@@ -1838,6 +1861,14 @@ async fn catch_up(
                     max_schema,
                     "not sending a revision newer than the subscriber's config schema"
                 );
+                if settled {
+                    *scanned = revision;
+                }
+                continue;
+            }
+            // A scrubbed revision is history (a newer one replaced it): nothing to apply, and a
+            // proxy would only reject it.
+            if wayhouse_config::has_redacted_secret(&String::from_utf8_lossy(&bytes)) {
                 if settled {
                     *scanned = revision;
                 }
@@ -3471,5 +3502,73 @@ listeners:
             get(&app, "/config").await.1.contains("extra"),
             "nothing was rolled back"
         );
+    }
+
+    #[tokio::test]
+    async fn a_reverted_trial_leaves_both_older_revisions_scrubbed_and_the_new_one_whole() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        post(&app, "/config", &with_token(TOKEN_ONE, false)).await;
+        post(&app, "/config", &with_token(TOKEN_TWO, false)).await;
+        // The trial is given up: the fallback comes back as revision 3.
+        let (status, body) = post(&app, "/config/revert", "").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let latest = get(&app, "/config").await.1;
+        assert!(latest.contains(TOKEN_ONE), "the revert keeps its secret");
+        for old in ["/config/revisions/1", "/config/revisions/2"] {
+            let text = get(&app, old).await.1;
+            assert!(
+                !text.contains(TOKEN_ONE) && !text.contains(TOKEN_TWO),
+                "{old}: {text}"
+            );
+        }
+    }
+
+    fn schema_doc(schema: u32) -> Vec<u8> {
+        format!("schema_version: {schema}\nsettings:\n  admin:\n    auth_token: \"{TOKEN_ONE}\"\n")
+            .into_bytes()
+    }
+
+    #[tokio::test]
+    async fn the_newest_revision_of_each_schema_stays_whole_for_proxies_on_an_older_one() {
+        let (state, _dir) = test_state();
+        let r1 = state.apply_revision(schema_doc(1)).unwrap();
+        let r2 = state.apply_revision(schema_doc(2)).unwrap();
+        let r3 = state.apply_revision(schema_doc(2)).unwrap();
+        let text = |r| String::from_utf8(state.store.get(r).unwrap().unwrap()).unwrap();
+        assert!(text(r1).contains(TOKEN_ONE), "newest of schema 1");
+        assert!(!text(r2).contains(TOKEN_ONE), "replaced by r3");
+        assert!(text(r3).contains(TOKEN_ONE));
+        // An old-schema proxy still gets something it can start on.
+        let (rev, bytes) = state.current_for_group(None, Some(1)).unwrap().unwrap();
+        assert_eq!(rev, r1);
+        assert!(String::from_utf8(bytes).unwrap().contains(TOKEN_ONE));
+        // A newer schema-1 revision takes over, and the old one is scrubbed.
+        let r4 = state.apply_revision(schema_doc(1)).unwrap();
+        state.apply_revision(schema_doc(2)).unwrap();
+        assert!(!text(r1).contains(TOKEN_ONE));
+        assert!(text(r4).contains(TOKEN_ONE));
+    }
+
+    #[tokio::test]
+    async fn catch_up_does_not_send_a_scrubbed_revision() {
+        let (state, _dir) = test_state();
+        let r1 = state.apply_revision(schema_doc(1)).unwrap();
+        let r2 = state.apply_revision(schema_doc(1)).unwrap();
+        assert!(!String::from_utf8(state.store.get(r1).unwrap().unwrap())
+            .unwrap()
+            .contains(TOKEN_ONE));
+        let (_updates_tx, updates_rx) = broadcast::channel(8);
+        let (tx, mut rx) = mpsc::channel(8);
+        tokio::spawn(subscribe_worker(
+            state.store.clone(),
+            state.stage.clone(),
+            None,
+            1,
+            updates_rx,
+            0,
+            tx,
+        ));
+        assert_eq!(rx.recv().await.unwrap().0, r2);
     }
 }

@@ -207,16 +207,24 @@ impl Store {
     }
 
     /// Rewrites revisions numbered below `below` in place with `rewrite` (which returns the new
-    /// bytes, or `None` to leave a revision alone), except the revision `skip`. Numbers never
+    /// bytes, or `None` to leave a revision alone), except the revisions in `skip`. Numbers never
     /// change, only the stored bytes. One atomic batch, so a crash leaves either all of a pass or
     /// none of it, and a repeat is harmless when `rewrite` is idempotent. A watermark in `meta`
-    /// remembers how far earlier passes got, so a pass only reads what is new; it stops at `skip`
-    /// so that revision is picked up once it is no longer protected. Returns how many were
+    /// remembers how far earlier passes got, so a pass only reads what is new; it stops at the
+    /// lowest `skip` in range so that revision is picked up once it is no longer protected. Returns how many were
     /// rewritten. Used to scrub secrets out of revisions a newer one has replaced (#474).
+    /// How far [`Self::rewrite_below`] has got: revisions under it are done (bar the skipped).
+    pub fn rewritten_below(&self) -> Result<u64, StoreError> {
+        Ok(self
+            .meta
+            .get(REWRITTEN_BELOW_KEY)?
+            .map_or(0, |v| decode_rev(&v)))
+    }
+
     pub fn rewrite_below(
         &self,
         below: u64,
-        skip: Option<u64>,
+        skip: &[u64],
         rewrite: impl Fn(&[u8]) -> Option<Vec<u8>>,
     ) -> Result<usize, StoreError> {
         use std::ops::Bound;
@@ -233,7 +241,7 @@ impl Store {
         );
         for item in self.revisions.range::<[u8; 8], _>(range) {
             let (k, v) = item?;
-            if skip == Some(decode_rev(&k)) {
+            if skip.contains(&decode_rev(&k)) {
                 continue;
             }
             if let Some(new) = rewrite(&v) {
@@ -244,7 +252,12 @@ impl Store {
         if rewritten > 0 {
             self.revisions.apply_batch(batch)?;
         }
-        let reached = skip.filter(|s| (from..below).contains(s)).unwrap_or(below);
+        let reached = skip
+            .iter()
+            .copied()
+            .filter(|s| (from..below).contains(s))
+            .min()
+            .unwrap_or(below);
         if reached > from {
             self.meta.insert(REWRITTEN_BELOW_KEY, encode_rev(reached))?;
         }
@@ -486,6 +499,8 @@ impl Store {
                     Some(i) => meta.insert(APPLIED_INDEX_KEY, encode_rev(i))?,
                     None => meta.remove(APPLIED_INDEX_KEY)?,
                 };
+                // The installed revisions may carry secrets again: the next pass starts over.
+                meta.remove(REWRITTEN_BELOW_KEY)?;
                 for (w, slot) in writes.iter().zip(&slots) {
                     match &w.value {
                         Some(v) => views[*slot].insert(w.key.as_slice(), v.as_slice())?,
@@ -1025,6 +1040,15 @@ mod tests {
         let side_keys: Vec<_> = side.iter().keys().map(|k| k.unwrap().to_vec()).collect();
         assert_eq!(side_keys, vec![6u64.to_be_bytes().to_vec()]);
 
+        store.rewrite_below(6, &[], scrub_secret).unwrap();
+        assert_eq!(store.rewritten_below().unwrap(), 6);
+        store.replace_all(&revisions, Some(9)).unwrap();
+        assert_eq!(
+            store.rewritten_below().unwrap(),
+            0,
+            "an installed snapshot is scrubbed again"
+        );
+
         // An empty snapshot empties the store and forgets the index.
         store.replace_all(&[], None).unwrap();
         assert!(store.all_revisions().unwrap().is_empty());
@@ -1046,7 +1070,7 @@ mod tests {
             store.put(text.as_bytes().to_vec()).unwrap();
         }
         // Revisions 1..=3 are older than 4; 2 is the fallback of a live trial.
-        assert_eq!(store.rewrite_below(4, Some(2), scrub_secret).unwrap(), 2);
+        assert_eq!(store.rewrite_below(4, &[2], scrub_secret).unwrap(), 2);
         assert_eq!(store.get(1).unwrap().unwrap(), b"a [x]");
         assert_eq!(
             store.get(2).unwrap().unwrap(),
@@ -1061,10 +1085,10 @@ mod tests {
         );
         assert_eq!(store.current_revision().unwrap(), Some(4));
         // The trial ends: the fallback is no longer protected and is picked up next time.
-        assert_eq!(store.rewrite_below(4, None, scrub_secret).unwrap(), 1);
+        assert_eq!(store.rewrite_below(4, &[], scrub_secret).unwrap(), 1);
         assert_eq!(store.get(2).unwrap().unwrap(), b"b [x]");
         assert_eq!(
-            store.rewrite_below(4, None, scrub_secret).unwrap(),
+            store.rewrite_below(4, &[], scrub_secret).unwrap(),
             0,
             "idempotent"
         );

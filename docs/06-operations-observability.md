@@ -418,7 +418,8 @@ store that never forgets a revision (ADR 20):
   plaintext `settings.admin.auth_token` and `settings.gossip.psk` (they read
   `[redacted]`); rolling back to such a revision answers `409`, so submit the
   config with the secret again. The fallback of a live trial keeps its secrets
-  until the trial ends. Freed disk pages, backups and replicas that have not
+  until the trial ends, and so does the newest promoted revision of each config
+  schema (an older proxy still has a config it can parse). Freed disk pages, backups and replicas that have not
   upgraded are out of reach: rotate any secret that was ever stored in plain text.
 - `POST /config[?confirm_within=<secs>]`, `GET /config/pending`,
   `POST /config/confirm/{revision}`, `POST /config/revert` — **confirm and
