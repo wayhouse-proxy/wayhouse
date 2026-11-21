@@ -7,6 +7,7 @@ const api = vi.hoisted(() => ({ getPendingConfig: vi.fn(), confirmRevision: vi.f
 vi.mock("../../api", async (orig) => ({ ...(await orig<typeof import("../../api")>()), ...api }));
 import { ApiError } from "../../api";
 import { SessionProvider } from "../../lib/session";
+import { PENDING_KEY } from "../../lib/config/usePending";
 import { TrialBar } from "./TrialBar";
 
 const RISKS = [{ id: "admin_listen", text: "settings.admin.listen changed" }];
@@ -53,6 +54,25 @@ describe("TrialBar", () => {
     bar();
     await act(async () => {});
     expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  });
+
+  it("keeps the very same status element when a trial appears", async () => {
+    api.getPendingConfig.mockResolvedValue({ pending: null, now_ms: 1, auto_confirm_secs: 60, risks: RISKS });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <TrialBar />
+      </QueryClientProvider>,
+    );
+    await act(async () => {});
+    const region = screen.getByRole("status");
+    api.getPendingConfig.mockResolvedValue(pending(45_000));
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: PENDING_KEY });
+    });
+    expect(await screen.findByText(/Applied as revision 9/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBe(region);
+    expect(region).toHaveTextContent("Applied on trial");
   });
 
   it("renders nothing when no revision is on trial", async () => {

@@ -49,29 +49,32 @@ export function TrialBar() {
   useEffect(() => {
     if (pending && remainingMs <= 0) qc.invalidateQueries({ queryKey: PENDING_KEY });
   }, [pending?.revision, remainingMs <= 0]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Always mounted: a live region that appears together with its first text is skipped by some screen readers.
-  if (!pending) return <span className="sr-only" role="status" />;
 
   const secs = Math.ceil(remainingMs / 1000);
-  const why = data!.risks.filter((r) => pending.reasons.includes(r.id)).map((r) => r.text.replace(/\.$/, ""));
+  const why = pending ? data!.risks.filter((r) => pending.reasons.includes(r.id)).map((r) => r.text.replace(/\.$/, "")) : [];
+  // The status span is the first child in both states, so it stays mounted when a trial appears and its text is announced.
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-2 border border-warn bg-surface px-3 py-2 text-sm">
-      <AlertTriangle aria-hidden size={16} strokeWidth={1.5} className="shrink-0 text-warn" />
+    <>
       <span className="sr-only" role="status">
-        {spoken(level, pending.revert_to)}
+        {pending ? spoken(level, pending.revert_to) : ""}
       </span>
-      <span aria-hidden className="flex-1">
-        Applied as revision {pending.revision}. Confirm within <strong className="font-mono">{secs} s</strong>, or the controller reverts
-        to revision {pending.revert_to}.{why.length > 0 && ` (${why.join("; ")}.)`}
-      </span>
-      <Button variant="primary" disabled={!canWrite} loading={end.isPending} onClick={() => end.mutate(true)}>
-        Keep changes
-      </Button>
-      <Button disabled={!canWrite} onClick={() => end.mutate(false)}>
-        Revert now
-      </Button>
-      {!canWrite && <span className="w-full text-ink-muted">Confirming or reverting needs the admin role.</span>}
-      {end.isError && !notOnTrial(end.error) && <span role="alert" className="w-full text-bad">{end.error instanceof Error ? end.error.message : String(end.error)}</span>}
-    </div>
+      {pending && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 border border-warn bg-surface px-3 py-2 text-sm">
+          <AlertTriangle aria-hidden size={16} strokeWidth={1.5} className="shrink-0 text-warn" />
+          <span aria-hidden className="flex-1">
+            Applied as revision {pending.revision}. Confirm within <strong className="font-mono">{secs} s</strong>, or the controller reverts
+            to revision {pending.revert_to}.{why.length > 0 && ` (${why.join("; ")}.)`}
+          </span>
+          <Button variant="primary" disabled={!canWrite} loading={end.isPending} onClick={() => end.mutate(true)}>
+            Keep changes
+          </Button>
+          <Button disabled={!canWrite} onClick={() => end.mutate(false)}>
+            Revert now
+          </Button>
+          {!canWrite && <span className="w-full text-ink-muted">Confirming or reverting needs the admin role.</span>}
+          {end.isError && !notOnTrial(end.error) && <span role="alert" className="w-full text-bad">{end.error instanceof Error ? end.error.message : String(end.error)}</span>}
+        </div>
+      )}
+    </>
   );
 }
