@@ -246,7 +246,7 @@ async fn mint_enrollment(
     body: Bytes,
 ) -> Response {
     tracing::info!(
-        actor = actor.as_deref().unwrap_or("-"),
+        actor = ?actor.as_deref().unwrap_or("-"),
         "enrollment: mint code"
     );
     let body = match sign_step_up(&state, body).await {
@@ -416,7 +416,7 @@ async fn revoke_acme_gateway(
 /// One audit line per ACME write, after the controller answered, so it says what happened and not only what was tried.
 /// `subject` is a site or gateway name, never a token.
 fn audit_acme(what: &str, actor: Option<&str>, subject: Option<&str>, resp: &Response) {
-    tracing::info!(actor = actor.unwrap_or("-"), subject = ?subject, status = resp.status().as_u16(), "acme: {what}");
+    tracing::info!(actor = ?actor.unwrap_or("-"), subject = ?subject, status = resp.status().as_u16(), "acme: {what}");
 }
 
 fn bad_acme_name() -> Response {

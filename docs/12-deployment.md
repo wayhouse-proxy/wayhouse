@@ -448,6 +448,16 @@ with a key an eavesdropper who records it today cannot recover later.
 - A code is stored as a hash only. It is single use (`"uses"` raises that), expires after
   `ttl_secs` (default 900, at most 7 days), and `DELETE /enrollments/{id}` revokes it.
   `GET /enrollments` lists codes and their state, never the code.
+- Revoking a spent single-name agent code also revokes the token and tunnel keys it issued, unless
+  the host enrolled again with a newer code (those credentials are the newer code's). Any other
+  spent code only disappears (a spent controller code stays as a `revoked` tombstone so its node id
+  stays reserved): its node keeps working until you delete the origin
+  (`DELETE /peers/{name}`). The revoke runs before the code is deleted, so if it fails the answer is
+  an error and a retry finishes the job. Under HA a follower reads its own replica, so a revoked
+  token can still pass on a lagging follower for a moment.
+- A name enrolled through a name-prefix code is claimed once: a name that already holds a token or
+  tunnel key answers 409 and the attempt is not counted against the code's limit. A name that
+  was registered by hand with the shared agent token holds neither, so a prefix code can still enroll it.
 - `POST /enroll` is the one unauthenticated write route: 1 KiB body, attempts limited per
   address and per code id, and every refusal looks the same.
 - With `--auth-token` on the controller, `agent-token` is a token for this origin alone, not the
