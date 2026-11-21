@@ -1631,6 +1631,37 @@ mod tests {
         )
     }
 
+    /// The only test that opens `/plugin-routes/subscribe`, so holding every slot cannot disturb
+    /// another.
+    #[tokio::test]
+    async fn route_subscribers_past_the_cap_are_refused_and_a_closed_stream_frees_its_slot() {
+        use super::super::routes::{MAX_SUBSCRIBERS, SUBSCRIBERS};
+        let (st, _d) = state(None);
+        let app = router(st);
+        let get = || {
+            Request::get("/plugin-routes/subscribe")
+                .header(wayhouse_http::protocol::HEADER, "1.0")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let held = SUBSCRIBERS
+            .try_acquire_many(MAX_SUBSCRIBERS as u32)
+            .unwrap();
+        let resp = app.clone().oneshot(get()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        drop(held);
+        let resp = app.clone().oneshot(get()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        drop(resp);
+        for _ in 0..100 {
+            if SUBSCRIBERS.available_permits() == MAX_SUBSCRIBERS {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the slot of a closed stream was not given back");
+    }
+
     async fn call(
         app: &Router,
         method: &str,
