@@ -118,8 +118,8 @@ shown again. To use it:
    `--secrets-file <path>` with `--secret-set NAME` (value on stdin), `--secret-delete NAME` and
    `--secret-list`.
 3. Reference it: `auth_token: { secret: admin-token }`. The value is read at start and on every
-   reload, so a rotated secret applies on `SIGHUP` without a restart (the old value works for 10
-   more minutes). A reference that cannot be resolved stops the start, or rejects the reload,
+   reload, so a rotated secret applies on `SIGHUP` without a restart (the old value works for 5
+   more minutes, the old gossip key for 10). A reference that cannot be resolved stops the start, or rejects the reload,
    with a message naming the secret.
 
 Plaintext values still work and are warned about. An unquoted all-digit or `true`/`false` token

@@ -797,7 +797,7 @@ Every call is audited with a `warn` line (secret name, key id, actor). A control
 refuses to listen on plain HTTP on a non-loopback address unless `--allow-insecure-secrets` is
 given, because the `PUT` body is the value. To rotate: `PUT` the new value, then send each
 proxy that uses it `SIGHUP` (the admin token and gossip key are swapped in place; the old value
-works for 10 minutes, see `docs/05` Secrets). During a rolling upgrade
+works for 5 minutes (the gossip key for 10), see `docs/05` Secrets). During a rolling upgrade
 of an HA tier, upgrade every controller before the first `PUT`.
 
 ### Fronting layer: anycast vs. L4 load balancer

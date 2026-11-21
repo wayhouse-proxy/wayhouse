@@ -2,10 +2,11 @@
 //!
 //! A rotation keeps the old value usable for an overlap window, because the parties holding
 //! a secret (HA replicas, the clients of the admin API) reload at different moments. The old
-//! value is *signed with* for one window and *accepted* for two: a replica that reloads late
-//! still signs with the old value after an early one has switched, and the early one must keep
-//! accepting it for as long as that can last. After that only the new value is accepted.
-//! Restarting the process drops the old value at once.
+//! value is *signed with* for one period and *accepted* for another, set per call: a secret
+//! that peers sign with (the gossip key) accepts the old value for twice as long as it signs
+//! with it, because a replica that reloads late still signs with the old value after an early
+//! one has switched. A secret nobody signs with (the admin token) accepts it for just the
+//! overlap. After that only the new value is accepted. Restarting drops the old value at once.
 
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, Instant};
@@ -29,20 +30,20 @@ impl RotatingSecret {
         }))
     }
 
-    /// Makes `new` the current value, keeps signing with the old one for `overlap` and accepting
-    /// it for twice that. Returns
+    /// Makes `new` the current value, keeps signing with the old one for `sign_for` and accepting
+    /// it for `accept_for`. Returns
     /// `false`, changing nothing, when `new` is already the current value.
-    pub fn rotate(&self, new: &str, overlap: Duration) -> bool {
-        self.rotate_at(new, overlap, Instant::now())
+    pub fn rotate(&self, new: &str, sign_for: Duration, accept_for: Duration) -> bool {
+        self.rotate_at(new, sign_for, accept_for, Instant::now())
     }
 
-    fn rotate_at(&self, new: &str, overlap: Duration, now: Instant) -> bool {
+    fn rotate_at(&self, new: &str, sign_for: Duration, accept_for: Duration, now: Instant) -> bool {
         let mut s = self.0.write().unwrap_or_else(PoisonError::into_inner);
         if token_eq(new, &s.current) {
             return false;
         }
         let old = std::mem::replace(&mut s.current, Arc::from(new));
-        s.previous = (!overlap.is_zero()).then(|| (old, now + overlap, now + overlap * 2));
+        s.previous = (!accept_for.is_zero()).then(|| (old, now + sign_for, now + accept_for));
         true
     }
 
@@ -99,7 +100,7 @@ mod tests {
     fn both_values_work_inside_the_window_and_only_the_new_one_after() {
         let s = RotatingSecret::new(OLD);
         let t0 = Instant::now();
-        assert!(s.rotate_at(NEW, Duration::from_secs(60), t0));
+        assert!(s.rotate_at(NEW, Duration::from_secs(60), Duration::from_secs(120), t0));
         assert_eq!(s.accepted_at(t0).len(), 2);
         assert!(s
             .accepted_at(t0 + Duration::from_secs(119))
@@ -116,7 +117,7 @@ mod tests {
     fn the_old_value_is_signed_with_for_one_window_but_accepted_for_two() {
         let s = RotatingSecret::new(OLD);
         let t0 = Instant::now();
-        s.rotate_at(NEW, Duration::from_secs(60), t0);
+        s.rotate_at(NEW, Duration::from_secs(60), Duration::from_secs(120), t0);
         assert_eq!(&*s.signing_at(t0 + Duration::from_secs(59)), OLD);
         assert_eq!(&*s.signing_at(t0 + Duration::from_secs(60)), NEW);
         // At the end of the signing window a replica that reloaded just then still signs with OLD
@@ -130,7 +131,7 @@ mod tests {
     #[test]
     fn a_zero_window_revokes_the_old_value_at_once() {
         let s = RotatingSecret::new(OLD);
-        assert!(s.rotate(NEW, Duration::ZERO));
+        assert!(s.rotate(NEW, Duration::ZERO, Duration::ZERO));
         assert!(s.accepts(NEW));
         assert!(!s.accepts(OLD));
     }
@@ -138,15 +139,19 @@ mod tests {
     #[test]
     fn rotating_to_the_same_value_changes_nothing() {
         let s = RotatingSecret::new(OLD);
-        assert!(!s.rotate(OLD, Duration::from_secs(60)));
+        assert!(!s.rotate(OLD, Duration::from_secs(60), Duration::from_secs(60)));
         assert_eq!(s.accepted().len(), 1);
     }
 
     #[test]
     fn a_second_rotation_forgets_the_value_before_the_last() {
         let s = RotatingSecret::new(OLD);
-        s.rotate(NEW, Duration::from_secs(60));
-        s.rotate("third-secret-0123456789", Duration::from_secs(60));
+        s.rotate(NEW, Duration::from_secs(60), Duration::from_secs(60));
+        s.rotate(
+            "third-secret-0123456789",
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        );
         assert!(!s.accepts(OLD));
         assert!(s.accepts(NEW));
         assert!(s.accepts("third-secret-0123456789"));
@@ -155,10 +160,10 @@ mod tests {
     #[test]
     fn signing_uses_the_old_value_until_the_window_closes() {
         let s = RotatingSecret::new(OLD);
-        s.rotate(NEW, Duration::from_secs(3600));
+        s.rotate(NEW, Duration::from_secs(3600), Duration::from_secs(3600));
         assert_eq!(&*s.signing(), OLD);
         let s = RotatingSecret::new(OLD);
-        s.rotate(NEW, Duration::ZERO);
+        s.rotate(NEW, Duration::ZERO, Duration::ZERO);
         assert_eq!(&*s.signing(), NEW);
     }
 }

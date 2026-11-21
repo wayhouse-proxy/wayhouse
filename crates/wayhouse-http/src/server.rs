@@ -122,7 +122,11 @@ mod tests {
             call(auth.clone(), Some("Bearer old-token")).await.0,
             StatusCode::OK
         );
-        live.rotate("new-token", std::time::Duration::from_secs(3600));
+        live.rotate(
+            "new-token",
+            std::time::Duration::from_secs(3600),
+            std::time::Duration::from_secs(3600),
+        );
         // The same `BearerAuth` a running router holds sees the swap.
         assert_eq!(
             call(auth.clone(), Some("Bearer new-token")).await.0,
@@ -132,7 +136,11 @@ mod tests {
             call(auth.clone(), Some("Bearer old-token")).await.0,
             StatusCode::OK
         );
-        live.rotate("newer-token", std::time::Duration::ZERO);
+        live.rotate(
+            "newer-token",
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+        );
         for revoked in ["Bearer old-token", "Bearer new-token"] {
             assert_eq!(
                 call(auth.clone(), Some(revoked)).await.0,

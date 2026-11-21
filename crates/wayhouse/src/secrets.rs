@@ -169,9 +169,10 @@ impl SecretSource {
     }
 }
 
-/// How long a rotated admin token or gossip key is signed with next to its replacement; it is
-/// accepted for twice that. HA replicas reload at different moments, so for this long a replica
-/// that has not reloaded yet can still talk to one that has. Restart the process to drop the old value at once.
+/// How long a rotated gossip key is signed with next to its replacement (and accepted for twice
+/// that), and how long the old admin token is still accepted. HA replicas reload at different
+/// moments, so for this long a replica that has not reloaded yet can still talk to one that has.
+/// Restart the process to drop the old value at once.
 pub const OVERLAP: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// The secrets a running proxy can swap on a reload: the live admin token the admin API checks
@@ -215,7 +216,7 @@ impl Live {
         let token = crate::admin_token(cfg).ok().flatten();
         match (&self.admin, token) {
             (Some(live), Some(token)) => {
-                if live.rotate(&token, OVERLAP) {
+                if live.rotate(&token, OVERLAP, OVERLAP) {
                     tracing::info!(source = source_desc, overlap_sec = overlap, "settings.admin.auth_token rotated; the previous token keeps working for the overlap window");
                 }
             }

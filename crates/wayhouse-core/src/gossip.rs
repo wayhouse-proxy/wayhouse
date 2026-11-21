@@ -299,10 +299,13 @@ impl GossipHandle {
     }
 
     /// Switches the mesh to a new pre-shared key without a restart. Datagrams under the old key
-    /// are still accepted, and sent, until `overlap` has passed, so replicas that reload at
+    /// are still sent for `overlap` and accepted for twice that: a replica that reloads late still
+    /// signs with the old key after an early one switched, so replicas that reload at
     /// different times keep talking. `false` when the key is unchanged or no mesh is running.
     pub fn rotate_psk(&self, new: &str, overlap: std::time::Duration) -> bool {
-        self.psk.get().is_some_and(|k| k.rotate(new, overlap))
+        self.psk
+            .get()
+            .is_some_and(|k| k.rotate(new, overlap, overlap * 2))
     }
 
     fn merger(&self) -> BroadcastMerger {
@@ -991,11 +994,19 @@ mod tests {
     fn a_datagram_signed_with_the_old_key_verifies_until_the_window_ends() {
         let psk = wayhouse_http::rotating::RotatingSecret::new("old-psk-0123456789");
         let from_old_peer = tag("old-psk-0123456789", b"hello", NOW);
-        psk.rotate("new-psk-0123456789", std::time::Duration::from_secs(3600));
+        psk.rotate(
+            "new-psk-0123456789",
+            std::time::Duration::from_secs(3600),
+            std::time::Duration::from_secs(3600),
+        );
         assert_eq!(verify_any(&psk, &from_old_peer, NOW), Ok(&b"hello"[..]));
         let from_new_peer = tag("new-psk-0123456789", b"hi", NOW);
         assert_eq!(verify_any(&psk, &from_new_peer, NOW), Ok(&b"hi"[..]));
-        psk.rotate("newer-psk-0123456789", std::time::Duration::ZERO);
+        psk.rotate(
+            "newer-psk-0123456789",
+            std::time::Duration::ZERO,
+            std::time::Duration::ZERO,
+        );
         assert_eq!(verify_any(&psk, &from_old_peer, NOW), Err(Reject::Auth));
         assert_eq!(verify_any(&psk, &from_new_peer, NOW), Err(Reject::Auth));
     }
