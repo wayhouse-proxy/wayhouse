@@ -7,7 +7,10 @@
 //!
 //! Unknown names are an error everywhere (a kill switch an older node silently ignores is
 //! worse than a rejected config), and a flag that is new after schema 4 adds a
-//! `features.<name>` entry to [`crate::version::FIELD_SINCE`].
+//! `features.<name>` entry to [`crate::version::FIELD_SINCE`]. That table walks dotted paths, so a
+//! flag whose name has a dot (`admin_write.backends`) cannot get an entry: every such flag is
+//! part of schema 4 as a whole (the `features` entry), and a dotted flag added after schema 4
+//! needs `check_fields_since` taught to match a key with a dot first.
 //!
 //! `wired` says whether the runtime consults the flag yet. An unwired flag is accepted and
 //! reported but changes nothing; the UI hides it. The proxy reads the data-plane flags through
