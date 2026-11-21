@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiError, addBackend, drainInstance, getFleetNodes, resolveFleetNodes, routeHint, undrainInstance } from "../api";
 import { useFleetSocket } from "../useFleetSocket";
+import { useStable } from "../lib/useStable";
 import {
   NODE_STATES,
   SORT_KEYS,
@@ -130,7 +131,8 @@ export function FleetPage() {
 
   // Inspector follows `sel`. It holds a snapshot, so it is re-opened as the row or the live view changes.
   const node = data?.items.find((n) => n.instance === q.sel);
-  const live = instances.find((i) => i.instance === q.sel);
+  // The socket pushes the whole fleet; only a change to this node should re-open the inspector.
+  const live = useStable(instances.find((i) => i.instance === q.sel));
   const shown = useRef(false);
   // The tag editor builds its PUT from this fresh read, not from the list that is up to one poll old.
   // (A failed refetch keeps the previous data, so the editor then falls back to the list it already had.)
