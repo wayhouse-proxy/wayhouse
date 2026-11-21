@@ -22,6 +22,7 @@ use wayhouse_core::metrics_defs as m;
 use wayhouse_core::sniff::Sniffers;
 use wayhouse_core::{Resolvers, RuntimeHandle};
 
+use crate::secrets::Live;
 use crate::sniffer_loader::SnifferLoader;
 
 const RECONNECT_MIN: Duration = Duration::from_millis(500);
@@ -93,6 +94,7 @@ pub async fn run(
     resolvers: Arc<Resolvers>,
     sniffer_loader: Option<Arc<SnifferLoader>>,
     sniffers: Arc<Sniffers>,
+    live: Arc<Live>,
 ) {
     // Owned by this loop and passed by `&mut` into `subscribe_once` so a
     // revision applied just before a mid-stream disconnect is still
@@ -109,6 +111,7 @@ pub async fn run(
             &resolvers,
             sniffer_loader.as_deref(),
             &sniffers,
+            &live,
         )
         .await
         {
@@ -147,6 +150,7 @@ fn subscribe_url(base_url: &str, since: u64) -> String {
     )
 }
 
+#[allow(clippy::too_many_arguments)] // same flat wiring as `run`
 async fn subscribe_once(
     base_url: &str,
     token: Option<&str>,
@@ -155,6 +159,7 @@ async fn subscribe_once(
     resolvers: &Resolvers,
     sniffer_loader: Option<&SnifferLoader>,
     sniffers: &Sniffers,
+    live: &Live,
 ) -> anyhow::Result<()> {
     let since = *cursor;
     let url = subscribe_url(base_url, since);
@@ -199,7 +204,7 @@ async fn subscribe_once(
         // ignored by `apply_sse_event`.
         while let Some(event) = buf.next_event() {
             if let Some(revision) =
-                apply_sse_event(&event, handle, resolvers, sniffer_loader, sniffers).await
+                apply_sse_event(&event, handle, resolvers, sniffer_loader, sniffers, live).await
             {
                 *cursor = revision;
             }
@@ -301,6 +306,7 @@ pub async fn watch_admin_reloads(
     resolvers: Arc<Resolvers>,
     sniffer_loader: Option<Arc<SnifferLoader>>,
     sniffers: Arc<Sniffers>,
+    live: Arc<Live>,
 ) {
     let admin = handle.reload_requested().clone();
     loop {
@@ -320,6 +326,7 @@ pub async fn watch_admin_reloads(
                     &resolvers,
                     sniffer_loader.as_deref(),
                     &sniffers,
+                    &live,
                     "admin-triggered overlay change",
                 )
                 .await;
@@ -341,6 +348,7 @@ async fn apply_sse_event(
     resolvers: &Resolvers,
     sniffer_loader: Option<&SnifferLoader>,
     sniffers: &Sniffers,
+    live: &Live,
 ) -> Option<u64> {
     let SseRevision { revision, config } = parse_sse_event(event)?;
 
@@ -352,6 +360,7 @@ async fn apply_sse_event(
                 resolvers,
                 sniffer_loader,
                 sniffers,
+                live,
                 &format!("controller revision {revision}"),
             )
             .await;

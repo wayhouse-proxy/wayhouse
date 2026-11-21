@@ -18,6 +18,8 @@ workspace = true
 
 [dependencies]
 wayhouse-config = { path = "../wayhouse-config" }
+# `RotatingSecret` only; the workspace entry already turns the `server` feature off.
+wayhouse-http.workspace = true
 
 tokio.workspace = true
 tracing.workspace = true

@@ -27,7 +27,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use foca::{AccumulatingRuntime, Config as FocaConfig, Foca, Invalidates, PostcardCodec, Timer};
 use hmac::{Hmac, Mac};
@@ -37,6 +37,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 use wayhouse_config::GossipConfig;
+use wayhouse_http::rotating::RotatingSecret;
 
 use crate::metrics_defs as m;
 
@@ -253,6 +254,9 @@ pub struct GossipHandle {
     member_ids: Arc<Mutex<HashSet<SocketAddr>>>,
     domain: DomainMap,
     publish_tx: mpsc::UnboundedSender<(SocketAddr, bool)>,
+    /// The mesh's pre-shared key, set once by [`spawn`] (or [`run`]); [`GossipHandle::rotate_psk`]
+    /// changes it while the mesh runs.
+    psk: Arc<OnceLock<Arc<RotatingSecret>>>,
 }
 
 /// The receiving half of [`GossipHandle::publish_backend_health`], held only
@@ -281,9 +285,24 @@ impl GossipHandle {
                 member_ids: Arc::new(Mutex::new(HashSet::new())),
                 domain: Arc::new(Mutex::new(HashMap::new())),
                 publish_tx: tx,
+                psk: Arc::new(OnceLock::new()),
             },
             GossipInbox(rx),
         )
+    }
+
+    /// Sets the key the mesh starts with (the first call wins).
+    fn set_psk(&self, psk: &str) -> Arc<RotatingSecret> {
+        self.psk
+            .get_or_init(|| Arc::new(RotatingSecret::new(psk)))
+            .clone()
+    }
+
+    /// Switches the mesh to a new pre-shared key without a restart. Datagrams under the old key
+    /// are still accepted, and sent, until `overlap` has passed, so replicas that reload at
+    /// different times keep talking. `false` when the key is unchanged or no mesh is running.
+    pub fn rotate_psk(&self, new: &str, overlap: std::time::Duration) -> bool {
+        self.psk.get().is_some_and(|k| k.rotate(new, overlap))
     }
 
     fn merger(&self) -> BroadcastMerger {
@@ -378,6 +397,11 @@ pub fn spawn(
     shutdown: watch::Receiver<bool>,
 ) -> Option<(GossipFabric, tokio::task::JoinHandle<()>)> {
     let (handle, inbox) = GossipHandle::new();
+    // Resolved here so a rotation can reach the key as soon as `spawn` returns. A reference that
+    // reached this point is a bug; `run` reports it and the mesh stays off.
+    if let Ok(psk) = cfg.psk.resolve(None) {
+        handle.set_psk(&psk);
+    }
     let fabric = GossipFabric {
         handle: handle.clone(),
         quorum_fraction: cfg.quorum_fraction,
@@ -402,7 +426,7 @@ pub async fn run(
     // The binary resolves `{ secret: ... }` before it starts the mesh; a reference that reaches
     // here is a bug, and the mesh must not run on an empty or guessed key.
     let psk = match cfg.psk.resolve(None) {
-        Ok(psk) => psk,
+        Ok(psk) => handle.set_psk(&psk),
         Err(error) => {
             tracing::error!(%error, "gossip: the pre-shared key was not resolved, mesh disabled");
             return;
@@ -458,7 +482,7 @@ pub async fn run(
             }
             recv = socket.recv_from(&mut recv_buf) => {
                 match recv {
-                    Ok((len, from)) => match verify_and_strip(&psk, &recv_buf[..len], wall_ms()) {
+                    Ok((len, from)) => match verify_any(&psk, &recv_buf[..len], wall_ms()) {
                         Ok(payload) => {
                             metrics::counter!(m::GOSSIP_MESSAGES_TOTAL, "direction" => "received")
                                 .increment(1);
@@ -566,11 +590,11 @@ fn publish_member_count(foca: &FocaInstance, handle: &GossipHandle, identity: So
 async fn drain_to_wire(
     runtime: &mut AccumulatingRuntime<SocketAddr>,
     socket: &UdpSocket,
-    psk: &str,
+    psk: &RotatingSecret,
     timers: &mut BinaryHeap<Reverse<TimerEntry>>,
 ) {
     while let Some((dst, data)) = runtime.to_send() {
-        let tagged = tag(psk, &data, wall_ms());
+        let tagged = tag(&psk.signing(), &data, wall_ms());
         match socket.send_to(&tagged, dst).await {
             Ok(_) => {
                 metrics::counter!(m::GOSSIP_MESSAGES_TOTAL, "direction" => "sent").increment(1);
@@ -642,6 +666,22 @@ enum Reject {
     /// Authentic and fresh, but not a versioned gossip frame at all (no magic
     /// byte): built before versioning existed.
     Format,
+}
+
+/// [`verify_and_strip`] under every key the mesh accepts now (the new one, and the old one for
+/// the overlap window after a rotation). A datagram that no key authenticates is `Auth`.
+fn verify_any<'a>(
+    psk: &RotatingSecret,
+    datagram: &'a [u8],
+    now_ms: u64,
+) -> Result<&'a [u8], Reject> {
+    for key in psk.accepted() {
+        match verify_and_strip(&key, datagram, now_ms) {
+            Err(Reject::Auth) => {}
+            other => return other,
+        }
+    }
+    Err(Reject::Auth)
 }
 
 fn verify_and_strip<'a>(psk: &str, datagram: &'a [u8], now_ms: u64) -> Result<&'a [u8], Reject> {
@@ -945,6 +985,70 @@ mod tests {
         let _ = shutdown_tx.send(true);
         let _ = ta.await;
         let _ = tb.await;
+    }
+
+    #[test]
+    fn a_datagram_signed_with_the_old_key_verifies_until_the_window_ends() {
+        let psk = wayhouse_http::rotating::RotatingSecret::new("old-psk-0123456789");
+        let from_old_peer = tag("old-psk-0123456789", b"hello", NOW);
+        psk.rotate("new-psk-0123456789", std::time::Duration::from_secs(3600));
+        assert_eq!(verify_any(&psk, &from_old_peer, NOW), Ok(&b"hello"[..]));
+        let from_new_peer = tag("new-psk-0123456789", b"hi", NOW);
+        assert_eq!(verify_any(&psk, &from_new_peer, NOW), Ok(&b"hi"[..]));
+        psk.rotate("newer-psk-0123456789", std::time::Duration::ZERO);
+        assert_eq!(verify_any(&psk, &from_old_peer, NOW), Err(Reject::Auth));
+        assert_eq!(verify_any(&psk, &from_new_peer, NOW), Err(Reject::Auth));
+    }
+
+    /// A pair where `a` has rotated to a new key and `b` still has the old one.
+    async fn join_after_a_rotated(window: std::time::Duration) -> (usize, usize) {
+        let free = || async {
+            let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            s.local_addr().unwrap()
+        };
+        let (addr_a, addr_b) = (free().await, free().await);
+        let cfg = |bind, seeds| GossipConfig {
+            bind,
+            seeds,
+            quorum_fraction: 0.66,
+            psk: "old-psk-0123456789".into(),
+        };
+        let (handle_a, inbox_a) = GossipHandle::new();
+        let (handle_b, inbox_b) = GossipHandle::new();
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        // Rotated before the mesh starts, so not one datagram goes out under the old key alone.
+        handle_a.set_psk("old-psk-0123456789");
+        assert!(handle_a.rotate_psk("new-psk-0123456789", window));
+        let ta = tokio::spawn(run(
+            cfg(addr_a, vec![addr_b]),
+            handle_a.clone(),
+            inbox_a,
+            shutdown_rx.clone(),
+        ));
+        let tb = tokio::spawn(run(
+            cfg(addr_b, vec![]),
+            handle_b.clone(),
+            inbox_b,
+            shutdown_rx,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let counts = (handle_a.member_count(), handle_b.member_count());
+        let _ = shutdown_tx.send(true);
+        let _ = ta.await;
+        let _ = tb.await;
+        counts
+    }
+
+    #[tokio::test]
+    async fn a_replica_that_rotated_still_talks_to_one_that_has_not_inside_the_window() {
+        let (a, b) = join_after_a_rotated(std::time::Duration::from_secs(3600)).await;
+        assert!(a >= 1 && b >= 1, "a={a} b={b}");
+    }
+
+    #[tokio::test]
+    async fn after_the_window_a_replica_on_the_old_key_is_shut_out() {
+        let (a, b) = join_after_a_rotated(std::time::Duration::ZERO).await;
+        assert_eq!((a, b), (0, 0));
     }
 
     #[tokio::test]

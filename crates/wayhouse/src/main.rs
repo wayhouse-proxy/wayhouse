@@ -611,6 +611,14 @@ async fn async_main(mut args: Args) -> anyhow::Result<()> {
         args.plugin_overlay_url.zip(Some(args.plugin_overlay_token)),
         args.plugin_overlay_file,
         args.allow_config_write,
+        secrets::SecretSource {
+            controller: args
+                .controller
+                .clone()
+                .map(|url| (url, args.controller_token.clone())),
+            file: args.secrets_file.clone(),
+            key_file: args.secret_key_file.clone(),
+        },
     )
     .await
 }
@@ -633,6 +641,7 @@ async fn run(
     file_mode_overlay: Option<(String, Option<String>)>,
     overlay_file: Option<PathBuf>,
     allow_config_write: bool,
+    secret_source: secrets::SecretSource,
 ) -> anyhow::Result<()> {
     let prometheus = metrics_exporter_prometheus::PrometheusBuilder::new().install_recorder()?;
 
@@ -719,6 +728,12 @@ async fn run(
     }
     let fd_gauge = procinfo::spawn_fd_gauge(Duration::from_secs(5));
 
+    // What a reload can rotate: the admin token the API checks, and where to read the new values.
+    let live = Arc::new(secrets::Live {
+        source: secret_source,
+        admin: admin_token(&cfg)?
+            .map(|t| Arc::new(wayhouse_http::rotating::RotatingSecret::new(&t))),
+    });
     let (sniffer_pins, sniffer_validator): (admin::SnifferPins, Option<admin::SnifferValidator>) =
         match (&sniffer_loader, &cfg.sniffers) {
             (Some(loader), Some(sc)) => {
@@ -740,7 +755,7 @@ async fn run(
         admin_tls.map(|cert| (cert, admin::handshake_limits(cfg.admin_tls.as_ref()))),
         handle.clone(),
         prometheus.clone(),
-        admin_token(&cfg)?,
+        live.admin.clone(),
         cfg.sniffers.as_ref().map(|sc| PathBuf::from(&sc.dir)),
         sniffers.clone(),
         sniffer_pins,
@@ -812,6 +827,20 @@ async fn run(
     } else {
         None
     };
+    // A secret rotated in the controller's store changes no config revision, so `SIGHUP` asks
+    // for the re-fetch (file mode reloads on `SIGHUP` itself).
+    #[cfg(unix)]
+    let sighup_reload = if matches!(config_source, ConfigSource::Controller(..)) {
+        let handle = handle.clone();
+        let mut hup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+        Some(tokio::spawn(async move {
+            while hup.recv().await.is_some() {
+                handle.request_reload();
+            }
+        }))
+    } else {
+        None
+    };
     let admin_reload_watch = if let ConfigSource::Controller(url, token) = &config_source {
         Some(tokio::spawn(controller_client::watch_admin_reloads(
             url.clone(),
@@ -820,6 +849,7 @@ async fn run(
             resolvers.clone(),
             sniffer_loader.clone(),
             sniffers.clone(),
+            live.clone(),
         )))
     } else {
         None
@@ -832,6 +862,7 @@ async fn run(
             resolvers,
             sniffer_loader,
             sniffers,
+            live,
         )),
         ConfigSource::Controller(url, token) => tokio::spawn(controller_client::run(
             url,
@@ -847,6 +878,7 @@ async fn run(
             resolvers,
             sniffer_loader,
             sniffers,
+            live,
         )),
     };
 
@@ -872,6 +904,10 @@ async fn run(
     }
     if let Some(admin_reload_watch) = admin_reload_watch {
         admin_reload_watch.abort();
+    }
+    #[cfg(unix)]
+    if let Some(sighup_reload) = sighup_reload {
+        sighup_reload.abort();
     }
     admin.abort();
     if let Some(aggregator) = aggregator {
