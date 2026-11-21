@@ -202,8 +202,7 @@ pub async fn run(
 }
 
 /// The `port_routes` value the plugin overlay was last merged with.
-static PORT_ROUTES_APPLIED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(true);
+static PORT_ROUTES_MERGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// Hands the effective values to the data path (`wayhouse_core::flags`). Returns whether
 /// `port_routes` differs from what the last config build merged, which asks for a rebuild.
@@ -220,7 +219,7 @@ fn apply(config: &BTreeMap<String, bool>, applied: &std::sync::atomic::AtomicBoo
 /// `wayhouse_feature_enabled` and `wayhouse_feature_source`. A change of `port_routes` asks
 /// for a rebuild, since the plugin entry listeners are part of the built configuration.
 pub fn publish(config: &BTreeMap<String, bool>, handle: &wayhouse_core::RuntimeHandle) {
-    publish_with(config, &PORT_ROUTES_APPLIED, handle);
+    publish_with(config, &PORT_ROUTES_MERGED, handle);
 }
 
 fn publish_with(

@@ -127,6 +127,7 @@ impl RuntimeHandle {
     /// [`Reconciled::failed`] and keeps its previous group running.
     pub async fn reconcile_listeners(&self) -> Reconciled {
         let snap = self.snapshot.load_full();
+        warn_if_all_parked(&snap);
         self.listeners.reconcile(&snap).await
     }
 
@@ -279,6 +280,7 @@ impl Runtime {
             sniffers,
             worker_count,
         );
+        warn_if_all_parked(&initial);
         listeners.start_all(&initial)?;
 
         // Spawned before the health task so it can hand `sweep` a
@@ -380,5 +382,15 @@ impl Runtime {
         if let Some(s) = &self.sources {
             s.abort_all();
         }
+    }
+}
+
+/// Validation refuses a config with no listeners at all, so an empty set here is every one
+/// parked with `enabled: false`: nothing accepts connections and `ready()` stays false.
+fn warn_if_all_parked(snap: &Snapshot) {
+    if snap.listeners.is_empty() {
+        tracing::warn!(
+            "every listener is parked (enabled: false); this instance answers nothing and is not ready"
+        );
     }
 }
