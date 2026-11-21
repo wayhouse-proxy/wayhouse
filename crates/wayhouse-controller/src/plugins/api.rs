@@ -2271,6 +2271,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_webhook_budgets_follow_the_flags() {
+        let (st, _d) = state(None);
+        let hooks = super::super::hooks::router(
+            super::super::hooks::HookState::new(st.store.clone(), st.runner.clone(), None)
+                .with_rates((1.0, 2.0), (10.0, 20.0)),
+        );
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.push(
+                hit(&hooks, "/plugins/p-x/hook", Some("whk_guess"), vec![])
+                    .await
+                    .0,
+            );
+        }
+        // A burst of 2: two refused tokens, then the source budget answers.
+        assert_eq!(
+            seen,
+            [
+                StatusCode::UNAUTHORIZED,
+                StatusCode::UNAUTHORIZED,
+                StatusCode::TOO_MANY_REQUESTS,
+                StatusCode::TOO_MANY_REQUESTS
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn one_source_is_rate_limited_before_any_token_is_compared() {
         let (st, _d) = state(None);
         let hooks = super::super::hooks::router(super::super::hooks::HookState::new(
