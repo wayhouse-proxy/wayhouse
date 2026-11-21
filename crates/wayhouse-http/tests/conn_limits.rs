@@ -315,3 +315,31 @@ async fn a_busy_keep_alive_connection_is_not_closed() {
     }
     assert!(answered >= 6, "only {answered} requests");
 }
+
+/// An upgraded connection (a WebSocket) keeps its slot for as long as it lives: hyper's
+/// connection future ends at the upgrade, but the cap counts open connections.
+#[tokio::test]
+async fn an_upgraded_connection_still_counts_against_the_cap() {
+    let addr = start(limits(5_000, 1)).await;
+    let mut a = TcpStream::connect(addr).await.unwrap();
+    a.write_all(
+        b"GET /upgrade HTTP/1.1\r\nHost: t\r\nConnection: upgrade\r\nUpgrade: test\r\n\r\n",
+    )
+    .await
+    .unwrap();
+    let got = read_some(&mut a, Duration::from_secs(2)).await.unwrap();
+    assert!(got.starts_with("HTTP/1.1 101"), "{got}");
+
+    // The only slot is taken by the upgraded connection: a second client waits in the queue.
+    let mut b = TcpStream::connect(addr).await.unwrap();
+    get_path(&mut b, "/peer").await;
+    assert!(
+        read_some(&mut b, Duration::from_millis(600))
+            .await
+            .is_none(),
+        "served while the upgraded connection was still open"
+    );
+    // The upgraded task ends at about 1.5 s and drops the stream; then the slot is free.
+    let got = read_some(&mut b, Duration::from_secs(4)).await.unwrap();
+    assert!(got.starts_with("HTTP/1.1 200"), "{got}");
+}
