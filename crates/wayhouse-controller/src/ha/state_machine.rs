@@ -216,20 +216,25 @@ impl StateMachineStore {
     /// is still live in another. Errors are logged: the next config write, or the next start, tries again.
     /// `true` when both ran.
     pub fn purge_secrets(&self) -> bool {
-        let kept = match self.config.kept_bytes() {
-            Ok(kept) => kept,
-            Err(e) => {
-                tracing::error!(error = %e, "reading the kept config revisions failed; log and snapshot not scrubbed");
-                return false;
-            }
-        };
         let mut ok = true;
+        // The applied index first, the kept set second. `build_snapshot` runs this beside the
+        // apply loop: read the other way round, an apply landing in between would put its entry
+        // under the index while the kept set still names the older live revision, and the live
+        // revision's entry would be scrubbed. Read in this order the kept set is never older
+        // than the index, so everything under the index is judged against the state that covers it.
         let applied = match self.read_meta() {
             Ok(meta) => meta.last_applied_log.map(|l| l.index),
             Err(e) => {
                 ok = false;
                 tracing::error!(error = %e, "reading the applied index failed; log not scrubbed");
                 None
+            }
+        };
+        let kept = match self.config.kept_bytes() {
+            Ok(kept) => kept,
+            Err(e) => {
+                tracing::error!(error = %e, "reading the kept config revisions failed; log and snapshot not scrubbed");
+                return false;
             }
         };
         let mut scrubbed = 0;
@@ -3118,5 +3123,51 @@ mod tests {
             sm.purge_secrets(),
             "a second run finds nothing and succeeds"
         );
+    }
+
+    #[tokio::test]
+    async fn a_follower_replaying_the_leaders_scrubbed_log_ends_with_the_leaders_store() {
+        let (mut leader, _d1) = test_sm();
+        append_and_apply(
+            &mut leader,
+            vec![
+                config_entry(1, &cfg("one")),
+                config_entry(2, &cfg("two")),
+                config_entry(3, &cfg("three")),
+            ],
+        )
+        .await;
+        // What the leader would send a follower that is behind: its retained entries, as they are.
+        let replay: Vec<Entry<TypeConfig>> = (1..=3)
+            .map(|i| {
+                let raw = leader.log.get(u64::to_be_bytes(i)).unwrap().unwrap();
+                serde_json::from_slice(&raw).unwrap()
+            })
+            .collect();
+        assert!(!log_text(&leader, 1).contains(TOKEN) && log_text(&leader, 3).contains(TOKEN));
+
+        let (mut follower, _d2) = test_sm();
+        append_and_apply(&mut follower, replay).await;
+        for r in 1..=3 {
+            assert_eq!(
+                follower.config.store.get(r).unwrap(),
+                leader.config.store.get(r).unwrap(),
+                "revision {r}"
+            );
+        }
+        assert_eq!(follower.config.store.current_revision().unwrap(), Some(3));
+        assert!(
+            String::from_utf8(follower.config.store.get(3).unwrap().unwrap())
+                .unwrap()
+                .contains(TOKEN)
+        );
+        // Same term and index on every entry, so the log still matches the leader's.
+        for r in 1..=3 {
+            assert_eq!(
+                follower.log.get(u64::to_be_bytes(r)).unwrap(),
+                leader.log.get(u64::to_be_bytes(r)).unwrap(),
+                "log entry {r}"
+            );
+        }
     }
 }
