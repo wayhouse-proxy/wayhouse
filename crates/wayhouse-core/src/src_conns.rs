@@ -56,7 +56,8 @@ impl SourceLimiter {
             .store(c.max_ip.is_some() || c.max_net.is_some(), Ordering::Release);
     }
 
-    pub fn is_enabled(&self) -> bool {
+    #[cfg(test)]
+    fn is_enabled(&self) -> bool {
         self.capped.load(Ordering::Acquire)
     }
 
@@ -69,6 +70,7 @@ impl SourceLimiter {
         }
         let key = NetKey::of(ip);
         let mut c = self.counts.lock().unwrap_or_else(PoisonError::into_inner);
+        // The caps can have been removed between the lock-free check above and taking the lock.
         if c.max_ip.is_none() && c.max_net.is_none() {
             return Ok(SourceGuard { limiter: None });
         }
@@ -154,6 +156,23 @@ mod tests {
             let _ = tx.send(l2.acquire("192.0.2.1".parse().unwrap()).is_ok());
         });
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(2)), Ok(true));
+    }
+
+    #[test]
+    fn caps_turned_off_and_on_again_take_effect_at_once() {
+        let l = SourceLimiter::new(Some(&cfg(Some(1), None)));
+        let ip: IpAddr = "9.9.9.9".parse().unwrap();
+        let _held = l.acquire(ip).unwrap();
+        assert!(l.is_enabled() && l.acquire(ip).is_err());
+        l.reconfigure(None);
+        assert!(!l.is_enabled());
+        let _free: Vec<_> = (0..5).map(|_| l.acquire(ip).unwrap()).collect();
+        l.reconfigure(Some(&cfg(Some(1), None)));
+        assert!(l.is_enabled());
+        assert!(
+            l.acquire(ip).is_err(),
+            "capped again, and `_held` still counts"
+        );
     }
 
     #[test]
