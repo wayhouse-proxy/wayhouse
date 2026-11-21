@@ -55,6 +55,8 @@ const FORMAT_KEY: &[u8] = b"format";
 
 const CURRENT_KEY: &[u8] = b"current";
 const APPLIED_INDEX_KEY: &[u8] = b"applied_index";
+/// Every revision below this number has been through [`Store::rewrite_below`] already.
+const REWRITTEN_BELOW_KEY: &[u8] = b"rewritten_below";
 
 /// Outcome of [`Store::put_applied`] / [`Store::put_applied_with`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +204,54 @@ impl Store {
         self.revisions.apply_batch(batch)?;
         self.db.flush()?;
         Ok(dropped.len())
+    }
+
+    /// Rewrites revisions numbered below `below` in place with `rewrite` (which returns the new
+    /// bytes, or `None` to leave a revision alone), except the revision `skip`. Numbers never
+    /// change, only the stored bytes. One atomic batch, so a crash leaves either all of a pass or
+    /// none of it, and a repeat is harmless when `rewrite` is idempotent. A watermark in `meta`
+    /// remembers how far earlier passes got, so a pass only reads what is new; it stops at `skip`
+    /// so that revision is picked up once it is no longer protected. Returns how many were
+    /// rewritten. Used to scrub secrets out of revisions a newer one has replaced (#474).
+    pub fn rewrite_below(
+        &self,
+        below: u64,
+        skip: Option<u64>,
+        rewrite: impl Fn(&[u8]) -> Option<Vec<u8>>,
+    ) -> Result<usize, StoreError> {
+        use std::ops::Bound;
+
+        let from = self
+            .meta
+            .get(REWRITTEN_BELOW_KEY)?
+            .map_or(0, |v| decode_rev(&v));
+        let mut batch = crate::kv::Batch::default();
+        let mut rewritten = 0;
+        let range = (
+            Bound::Included(encode_rev(from)),
+            Bound::Excluded(encode_rev(below)),
+        );
+        for item in self.revisions.range::<[u8; 8], _>(range) {
+            let (k, v) = item?;
+            if skip == Some(decode_rev(&k)) {
+                continue;
+            }
+            if let Some(new) = rewrite(&v) {
+                batch.insert(&*k, new);
+                rewritten += 1;
+            }
+        }
+        if rewritten > 0 {
+            self.revisions.apply_batch(batch)?;
+        }
+        let reached = skip.filter(|s| (from..below).contains(s)).unwrap_or(below);
+        if reached > from {
+            self.meta.insert(REWRITTEN_BELOW_KEY, encode_rev(reached))?;
+        }
+        if rewritten > 0 || reached > from {
+            self.db.flush()?;
+        }
+        Ok(rewritten)
     }
 
     /// Accepts a new revision: assigns the next monotonic number, persists
@@ -980,5 +1030,43 @@ mod tests {
         assert!(store.all_revisions().unwrap().is_empty());
         assert_eq!(store.current_revision().unwrap(), None);
         assert_eq!(store.applied_index().unwrap(), None);
+    }
+
+    fn scrub_secret(bytes: &[u8]) -> Option<Vec<u8>> {
+        let t = std::str::from_utf8(bytes).ok()?;
+        t.contains("SECRET")
+            .then(|| t.replace("SECRET", "[x]").into_bytes())
+    }
+
+    #[test]
+    fn rewriting_older_revisions_keeps_numbers_skips_the_one_named_and_resumes_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        for text in ["a SECRET", "b SECRET", "c SECRET", "d SECRET"] {
+            store.put(text.as_bytes().to_vec()).unwrap();
+        }
+        // Revisions 1..=3 are older than 4; 2 is the fallback of a live trial.
+        assert_eq!(store.rewrite_below(4, Some(2), scrub_secret).unwrap(), 2);
+        assert_eq!(store.get(1).unwrap().unwrap(), b"a [x]");
+        assert_eq!(
+            store.get(2).unwrap().unwrap(),
+            b"b SECRET",
+            "the fallback is untouched"
+        );
+        assert_eq!(store.get(3).unwrap().unwrap(), b"c [x]");
+        assert_eq!(
+            store.get(4).unwrap().unwrap(),
+            b"d SECRET",
+            "the newest is never touched"
+        );
+        assert_eq!(store.current_revision().unwrap(), Some(4));
+        // The trial ends: the fallback is no longer protected and is picked up next time.
+        assert_eq!(store.rewrite_below(4, None, scrub_secret).unwrap(), 1);
+        assert_eq!(store.get(2).unwrap().unwrap(), b"b [x]");
+        assert_eq!(
+            store.rewrite_below(4, None, scrub_secret).unwrap(),
+            0,
+            "idempotent"
+        );
     }
 }

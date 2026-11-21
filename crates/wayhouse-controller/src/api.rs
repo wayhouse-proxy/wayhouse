@@ -191,7 +191,7 @@ impl AppState {
         let stage = store_db.open_tree("stage")?;
         let actors = store_db.open_tree("actors")?;
         let pending = store_db.open_tree("config_pending")?;
-        Ok(AppState {
+        let state = AppState {
             store,
             stage,
             updates,
@@ -204,7 +204,10 @@ impl AppState {
             relay: RelayCursor::open(&store_db)?,
             schema_floor: None,
             subscribers: Arc::new(tokio::sync::Semaphore::new(MAX_SUBSCRIBERS)),
-        })
+        };
+        // Revisions written before this build, or before a crash, are caught up here.
+        state.redact_retired();
+        Ok(state)
     }
 
     /// Test convenience: [`Self::try_new`] on a store that is known to open.
@@ -253,6 +256,7 @@ impl AppState {
         };
         // Skipped (a replay): the trial was ended the first time, `on_trial` is already false.
         self.store.mark_applied_with(index, writes)?;
+        self.redact_retired();
         Ok(on_trial)
     }
 
@@ -325,6 +329,7 @@ impl AppState {
         }
         self.pending.remove(PENDING_KEY)?;
         self.pending.flush()?;
+        self.redact_retired();
         Ok(true)
     }
 
@@ -384,7 +389,30 @@ impl AppState {
             self.stage_and_actor_writes(revision, &stage_bytes, actor, trial)
         })?;
         let _ = self.updates.send(revision);
+        self.redact_retired();
         Ok(revision)
+    }
+
+    /// Strips the plaintext secrets out of every revision that can no longer be the live one:
+    /// older than the newest revision promoted for everyone, and not the fallback of a live
+    /// trial (#474). Runs in apply, so every replica does the same. A failure is logged, not
+    /// returned: the write it follows has landed, and the next one retries from the watermark.
+    pub fn redact_retired(&self) {
+        let result = (|| -> Result<usize, StoreError> {
+            let Some((live, _)) = self.current_for_group(None, None)? else {
+                return Ok(0);
+            };
+            let fallback = self.pending()?.map(|p| p.trial.revert_to);
+            self.store.rewrite_below(live, fallback, |bytes| {
+                let text = std::str::from_utf8(bytes).ok()?;
+                wayhouse_config::redact_secrets(text).map(String::into_bytes)
+            })
+        })();
+        match result {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(revisions = n, "redacted secrets in retired revisions"),
+            Err(e) => tracing::error!(error = %e, "redacting retired revisions failed"),
+        }
     }
 
     /// The record that puts `revision` on `trial`.
@@ -448,6 +476,7 @@ impl AppState {
         match applied {
             Applied::Written(revision) => {
                 let _ = self.updates.send(revision);
+                self.redact_retired();
                 Ok(Some(revision))
             }
             Applied::AlreadyApplied => Ok(None),
@@ -474,6 +503,7 @@ impl AppState {
             writes
         })?;
         let _ = self.updates.send(revision);
+        self.redact_retired();
         Ok(Some(revision))
     }
 
@@ -501,6 +531,7 @@ impl AppState {
         match applied {
             Applied::Written(revision) => {
                 let _ = self.updates.send(revision);
+                self.redact_retired();
                 Ok(Some(revision))
             }
             Applied::AlreadyApplied => Ok(None),
@@ -565,6 +596,7 @@ impl AppState {
         }
         if found {
             let _ = self.updates.send(revision);
+            self.redact_retired();
         }
         Ok(Some(found))
     }
@@ -594,6 +626,7 @@ impl AppState {
         }
         self.set_stage(revision, &stage)?;
         let _ = self.updates.send(revision);
+        self.redact_retired();
         Ok(true)
     }
 
@@ -1566,6 +1599,18 @@ async fn rollback(
     match state.store.get(revision) {
         Ok(Some(bytes)) => {
             let text = String::from_utf8_lossy(&bytes).into_owned();
+            if wayhouse_config::has_redacted_secret(&text) {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "revision {revision} had its secrets redacted once it was replaced; \
+                             submit the config with the secret again instead of rolling back"
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
             // A rollback is always immediately promoted — it's presumably
             // urgent, never something to stage (see the module doc).
             let resp = submit(
@@ -3314,5 +3359,117 @@ listeners:
             .await
             .unwrap();
         assert_eq!(promote.status(), StatusCode::OK);
+    }
+
+    const TOKEN_ONE: &str = "first-admin-token-0123456789";
+    const TOKEN_TWO: &str = "second-admin-token-0123456789";
+
+    fn with_token(token: &str, extra_pool: bool) -> String {
+        let extra = if extra_pool {
+            "  - name: extra\n    targets: [\"127.0.0.1:25567\"]\n"
+        } else {
+            ""
+        };
+        format!(
+            "settings:\n  admin:\n    auth_token: \"{token}\"\npools:\n  - name: mc\n    targets: [\"127.0.0.1:25566\"]\n{extra}listeners:\n  - name: main\n    bind: \"0.0.0.0:25565\"\n    protocol: tcp\n    pool: mc\n"
+        )
+    }
+
+    async fn send(app: &Router, req: Request<Body>) -> (StatusCode, String) {
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    async fn post(app: &Router, path: &str, body: &str) -> (StatusCode, String) {
+        send(
+            app,
+            Request::post(path)
+                .body(Body::from(body.to_owned()))
+                .unwrap(),
+        )
+        .await
+    }
+
+    async fn get(app: &Router, path: &str) -> (StatusCode, String) {
+        send(app, Request::get(path).body(Body::empty()).unwrap()).await
+    }
+
+    #[tokio::test]
+    async fn a_revision_a_newer_one_replaced_loses_its_plaintext_secret_and_the_current_one_keeps_it(
+    ) {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        // The token does not change between the two, so no trial starts.
+        assert_eq!(
+            post(&app, "/config", &with_token(TOKEN_ONE, false)).await.0,
+            StatusCode::OK
+        );
+        assert!(
+            get(&app, "/config/revisions/1").await.1.contains(TOKEN_ONE),
+            "still current"
+        );
+        assert_eq!(
+            post(&app, "/config", &with_token(TOKEN_ONE, true)).await.0,
+            StatusCode::OK
+        );
+        let old = get(&app, "/config/revisions/1").await.1;
+        assert!(!old.contains(TOKEN_ONE), "{old}");
+        assert!(old.contains(wayhouse_config::REDACTED), "{old}");
+        assert!(
+            get(&app, "/config").await.1.contains(TOKEN_ONE),
+            "the current revision is untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_staged_revision_does_not_retire_the_one_before_it() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        post(&app, "/config", &with_token(TOKEN_ONE, false)).await;
+        let (status, _) = post(
+            &app,
+            "/config?stage=canary&group=eu",
+            &with_token(TOKEN_ONE, true),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(get(&app, "/config/revisions/1").await.1.contains(TOKEN_ONE));
+    }
+
+    #[tokio::test]
+    async fn the_fallback_of_a_trial_keeps_its_secret_until_the_trial_is_confirmed() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        post(&app, "/config", &with_token(TOKEN_ONE, false)).await;
+        // A changed admin token is a lockout risk: it goes on trial, with revision 1 as the way back.
+        let (status, body) = post(&app, "/config", &with_token(TOKEN_TWO, false)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            get(&app, "/config/revisions/1").await.1.contains(TOKEN_ONE),
+            "needed for the revert"
+        );
+        assert_eq!(post(&app, "/config/confirm/2", "").await.0, StatusCode::OK);
+        let old = get(&app, "/config/revisions/1").await.1;
+        assert!(!old.contains(TOKEN_ONE), "{old}");
+    }
+
+    #[tokio::test]
+    async fn a_rollback_to_a_redacted_revision_is_refused_with_a_clear_message() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        post(&app, "/config", &with_token(TOKEN_ONE, false)).await;
+        post(&app, "/config", &with_token(TOKEN_ONE, true)).await;
+        let (status, body) = post(&app, "/config/rollback/1", "").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(body.contains("redacted"), "{body}");
+        assert_eq!(get(&app, "/config").await.0, StatusCode::OK);
+        assert!(
+            get(&app, "/config").await.1.contains("extra"),
+            "nothing was rolled back"
+        );
     }
 }

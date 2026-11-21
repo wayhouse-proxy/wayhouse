@@ -413,7 +413,13 @@ store that never forgets a revision (ADR 20):
   against `current` or another revision.
 - `POST /config/rollback/{revision}` — re-submits that revision's exact bytes
   through the same validate-then-store path `POST /config` uses; rollback
-  never rewrites history, it creates a new revision with old content.
+  never rewrites history, it creates a new revision with old content. Once a
+  newer revision has been promoted for everyone, an older revision loses its
+  plaintext `settings.admin.auth_token` and `settings.gossip.psk` (they read
+  `[redacted]`); rolling back to such a revision answers `409`, so submit the
+  config with the secret again. The fallback of a live trial keeps its secrets
+  until the trial ends. Freed disk pages, backups and replicas that have not
+  upgraded are out of reach: rotate any secret that was ever stored in plain text.
 - `POST /config[?confirm_within=<secs>]`, `GET /config/pending`,
   `POST /config/confirm/{revision}`, `POST /config/revert` — **confirm and
   revert**, the guard against locking yourself out. A revision submitted with
