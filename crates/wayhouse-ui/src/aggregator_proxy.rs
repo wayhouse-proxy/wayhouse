@@ -304,7 +304,10 @@ async fn prune_node_tags(
     };
     let mut removed = Vec::new();
     if !dry_run {
-        for name in unlisted.iter().filter(|n| confirm.names.contains(n.as_str())) {
+        for name in unlisted
+            .iter()
+            .filter(|n| confirm.names.contains(n.as_str()))
+        {
             let Some(segment) = crate::proxy_util::path_segment(name) else {
                 continue;
             };
@@ -891,11 +894,8 @@ mod tests {
         let r = send(&app, &op, "POST", uri, r#"{"names":["gone"]}"#).await;
         assert_eq!(r.status(), StatusCode::CONFLICT);
         let (agg, _) = spawn_logging(StatusCode::OK, r#"{"count":1,"instances":["fra-1"]}"#).await;
-        let (app, op) = app_with(
-            agg,
-            Some(tag_controller().await.0),
-            crate::role::Role::Operator,
-        );
+        let (ctl, deleted) = tag_controller().await;
+        let (app, op) = app_with(agg, Some(ctl), crate::role::Role::Operator);
         for q in ["dry_run=1", "dry_run=True", "dry_run=yes", "dry_run="] {
             let r = send(
                 &app,
