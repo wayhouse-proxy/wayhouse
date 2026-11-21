@@ -301,6 +301,20 @@ describe("Fleet page inspector", () => {
     expect(api.undrainInstance).toHaveBeenCalledWith("n001");
   });
 
+  it("keeps the last pools on screen but says they are not updating when a refetch fails", async () => {
+    api.drainInstance.mockResolvedValue(undefined);
+    show("admin", "/fleet?q=n00");
+    await userEvent.click(await row());
+    const panel = await screen.findByRole("complementary", { name: "Details" });
+    expect(await within(panel).findByText("10.0.0.5:7777")).toBeInTheDocument();
+    expect(panel).toHaveTextContent("Node last reported 0.8 s before this read.");
+    api.getNodePools.mockRejectedValue(new ApiError(502, "aggregator unreachable"));
+    await userEvent.click(within(panel).getByRole("button", { name: "Drain" }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Drain" }));
+    expect(await within(panel).findByText(/The pools are not updating: aggregator unreachable/)).toBeInTheDocument();
+    expect(within(panel).getByText("10.0.0.5:7777")).toBeInTheDocument();
+  });
+
   it("remove and disable of a backend warn they are fleet-wide and wait for confirmation", async () => {
     show("admin", "/fleet?q=n00");
     await userEvent.click(await row());

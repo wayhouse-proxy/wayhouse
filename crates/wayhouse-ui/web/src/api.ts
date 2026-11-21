@@ -581,10 +581,24 @@ export function deleteLayoutOverride(): Promise<void> {
 
 // --- fleet nodes (paged on the aggregator) ---
 
-/** One node's pools and backend state (`GET /api/fleet/nodes/{instance}/pools`), what the fleet inspector shows. */
-export function getNodePools(instance: string): Promise<FleetNodePools> {
-  return requestJson(`/api/fleet/nodes/${encodeURIComponent(instance)}/pools`);
+/**
+ * One node's pools and backend state (`GET /api/fleet/nodes/{instance}/pools`), what the fleet inspector shows.
+ * An aggregator one release back has no such route and answers a bare 404 (a node it does not know gets
+ * `{"error":"no such instance"}`), so on that 404 the node is read from the whole-fleet list instead.
+ */
+export async function getNodePools(instance: string): Promise<FleetNodePools> {
+  try {
+    return await requestJson<FleetNodePools>(`/api/fleet/nodes/${encodeURIComponent(instance)}/pools`);
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.status !== 404 || e.message === "no such instance") throw e;
+    const all = await requestJson<FleetNodePools[]>("/api/fleet/pools");
+    const one = all.find((n) => n.instance === instance);
+    if (!one) throw new ApiError(404, "no such instance");
+    return one;
+  }
 }
+
+// --- fleet nodes (paged on the aggregator) ---
 
 export async function getFleetNodes(query: string): Promise<NodePage> {
   const p = new URLSearchParams(query);

@@ -66,6 +66,9 @@ member reports a lower level. The steps are in
 Protocol 1.3 adds `region` and `tags` to the proxy's push to the aggregator (`--region`,
 `--tag`, see [operations](06-operations-observability.md)). The change is additive: a proxy on
 0.3.0 pushes none and lists without a region or tags; upgrade the aggregator first to see them.
+Protocol 1.3 also adds the aggregator's `GET /fleet/nodes/{instance}/pools`, which the UI's node
+inspector reads. A UI on 0.4.0 in front of a 0.3.0 aggregator gets a bare `404` and reads the
+node from `GET /fleet/pools` instead, so nothing breaks while the aggregator is upgraded second.
 
 Confirm-and-revert for config revisions (a revision on trial, see
 [operations](06-operations-observability.md)) follows the same rule under HA: upgrade every

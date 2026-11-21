@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   getFleetNodes,
+  getNodePools,
   getSession,
   setNodeTags,
   getCurrentConfig,
@@ -18,6 +19,31 @@ function mockFetch(resp: Response) {
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe("getNodePools", () => {
+  const body = (v: unknown, status = 200) => new Response(typeof v === "string" ? v : JSON.stringify(v), { status });
+  const node = { instance: "n1", last_seen_ms_ago: 5, pools: [] };
+
+  it("reads the node's own route", async () => {
+    const f = mockFetch(body(node));
+    await expect(getNodePools("n 1")).resolves.toEqual(node);
+    expect(f.mock.calls[0][0]).toBe("/api/fleet/nodes/n%201/pools");
+  });
+
+  it("an aggregator without the route (bare 404) is read from the whole-fleet list", async () => {
+    const f = vi.fn().mockResolvedValueOnce(body("", 404)).mockResolvedValueOnce(body([{ ...node, instance: "n0" }, node]));
+    vi.stubGlobal("fetch", f);
+    await expect(getNodePools("n1")).resolves.toEqual(node);
+    expect(f.mock.calls[1][0]).toBe("/api/fleet/pools");
+  });
+
+  it("an unknown node is a 404 and does not read the fleet", async () => {
+    const f = vi.fn().mockResolvedValue(body({ error: "no such instance" }, 404));
+    vi.stubGlobal("fetch", f);
+    await expect(getNodePools("gone")).rejects.toMatchObject({ status: 404 });
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("api", () => {
   it("login accepts wayhouse-ui's plain-text `ok` body (not JSON)", async () => {

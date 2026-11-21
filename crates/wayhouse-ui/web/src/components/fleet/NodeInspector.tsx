@@ -42,9 +42,9 @@ export function NodeInspector({
   function run(label: string, p: Promise<unknown>) {
     setBusy(true);
     p.then(() => toast(`${label}: done`)).catch((e) => toast(`${label} failed: ${e instanceof ApiError ? e.message : e}`, "down")).finally(() => {
-        setBusy(false);
-        void poolsQuery.refetch();
-      });
+      setBusy(false);
+      void poolsQuery.refetch();
+    });
   }
 
   const pools = poolsQuery.data?.pools ?? [];
@@ -102,6 +102,12 @@ export function NodeInspector({
 
       <section aria-label="Pools">
         <h3 className="mb-1 font-semibold">Pools</h3>
+        {poolsQuery.isError && poolsQuery.data && (
+          <p role="status" className="mb-2 text-xs text-bad">
+            The pools are not updating: {poolsQuery.error instanceof ApiError ? poolsQuery.error.message : String(poolsQuery.error)}. These are from the last successful read.
+          </p>
+        )}
+        {poolsQuery.data && <p className="mb-2 text-xs text-ink-muted">Node last reported {(poolsQuery.data.last_seen_ms_ago / 1000).toFixed(1)} s before this read.</p>}
         {poolsQuery.isError && !poolsQuery.data ? (
           <p role="status" className="text-bad">The pools could not be loaded: {poolsQuery.error instanceof ApiError ? poolsQuery.error.message : String(poolsQuery.error)}</p>
         ) : pools.length === 0 ? (
