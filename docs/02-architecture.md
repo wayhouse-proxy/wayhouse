@@ -46,8 +46,10 @@ struct, the rest is shared).
   prefix), via `IP_PKTINFO`/`IPV6_RECVPKTINFO` (UDP, per datagram) or `getsockname()`
   (TCP). This is the lever for games with no protocol hint: subdomain → its own
   destination IP.
-- **First-packet peek** (TCP): `MSG_PEEK` up to `peek_max_bytes` or `peek_timeout`.
-  If that is not enough (the client sends nothing first), the default route applies.
+- **First-packet peek** (TCP): `MSG_PEEK` of the bytes the listener's routes need (at most 4096),
+  waiting up to 250 ms (fixed, not a setting). A client that sends nothing in that time is routed
+  on empty bytes: a route that needs the bytes does not match, and the first `always` route (the
+  default) applies, so server-speaks-first protocols work. See [07](07-security-ddos.md).
 - **External resolver**: calls gRPC/HTTP with `{listener, src_ip, sni, first_bytes(b64),
   routing_key}`, expects `{pool | target, ttl}`. The result is cached
   (key configurable). Timeout → fallback route.

@@ -47,7 +47,7 @@ use crate::ha::HaHandle;
 /// routes use the same budget.
 pub(crate) const SOURCE_RATE: (f64, f64) = (5.0, 20.0);
 /// Requests per second and burst one install's webhook accepts.
-const INSTALL_RATE: (f64, f64) = (10.0, 20.0);
+pub(crate) const INSTALL_RATE: (f64, f64) = (10.0, 20.0);
 /// Headers the guest is shown at most.
 const MAX_HEADERS: usize = 32;
 
@@ -138,6 +138,14 @@ impl HookState {
             source: Arc::new(Limiter::new(SOURCE_RATE)),
             install: Arc::new(Limiter::new(INSTALL_RATE)),
         }
+    }
+
+    /// Replaces the two budgets (`(per second, burst)`): one source address, one install.
+    #[must_use]
+    pub fn with_rates(mut self, source: (f64, f64), install: (f64, f64)) -> Self {
+        self.source = Arc::new(Limiter::new(source));
+        self.install = Arc::new(Limiter::new(install));
+        self
     }
 }
 

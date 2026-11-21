@@ -633,6 +633,7 @@ impl TlsListener {
                         continue;
                     }
                 };
+                crate::conn::harden(&stream);
                 // The lock is never held across a spawn, an abort or an `.await`:
                 // either can drop a task's future (and its `Slot`) inline.
                 let admitted = {
@@ -891,7 +892,7 @@ pub async fn serve(
             crate::conn::serve_listener(listener, app, crate::conn::ConnLimits::default()).await
         }
         None => {
-            let listener = TcpListener::bind(addr).await?;
+            let listener = crate::conn::HardenedListener(TcpListener::bind(addr).await?);
             tracing::info!(listen = %addr, "{name} listening");
             crate::conn::serve_listener(listener, app, crate::conn::ConnLimits::default()).await
         }

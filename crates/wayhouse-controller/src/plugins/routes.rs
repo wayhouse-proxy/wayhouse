@@ -10,12 +10,13 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::StreamExt;
 
 use super::api::PluginsState;
 use super::ports::PortAssignment;
@@ -203,12 +204,26 @@ pub async fn show(State(st): State<PluginsState>) -> Response {
 }
 
 /// `GET /plugin-routes/subscribe`: the overlay now, then again whenever it changes.
-pub async fn subscribe(
-    State(st): State<PluginsState>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+pub async fn subscribe(State(st): State<PluginsState>) -> Response {
+    let Ok(permit) = SUBSCRIBERS.try_acquire() else {
+        tracing::warn!(
+            max = MAX_SUBSCRIBERS,
+            "plugin route subscriber cap reached; refusing a stream"
+        );
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(axum::http::header::RETRY_AFTER, "5")],
+            Json(serde_json::json!({"error": "too many subscribers; retry shortly"})),
+        )
+            .into_response();
+    };
+    // The slot is held by the stream's task and given back when it ends, even by a panic.
+    permit.forget();
+    let slot = Slot;
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     let store = st.store.clone();
     tokio::spawn(async move {
+        let _slot = slot;
         let mut changes = store.watch();
         let mut last: Option<Overlay> = None;
         loop {
@@ -225,13 +240,34 @@ pub async fn subscribe(
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "could not read the plugin route overlay"),
             }
-            if changes.changed().await.is_err() {
-                return;
+            // A client that went away frees its slot at once, not at the next change.
+            tokio::select! {
+                () = tx.closed() => return,
+                changed = changes.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
             }
         }
     });
-    Sse::new(ReceiverStream::new(rx).map(|doc| Ok(Event::default().data(doc))))
+    Sse::new(ReceiverStream::new(rx).map(|doc| Ok::<_, Infallible>(Event::default().data(doc))))
         .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+/// Most live `GET /plugin-routes/subscribe` streams at once, like the config and registry streams.
+pub(super) const MAX_SUBSCRIBERS: usize = 1024;
+pub(super) static SUBSCRIBERS: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(MAX_SUBSCRIBERS);
+
+/// A taken subscriber slot; dropping it gives the slot back.
+struct Slot;
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        SUBSCRIBERS.add_permits(1);
+    }
 }
 
 #[cfg(test)]

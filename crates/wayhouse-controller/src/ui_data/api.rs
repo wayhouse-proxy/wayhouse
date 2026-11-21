@@ -130,9 +130,9 @@ pub fn router(state: UiState) -> Router {
         )
         .route(
             "/secrets/rewrap",
-            axum::routing::post(
-                |State(st): State<UiState>| async move { rewrap_secrets(&st).await },
-            ),
+            axum::routing::post(|State(st): State<UiState>, headers: HeaderMap| async move {
+                rewrap_secrets(&st, &headers).await
+            }),
         )
         .route(
             "/secrets/{name}",
@@ -421,7 +421,7 @@ async fn put_secret(st: &UiState, name: String, headers: &HeaderMap, body: Bytes
 /// `POST /secrets/rewrap`: re-encrypts every cluster secret under the active key (step 2 of a
 /// rotation, next to `/admin/plugins/secrets/rewrap`). Refuses while a member lacks the active
 /// key. A secret replaced meanwhile is skipped and reported.
-async fn rewrap_secrets(st: &UiState) -> Response {
+async fn rewrap_secrets(st: &UiState, headers: &HeaderMap) -> Response {
     use crate::ui_data::Applied;
     let ring = st.keyring.current();
     let Some(active) = ring.active_id().map(str::to_string) else {
@@ -483,9 +483,7 @@ async fn rewrap_secrets(st: &UiState) -> Response {
             }
         };
         match applied {
-            Ok(Applied::Done) => {
-                tracing::warn!(secret = %name, key_id = %active, "cluster secret rewrapped");
-            }
+            Ok(Applied::Done) => {}
             Ok(Applied::Stale | Applied::NotFound) => skipped.push(name),
             Ok(other) => return internal(format!("unexpected answer {other:?}")),
             Err(e) => return internal(e),
@@ -494,6 +492,14 @@ async fn rewrap_secrets(st: &UiState) -> Response {
     if let (Some(ha), true) = (&st.ha, total > skipped.len()) {
         crate::plugins::peer::request_purge(ha);
     }
+    tracing::warn!(
+        actor = ?actor(headers).as_deref().unwrap_or("-"),
+        rewrapped = total - skipped.len(),
+        skipped = skipped.len(),
+        unreadable = unreadable.len(),
+        key_id = %active,
+        "cluster secrets rewrapped"
+    );
     Json(json!({
         "rewrapped": total - skipped.len(),
         "skipped": skipped,

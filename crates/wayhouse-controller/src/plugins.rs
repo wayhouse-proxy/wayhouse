@@ -138,6 +138,23 @@ fn is_lower_hex(s: &str, len: usize) -> bool {
 }
 
 impl InstallRecord {
+    /// The record [`PluginOp::SetConfig`] leaves: the new config and approval together, or the
+    /// answer the op gives instead (stale when the approval moved since the proposer read it).
+    /// Shared by the replicated apply and the standalone store, so both answer alike.
+    fn set_config(
+        &mut self,
+        config: &serde_json::Value,
+        expected_approved: &Capabilities,
+        approved: &Capabilities,
+    ) -> Result<(), Applied> {
+        if self.approved != *expected_approved {
+            return Err(Applied::Stale);
+        }
+        self.config = config.clone();
+        self.approved = approved.clone();
+        self.validate().map_err(Applied::Invalid)
+    }
+
     /// The checks the API makes before an install and every replica makes when it
     /// applies one, so a malformed record from any proposer is refused the same way
     /// everywhere. (The approved capabilities are typed and validated on parse.)
@@ -746,13 +763,8 @@ impl PluginStore {
         let Some(mut record) = self.get(id)? else {
             return Ok(Applied::NoSuchInstall);
         };
-        if record.approved != *expected_approved {
-            return Ok(Applied::Stale);
-        }
-        record.config = config.clone();
-        record.approved = approved.clone();
-        if let Err(why) = record.validate() {
-            return Ok(Applied::Invalid(why));
+        if let Err(refused) = record.set_config(config, expected_approved, approved) {
+            return Ok(refused);
         }
         self.write_record(&record)?;
         Ok(Applied::Done(None))
@@ -963,13 +975,9 @@ impl PluginStore {
                         let Some(mut record) = read(id)? else {
                             return done(Applied::NoSuchInstall);
                         };
-                        if record.approved != *expected_approved {
-                            return done(Applied::Stale);
-                        }
-                        record.config = config.clone();
-                        record.approved = approved.clone();
-                        if let Err(why) = record.validate() {
-                            return done(Applied::Invalid(why));
+                        if let Err(refused) = record.set_config(config, expected_approved, approved)
+                        {
+                            return done(refused);
                         }
                         let bytes = serde_json::to_vec(&record).map_err(|e| abort(e.into()))?;
                         inst.insert(id.as_bytes(), bytes)?;

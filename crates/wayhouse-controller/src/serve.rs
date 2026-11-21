@@ -337,8 +337,34 @@ struct Args {
     #[arg(long, requires = "plugin_webhook_tls_cert")]
     plugin_webhook_tls_key: Option<PathBuf>,
 
+    /// Webhook requests per second one source address may make (IPv6 by /64), valid token or not.
+    #[arg(long, requires = "plugin_webhook_listen", default_value_t = crate::plugins::hooks::SOURCE_RATE.0, value_parser = positive_rate)]
+    plugin_webhook_source_rate: f64,
+
+    /// Burst of `--plugin-webhook-source-rate`.
+    #[arg(long, requires = "plugin_webhook_listen", default_value_t = crate::plugins::hooks::SOURCE_RATE.1, value_parser = positive_rate)]
+    plugin_webhook_source_burst: f64,
+
+    /// Webhook requests per second one install accepts, over all sources.
+    #[arg(long, requires = "plugin_webhook_listen", default_value_t = crate::plugins::hooks::INSTALL_RATE.0, value_parser = positive_rate)]
+    plugin_webhook_install_rate: f64,
+
+    /// Burst of `--plugin-webhook-install-rate`.
+    #[arg(long, requires = "plugin_webhook_listen", default_value_t = crate::plugins::hooks::INSTALL_RATE.1, value_parser = positive_rate)]
+    plugin_webhook_install_burst: f64,
+
     #[command(flatten)]
     tls: wayhouse_http::tls::TlsArgs,
+}
+
+/// A rate or burst: finite and at least 1 per second (a burst of 1 still lets one request in).
+fn positive_rate(s: &str) -> Result<f64, String> {
+    let v: f64 = s.parse().map_err(|_| format!("{s:?} is not a number"))?;
+    if v.is_finite() && (1.0..=1_000_000.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err("must be between 1 and 1000000".into())
+    }
 }
 
 /// The flags this program takes, for `wayhouse-control` to route its own flags by.
@@ -951,12 +977,23 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
                     state.updates.subscribe(),
                 ));
                 if let Some(addr) = args.plugin_webhook_listen {
-                    let hooks =
-                        crate::plugins::hooks::router(crate::plugins::hooks::HookState::new(
+                    let hooks = crate::plugins::hooks::router(
+                        crate::plugins::hooks::HookState::new(
                             store.clone(),
                             runner.clone(),
                             ha.clone(),
-                        ));
+                        )
+                        .with_rates(
+                            (
+                                args.plugin_webhook_source_rate,
+                                args.plugin_webhook_source_burst,
+                            ),
+                            (
+                                args.plugin_webhook_install_rate,
+                                args.plugin_webhook_install_burst,
+                            ),
+                        ),
+                    );
                     let (tls, limits) = (webhook_tls.clone(), args.tls.limits());
                     drop(tokio::spawn(async move {
                         if let Err(e) = wayhouse_http::tls::serve(
@@ -1177,6 +1214,16 @@ type HaParts = (
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rate_flag_takes_a_finite_number_from_one_up() {
+        for good in ["1", "5", "20.5", "1000000"] {
+            assert!(super::positive_rate(good).is_ok(), "{good}");
+        }
+        for bad in ["0", "0.5", "-1", "NaN", "inf", "1e9", "", "fast"] {
+            assert!(super::positive_rate(bad).is_err(), "{bad}");
+        }
+    }
+
     use clap::Parser;
 
     use super::Args;

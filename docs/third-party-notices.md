@@ -14,8 +14,8 @@ redistributed as a binary.
 | In the image | `/licenses/LICENSE-APACHE` and `/licenses/NOTICE` ([`deploy/caddy/NOTICE`](../deploy/caddy/NOTICE))        |
 
 Apache-2.0 allows redistribution. What we do to meet its terms: ship the license text, keep the
-attribution in the NOTICE, and state changes. We change no Caddy source: the image builds the upstream tag with `xcaddy`, a patched Go toolchain
-and a newer `golang.org/x/net` (security fixes the upstream image does not have yet), and
+attribution in the NOTICE, and state changes. We change no Caddy source: the image builds the upstream tag with `xcaddy`, a patched Go toolchain,
+a newer `golang.org/x/net` and `go-jose/v4` (security fixes the upstream image does not have yet), and
 replaces the upstream image's binary with it. Caddy's own Go dependencies (BSD, MIT
 and similar) are compiled in and are covered by the upstream project's license files; the image
 does not list them one by one. Upstream's module list is `caddy list-modules --versions`.

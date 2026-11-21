@@ -1551,6 +1551,14 @@ async fn rewrap_secrets(State(st): State<PluginsState>, headers: HeaderMap) -> R
             },
         }
     };
+    tracing::warn!(
+        actor = ?actor(&headers).as_deref().unwrap_or("-"),
+        rewrapped = total - skipped.len(),
+        skipped = skipped.len(),
+        unreadable = unreadable.len(),
+        key_id = %active,
+        "plugin secrets rewrapped"
+    );
     Json(serde_json::json!({
         "rewrapped": total - skipped.len(),
         "skipped": skipped,
@@ -1629,6 +1637,37 @@ mod tests {
             },
             dir,
         )
+    }
+
+    /// The only test that opens `/plugin-routes/subscribe`, so holding every slot cannot disturb
+    /// another.
+    #[tokio::test]
+    async fn route_subscribers_past_the_cap_are_refused_and_a_closed_stream_frees_its_slot() {
+        use super::super::routes::{MAX_SUBSCRIBERS, SUBSCRIBERS};
+        let (st, _d) = state(None);
+        let app = router(st);
+        let get = || {
+            Request::get("/plugin-routes/subscribe")
+                .header(wayhouse_http::protocol::HEADER, "1.0")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let held = SUBSCRIBERS
+            .try_acquire_many(MAX_SUBSCRIBERS as u32)
+            .unwrap();
+        let resp = app.clone().oneshot(get()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        drop(held);
+        let resp = app.clone().oneshot(get()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        drop(resp);
+        for _ in 0..100 {
+            if SUBSCRIBERS.available_permits() == MAX_SUBSCRIBERS {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the slot of a closed stream was not given back");
     }
 
     async fn call(
@@ -2236,6 +2275,33 @@ mod tests {
         assert_eq!(
             hit(&hooks, &path, Some(&rotated), vec![]).await.0,
             StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn the_webhook_budgets_follow_the_flags() {
+        let (st, _d) = state(None);
+        let hooks = super::super::hooks::router(
+            super::super::hooks::HookState::new(st.store.clone(), st.runner.clone(), None)
+                .with_rates((1.0, 2.0), (10.0, 20.0)),
+        );
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.push(
+                hit(&hooks, "/plugins/p-x/hook", Some("whk_guess"), vec![])
+                    .await
+                    .0,
+            );
+        }
+        // A burst of 2: two refused tokens, then the source budget answers.
+        assert_eq!(
+            seen,
+            [
+                StatusCode::UNAUTHORIZED,
+                StatusCode::UNAUTHORIZED,
+                StatusCode::TOO_MANY_REQUESTS,
+                StatusCode::TOO_MANY_REQUESTS
+            ]
         );
     }
 
