@@ -123,6 +123,34 @@ async fn a_write_on_a_follower_is_readable_on_every_replica() -> Result<()> {
     let (status, body) = send(&http, put, writer, "/ui/dashboards/bad", Some(bad)).await?;
     assert_eq!(status, 422, "{body}");
 
+    // The writer itself reads its own forwarded write at once (no wait for the apply to catch up).
+    let (status, body) = send(
+        &http,
+        reqwest::Method::GET,
+        writer,
+        "/ui/dashboards/ops",
+        None,
+    )
+    .await?;
+    assert_eq!((status, &body["widgets"]), (200, &dash["widgets"]));
+
+    // A theme that fails the contrast checks is refused on the follower, and no replica stores it.
+    let pale = json!({"base": "light", "tokens": {"ink": "#bbbbbb"}});
+    let (status, body) = send(
+        &http,
+        reqwest::Method::PUT,
+        writer,
+        "/ui/themes/pale",
+        Some(pale),
+    )
+    .await?;
+    assert_eq!(status, 422, "{body}");
+    assert!(body["failures"].as_array().is_some_and(|f| !f.is_empty()));
+    for base in &bases {
+        let (status, _) = send(&http, reqwest::Method::GET, base, "/ui/themes/pale", None).await?;
+        assert_eq!(status, 404, "{base}");
+    }
+
     // Another replica sees both after the commit.
     wait_until(
         || async {
