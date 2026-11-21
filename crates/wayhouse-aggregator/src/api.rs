@@ -1351,6 +1351,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_query_takes_a_thousand_nodes_with_sixteen_longest_tags_each() {
+        // The controller keeps at most 1000 tag records of 16 tags (32-character keys,
+        // 64-character values); the overlay it sends must fit `NODE_TAGS_BODY_LIMIT` (#525).
+        let tags: serde_json::Map<_, _> = (0..16)
+            .map(|i| (format!("{i:k<32}"), serde_json::json!("v".repeat(64))))
+            .collect();
+        let by_node: serde_json::Map<_, _> = (0..1000)
+            .map(|i| (format!("{i:n<64}"), serde_json::Value::Object(tags.clone())))
+            .collect();
+        let body = serde_json::json!({ "operator_tags": by_node }).to_string();
+        assert!(body.len() < NODE_TAGS_BODY_LIMIT, "{} bytes", body.len());
+        let state = test_state();
+        state
+            .store
+            .ingest(labelled("a", Some("eu"), &[("env", "prod")]));
+        let resp = router(state)
+            .oneshot(
+                Request::post("/fleet/nodes/query")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn the_query_and_resolve_routes_take_the_operators_tags_in_the_body() {
         let state = test_state();
         state
