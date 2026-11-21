@@ -199,15 +199,6 @@ pub async fn run(role: Role, bin: &'static str, argv: Vec<OsString>) -> Result<(
                 i.enroll.advertise.as_deref(),
                 &i.extra,
             )?;
-            // Everything the unit needs is checked before the one-time code is spent.
-            if role == Role::Controller
-                && !i
-                    .extra
-                    .iter()
-                    .any(|a| a == "--listen" || a.starts_with("--listen="))
-            {
-                return Err("a controller replica needs --listen ADDR after `--`".into());
-            }
             let name = enroll_into(role, &i.enroll, &dir).await?;
             install_systemd(&spec, &dir, &i.enroll.controller_url, &i.extra, !i.no_start)?;
             eprintln!(

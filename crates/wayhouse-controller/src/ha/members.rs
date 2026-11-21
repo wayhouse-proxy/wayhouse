@@ -475,7 +475,7 @@ async fn add_member(
     )
     .await
     .map_err(MemberError::into_response)?;
-    tracing::info!(actor = who, id, addr = %addr, "adding an HA member");
+    tracing::info!(actor = ?who, id, addr = %addr, "adding an HA member");
     // Blocking: returns once the learner has caught up, by log or snapshot.
     ha.raft
         .add_learner(id, BasicNode::new(addr.to_owned()), true)
@@ -555,7 +555,7 @@ async fn remove(
     } else {
         return error(StatusCode::NOT_FOUND, format!("node {id} is not a member"));
     };
-    tracing::info!(actor = actor(&headers), id, "removing an HA member");
+    tracing::info!(actor = ?actor(&headers), id, "removing an HA member");
     // `retain = false`: the node leaves the membership entirely. Removing the
     // leader is allowed; `openraft` steps it down once the change commits.
     match ha.raft.change_membership(change, false).await {
@@ -590,7 +590,7 @@ async fn readdress(
     {
         return e.into_response();
     }
-    tracing::info!(actor = actor(&headers), id, addr = %req.addr, "re-addressing an HA member");
+    tracing::info!(actor = ?actor(&headers), id, addr = %req.addr, "re-addressing an HA member");
     let nodes = BTreeMap::from([(id, BasicNode::new(req.addr))]);
     match ha
         .raft
