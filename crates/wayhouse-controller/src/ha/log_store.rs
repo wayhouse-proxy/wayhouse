@@ -197,9 +197,11 @@ impl RaftLogStorage<TypeConfig> for LogStore {
 }
 
 /// Scrubs the plaintext secrets out of the retained, already-applied `Config` and `RelayConfig`
-/// entries of `entries` (the `raft_log` tree), except an entry whose config is one of `keep` (the
+/// entries from index `from` up to `up_to`, except an entry whose config is one of `keep` (the
 /// exact bytes of a revision that holds its plaintext on purpose, see
-/// `AppState::kept_bytes`). Returns how many entries it rewrote.
+/// `AppState::kept_bytes`). Returns how many entries it rewrote and the index to start the next
+/// scan at: everything below it is scrubbed, so the next pass skips it. A kept entry holds the
+/// mark back, because it is scrubbed once its revision retires.
 ///
 /// A purely local rewrite, never replicated: openraft matches log entries on term and index,
 /// never on payload, so the entry keeps its place and a follower that replays it stores a
@@ -210,11 +212,15 @@ impl RaftLogStorage<TypeConfig> for LogStore {
 /// truncation that removed the entry meanwhile is not undone, and one that replaced it wins.
 pub fn redact_applied(
     entries: &crate::kv::Tree,
+    from: u64,
     up_to: u64,
     keep: &[Vec<u8>],
-) -> Result<usize, crate::kv::Error> {
-    let changes = plan_redaction(entries, up_to, keep)?;
-    commit_redaction(entries, &changes)
+) -> Result<(usize, u64), crate::kv::Error> {
+    let (changes, next) = plan_redaction(entries, from, up_to, keep)?;
+    let written = commit_redaction(entries, &changes)?;
+    // A rewrite that lost its race to a newer entry is looked at again.
+    let next = if written == changes.len() { next } else { from };
+    Ok((written, next))
 }
 
 /// One planned rewrite: the key, the entry as read, and its scrubbed form.
@@ -222,15 +228,19 @@ type Change = (Vec<u8>, Vec<u8>, Vec<u8>);
 
 fn plan_redaction(
     entries: &crate::kv::Tree,
+    from: u64,
     up_to: u64,
     keep: &[Vec<u8>],
-) -> Result<Vec<Change>, crate::kv::Error> {
+) -> Result<(Vec<Change>, u64), crate::kv::Error> {
     use super::WriteRequest;
     use openraft::EntryPayload;
 
     let mut changes: Vec<Change> = Vec::new();
-    for item in entries.range::<[u8; 8], _>((Bound::Unbounded, Bound::Included(encode_idx(up_to))))
-    {
+    let mut next = up_to.saturating_add(1);
+    for item in entries.range::<[u8; 8], _>((
+        Bound::Included(encode_idx(from)),
+        Bound::Included(encode_idx(up_to)),
+    )) {
         let (key, raw) = item?;
         // Most entries are not configs; skip the JSON decode for those.
         if !raw.windows(6).any(|w| w == b"Config") {
@@ -246,6 +256,7 @@ fn plan_redaction(
             continue;
         };
         if keep.contains(bytes) {
+            next = next.min(entry.log_id.index);
             continue;
         }
         let Some(text) = std::str::from_utf8(bytes).ok() else {
@@ -258,7 +269,7 @@ fn plan_redaction(
         let new = serde_json::to_vec(&entry).expect("a log entry serializes");
         changes.push((key.to_vec(), raw.to_vec(), new));
     }
-    Ok(changes)
+    Ok((changes, next))
 }
 
 fn commit_redaction(
@@ -410,7 +421,9 @@ mod tests {
             ],
         );
         // Entries 1..=3 are applied here; `live` is a revision that keeps its plaintext.
-        let n = redact_applied(&store.entries, 3, std::slice::from_ref(&live)).unwrap();
+        let n = redact_applied(&store.entries, 0, 3, std::slice::from_ref(&live))
+            .unwrap()
+            .0;
         assert_eq!(n, 1);
         let all = store.try_get_log_entries(..).await.unwrap();
         assert_eq!(all.len(), 4);
@@ -432,7 +445,35 @@ mod tests {
         );
         // Same term and index, so the log still matches the leader's; a repeat does nothing.
         assert_eq!(*all[1].get_log_id(), *config_entry(2, vec![]).get_log_id());
-        assert_eq!(redact_applied(&store.entries, 3, &[live]).unwrap(), 0);
+        assert_eq!(redact_applied(&store.entries, 0, 3, &[live]).unwrap().0, 0);
+    }
+
+    #[tokio::test]
+    async fn a_scan_starts_at_the_watermark_and_stops_below_a_kept_entry() {
+        let (mut store, _dir) = open();
+        let live = config_text("# live\n");
+        seed(
+            &store,
+            &[
+                config_entry(1, config_text("# one\n")),
+                config_entry(2, live.clone()),
+                config_entry(3, config_text("# three\n")),
+            ],
+        );
+        // From 3 on: entry 1 is below the watermark and is not read at all.
+        let (n, next) = redact_applied(&store.entries, 3, 3, &[]).unwrap();
+        assert_eq!((n, next), (1, 4));
+        let all = store.try_get_log_entries(..).await.unwrap();
+        assert!(
+            String::from_utf8(payload_bytes(&all[0]))
+                .unwrap()
+                .contains(TOKEN),
+            "below the watermark"
+        );
+        // A full scan with `live` kept: the next watermark stays on the kept entry, so it is
+        // looked at again once that revision retires.
+        let (n, next) = redact_applied(&store.entries, 0, 3, std::slice::from_ref(&live)).unwrap();
+        assert_eq!((n, next), (1, 2));
     }
 
     #[tokio::test]
@@ -446,7 +487,7 @@ mod tests {
             ],
         );
         // Planned from what was read; then entry 1 is purged and entry 2 is replaced.
-        let plan = plan_redaction(&store.entries, 2, &[]).unwrap();
+        let plan = plan_redaction(&store.entries, 0, 2, &[]).unwrap().0;
         assert_eq!(plan.len(), 2);
         store.purge(*entry(1).get_log_id()).await.unwrap();
         let newer = serde_json::to_vec(&config_entry(2, config_text("# newer\n"))).unwrap();

@@ -461,7 +461,8 @@ impl AppState {
     /// The exact bytes of every config revision that still holds its plaintext on purpose: the
     /// live one and everything newer (a staged revision a group still waits for), and the retained
     /// older ones. Copies of any other revision, in the Raft log or a snapshot, are scrubbed
-    /// (`ha::state_machine`).
+    /// (`ha::state_machine`). Matching is by bytes: a retired entry whose text equals a kept
+    /// revision's stays whole too, which exposes nothing the kept revision does not.
     pub fn kept_bytes(&self) -> Result<Vec<Vec<u8>>, StoreError> {
         let Some((live, _)) = self.current_for_group(None, None)? else {
             return Ok(Vec::new());
@@ -745,12 +746,12 @@ impl AppState {
                     .store
                     .get(rev)?
                     .expect("a revision number from current_revision/the scan always exists");
+                let text = String::from_utf8_lossy(&bytes);
                 let parseable = max_schema.is_none_or(|max| {
-                    wayhouse_config::version::declared_schema_version(&String::from_utf8_lossy(
-                        &bytes,
-                    )) <= max
+                    wayhouse_config::version::declared_schema_version(&text) <= max
                 });
-                if parseable {
+                // A scrubbed revision has lost its secrets: no one's current config.
+                if parseable && !wayhouse_config::has_redacted_secret(&text) {
                     return Ok(Some((rev, bytes)));
                 }
             }
@@ -2300,6 +2301,20 @@ listeners:
             state.current_for_group(None, Some(2)).unwrap().unwrap().0,
             old + 1
         );
+        assert_eq!(
+            state.current_for_group(None, None).unwrap().unwrap().0,
+            old + 1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_scrubbed_revision_is_never_served_as_the_current_one() {
+        let (state, _dir) = test_state();
+        let scrubbed = b"schema_version: 1\nsettings:\n  admin:\n    auth_token: '[redacted]'\n";
+        let old = put_promoted(&state.store, scrubbed);
+        let _new = put_promoted(&state.store, b"schema_version: 2\n");
+        // A proxy that only parses schema 1 gets nothing rather than a config without its token.
+        assert!(state.current_for_group(None, Some(1)).unwrap().is_none());
         assert_eq!(
             state.current_for_group(None, None).unwrap().unwrap().0,
             old + 1

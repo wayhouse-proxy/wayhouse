@@ -169,13 +169,18 @@ pub(crate) async fn apply_config(
     let cfg = match live.prepare(cfg).await {
         Ok(cfg) => cfg,
         Err(e) => {
+            let retry = matches!(e, crate::secrets::Prepare::Unavailable(_));
             metrics::counter!(m::CONFIG_RELOAD, "result" => "failed").increment(1);
             tracing::error!(
                 source = source_desc,
                 error = %e,
                 "secrets could not be applied; reload rejected, keeping the current configuration and secrets"
             );
-            return Applied::SecretsUnavailable;
+            return if retry {
+                Applied::SecretsUnavailable
+            } else {
+                Applied::Rejected
+            };
         }
     };
     // Scan first: if a pinned module no longer validates, keep the previous config
@@ -576,7 +581,11 @@ mod tests {
         let r = rig();
         std::fs::remove_file(&r.store).unwrap();
         let before = r.handle.snapshot().listeners.len();
-        assert!(!reload(&r, &SEALED.replace("l1", "l2")).await);
+        assert_eq!(
+            reload_as(&r, &SEALED.replace("l1", "l2")).await,
+            Applied::SecretsUnavailable,
+            "a secret that cannot be read may come back, so a caller asks again"
+        );
         assert!(r.admin.accepts(FIRST));
         assert_eq!(r.handle.snapshot().listeners.len(), before);
         assert_eq!(
@@ -593,7 +602,11 @@ mod tests {
     async fn a_too_short_rotated_token_rejects_the_reload() {
         let r = rig();
         seal(&r.store, "admin-token", "only-ten-b");
-        assert!(!reload(&r, SEALED).await);
+        assert_eq!(
+            reload_as(&r, SEALED).await,
+            Applied::Rejected,
+            "a weak value stays weak: asking again changes nothing"
+        );
         assert!(!r.admin.accepts("only-ten-b"));
         assert!(r.admin.accepts(FIRST));
         r.runtime
@@ -606,12 +619,39 @@ mod tests {
         let r = rig();
         let open = "pools:\n  - name: p\n    targets: [\"127.0.0.1:9\"]\n    health_check:\n      type: none\n\
             listeners:\n  - name: l2\n    bind: \"127.0.0.1:0\"\n    pool: p\n";
-        assert!(
-            !reload(&r, open).await,
+        assert_eq!(
+            reload_as(&r, open).await,
+            Applied::Rejected,
             "dropping auth is a restart-only change"
         );
         assert!(r.admin.accepts(FIRST));
         assert_eq!(r.handle.snapshot().listeners[0].name, "l1");
+        r.runtime
+            .shutdown_with_grace(Duration::from_millis(100))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_reload_that_adds_the_gossip_mesh_says_it_needs_a_restart() {
+        let log = Capture::default();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(log.clone())
+                .with_ansi(false)
+                .finish(),
+        );
+        let r = rig();
+        let with_mesh = SEALED.replace(
+            "settings:\n",
+            "settings:\n  failure_domain: z1\n  gossip:\n    bind: \"127.0.0.1:17946\"\n    psk: \"0123456789abcdef0123456789abcdef\"\n",
+        );
+        assert!(reload(&r, &with_mesh).await);
+        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            text.contains("settings.gossip") && text.contains("restart"),
+            "{text}"
+        );
         r.runtime
             .shutdown_with_grace(Duration::from_millis(100))
             .await;

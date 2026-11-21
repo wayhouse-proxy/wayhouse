@@ -447,48 +447,53 @@ async fn rewrap_secrets(st: &UiState, headers: &HeaderMap) -> Response {
         Err(e) => return internal(e),
     };
     let (mut total, mut skipped, mut unreadable) = (0, Vec::new(), Vec::new());
-    for (name, mut record) in stored {
-        if record["key_id"].as_str() == Some(active.as_str()) {
-            continue;
-        }
-        let Ok(old) = serde_json::from_value::<wayhouse_secrets::Sealed>(record.clone()) else {
-            unreadable.push(name);
-            continue;
-        };
-        let Ok(value) = ring.open_cluster(&name, &old) else {
-            unreadable.push(name);
-            continue;
-        };
-        let Ok(new) = ring.seal_cluster(&name, value.expose()) else {
-            unreadable.push(name);
-            continue;
-        };
-        total += 1;
-        record["key_id"] = new.key_id.into();
-        record["nonce"] = new.nonce.into();
-        record["ciphertext"] = new.ciphertext.into();
-        let op = UiOp::RewrapSecret {
-            name: name.clone(),
-            from_nonce: old.nonce,
-            value: record,
-        };
-        let applied = match &st.ha {
-            None => st.store.apply_local(&op).map_err(|e| e.to_string()),
-            Some(ha) => {
-                match crate::plugins::peer::propose_ciphertext(ha, WriteRequest::Ui(op)).await {
-                    Ok(WriteResponse::UiResult(a)) => Ok(a),
-                    Ok(other) => return internal(format!("unexpected answer {other:?}")),
-                    Err(why) => return err(StatusCode::SERVICE_UNAVAILABLE, why),
-                }
+    // Whatever happens in the loop, the entries already rewrapped are logged below.
+    let failed: Option<Response> = async {
+        for (name, mut record) in stored {
+            if record["key_id"].as_str() == Some(active.as_str()) {
+                continue;
             }
-        };
-        match applied {
-            Ok(Applied::Done) => {}
-            Ok(Applied::Stale | Applied::NotFound) => skipped.push(name),
-            Ok(other) => return internal(format!("unexpected answer {other:?}")),
-            Err(e) => return internal(e),
+            let Ok(old) = serde_json::from_value::<wayhouse_secrets::Sealed>(record.clone()) else {
+                unreadable.push(name);
+                continue;
+            };
+            let Ok(value) = ring.open_cluster(&name, &old) else {
+                unreadable.push(name);
+                continue;
+            };
+            let Ok(new) = ring.seal_cluster(&name, value.expose()) else {
+                unreadable.push(name);
+                continue;
+            };
+            total += 1;
+            record["key_id"] = new.key_id.into();
+            record["nonce"] = new.nonce.into();
+            record["ciphertext"] = new.ciphertext.into();
+            let op = UiOp::RewrapSecret {
+                name: name.clone(),
+                from_nonce: old.nonce,
+                value: record,
+            };
+            let applied = match &st.ha {
+                None => st.store.apply_local(&op).map_err(|e| e.to_string()),
+                Some(ha) => {
+                    match crate::plugins::peer::propose_ciphertext(ha, WriteRequest::Ui(op)).await {
+                        Ok(WriteResponse::UiResult(a)) => Ok(a),
+                        Ok(other) => return Some(internal(format!("unexpected answer {other:?}"))),
+                        Err(why) => return Some(err(StatusCode::SERVICE_UNAVAILABLE, why)),
+                    }
+                }
+            };
+            match applied {
+                Ok(Applied::Done) => {}
+                Ok(Applied::Stale | Applied::NotFound) => skipped.push(name),
+                Ok(other) => return Some(internal(format!("unexpected answer {other:?}"))),
+                Err(e) => return Some(internal(e)),
+            }
         }
+        None
     }
+    .await;
     if let (Some(ha), true) = (&st.ha, total > skipped.len()) {
         crate::plugins::peer::request_purge(ha);
     }
@@ -498,8 +503,12 @@ async fn rewrap_secrets(st: &UiState, headers: &HeaderMap) -> Response {
         skipped = skipped.len(),
         unreadable = unreadable.len(),
         key_id = %active,
+        complete = failed.is_none(),
         "cluster secrets rewrapped"
     );
+    if let Some(response) = failed {
+        return response;
+    }
     Json(json!({
         "rewrapped": total - skipped.len(),
         "skipped": skipped,
