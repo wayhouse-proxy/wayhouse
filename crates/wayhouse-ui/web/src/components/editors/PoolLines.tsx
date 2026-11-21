@@ -1,5 +1,6 @@
 import type { State } from "../ui/StatusMark";
 import { StatusMark } from "../ui/StatusMark";
+import { clip, Mark } from "./diagram";
 import { Table, TBody, TD, TH, THead, TR } from "../ui/Table";
 
 export interface BackendRow {
@@ -12,13 +13,6 @@ export interface BackendRow {
 const ROW = 28;
 const W = 440;
 const WORD: Record<State, string> = { up: "up", degraded: "degraded", down: "down", unknown: "state unknown" };
-
-function Mark({ x, y, state }: { x: number; y: number; state: State }) {
-  if (state === "up") return <circle cx={x} cy={y} r={4.5} className="fill-good" />;
-  if (state === "down") return <rect x={x - 4.5} y={y - 4.5} width={9} height={9} className="fill-bad" />;
-  if (state === "degraded") return <path d={`M${x - 5.5} ${y + 4.5} L${x + 5.5} ${y + 4.5} L${x} ${y - 5} Z`} className="fill-warn" />;
-  return <circle cx={x} cy={y} r={4} className="fill-none stroke-ink-muted" strokeWidth={1.5} />;
-}
 
 /**
  * The pool's patch lines (DESIGN.md): the pool on the left, one line to each backend on the right with its live state
@@ -41,10 +35,11 @@ export function PoolLines({ name, source, rows }: { name: string; source?: strin
             const y = 8 + ROW * i + ROW / 2;
             return (
               <g key={i}>
+                <title>{r.addr}</title>
                 <path d={`M150 ${mid} H200 V${y} H230`} className="fill-none stroke-control" strokeWidth={1.5} />
                 <Mark x={238} y={y} state={r.state} />
                 <text x={252} y={y + 4} className="fill-ink text-xs font-mono">
-                  {r.addr}
+                  {clip(r.addr, 26)}
                   {r.note && <tspan className="fill-ink-muted font-sans"> ({r.note})</tspan>}
                 </text>
               </g>
