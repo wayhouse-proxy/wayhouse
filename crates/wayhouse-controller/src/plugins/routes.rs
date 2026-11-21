@@ -205,7 +205,7 @@ pub async fn show(State(st): State<PluginsState>) -> Response {
 
 /// `GET /plugin-routes/subscribe`: the overlay now, then again whenever it changes.
 pub async fn subscribe(State(st): State<PluginsState>) -> Response {
-    let Ok(permit) = SUBSCRIBERS.try_acquire() else {
+    let Some(slot) = crate::slot::Slot::take(&SUBSCRIBERS) else {
         tracing::warn!(
             max = MAX_SUBSCRIBERS,
             "plugin route subscriber cap reached; refusing a stream"
@@ -218,8 +218,6 @@ pub async fn subscribe(State(st): State<PluginsState>) -> Response {
             .into_response();
     };
     // The slot is held by the stream's task and given back when it ends, even by a panic.
-    permit.forget();
-    let slot = Slot;
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     let store = st.store.clone();
     tokio::spawn(async move {
@@ -260,15 +258,6 @@ pub async fn subscribe(State(st): State<PluginsState>) -> Response {
 pub(super) const MAX_SUBSCRIBERS: usize = 1024;
 pub(super) static SUBSCRIBERS: tokio::sync::Semaphore =
     tokio::sync::Semaphore::const_new(MAX_SUBSCRIBERS);
-
-/// A taken subscriber slot; dropping it gives the slot back.
-struct Slot;
-
-impl Drop for Slot {
-    fn drop(&mut self) {
-        SUBSCRIBERS.add_permits(1);
-    }
-}
 
 #[cfg(test)]
 mod tests {

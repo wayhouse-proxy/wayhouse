@@ -270,7 +270,7 @@ async fn subscribe(
     State(state): State<IntentState>,
     Query(params): Query<SubscribeParams>,
 ) -> Response {
-    let Ok(permit) = SUBSCRIBERS.try_acquire() else {
+    let Some(slot) = crate::slot::Slot::take(&SUBSCRIBERS) else {
         tracing::warn!(
             max = MAX_SUBSCRIBERS,
             "intent subscriber cap reached; refusing a stream"
@@ -283,8 +283,6 @@ async fn subscribe(
             .into_response();
     };
     // The slot is held by the stream's worker and given back when it ends, even by a panic.
-    permit.forget();
-    let slot = Slot;
     let (tx, rx) = mpsc::channel(16);
     let updates = state.updates.subscribe();
     tokio::spawn(async move {
@@ -305,15 +303,6 @@ async fn subscribe(
 /// Most live `GET /intent/subscribe` streams at once, like the config and registry streams.
 const MAX_SUBSCRIBERS: usize = 1024;
 static SUBSCRIBERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_SUBSCRIBERS);
-
-/// A taken subscriber slot; dropping it gives the slot back.
-struct Slot;
-
-impl Drop for Slot {
-    fn drop(&mut self) {
-        SUBSCRIBERS.add_permits(1);
-    }
-}
 
 async fn subscribe_worker(
     store: Arc<Store>,

@@ -153,7 +153,7 @@ ships [`deploy/caddy/base.json`](../deploy/caddy/base.json) (`unix//run/caddy/ad
 [`deploy/k8s/overlays/web-gateway/web-gateway.yaml`](../deploy/k8s/overlays/web-gateway/web-gateway.yaml).
 
 The `wayhouse-caddy` image is stock Caddy 2.11.7 source (no modules, no patches), compiled in the
-Dockerfile with a patched Go toolchain, `golang.org/x/net` and `go-jose/v4` (replaced to 4.1.6) because the
+Dockerfile with a patched Go toolchain, `golang.org/x/net` and `go-jose/v4` (replaced to the version pinned in `deploy/Dockerfile`) because the
 official image lags the Go and dependency security fixes, and `curl`, `libcurl` and `brotli-libs` are removed from it; the version and the base digests are pinned in
 [`deploy/Dockerfile`](../deploy/Dockerfile) (one place; bumps are manual, the Trivy job scans it like the
 other images). It runs as uid 65532 on high ports with a read-only root filesystem and no
