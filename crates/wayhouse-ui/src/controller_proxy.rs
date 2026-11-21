@@ -175,7 +175,7 @@ async fn put_acme_site(
     let Some(segment) = crate::proxy_util::path_segment(&name) else {
         return bad_acme_name();
     };
-    tracing::info!(actor = actor.as_deref().unwrap_or("-"), site = ?name, "acme: put site");
+    tracing::info!(actor = ?actor.as_deref().unwrap_or("-"), site = ?name, "acme: put site");
     proxy_typed(
         &state,
         Method::PUT,
@@ -196,7 +196,7 @@ async fn delete_acme_site(
     let Some(segment) = crate::proxy_util::path_segment(&name) else {
         return bad_acme_name();
     };
-    tracing::info!(actor = actor.as_deref().unwrap_or("-"), site = ?name, "acme: delete site");
+    tracing::info!(actor = ?actor.as_deref().unwrap_or("-"), site = ?name, "acme: delete site");
     proxy(
         &state,
         Method::DELETE,
@@ -375,7 +375,7 @@ async fn revoke_enrollment(
         )
             .into_response();
     };
-    tracing::info!(actor = actor.as_deref().unwrap_or("-"), enrollment = %id, "enrollment: revoke code");
+    tracing::info!(actor = ?actor.as_deref().unwrap_or("-"), enrollment = %id, "enrollment: revoke code");
     proxy(
         &state,
         Method::DELETE,
@@ -395,7 +395,7 @@ async fn revoke_acme_gateway(
     let Some(segment) = crate::proxy_util::path_segment(&name) else {
         return bad_acme_name();
     };
-    tracing::info!(actor = actor.as_deref().unwrap_or("-"), gateway = ?name, "acme: revoke gateway");
+    tracing::info!(actor = ?actor.as_deref().unwrap_or("-"), gateway = ?name, "acme: revoke gateway");
     proxy(
         &state,
         Method::DELETE,

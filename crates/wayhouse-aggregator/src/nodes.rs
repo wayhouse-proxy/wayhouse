@@ -357,7 +357,9 @@ pub fn select(all: Vec<Node>, filter: &Filter) -> Vec<Node> {
 }
 
 /// Orders version strings by their dotted numbers (`0.9.0` before `0.10.0`), a pre-release
-/// before its release; text that is not a dotted number sorts as text, after the numbers.
+/// before its release; text that is not a dotted number sorts as text, after the numbers. A `+build` suffix makes a
+/// version text, and the dotted parts of a pre-release (`rc.9`, `rc.10`) compare as text, which
+/// is fine for the versions release-please produces.
 fn cmp_version(a: &str, b: &str) -> std::cmp::Ordering {
     let key = |v: &str| {
         let (core, pre) = v.split_once('-').unwrap_or((v, ""));

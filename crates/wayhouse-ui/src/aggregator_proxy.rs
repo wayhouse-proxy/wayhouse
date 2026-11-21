@@ -261,7 +261,7 @@ async fn node_tags(
 #[derive(serde::Deserialize, Default)]
 struct Confirm {
     #[serde(default)]
-    names: Vec<String>,
+    names: std::collections::HashSet<String>,
 }
 
 /// `POST /api/fleet/node-tags/prune[?dry_run=true|false]`, body `{"names": [...]}` (optional):
@@ -304,7 +304,7 @@ async fn prune_node_tags(
     };
     let mut removed = Vec::new();
     if !dry_run {
-        for name in unlisted.iter().filter(|n| confirm.names.contains(n)) {
+        for name in unlisted.iter().filter(|n| confirm.names.contains(n.as_str())) {
             let Some(segment) = crate::proxy_util::path_segment(name) else {
                 continue;
             };

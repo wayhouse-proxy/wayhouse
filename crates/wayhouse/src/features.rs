@@ -102,7 +102,10 @@ fn save(path: &std::path::Path, overrides: &Overrides) {
 }
 
 /// Loads the saved overrides at start; an expired one is judged out by [`overrides`].
-fn restore(path: &std::path::Path) -> bool {
+///
+/// `main` calls this before the listeners start, so the first connections already see the saved
+/// kill switches; [`run`] does not restore again.
+pub fn restore(path: &std::path::Path) -> bool {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
@@ -137,10 +140,6 @@ pub async fn run(
     saved: std::path::PathBuf,
 ) {
     let url = format!("{base_url}/features/overrides");
-    if restore(&saved) {
-        tracing::info!(path = %saved.display(), "feature overrides restored");
-        publish(&handle.snapshot().features, &handle);
-    }
     let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
     // Warn when the failure changes (a rotated token shows up once), not every 15 s.
     let mut failing: Option<String> = None;
