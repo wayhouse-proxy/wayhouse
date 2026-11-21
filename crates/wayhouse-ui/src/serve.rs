@@ -82,12 +82,12 @@ struct Args {
     #[arg(long, default_value_t = 43200)]
     session_max_age_secs: u64,
 
-    /// Address of a reverse proxy in front of this UI (repeat or comma-separate for several).
-    /// Only requests from these addresses are believed when they say who the client is
+    /// Address or CIDR block (`10.0.0.0/8`) of a reverse proxy in front of this UI (repeat or
+    /// comma-separate for several). Only requests from these addresses are believed when they say who the client is
     /// (`X-Forwarded-For`), so the login delay applies per client instead of per proxy. Leave
     /// it unset when clients connect directly: the header can be spoofed.
     #[arg(long, value_delimiter = ',')]
-    trusted_proxy: Vec<std::net::IpAddr>,
+    trusted_proxy: Vec<crate::login_limit::TrustedProxy>,
 
     /// Most browser sessions held at once; at the cap the oldest is evicted.
     #[arg(long, default_value_t = 1000)]
@@ -302,6 +302,12 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
     // Load (and validate) the serving certificate before anything else starts.
     let tls_cert = args.tls.load()?;
 
+    for p in args.trusted_proxy.iter().filter(|p| p.is_wide()) {
+        tracing::warn!(
+            block = %p,
+            "--trusted-proxy covers a very wide block; anyone who can reach this UI from inside it can pick their own login-throttle address. Use the proxy's own address or a narrow subnet"
+        );
+    }
     let login_required = args.ui_password.is_some() || args.users_file.is_some();
     let mut state = AppState::new(args.ui_password)
         // Open mode on a loopback bind is the DNS-rebinding setting: only answer

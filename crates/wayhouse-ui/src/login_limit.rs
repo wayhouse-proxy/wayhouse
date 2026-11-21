@@ -263,20 +263,100 @@ fn source_key(ip: IpAddr) -> IpAddr {
     }
 }
 
+/// A reverse proxy the operator trusts to say who the client is: one address, or a CIDR block
+/// (`10.0.0.0/8`, `fd00::/8`). A bare address is its own single-address block, so trusting one
+/// proxy never trusts its neighbours. `/0` is refused: it would let any peer forge the header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrustedProxy {
+    base: IpAddr,
+    prefix: u8,
+}
+
+impl TrustedProxy {
+    fn new(base: IpAddr, prefix: u8) -> Self {
+        // An IPv4-mapped IPv6 block is the IPv4 block it carries, like the peer addresses.
+        match base {
+            IpAddr::V6(v6) if prefix >= 96 => match v6.to_ipv4_mapped() {
+                Some(v4) => Self {
+                    base: IpAddr::V4(v4),
+                    prefix: prefix - 96,
+                },
+                None => Self { base, prefix },
+            },
+            _ => Self { base, prefix },
+        }
+    }
+
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match (self.base, ip.to_canonical()) {
+            (IpAddr::V4(a), IpAddr::V4(b)) => bits_match(&a.octets(), &b.octets(), self.prefix),
+            (IpAddr::V6(a), IpAddr::V6(b)) => bits_match(&a.octets(), &b.octets(), self.prefix),
+            _ => false,
+        }
+    }
+
+    /// A block wider than a /16 (IPv4) or /48 (IPv6): it trusts a lot of addresses, so the
+    /// operator is warned at startup.
+    pub fn is_wide(&self) -> bool {
+        match self.base {
+            IpAddr::V4(_) => self.prefix < 16,
+            IpAddr::V6(_) => self.prefix < 48,
+        }
+    }
+}
+
+fn bits_match(a: &[u8], b: &[u8], prefix: u8) -> bool {
+    let full = usize::from(prefix / 8);
+    let rem = prefix % 8;
+    a[..full] == b[..full] && (rem == 0 || (a[full] ^ b[full]) >> (8 - rem) == 0)
+}
+
+impl std::fmt::Display for TrustedProxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.base, self.prefix)
+    }
+}
+
+impl std::str::FromStr for TrustedProxy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        let (addr, prefix) = match s.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (s, None),
+        };
+        let base: IpAddr = addr
+            .trim()
+            .parse()
+            .map_err(|_| format!("{s:?} is not an IP address or CIDR block"))?;
+        let max = if base.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            None => max,
+            Some(p) => p
+                .parse::<u8>()
+                .ok()
+                .filter(|p| *p <= max)
+                .ok_or_else(|| format!("{s:?} has an invalid prefix length (0 to {max})"))?,
+        };
+        // After the IPv4-mapped rewrite, so `::ffff:0.0.0.0/96` (all of IPv4) is caught too.
+        let proxy = Self::new(base, prefix);
+        if proxy.prefix == 0 {
+            return Err(format!(
+                "{s:?} would trust every peer, so any client could forge X-Forwarded-For"
+            ));
+        }
+        Ok(proxy)
+    }
+}
+
 /// The address a login attempt is throttled under. This is the socket peer, unless the peer is
-/// one of the operator's `trusted` reverse proxies: then it is the nearest `X-Forwarded-For`
-/// entry (counting from the right, which is the end the proxy appended) that is not itself a
-/// trusted proxy. The header is never read from any other peer (it can be spoofed), and an entry
-/// that does not parse stops the walk and falls back to the peer, so a malformed header can only
-/// make the delay coarser, never let a client pick its own key.
-pub fn client_ip(peer: IpAddr, forwarded: Option<&str>, trusted: &[IpAddr]) -> IpAddr {
-    // Exact addresses: trusting one proxy must not trust its whole /64 (`source_key` is for the
-    // throttle's key, not for trust). Only an IPv4-mapped IPv6 address is read as its IPv4.
-    let exact = |ip: IpAddr| match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
-        v4 => v4,
-    };
-    let is_trusted = |ip: IpAddr| trusted.iter().any(|t| exact(*t) == exact(ip));
+/// within one of the operator's `trusted` reverse proxies: then it is the nearest
+/// `X-Forwarded-For` entry (counting from the right, which is the end the proxy appended) that is
+/// not itself a trusted proxy. The header is never read from any other peer (it can be spoofed),
+/// and an entry that does not parse stops the walk and falls back to the peer, so a malformed
+/// header can only make the delay coarser, never let a client pick its own key.
+pub fn client_ip(peer: IpAddr, forwarded: Option<&str>, trusted: &[TrustedProxy]) -> IpAddr {
+    let is_trusted = |ip: IpAddr| trusted.iter().any(|t| t.contains(ip));
     if !is_trusted(peer) {
         return peer;
     }
@@ -336,6 +416,10 @@ impl LoginLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tp(s: &str) -> TrustedProxy {
+        s.parse().unwrap()
+    }
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
@@ -529,7 +613,7 @@ mod tests {
     #[test]
     fn a_trusted_proxy_vouches_for_the_forwarded_address_and_nobody_else_does() {
         let proxy = ip("10.0.0.5");
-        let trusted = [proxy];
+        let trusted = [tp("10.0.0.5")];
         // Behind the proxy, the client is the entry the proxy appended.
         assert_eq!(
             client_ip(proxy, Some("203.0.113.9"), &trusted),
@@ -559,21 +643,71 @@ mod tests {
             client_ip(
                 ip("2001:db8::99"),
                 Some("203.0.113.9"),
-                &[ip("2001:db8::5")]
+                &[tp("2001:db8::5")]
             ),
             ip("2001:db8::99")
         );
         assert_eq!(
-            client_ip(ip("2001:db8::5"), Some("203.0.113.9"), &[ip("2001:db8::5")]),
+            client_ip(ip("2001:db8::5"), Some("203.0.113.9"), &[tp("2001:db8::5")]),
             ip("203.0.113.9")
         );
         // No trusted proxies configured: always the peer.
         assert_eq!(client_ip(proxy, Some("203.0.113.9"), &[]), proxy);
+        // A CIDR block trusts every address inside it and nothing outside.
+        let net = [tp("10.0.0.0/24"), tp("fd00::/8")];
+        assert_eq!(
+            client_ip(ip("10.0.0.77"), Some("203.0.113.9"), &net),
+            ip("203.0.113.9")
+        );
+        assert_eq!(
+            client_ip(ip("fd12::1"), Some("203.0.113.9"), &net),
+            ip("203.0.113.9")
+        );
+        assert_eq!(
+            client_ip(ip("10.0.1.77"), Some("203.0.113.9"), &net),
+            ip("10.0.1.77")
+        );
+        // A trusted hop inside the block is walked through, like a single trusted address.
+        assert_eq!(
+            client_ip(ip("10.0.0.5"), Some("203.0.113.9, 10.0.0.200"), &net),
+            ip("203.0.113.9")
+        );
         // An IPv4-mapped peer matches its IPv4 proxy.
         assert_eq!(
             client_ip(ip("::ffff:10.0.0.5"), Some("203.0.113.9"), &trusted),
             ip("203.0.113.9")
         );
+    }
+
+    #[test]
+    fn trusted_proxies_parse_as_addresses_or_blocks_and_refuse_everything() {
+        let p: TrustedProxy = "10.1.2.3/8".parse().unwrap();
+        assert!(p.contains(ip("10.255.0.1")) && !p.contains(ip("11.0.0.1")));
+        let one: TrustedProxy = "192.0.2.7".parse().unwrap();
+        assert!(one.contains(ip("192.0.2.7")) && !one.contains(ip("192.0.2.8")));
+        let odd: TrustedProxy = "10.0.0.0/13".parse().unwrap();
+        assert!(odd.contains(ip("10.7.255.255")) && !odd.contains(ip("10.8.0.0")));
+        let mapped: TrustedProxy = "::ffff:10.0.0.0/104".parse().unwrap();
+        assert!(mapped.contains(ip("10.9.9.9")));
+        assert!(!tp("10.0.0.0/16").is_wide() && tp("10.0.0.0/15").is_wide());
+        assert!(!tp("fd00::/48").is_wide() && tp("fd00::/8").is_wide());
+        assert!(
+            tp("::ffff:10.0.0.0/103").is_wide(),
+            "judged as the IPv4 /7 it is"
+        );
+        for bad in [
+            "0.0.0.0/0",
+            "::/0",
+            "::ffff:0.0.0.0/96",
+            "::ffff:0:0/96",
+            "10.0.0.0/33",
+            "fd00::/129",
+            "nope",
+            "10.0.0.0/x",
+            "",
+        ] {
+            assert!(bad.parse::<TrustedProxy>().is_err(), "{bad:?}");
+        }
     }
 
     #[test]
