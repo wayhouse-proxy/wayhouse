@@ -130,11 +130,9 @@ pub fn router(state: UiState) -> Router {
         )
         .route(
             "/secrets/rewrap",
-            axum::routing::post(
-                |State(st): State<UiState>, headers: HeaderMap| async move {
-                    rewrap_secrets(&st, &headers).await
-                },
-            ),
+            axum::routing::post(|State(st): State<UiState>, headers: HeaderMap| async move {
+                rewrap_secrets(&st, &headers).await
+            }),
         )
         .route(
             "/secrets/{name}",
