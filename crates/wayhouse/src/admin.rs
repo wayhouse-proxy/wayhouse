@@ -33,7 +33,7 @@ struct AdminState {
     /// Bearer token every request except `GET /healthz` must present;
     /// `None` leaves the API open (`settings.admin.auth_token`, phase 10+11
     /// slice 10 — see `docs/05` "Admin API auth").
-    auth_token: Option<String>,
+    auth_token: Option<std::sync::Arc<wayhouse_http::rotating::RotatingSecret>>,
     /// `settings.sniffers.dir`, if configured — where `/admin/sniffers`
     /// writes/removes `.wasm` files. `None` when this instance has no
     /// `settings.sniffers` block at all (turning sniffing on from nothing is
@@ -135,7 +135,13 @@ fn router(state: AdminState) -> Router {
     // must not reach it.
     let gated = wayhouse_http::protocol::gate_lenient(gated, "proxy").route_layer(
         middleware::from_fn_with_state(
-            wayhouse_http::server::BearerAuth::new(state.auth_token.as_deref())
+            state
+                .auth_token
+                .clone()
+                .map_or_else(
+                    || wayhouse_http::server::BearerAuth::new(None),
+                    wayhouse_http::server::BearerAuth::rotating,
+                )
                 .with_body("unauthorized\n"),
             wayhouse_http::server::require_bearer,
         ),
@@ -190,7 +196,7 @@ pub async fn serve(
     )>,
     runtime: RuntimeHandle,
     prometheus: PrometheusHandle,
-    auth_token: Option<String>,
+    auth_token: Option<std::sync::Arc<wayhouse_http::rotating::RotatingSecret>>,
     sniffers_dir: Option<PathBuf>,
     sniffers: std::sync::Arc<Sniffers>,
     sniffer_pins: SnifferPins,
@@ -1216,7 +1222,8 @@ mod tests {
         let app = router(AdminState {
             runtime: runtime.handle(),
             prometheus,
-            auth_token: auth_token.map(str::to_string),
+            auth_token: auth_token
+                .map(|t| std::sync::Arc::new(wayhouse_http::rotating::RotatingSecret::new(t))),
             sniffers_dir,
             sniffers: std::sync::Arc::new(wayhouse_core::sniff::Sniffers::default()),
             sniffer_pins: std::sync::Arc::new(Vec::new),

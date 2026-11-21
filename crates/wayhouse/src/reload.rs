@@ -4,7 +4,9 @@
 //! in atomically. Pool membership, balancer, health-check and capacity changes
 //! take effect live, and so do listeners (reconciled by name: added, removed or
 //! re-spawned), resolvers and backend sources. Only the startup-only settings
-//! (`workers`, `limits`, `geo_db`, `admin`, sniffer engine limits) need a restart.
+//! (`workers`, `limits`, `geo_db`, `admin.listen` / `admin.tls`, sniffer engine limits) need a
+//! restart. A rotated admin token or gossip key does not: references are read again on every
+//! reload and the old value keeps working for [`crate::secrets::OVERLAP`].
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,6 +19,7 @@ use wayhouse_core::metrics_defs as m;
 use wayhouse_core::sniff::Sniffers;
 use wayhouse_core::{Resolvers, RuntimeHandle, Snapshot};
 
+use crate::secrets::Live;
 use crate::sniffer_loader::SnifferLoader;
 
 /// Quiet period the trigger must stay silent for before a reload runs.
@@ -46,6 +49,7 @@ pub async fn run(
     resolvers: Arc<Resolvers>,
     sniffer_loader: Option<Arc<SnifferLoader>>,
     sniffers: Arc<Sniffers>,
+    live: Arc<Live>,
 ) {
     let trigger = Arc::new(Notify::new());
     // Kept alive for the lifetime of this task; dropping it stops the watch.
@@ -73,6 +77,7 @@ pub async fn run(
                 &resolvers,
                 sniffer_loader.as_deref(),
                 &sniffers,
+                &live,
             )
             .await;
         }
@@ -93,6 +98,7 @@ pub async fn run(
                 &resolvers,
                 sniffer_loader.as_deref(),
                 &sniffers,
+                &live,
             )
             .await;
         }
@@ -105,6 +111,7 @@ async fn apply(
     resolvers: &Resolvers,
     sniffer_loader: Option<&SnifferLoader>,
     sniffers: &Sniffers,
+    live: &Live,
 ) {
     match crate::plugin_overlay::load(path) {
         Ok(cfg) => {
@@ -114,6 +121,7 @@ async fn apply(
                 resolvers,
                 sniffer_loader,
                 sniffers,
+                live,
                 &format!("file {}", path.display()),
             )
             .await;
@@ -123,6 +131,17 @@ async fn apply(
             tracing::error!(error = %e, "config reload failed; keeping current configuration");
         }
     }
+}
+
+/// What [`apply_config`] did with a config.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Applied {
+    Yes,
+    /// The config itself was refused; sending it again changes nothing.
+    Rejected,
+    /// Its secrets could not be read or are unusable (say a transient fetch failure): the same
+    /// config may apply later, so a caller that can ask again should.
+    SecretsUnavailable,
 }
 
 /// Rebuilds the snapshot from an already-parsed-and-validated [`wayhouse_config::Config`]
@@ -138,20 +157,27 @@ pub(crate) async fn apply_config(
     resolvers: &Resolvers,
     sniffer_loader: Option<&SnifferLoader>,
     sniffers: &Sniffers,
+    live: &Live,
     source_desc: &str,
-) -> bool {
+) -> Applied {
     for w in cfg.warnings() {
         tracing::warn!(source = source_desc, "{w}");
     }
-    // The admin token and the gossip key are read once, at start. A reload does not resolve
-    // secret references again, so a rotated secret takes effect at the next restart.
-    for name in cfg.secret_names() {
-        tracing::warn!(
-            source = source_desc,
-            secret = %name,
-            "settings.admin.auth_token and settings.gossip.psk are read at start only: a changed or rotated secret applies at the next restart"
-        );
-    }
+    // Secret references are read again on every reload, so a rotated admin token or gossip key
+    // applies without a restart. A secret that cannot be read, or a value that is too weak,
+    // rejects the reload and the old secrets keep working.
+    let cfg = match live.prepare(cfg).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            metrics::counter!(m::CONFIG_RELOAD, "result" => "failed").increment(1);
+            tracing::error!(
+                source = source_desc,
+                error = %e,
+                "secrets could not be applied; reload rejected, keeping the current configuration and secrets"
+            );
+            return Applied::SecretsUnavailable;
+        }
+    };
     // Scan first: if a pinned module no longer validates, keep the previous config
     // and sniffer set together instead of activating routes that name sniffers the
     // old set cannot serve.
@@ -164,7 +190,7 @@ pub(crate) async fn apply_config(
                 error = %e,
                 "sniffer rescan failed; reload rejected, keeping the current configuration and sniffer set"
             );
-            return false;
+            return Applied::Rejected;
         }
     };
     let prev = handle.current();
@@ -187,6 +213,7 @@ pub(crate) async fn apply_config(
     metrics::counter!(m::CONFIG_RELOAD, "result" => "ok").increment(1);
     metrics::gauge!(m::CONFIG_VERSION).set(unix_now());
     crate::features::publish(&cfg.features, handle);
+    live.rotate(&cfg, handle, source_desc);
     // Always reconcile, not only when the listener definitions changed: the
     // snapshot above is already stored, so after a failed (re)bind the running
     // group no longer matches it, and only a reconcile on a later reload — even
@@ -219,7 +246,7 @@ pub(crate) async fn apply_config(
         rebuild_resolvers(&cfg, resolvers);
     }
     tracing::info!(source = %source_desc, "configuration reloaded");
-    true
+    Applied::Yes
 }
 
 /// Rebuild the external-resolver clients from the new `resolvers:` and swap the
@@ -365,14 +392,32 @@ mod tests {
         let sniffers = Sniffers::default();
 
         let blocker = std::net::TcpListener::bind(p2).unwrap();
-        apply_config(parse(p2), &handle, &resolvers, None, &sniffers, "test").await;
+        apply_config(
+            parse(p2),
+            &handle,
+            &resolvers,
+            None,
+            &sniffers,
+            &Live::default(),
+            "test",
+        )
+        .await;
         assert!(
             tokio::net::TcpStream::connect(p1).await.is_ok(),
             "the old listener keeps serving after the failed rebind"
         );
 
         drop(blocker);
-        apply_config(parse(p2), &handle, &resolvers, None, &sniffers, "test").await;
+        apply_config(
+            parse(p2),
+            &handle,
+            &resolvers,
+            None,
+            &sniffers,
+            &Live::default(),
+            "test",
+        )
+        .await;
         assert!(
             tokio::net::TcpStream::connect(p2).await.is_ok(),
             "reloading the same config retried the bind"
@@ -413,6 +458,7 @@ mod tests {
             &Resolvers::default(),
             None,
             &Sniffers::default(),
+            &Live::default(),
             "test",
         )
         .await;
@@ -425,6 +471,7 @@ mod tests {
             &Resolvers::default(),
             None,
             &Sniffers::default(),
+            &Live::default(),
         )
         .await;
         assert!(
@@ -433,6 +480,188 @@ mod tests {
         );
         assert_eq!(handle.snapshot().listeners.len(), 1);
         runtime
+            .shutdown_with_grace(Duration::from_millis(100))
+            .await;
+    }
+
+    const KEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
+    const FIRST: &str = "first-admin-token-0123456789";
+    const SECOND: &str = "second-admin-token-0123456789";
+
+    /// A proxy on a file config with a sealed admin token and a gossip key, plus the pieces a
+    /// test needs to rotate them: the secrets file, and the live token the admin API checks.
+    struct Rig {
+        _dir: tempfile::TempDir,
+        store: PathBuf,
+        live: Live,
+        admin: Arc<wayhouse_http::rotating::RotatingSecret>,
+        runtime: wayhouse_core::Runtime,
+        handle: RuntimeHandle,
+    }
+
+    const SEALED: &str =
+        "schema_version: 4\nsettings:\n  admin:\n    auth_token: { secret: admin-token }\n\
+        pools:\n  - name: p\n    targets: [\"127.0.0.1:9\"]\n    health_check:\n      type: none\n\
+        listeners:\n  - name: l1\n    bind: \"127.0.0.1:0\"\n    pool: p\n";
+
+    fn seal(rig_store: &Path, name: &str, value: &str) {
+        let ring = wayhouse_secrets::Keyring::parse(KEY).unwrap();
+        crate::secret_store::set(rig_store, &ring, name, value.as_bytes()).unwrap();
+    }
+
+    fn rig() -> Rig {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (store, keys) = (dir.path().join("secrets"), dir.path().join("keys"));
+        std::fs::write(&keys, format!("{KEY}\n")).unwrap();
+        std::fs::set_permissions(&keys, std::fs::Permissions::from_mode(0o600)).unwrap();
+        seal(&store, "admin-token", FIRST);
+        let admin = Arc::new(wayhouse_http::rotating::RotatingSecret::new(FIRST));
+        let live = Live {
+            source: crate::secrets::SecretSource {
+                controller: None,
+                file: Some(store.clone()),
+                key_file: Some(keys),
+            },
+            admin: Some(admin.clone()),
+        };
+        let cfg = wayhouse_config::parse_str(SEALED).unwrap();
+        let runtime = wayhouse_core::Runtime::start(Snapshot::from_config(&cfg), Arc::default(), 1);
+        let handle = runtime.handle();
+        Rig {
+            _dir: dir,
+            store,
+            live,
+            admin,
+            runtime,
+            handle,
+        }
+    }
+
+    async fn reload(r: &Rig, yaml: &str) -> bool {
+        reload_as(r, yaml).await == Applied::Yes
+    }
+
+    async fn reload_as(r: &Rig, yaml: &str) -> Applied {
+        let cfg = wayhouse_config::parse_str(yaml).unwrap();
+        apply_config(
+            cfg,
+            &r.handle,
+            &Resolvers::default(),
+            None,
+            &Sniffers::default(),
+            &r.live,
+            "test",
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_reload_picks_up_a_rotated_admin_token_and_keeps_the_old_one_for_the_window() {
+        let r = rig();
+        seal(&r.store, "admin-token", SECOND);
+        assert!(reload(&r, SEALED).await);
+        assert!(r.admin.accepts(SECOND));
+        assert!(
+            r.admin.accepts(FIRST),
+            "the old token works inside the overlap window"
+        );
+        r.runtime
+            .shutdown_with_grace(Duration::from_millis(100))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_reload_whose_secret_is_missing_is_rejected_and_the_token_stays() {
+        let r = rig();
+        std::fs::remove_file(&r.store).unwrap();
+        let before = r.handle.snapshot().listeners.len();
+        assert!(!reload(&r, &SEALED.replace("l1", "l2")).await);
+        assert!(r.admin.accepts(FIRST));
+        assert_eq!(r.handle.snapshot().listeners.len(), before);
+        assert_eq!(
+            r.handle.snapshot().listeners[0].name,
+            "l1",
+            "the rejected config is not live"
+        );
+        r.runtime
+            .shutdown_with_grace(Duration::from_millis(100))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_too_short_rotated_token_rejects_the_reload() {
+        let r = rig();
+        seal(&r.store, "admin-token", "only-ten-b");
+        assert!(!reload(&r, SEALED).await);
+        assert!(!r.admin.accepts("only-ten-b"));
+        assert!(r.admin.accepts(FIRST));
+        r.runtime
+            .shutdown_with_grace(Duration::from_millis(100))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_reload_cannot_remove_the_admin_token() {
+        let r = rig();
+        let open = "pools:\n  - name: p\n    targets: [\"127.0.0.1:9\"]\n    health_check:\n      type: none\n\
+            listeners:\n  - name: l2\n    bind: \"127.0.0.1:0\"\n    pool: p\n";
+        assert!(
+            !reload(&r, open).await,
+            "dropping auth is a restart-only change"
+        );
+        assert!(r.admin.accepts(FIRST));
+        assert_eq!(r.handle.snapshot().listeners[0].name, "l1");
+        r.runtime
+            .shutdown_with_grace(Duration::from_millis(100))
+            .await;
+    }
+
+    #[derive(Clone, Default)]
+    struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
+        type Writer = Capture;
+        fn make_writer(&'a self) -> Capture {
+            self.clone()
+        }
+    }
+
+    /// No log line of a reload carries a secret value: not on a rotation, not when the new value
+    /// is refused as too short, not when the secret is gone.
+    #[tokio::test]
+    async fn no_reload_log_line_carries_a_secret_value() {
+        let log = Capture::default();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(log.clone())
+                .with_ansi(false)
+                .finish(),
+        );
+        let r = rig();
+        seal(&r.store, "admin-token", SECOND);
+        assert!(reload(&r, SEALED).await);
+        seal(&r.store, "admin-token", "only-ten-b");
+        assert!(!reload(&r, SEALED).await);
+        std::fs::remove_file(&r.store).unwrap();
+        assert!(!reload(&r, SEALED).await);
+        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert!(text.contains("rotated"), "the rotation was logged: {text}");
+        for secret in [FIRST, SECOND, "only-ten-b"] {
+            assert!(!text.contains(secret), "a log line carries a secret value");
+        }
+        r.runtime
             .shutdown_with_grace(Duration::from_millis(100))
             .await;
     }

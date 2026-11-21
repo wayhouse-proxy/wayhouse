@@ -798,8 +798,9 @@ line prints a value. A config revision holds the name only.
 
 Every call is audited with a `warn` line (secret name, key id, actor). A controller with a key
 refuses to listen on plain HTTP on a non-loopback address unless `--allow-insecure-secrets` is
-given, because the `PUT` body is the value. To rotate: `PUT` the new value, then restart the
-proxies that use it (the admin token and gossip key are read at start). During a rolling upgrade
+given, because the `PUT` body is the value. To rotate: `PUT` the new value, then send each
+proxy that uses it `SIGHUP` (the admin token and gossip key are swapped in place; the old value
+works for 5 minutes (the gossip key for 10), see `docs/05` Secrets). During a rolling upgrade
 of an HA tier, upgrade every controller before the first `PUT`.
 
 ### Fronting layer: anycast vs. L4 load balancer

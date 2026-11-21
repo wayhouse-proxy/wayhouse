@@ -3,6 +3,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use tokio::sync::{watch, Notify};
@@ -37,6 +38,7 @@ pub struct Runtime {
     /// `SourceFactory` was supplied (i.e. tests / no discovery configured).
     sources: Option<Arc<SourceManager>>,
     reload_requested: Arc<Notify>,
+    gossip: Option<crate::gossip::GossipHandle>,
     shutdown_tx: watch::Sender<bool>,
     /// The health-checker task. Listener tasks live in `listeners`, discovery
     /// refresh tasks in `sources`.
@@ -57,9 +59,19 @@ pub struct RuntimeHandle {
     listeners: Arc<ListenerManager>,
     sources: Option<Arc<SourceManager>>,
     reload_requested: Arc<Notify>,
+    gossip: Option<crate::gossip::GossipHandle>,
 }
 
 impl RuntimeHandle {
+    /// Rotates the gossip pre-shared key of the running mesh (see
+    /// [`crate::gossip::GossipHandle::rotate_psk`]). `false` when it is unchanged or this
+    /// instance runs no mesh; turning the mesh on or off still needs a restart.
+    pub fn rotate_gossip_psk(&self, new: &str, overlap: Duration) -> bool {
+        self.gossip
+            .as_ref()
+            .is_some_and(|g| g.rotate_psk(new, overlap))
+    }
+
     pub fn snapshot(&self) -> arc_swap::Guard<Arc<Snapshot>> {
         self.snapshot.load()
     }
@@ -291,6 +303,7 @@ impl Runtime {
                 None => (None, None),
             };
 
+        let gossip_handle = gossip_fabric.as_ref().map(|f| f.handle.clone());
         let mut tasks = Vec::new();
         {
             let snap = snapshot.clone();
@@ -316,6 +329,7 @@ impl Runtime {
             listeners,
             sources,
             reload_requested,
+            gossip: gossip_handle,
             shutdown_tx,
             tasks,
         })
@@ -332,6 +346,7 @@ impl Runtime {
             listeners: self.listeners.clone(),
             sources: self.sources.clone(),
             reload_requested: self.reload_requested.clone(),
+            gossip: self.gossip.clone(),
         }
     }
 

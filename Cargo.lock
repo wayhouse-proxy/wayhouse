@@ -5050,6 +5050,7 @@ dependencies = [
  "tokio",
  "tracing",
  "wayhouse-config",
+ "wayhouse-http",
 ]
 
 [[package]]
