@@ -35,13 +35,14 @@ Let anyone write a plugin, let operators install it from a registry and enable i
 ## Manifest and registry
 
 - Capabilities are **embedded in the module** (custom section `wayhouse.plugin-caps`, read without instantiating) and bound to its sha256. The index's `capabilities` copy is informational for browsing only; the controller reads the section from the downloaded bytes, rejects a module whose section differs from the index, and shows the section's content in the approval screen. An unsigned or external registry therefore cannot show one thing and install another.
-- Per-plugin `manifest.toml` in the plugins repo: `name`, `description`, `license`, `version`, `plugin_abi`, `min_controller`, `limits`, `tick_interval`, `capabilities` (`net.hosts`, `secrets` slot names with descriptions, `routes.namespace`, `state` size), `config` schema (non-secret settings).
+- Per-plugin `manifest.toml` in the plugins repo: `name`, `description`, `license`, `version`, `plugin_abi`, `min_controller`, `limits`, `tick_interval`, `capabilities` (`http.hosts`, `secrets` slots with descriptions, each bound to the hosts it may be sent to, `routes.hosts` hostname patterns, `routes.backends` backend networks, `routes.max_entries` route-count cap, `state` size), `config` schema (non-secret settings).
 - The registry `index.json` is the sniffer format with a top-level `"kind": "plugin"` and a `plugins` list whose version entries add `capabilities`. The crate parses `kind` now and accepts only `sniffer`; adding `plugin` is part of the plugin build wave. `schema` stays 1 (nothing is released).
 - Official plugins are the small tested set from #219; community plugins are tested by the plugins repo's own CI.
 
 ## Capabilities and trust
 
 - At install the UI shows the requested capabilities in plain words (hosts it may call, secret slots and which hosts they are bound to, hostname patterns and backend constraints for routes, route-count cap) and the registry's trust state (official signed / unsigned / external at own risk). The operator approves; **approval is recorded against the module's sha256 plus the capability set**.
+- Every mutating route (install, approve, enable, disable, uninstall, secrets) is admin-authenticated like every other mutating route; no new auth scheme.
 - On update (a new sha256), any capability not already approved needs approval again. An update never silently widens access.
 - **Secrets.** Entered by the operator per plugin instance, stored in the controller, never returned by any API, never logged, never passed to the guest, and redacted from any response or log line that would echo a request or response. Each secret slot is **bound to specific hosts** in the manifest and approved as such, so a token cannot be sent to a second approved host. **Hard gate:** secrets in the replicated log and snapshots persist in old log segments and backups, so the secret storage review (at-rest encryption, key management, log compaction) must be finished before any plugin that uses secrets ships.
 
@@ -55,8 +56,18 @@ The `http` import does not reuse the registry client's guard unchanged, because 
 
 ### Install identity and uninstall
 
-Each install gets an install id, and route ownership is `plugin:<install id>`, so two registries shipping the same plugin name do not collide. Disabling or uninstalling a plugin removes its routes and state after a short grace period configured per install (default: routes removed immediately on uninstall, kept as last-known-good for a bounded time, default 10 minutes, when the plugin is disabled or its ticks keep failing, then removed with a visible alert).
-- Admin-authenticated like every other mutating route; no new auth scheme.
+Each install gets an install id, and route ownership is `plugin:<install id>`, so two registries shipping the same plugin name do not collide.
+
+**Route rule (one place).**
+- Uninstalling or disabling withdraws the install's routes at once.
+- A plugin that is enabled but whose ticks keep failing keeps its last committed routes as last-known-good for a bounded grace period (`max(10 x tick interval, 10 minutes)`), then the status shows `routes_stale`, and at twice the grace the routes are withdrawn with a visible alert.
+
+**State lifecycle.**
+- Disable keeps the plugin's state, port assignments and secrets. Enable resumes against them, and `init` must tolerate existing state.
+- Uninstall deletes the install's state and secrets immediately, with no grace period and no undo. Its entry ports wait out the quarantine in `docs/plugins.md` before reuse. The module blob goes with the last install that uses it.
+- A reinstall is a new install id and starts empty.
+
+Both rules are implemented as described in `docs/plugins.md` ("Routes", "Ticks").
 
 ## HA and state
 
