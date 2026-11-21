@@ -273,8 +273,12 @@ pub(crate) fn scan_sniffers(
 
 fn spawn_watcher(path: &Path, trigger: Arc<Notify>) -> notify::Result<RecommendedWatcher> {
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
-            trigger.notify_one();
+        match res {
+            // The admin API's own staging files (`/config/file`) are not a config edit.
+            Ok(event)
+                if event.paths.iter().all(|p| is_staging_file(p)) && !event.paths.is_empty() => {}
+            Ok(_) => trigger.notify_one(),
+            Err(_) => {}
         }
     })?;
     // Watch the parent directory so atomic-rename saves are seen; fall back to
@@ -286,6 +290,11 @@ fn spawn_watcher(path: &Path, trigger: Arc<Notify>) -> notify::Result<Recommende
         .unwrap_or_else(|| path.to_path_buf());
     watcher.watch(&target, RecursiveMode::NonRecursive)?;
     Ok(watcher)
+}
+
+/// A temp or backup file the admin API writes next to the config (`.<name>.<pid>.new.tmp`, `<name>.prev`).
+fn is_staging_file(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "tmp" || e == "prev")
 }
 
 /// Unix timestamp (whole seconds) for the `wayhouse_config_version` gauge.

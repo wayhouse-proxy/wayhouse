@@ -1,0 +1,5 @@
+# The official plugins the `sniffers-e2e` CI job builds and runs through the host's own
+# conformance check (`wayhouse-plugin-check`), pinned by commit of the plugins repository.
+# Move it with the plugins repo's ABI pin whenever the plugin ABI changes (docs/plugins.md).
+repo = "wayhouse-proxy/plugins"
+rev = "fd00be6e140d6e9cf0ecaed7ebc590ec6e7e97c4"

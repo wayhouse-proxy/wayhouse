@@ -51,6 +51,8 @@ tokio-tungstenite = "0.29"
 base64 = "0.22"
 tempfile.workspace = true
 wat.workspace = true
+# Signs release-feed fixtures in tests only (throwaway key pair per test run).
+minisign = "0.10"
 # HTTP/2 WebSocket (extended CONNECT) test client; all already in the lockfile.
 hyper = { version = "1", features = ["client", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

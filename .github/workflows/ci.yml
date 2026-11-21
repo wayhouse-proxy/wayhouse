@@ -73,6 +73,7 @@ jobs:
           python3 .github/scripts/sarif_categories_test.py
           python3 .github/scripts/check_release_test.py
           python3 .github/scripts/fetch_sniffers_test.py
+          python3 .github/scripts/check_plugins_test.py
           python3 .github/scripts/update_sniffers_lock_test.py
           python3 .github/scripts/no_bundled_sniffers_test.py
           python3 .github/scripts/check_md_links_test.py
@@ -271,7 +272,9 @@ jobs:
   # release asset blocks the PRs that do run it (re-run once, like any flake). It runs
   # when wayhouse or sniffers.lock changes, on the merge queue and in the nightly run
   # (like every other job). wasmtime generates native code per architecture, hence
-  # both runners. A hash mismatch or a missing asset fails the fetch step loudly.
+  # both runners. A hash mismatch or a missing asset fails the fetch step loudly. The same
+  # job also builds the official plugins pinned in plugins.lock and runs the plugin host's
+  # conformance check on them (amd64 only), so a host change cannot silently break them.
   sniffers-e2e:
     name: sniffers e2e (${{ matrix.arch }})
     needs: changes
@@ -291,6 +294,9 @@ jobs:
       - name: Install protoc
         uses: ./.github/actions/apt-install
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          targets: wasm32-unknown-unknown   # for the official plugins, built below
+          components: rustfmt, clippy       # as rust-toolchain.toml: no extra install mid-job
       - uses: ./.github/actions/cargo-cache
         with: { name: "sniffers-e2e-${{ matrix.arch }}" }
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
@@ -303,6 +309,12 @@ jobs:
         # ABI check, the artifact test and the WASM-boundary latency gate vs. NFR N1
         # (release matters for real numbers, see docs/07).
         run: cargo nextest run -p wayhouse --release --profile ci --run-ignored only --no-capture
+      - name: Build the pinned official plugins and run the host's conformance check on them
+        # plugins.lock pins a commit of the plugins repository. A plugin built for another
+        # ABI minor than this checkout's is a warning (an ABI bump, until the lock moves);
+        # any other failure fails the job. One architecture is enough: the check is the same.
+        if: matrix.arch == 'amd64'
+        run: python3 .github/scripts/check_plugins.py
       - name: Test report
         if: always()
         run: python3 .github/scripts/test_summary.py --title "sniffers e2e (${{ matrix.arch }})" target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"

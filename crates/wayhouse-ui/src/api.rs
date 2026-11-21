@@ -77,6 +77,9 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub aggregator: Option<AggregatorTarget>,
     pub controller: Option<ControllerTarget>,
+    /// A file-config proxy's admin API (`--proxy-url`): where the config editor reads and writes
+    /// when there is no controller (`GET`/`PUT /config/file`, `/config/schema`, `/config/validate`).
+    pub proxy_admin: Option<ControllerTarget>,
     /// `wayhouse-web-sync`'s metrics endpoint, for the Web sites page ([`crate::web_sync_api`]).
     pub web_sync: Option<crate::web_sync_api::WebSyncTarget>,
     /// The live bridge to the aggregator's `/fleet/subscribe` feed
@@ -103,6 +106,8 @@ pub struct AppState {
     /// changes are lost on restart, which the Sniffers page says.
     pub registries_persistent: bool,
     pub registry_client: crate::registry_client::RegistryClient,
+    /// The daily release-feed check; `None` in tests and when the feed is off.
+    pub release_watch: Option<Arc<crate::release_watch::ReleaseWatch>>,
     /// Refuse any request whose `Host` is not a loopback name or address
     /// ([`crate::origin_guard`]): DNS-rebinding protection for the open-mode UI.
     pub loopback_host_only: bool,
@@ -134,6 +139,7 @@ impl AppState {
                 .expect("the extra roots were validated by init_ca_file, so the client builds"),
             aggregator: None,
             controller: None,
+            proxy_admin: None,
             web_sync: None,
             fleet_feed: None,
             secure_cookie: false,
@@ -147,6 +153,7 @@ impl AppState {
             ),
             registries_persistent: false,
             registry_client: crate::registry_client::RegistryClient::new(),
+            release_watch: None,
             loopback_host_only: false,
             ws_slots: Arc::new(tokio::sync::Semaphore::new(crate::ws::DEFAULT_MAX_SOCKETS)),
             settings_dir: None,
@@ -183,6 +190,11 @@ impl AppState {
         self
     }
 
+    pub fn with_release_watch(mut self, watch: Arc<crate::release_watch::ReleaseWatch>) -> Self {
+        self.release_watch = Some(watch);
+        self
+    }
+
     pub fn with_session_limits(mut self, limits: SessionLimits) -> Self {
         self.sessions = Arc::new(SessionStore::with_limits(limits));
         self
@@ -215,6 +227,11 @@ impl AppState {
 
     pub fn with_controller(mut self, base_url: String, token: Option<String>) -> Self {
         self.controller = Some(ControllerTarget { base_url, token });
+        self
+    }
+
+    pub fn with_proxy_admin(mut self, base_url: String, token: Option<String>) -> Self {
+        self.proxy_admin = Some(ControllerTarget { base_url, token });
         self
     }
 
@@ -266,6 +283,7 @@ pub fn router(state: AppState) -> Router {
 
     let viewer = Router::new()
         .route("/ui/session", get(session_status))
+        .route("/api/release", get(release_status))
         .merge(crate::aggregator_proxy::viewer_router())
         .merge(crate::controller_proxy::viewer_router())
         .merge(crate::ui_data_proxy::viewer_router())
@@ -488,6 +506,16 @@ async fn session_status(
         .into_response()
 }
 
+/// `GET /api/release`: the version this backend runs and the newest stable release the signed
+/// feed knows of (`crate::release_watch`). Any signed-in role may read it.
+async fn release_status(State(state): State<AppState>) -> Response {
+    let status = match &state.release_watch {
+        Some(w) => w.status(),
+        None => crate::release_watch::ReleaseWatch::new(env!("CARGO_PKG_VERSION"), None).status(),
+    };
+    (StatusCode::OK, Json(status)).into_response()
+}
+
 /// Extracts the session id from the `Cookie` header(s), if present. Shared by
 /// [`logout`] and [`crate::auth::check_role`]. Every `cookie` header counts:
 /// over HTTP/2 a browser may send one per cookie (RFC 9113 §8.2.3).
@@ -558,6 +586,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_release_status_needs_a_session_and_reports_the_running_version() {
+        let app = router(AppState::new(Some("secret".into())));
+        let resp = app
+            .clone()
+            .oneshot(
+                HttpRequest::get("/api/release")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                HttpRequest::post("/ui/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"password":"secret"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cookie = cookie_header_from(&set_cookie_value(&resp));
+        let resp = app
+            .oneshot(
+                HttpRequest::get("/api/release")
+                    .header("cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["current"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["enabled"], false, "no watch is configured in tests");
+        assert!(v["latest"].is_null());
     }
 
     #[tokio::test]

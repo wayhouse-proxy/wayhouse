@@ -1,5 +1,6 @@
 //! Route matchers, the match context, and TLS SNI extraction.
 
+use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::ops::RangeInclusive;
 
@@ -163,13 +164,77 @@ impl Matcher {
     }
 }
 
-/// Extract the SNI `host_name` from a TLS ClientHello at the start of `buf`.
+/// Where the ClientHello at the start of a buffer stands.
+#[derive(Debug, PartialEq, Eq)]
+pub enum HelloState<'a> {
+    /// The whole handshake message is buffered; its bytes are returned joined across records.
+    Complete(Cow<'a, [u8]>),
+    /// A handshake record starts here but the message is not all there yet: more bytes could
+    /// complete it.
+    NeedMore,
+    /// Not a handshake record, or not a ClientHello: waiting would not help.
+    Invalid,
+}
+
+/// Collect the ClientHello at the start of `buf`. A client may split one handshake message
+/// across several consecutive TLS records (RFC 8446 §5.1), so this joins the payloads of the
+/// leading `0x16` records until the message length its 4-byte header announces is reached.
+pub fn client_hello_state(buf: &[u8]) -> HelloState<'_> {
+    // The common case is a hello in one record: borrow it. Only a split hello is copied.
+    let mut first: &[u8] = &[];
+    let mut joined: Vec<u8> = Vec::new();
+    let mut records = 0usize;
+    let mut pos = 0usize;
+    loop {
+        let view: &[u8] = if records <= 1 { first } else { &joined };
+        // The message type is known from the first byte, its length from the first four: check
+        // them, then see whether the message is whole.
+        if view.first().is_some_and(|&t| t != 0x01) {
+            return HelloState::Invalid; // not a ClientHello
+        }
+        if view.len() >= 4 {
+            let hs_len = u32::from_be_bytes([0, view[1], view[2], view[3]]) as usize;
+            if view.len() >= 4 + hs_len {
+                return HelloState::Complete(if records <= 1 {
+                    Cow::Borrowed(first)
+                } else {
+                    Cow::Owned(joined)
+                });
+            }
+        }
+        let Some(&lead) = buf.get(pos) else {
+            return HelloState::NeedMore;
+        };
+        if lead != 0x16 {
+            return HelloState::Invalid; // the message ends before its announced length
+        }
+        let Some(head) = buf.get(pos..pos + 5) else {
+            return HelloState::NeedMore; // not even the 5-byte record header yet
+        };
+        let rec_len = u16::from_be_bytes([head[3], head[4]]) as usize;
+        let Some(payload) = buf.get(pos + 5..pos + 5 + rec_len) else {
+            return HelloState::NeedMore; // the record is cut short
+        };
+        match records {
+            0 => first = payload,
+            1 => {
+                joined.extend_from_slice(first);
+                joined.extend_from_slice(payload);
+            }
+            _ => joined.extend_from_slice(payload),
+        }
+        records += 1;
+        pos += 5 + rec_len;
+    }
+}
+
+/// Extract the SNI `host_name` from a TLS ClientHello at the start of `buf`, also when the
+/// client split it across several TLS records.
 /// Returns `None` if `buf` is not a ClientHello, is truncated, or carries no
 /// SNI. The TCP listener reassembles a ClientHello split across TCP segments
-/// before calling this (it re-peeks until the whole first TLS record is
-/// buffered or the peek budget expires), so a `None` from a genuine truncation
-/// means the client stalled mid-handshake past the budget — that route then
-/// just does not match.
+/// before calling this (it re-peeks until the whole message is buffered or the peek budget
+/// expires), so a `None` from a genuine truncation means the client stalled mid-handshake
+/// past the budget — that route then just does not match.
 pub fn extract_sni(buf: &[u8]) -> Option<String> {
     struct Reader<'a> {
         b: &'a [u8],
@@ -201,15 +266,11 @@ pub fn extract_sni(buf: &[u8]) -> Option<String> {
         }
     }
 
-    let mut r = Reader::new(buf);
-    if r.u8()? != 0x16 {
-        return None; // not a handshake record
-    }
-    r.take(2)?; // record version
-    let rec_len = r.u16()?;
-    let rec = r.take(rec_len)?; // first record fragment
+    let HelloState::Complete(rec) = client_hello_state(buf) else {
+        return None;
+    };
 
-    let mut h = Reader::new(rec);
+    let mut h = Reader::new(&rec);
     if h.u8()? != 0x01 {
         return None; // not a ClientHello
     }
