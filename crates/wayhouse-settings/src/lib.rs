@@ -170,10 +170,20 @@ const MAX_FILE_BYTES: u64 = 1 << 20;
 
 fn read_capped(p: &Path) -> std::io::Result<String> {
     use std::io::Read;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Never block on a FIFO or follow a link planted where the file should be.
+        opts.custom_flags(nix::libc::O_NONBLOCK | nix::libc::O_NOFOLLOW);
+    }
+    let f = opts.open(p)?;
+    if !f.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
     let mut text = String::new();
-    std::fs::File::open(p)?
-        .take(MAX_FILE_BYTES + 1)
-        .read_to_string(&mut text)?;
+    f.take(MAX_FILE_BYTES + 1).read_to_string(&mut text)?;
     if text.len() as u64 > MAX_FILE_BYTES {
         return Err(std::io::Error::other(format!(
             "larger than {MAX_FILE_BYTES} bytes"
@@ -1441,6 +1451,15 @@ mod tests {
         .unwrap();
         assert!(read(dir.path(), "b").is_err());
         assert!(read_schema(dir.path(), "b").is_none());
+
+        // A FIFO where the file should be is refused at once, not waited on.
+        std::fs::remove_file(path(dir.path(), "b")).unwrap();
+        nix::unistd::mkfifo(
+            &path(dir.path(), "b"),
+            nix::sys::stat::Mode::from_bits_truncate(0o600),
+        )
+        .unwrap();
+        assert!(read(dir.path(), "b").is_err());
     }
 
     #[test]

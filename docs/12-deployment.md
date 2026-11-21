@@ -253,7 +253,7 @@ ways to arrange that:
   the files `0600`.
 - **One user per program** (a program cannot read or change another program's flags): create
   `DIR/<program>/` yourself, owned by that program's user, with a group the UI backend's user
-  belongs to (and no other program does), mode `2770`; the program's own user must be the owner or in that group too (the setgid bit hands the group to new
+  belongs to (and no other program does), mode `2770`; the program's own user must be in that group too (being the owner is not enough: the files the UI backend writes belong to it and its group) (the setgid bit hands the group to new
   files). When a program directory is group-writable its files are written `0660`, whatever the
   umask. The UI user is then the only one besides the program that can change that program's
   flags. A systemd tmpfiles line does it: `d /var/lib/wayhouse/settings/controller 2770 wayhouse-controller wayhouse-settings-ui -`.
