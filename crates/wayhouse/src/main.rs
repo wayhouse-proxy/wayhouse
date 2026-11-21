@@ -695,6 +695,12 @@ async fn run(
         &wayhouse_core::BackendOverlay::new(),
         &discovery,
     );
+    // Saved kill switches apply before the first listener accepts a connection.
+    if matches!(config_source, ConfigSource::Controller(..))
+        && features::restore(&feature_overrides_file, &cfg.features)
+    {
+        tracing::info!(path = %feature_overrides_file.display(), "feature overrides restored");
+    }
     let runtime = Runtime::start_with_discovery(
         snapshot,
         resolvers.clone(),

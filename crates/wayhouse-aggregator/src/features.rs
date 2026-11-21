@@ -39,12 +39,25 @@ pub struct FeatureRollup {
 #[must_use]
 pub fn rollup(states: &[InstanceState]) -> FeatureRollup {
     let mut flags: BTreeMap<&str, FlagRollup> = BTreeMap::new();
+    // The names kept past the cap are the first by name, not the first reported, so the answer
+    // does not depend on the order of the instances, and the set never holds more than the cap
+    // plus one name however many an instance reports.
+    let mut listed: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for name in states
+        .iter()
+        .flat_map(|s| s.payload.features.iter().map(|f| f.name.as_str()))
+    {
+        listed.insert(name);
+        if listed.len() > MAX_FLAGS {
+            listed.pop_last();
+        }
+    }
     let mut reporting = 0;
     for s in states {
         let p = &s.payload;
         reporting += usize::from(!p.features.is_empty());
         for f in &p.features {
-            if flags.len() >= MAX_FLAGS && !flags.contains_key(f.name.as_str()) {
+            if !listed.contains(f.name.as_str()) {
                 continue;
             }
             let r = flags.entry(&f.name).or_insert_with(|| FlagRollup {
@@ -120,6 +133,26 @@ mod tests {
         );
         let r = rollup(&[node("a", &many)]);
         assert_eq!(r.flags.len(), MAX_FLAGS);
+    }
+
+    #[test]
+    fn the_names_past_the_cap_do_not_depend_on_the_order_of_the_instances() {
+        let one = |from: usize| {
+            serde_json::Value::Array(
+                (from..from + MAX_FLAGS)
+                    .map(|i| json!({"name": format!("f{i:04}"), "value": true, "source": "default", "available": true}))
+                    .collect(),
+            )
+        };
+        let (a, b) = (node("a", &one(0)), node("b", &one(100)));
+        let names = |r: FeatureRollup| r.flags.into_iter().map(|f| f.name).collect::<Vec<_>>();
+        let ab = names(rollup(&[node("a", &one(0)), node("b", &one(100))]));
+        let ba = names(rollup(&[b, a]));
+        assert_eq!(
+            ab, ba,
+            "the same flags are listed whichever instance comes first"
+        );
+        assert_eq!(ab.len(), MAX_FLAGS);
     }
 
     #[test]

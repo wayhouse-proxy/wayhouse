@@ -261,7 +261,7 @@ async fn node_tags(
 #[derive(serde::Deserialize, Default)]
 struct Confirm {
     #[serde(default)]
-    names: Vec<String>,
+    names: std::collections::HashSet<String>,
 }
 
 /// `POST /api/fleet/node-tags/prune[?dry_run=true|false]`, body `{"names": [...]}` (optional):
@@ -304,7 +304,10 @@ async fn prune_node_tags(
     };
     let mut removed = Vec::new();
     if !dry_run {
-        for name in unlisted.iter().filter(|n| confirm.names.contains(n)) {
+        for name in unlisted
+            .iter()
+            .filter(|n| confirm.names.contains(n.as_str()))
+        {
             let Some(segment) = crate::proxy_util::path_segment(name) else {
                 continue;
             };
@@ -885,17 +888,15 @@ mod tests {
     #[tokio::test]
     async fn pruning_refuses_when_the_aggregator_lists_nothing_and_a_typo_never_deletes() {
         let (empty, _) = spawn_logging(StatusCode::OK, r#"{"count":0,"instances":[]}"#).await;
-        let (ctl, deleted) = tag_controller().await;
+        let (ctl, refused) = tag_controller().await;
         let (app, op) = app_with(empty, Some(ctl), crate::role::Role::Operator);
         let uri = "/api/fleet/node-tags/prune";
         let r = send(&app, &op, "POST", uri, r#"{"names":["gone"]}"#).await;
         assert_eq!(r.status(), StatusCode::CONFLICT);
+        assert!(refused.lock().unwrap().is_empty(), "nothing was deleted");
         let (agg, _) = spawn_logging(StatusCode::OK, r#"{"count":1,"instances":["fra-1"]}"#).await;
-        let (app, op) = app_with(
-            agg,
-            Some(tag_controller().await.0),
-            crate::role::Role::Operator,
-        );
+        let (ctl, deleted) = tag_controller().await;
+        let (app, op) = app_with(agg, Some(ctl), crate::role::Role::Operator);
         for q in ["dry_run=1", "dry_run=True", "dry_run=yes", "dry_run="] {
             let r = send(
                 &app,
