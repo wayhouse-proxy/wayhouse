@@ -288,14 +288,32 @@ impl TrustedProxy {
     }
 
     pub fn contains(&self, ip: IpAddr) -> bool {
-        let (a, b): (Vec<u8>, Vec<u8>) = match (self.base, ip.to_canonical()) {
-            (IpAddr::V4(a), IpAddr::V4(b)) => (a.octets().into(), b.octets().into()),
-            (IpAddr::V6(a), IpAddr::V6(b)) => (a.octets().into(), b.octets().into()),
-            _ => return false,
-        };
-        let full = usize::from(self.prefix / 8);
-        let rem = self.prefix % 8;
-        a[..full] == b[..full] && (rem == 0 || (a[full] ^ b[full]) >> (8 - rem) == 0)
+        match (self.base, ip.to_canonical()) {
+            (IpAddr::V4(a), IpAddr::V4(b)) => bits_match(&a.octets(), &b.octets(), self.prefix),
+            (IpAddr::V6(a), IpAddr::V6(b)) => bits_match(&a.octets(), &b.octets(), self.prefix),
+            _ => false,
+        }
+    }
+
+    /// A block wider than a /16 (IPv4) or /48 (IPv6): it trusts a lot of addresses, so the
+    /// operator is warned at startup.
+    pub fn is_wide(&self) -> bool {
+        match self.base {
+            IpAddr::V4(_) => self.prefix < 16,
+            IpAddr::V6(_) => self.prefix < 48,
+        }
+    }
+}
+
+fn bits_match(a: &[u8], b: &[u8], prefix: u8) -> bool {
+    let full = usize::from(prefix / 8);
+    let rem = prefix % 8;
+    a[..full] == b[..full] && (rem == 0 || (a[full] ^ b[full]) >> (8 - rem) == 0)
+}
+
+impl std::fmt::Display for TrustedProxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.base, self.prefix)
     }
 }
 
@@ -320,12 +338,14 @@ impl std::str::FromStr for TrustedProxy {
                 .filter(|p| *p <= max)
                 .ok_or_else(|| format!("{s:?} has an invalid prefix length (0 to {max})"))?,
         };
-        if prefix == 0 {
+        // After the IPv4-mapped rewrite, so `::ffff:0.0.0.0/96` (all of IPv4) is caught too.
+        let proxy = Self::new(base, prefix);
+        if proxy.prefix == 0 {
             return Err(format!(
                 "{s:?} would trust every peer, so any client could forge X-Forwarded-For"
             ));
         }
-        Ok(Self::new(base, prefix))
+        Ok(proxy)
     }
 }
 
@@ -669,6 +689,12 @@ mod tests {
         assert!(odd.contains(ip("10.7.255.255")) && !odd.contains(ip("10.8.0.0")));
         let mapped: TrustedProxy = "::ffff:10.0.0.0/104".parse().unwrap();
         assert!(mapped.contains(ip("10.9.9.9")));
+        assert!(!tp("10.0.0.0/16").is_wide() && tp("10.0.0.0/15").is_wide());
+        assert!(!tp("fd00::/48").is_wide() && tp("fd00::/8").is_wide());
+        assert!(
+            tp("::ffff:10.0.0.0/103").is_wide(),
+            "judged as the IPv4 /7 it is"
+        );
         for bad in [
             "0.0.0.0/0",
             "::/0",

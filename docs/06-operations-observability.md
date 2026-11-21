@@ -714,7 +714,7 @@ does not help. Behind a reverse proxy every client has the proxy's
 address, so pass `--trusted-proxy <proxy address or CIDR block>` (repeat or comma-separate for several):
 requests from those addresses are throttled under the client in the right-most
 `X-Forwarded-For` entry that is not itself a trusted proxy. Without the flag the header is
-ignored, because any client could spoof it. A bare address trusts exactly that address (never its /64); a block such as `10.0.0.0/8` or `fd00::/8` trusts everything inside it, and `/0` is refused. An `X-Forwarded-For` entry written as `ip:port` is not understood, so such a request is throttled under the proxy's address. The delay
+ignored, because any client could spoof it. A bare address trusts exactly that address (never its /64); a block such as `10.0.0.0/8` or `fd00::/8` trusts everything inside it, and `/0` is refused. Keep blocks as narrow as the proxies' own subnet: anyone inside a trusted block can name the address they are throttled under, so a block wider than a /16 (IPv4) or /48 (IPv6) logs a warning at startup. An `X-Forwarded-For` entry written as `ip:port` is not understood, so such a request is throttled under the proxy's address. The delay
 is kept in memory on each controller replica (a restart or another replica
 starts fresh), and names share a fixed set of 1024 slots, so it neither leaks
 which accounts exist nor grows with attacker-chosen names.

@@ -302,6 +302,12 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
     // Load (and validate) the serving certificate before anything else starts.
     let tls_cert = args.tls.load()?;
 
+    for p in args.trusted_proxy.iter().filter(|p| p.is_wide()) {
+        tracing::warn!(
+            block = %p,
+            "--trusted-proxy covers a very wide block; anyone who can reach this UI from inside it can pick their own login-throttle address. Use the proxy's own address or a narrow subnet"
+        );
+    }
     let login_required = args.ui_password.is_some() || args.users_file.is_some();
     let mut state = AppState::new(args.ui_password)
         // Open mode on a loopback bind is the DNS-rebinding setting: only answer
