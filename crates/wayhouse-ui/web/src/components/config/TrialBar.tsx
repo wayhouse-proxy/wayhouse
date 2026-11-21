@@ -49,7 +49,8 @@ export function TrialBar() {
   useEffect(() => {
     if (pending && remainingMs <= 0) qc.invalidateQueries({ queryKey: PENDING_KEY });
   }, [pending?.revision, remainingMs <= 0]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (!pending) return null;
+  // Always mounted: a live region that appears together with its first text is skipped by some screen readers.
+  if (!pending) return <span className="sr-only" role="status" />;
 
   const secs = Math.ceil(remainingMs / 1000);
   const why = data!.risks.filter((r) => pending.reasons.includes(r.id)).map((r) => r.text.replace(/\.$/, ""));
@@ -69,6 +70,7 @@ export function TrialBar() {
       <Button disabled={!canWrite} onClick={() => end.mutate(false)}>
         Revert now
       </Button>
+      {!canWrite && <span className="w-full text-ink-muted">Confirming or reverting needs the admin role.</span>}
       {end.isError && !notOnTrial(end.error) && <span role="alert" className="w-full text-bad">{end.error instanceof Error ? end.error.message : String(end.error)}</span>}
     </div>
   );

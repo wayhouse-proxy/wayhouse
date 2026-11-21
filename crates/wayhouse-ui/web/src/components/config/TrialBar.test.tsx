@@ -45,6 +45,14 @@ describe("TrialBar", () => {
     await screen.findByText(/Applied as revision 9/);
     expect(screen.getByRole("button", { name: "Keep changes" })).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByRole("button", { name: "Revert now" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText("Confirming or reverting needs the admin role.")).toBeInTheDocument();
+  });
+
+  it("keeps its live region mounted while nothing is on trial, so the first message is announced", async () => {
+    api.getPendingConfig.mockResolvedValue({ pending: null, now_ms: 1, auto_confirm_secs: 60, risks: RISKS });
+    bar();
+    await act(async () => {});
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
   });
 
   it("renders nothing when no revision is on trial", async () => {
