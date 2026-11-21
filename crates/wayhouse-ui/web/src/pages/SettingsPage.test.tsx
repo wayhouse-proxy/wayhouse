@@ -53,7 +53,7 @@ const page = (role: Role = "admin") => renderConfigPage("/settings", { "/setting
 
 async function editWorkers(to: string) {
   const field = await screen.findByLabelText(/Worker tasks per listener/);
-  // Select the old value and type over it, as people do: emptying the field first would drop the key and its comment.
+  // Select the old value and type over it, as people do.
   await userEvent.type(field, to, { initialSelectionStart: 0, initialSelectionEnd: 10 });
 }
 
@@ -83,6 +83,32 @@ describe("Settings general form", () => {
     expect(api.submitConfig).not.toHaveBeenCalled();
     await userEvent.click(within(dlg).getByRole("button", { name: "Apply" }));
     expect(api.submitConfig).toHaveBeenCalledWith(expect.stringContaining("workers: 4 # tasks"), { base: 3 });
+    expect(await screen.findByText("Applied as revision 4.")).toBeInTheDocument();
+  });
+
+  it("keeps the key and its comment when a number field is emptied and then filled again", async () => {
+    page();
+    const field = await screen.findByLabelText(/Worker tasks per listener/);
+    await userEvent.clear(field);
+    await userEvent.type(field, "4");
+    await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+    const dlg = await screen.findByRole("dialog");
+    expect(within(dlg).getByLabelText("Changes to the YAML")).toHaveTextContent("+ workers: 4 # tasks");
+  });
+
+  it("keeps the review open while the apply request is in flight", async () => {
+    let finish!: (v: { revision: number }) => void;
+    api.submitConfig.mockReturnValue(new Promise((r) => (finish = r)));
+    page();
+    await editWorkers("4");
+    await userEvent.click(screen.getByRole("button", { name: "Apply" }));
+    const dlg = await screen.findByRole("dialog");
+    await within(dlg).findByText(/controller accepts this configuration/);
+    await userEvent.click(within(dlg).getByRole("button", { name: "Apply" }));
+    await userEvent.click(within(dlg).getByRole("button", { name: "Cancel" }));
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    finish({ revision: 4 });
     expect(await screen.findByText("Applied as revision 4.")).toBeInTheDocument();
   });
 
