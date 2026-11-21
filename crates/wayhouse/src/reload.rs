@@ -641,6 +641,9 @@ mod tests {
                 .with_ansi(false)
                 .finish(),
         );
+        // A callsite another test already registered while no subscriber was listening keeps
+        // its "never" interest until this refresh; without it these assertions can miss lines.
+        tracing::callsite::rebuild_interest_cache();
         let r = rig();
         let with_mesh = SEALED.replace(
             "settings:\n",
@@ -689,6 +692,9 @@ mod tests {
                 .with_ansi(false)
                 .finish(),
         );
+        // A callsite another test already registered while no subscriber was listening keeps
+        // its "never" interest until this refresh; without it these assertions can miss lines.
+        tracing::callsite::rebuild_interest_cache();
         let r = rig();
         seal(&r.store, "admin-token", SECOND);
         assert!(reload(&r, SEALED).await);

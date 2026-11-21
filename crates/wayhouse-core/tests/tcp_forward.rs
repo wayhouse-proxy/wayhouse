@@ -237,8 +237,33 @@ fn reserve_port(port: u16) -> std::io::Result<std::net::SocketAddr> {
     }
 }
 
-/// A port on 127.0.0.1 that nothing listens on and no other test was given.
+/// The 10 000 ports just below the kernel's ephemeral range. Every outgoing connection of any
+/// process, and every `bind(0)`, takes its port from the ephemeral range, so a port picked there
+/// can be held by someone else's client socket by the time the proxy binds it. Below it, only a
+/// deliberate bind of that exact port can clash. `None` when the range cannot be read.
+fn quiet_ports() -> Option<std::ops::Range<u16>> {
+    let text = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").ok()?;
+    let low: u16 = text.split_whitespace().next()?.parse().ok()?;
+    let start = low.checked_sub(10_000).filter(|s| *s >= 1024)?;
+    Some(start..low)
+}
+
+/// A port on 127.0.0.1 that nothing listens on and no other test was given. It comes from
+/// outside the ephemeral range when it can (see [`quiet_ports`]), spread by process id so
+/// parallel test processes rarely probe the same one.
 async fn free_port() -> std::net::SocketAddr {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    if let Some(range) = quiet_ports() {
+        let span = u32::from(range.end - range.start);
+        for _ in 0..2000 {
+            let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let offset = (std::process::id().wrapping_mul(7919) + n.wrapping_mul(131)) % span;
+            let port = range.start + u16::try_from(offset).unwrap_or(0);
+            if let Ok(addr) = reserve_port(port) {
+                return addr;
+            }
+        }
+    }
     loop {
         if let Ok(addr) = reserve_port(0) {
             return addr;
