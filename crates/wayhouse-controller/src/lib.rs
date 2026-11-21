@@ -27,6 +27,7 @@ pub mod acme;
 pub mod addresses;
 pub mod adopt;
 pub mod api;
+pub mod cert_cli;
 pub mod confirm;
 pub mod enroll;
 pub mod features;

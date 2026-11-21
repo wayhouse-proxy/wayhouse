@@ -5025,6 +5025,7 @@ dependencies = [
  "wayhouse-plugin-host",
  "wayhouse-secrets",
  "wayhouse-settings",
+ "x509-parser",
  "zeroize",
 ]
 

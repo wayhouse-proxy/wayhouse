@@ -123,9 +123,10 @@ the overlay sets no `--allow-insecure-controller` and no `--allow-insecure-secre
 ports are loopback only. The UI itself stays on plain http on the host loopback; put a TLS front
 door (`compose.web.yml`) in front of it to expose it. To reach the controller from another host,
 add its name with `init --san controller.example.org` (before the first start; `init` never
-overwrites). The certificates are valid for five years and the CA for ten; there is no renewal
-command yet, so replace the files in `tls/` (the controller re-reads them without a restart on
-systemd, and the `keys` step copies them again on the next `docker compose up`). Add
+overwrites). The certificates are valid for five years and the CA for ten. Renew one with
+`wayhouse-controller cert controller --tls-dir <dir>/tls` (below);
+the controller re-reads the new pair without a restart on systemd, and the `keys` step copies it
+again on the next `docker compose up`. Add
 `compose.web.yml` for the Caddy front door and `compose.solo-acme.yml` for certificates
 ([`acme.md`](acme.md#one-box)).
 
@@ -194,15 +195,26 @@ What differs:
 - **`/metrics` lists every component.** The three share one recorder, so each listener's `/metrics`
   carries the series of all three.
 
+**Renewing a certificate.** `wayhouse-controller cert <controller|aggregator|control>... [--tls-dir DIR] [--san NAME]...`
+issues a new leaf certificate under the CA that `init` left in the TLS directory (`ca.pem` and
+`ca.key`; default `/etc/wayhouse/tls`). A certificate that already exists keeps its names, and each
+`--san` is added to them; one that does not exist is issued for `localhost`, the loopback addresses
+and the `--san`s. The key is always new. The leaf never outlives the CA, a `ca.key` that does not
+belong to `ca.pem` is refused, and nothing is written unless every requested certificate was made
+and verified, so a failed run changes nothing. Each file is replaced atomically (key first).
+Servers reload the pair within 30 s with no restart. The command prints the new fingerprint: an
+agent enrolled with `--pin` needs the new one. Kubernetes keeps its certificates in Secrets: run
+`init --target k8s-secret` again for a fresh set instead. The CA itself is not renewed (ten years):
+when it nears its end, start over with `init`.
+
 **Moving on to the split layout or to HA** (nothing is lost; the data directory, keyring, tokens and
 settings are the same files). Stop the process, then copy `control.pem` and `control.key` to
 `controller.*` and `aggregator.*` in the same `tls/` directory (the CA stays), switch the units or
 the compose overlay back (leave out `compose.solo-control.yml`; on systemd use
 `wayhouse-solo.target`), and start. On systemd that is all: the split units reach everything on
 loopback. In compose the split UI dials `https://aggregator:9902`, a name `control.pem` does not
-carry, and there is no command yet to issue a leaf (the same gap as certificate renewal), so run
-`init --san aggregator` into a new `tls/` directory before the first start if you expect to split
-later. To run Raft replicas, continue with
+carry: issue it first with `wayhouse-controller cert aggregator --san aggregator --tls-dir <dir>/tls`
+(and `cert controller` for the split controller certificate). To run Raft replicas, continue with
 [Upgrading a single controller to HA](#upgrading-a-single-controller-to-ha); that is a controller-binary
 feature, and `wayhouse-control` runs one node only. Kubernetes keeps separate Deployments, as before.
 

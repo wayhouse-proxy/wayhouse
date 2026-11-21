@@ -8,6 +8,10 @@ async fn main() -> anyhow::Result<()> {
     if std::env::args_os().nth(1).is_some_and(|a| a == "init") {
         return wayhouse_controller::init::main(std::env::args_os().skip(2));
     }
+    // `wayhouse-controller cert`: issues or renews a leaf certificate under the CA `init` made.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "cert") {
+        return wayhouse_controller::cert_cli::main(std::env::args_os().skip(2));
+    }
     // `wayhouse-controller step-up init|sign`: the operator's side of the signed step-up.
     if std::env::args_os().nth(1).is_some_and(|a| a == "step-up") {
         return wayhouse_controller::step_up_cli::main(std::env::args_os().skip(2));
