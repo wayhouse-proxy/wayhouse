@@ -3,7 +3,6 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ApiError, addBackend, drainInstance, getFleetNodes, resolveFleetNodes, routeHint, undrainInstance } from "../api";
-import { useFleetSocket } from "../useFleetSocket";
 import {
   NODE_STATES,
   SORT_KEYS,
@@ -98,7 +97,6 @@ export function FleetPage() {
   const toast = useToast();
   const { confirm, dialog } = useConfirm();
   const inspector = useInspector();
-  const { instances, connected } = useFleetSocket();
 
   /** Change the URL state. A filter change goes back to page 1; the stable setter keeps inspector callbacks current. */
   const update: Update = (change) =>
@@ -128,9 +126,8 @@ export function FleetPage() {
     if (data && data.items.length === 0 && data.total > 0 && q.page > 1) update({ page: 1 });
   });
 
-  // Inspector follows `sel`. It holds a snapshot, so it is re-opened as the row or the live view changes.
+  // Inspector follows `sel`. It holds a snapshot, so it is re-opened as the row changes.
   const node = data?.items.find((n) => n.instance === q.sel);
-  const live = instances.find((i) => i.instance === q.sel);
   const shown = useRef(false);
   // The tag editor builds its PUT from this fresh read, not from the list that is up to one poll old.
   // (A failed refetch keeps the previous data, so the editor then falls back to the list it already had.)
@@ -152,8 +149,8 @@ export function FleetPage() {
       return;
     }
     shown.current = true;
-    inspector.open(q.sel, <NodeInspector instance={q.sel} node={node} live={live} onTag={addTag} tagsUnavailable={data?.operatorTagsUnavailable} latest={latest} />);
-  }, [q.sel, node, live, data?.operatorTagsUnavailable]); // eslint-disable-line react-hooks/exhaustive-deps
+    inspector.open(q.sel, <NodeInspector instance={q.sel} node={node} onTag={addTag} tagsUnavailable={data?.operatorTagsUnavailable} latest={latest} />);
+  }, [q.sel, node, data?.operatorTagsUnavailable]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => inspector.close(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groups: Group<FleetNode>[] = useMemo(() => {
@@ -228,7 +225,7 @@ export function FleetPage() {
       <PageHeader
         title="Fleet"
         summary="Every node that reports to the aggregator, by region. Filter, then act on one node or on everything the filter selects."
-        actions={<StatusMark state={connected ? "up" : "down"} word={connected ? "live" : "reconnecting…"} />}
+        actions={<StatusMark state={nodes.isError ? "down" : "up"} word={nodes.isError ? "not updating" : "live"} />}
       />
 
       <FilterBar q={q} update={update} />

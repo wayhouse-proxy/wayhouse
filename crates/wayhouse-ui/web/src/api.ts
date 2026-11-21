@@ -13,6 +13,7 @@ import type {
   FanoutResponse,
   InstallResponse,
   PluginDetail,
+  FleetNodePools,
   PluginInstall,
   PluginSecretSlot,
   PluginFetchResult,
@@ -579,6 +580,11 @@ export function deleteLayoutOverride(): Promise<void> {
 }
 
 // --- fleet nodes (paged on the aggregator) ---
+
+/** One node's pools and backend state (`GET /api/fleet/nodes/{instance}/pools`), what the fleet inspector shows. */
+export function getNodePools(instance: string): Promise<FleetNodePools> {
+  return requestJson(`/api/fleet/nodes/${encodeURIComponent(instance)}/pools`);
+}
 
 export async function getFleetNodes(query: string): Promise<NodePage> {
   const p = new URLSearchParams(query);
