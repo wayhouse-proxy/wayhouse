@@ -212,7 +212,8 @@ fn flags_come_from_the_settings_file_and_a_check_does_not_use_up_a_try() {
         "previous": {},
         "pending": { "applied_at": wayhouse_settings::now(), "attempts": 1 },
     });
-    let settings = dir.path().join("wayhouse.json");
+    std::fs::create_dir(dir.path().join("wayhouse")).unwrap();
+    let settings = dir.path().join("wayhouse").join("settings.json");
     std::fs::write(&settings, file.to_string()).unwrap();
     let run = |extra: &[&str]| {
         Command::new(env!("CARGO_BIN_EXE_wayhouse"))

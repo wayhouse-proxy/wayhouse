@@ -179,7 +179,7 @@ What differs:
   `--ui-tls-key`. A flag a program derives from the others (`--ui-controller-url`, the UI's tokens,
   every `--listen`) is refused or pinned, so a settings file cannot move a listener the UI depends
   on. `wayhouse-control --help` lists the rules. Each program keeps its own settings file
-  (`controller.json`, `aggregator.json`, `ui.json`).
+  (`controller/settings.json`, `aggregator/settings.json`, `ui/settings.json` under the settings directory).
 - **Secrets are per program.** The three programs name their secrets alike (`auth-token`), so under
   systemd each credential is `<program>-<flag>` (`controller-auth-token`, `aggregator-ingest-token`,
   `ui-ui-password`; see `deploy/systemd/wayhouse-control.service`), and compose gives each its own
@@ -240,7 +240,7 @@ build if any other pod brings the flag back or reaches a Service over plain http
 ## Process flags from a settings file (`--settings-dir`)
 
 The proxy, the controller, the aggregator and the UI accept `--settings-dir DIR`. The program
-reads `DIR/<program>.json` (`wayhouse`, `controller`, `aggregator`, `ui`) and uses its values as
+reads `DIR/<program>/settings.json` (`wayhouse`, `controller`, `aggregator`, `ui`) and uses its values as
 flags the command line did not give: **the command line always wins**, and the programs read no
 environment variables for their flags. The UI writes these files (Settings → Process flags);
 the flag list it offers and the check of a new value come from each program's own `clap`
@@ -256,13 +256,25 @@ restarts through its restart policy, and:
 
 This needs a restart policy that restarts on exit status 75: systemd `Restart=on-failure` (the
 units in `deploy/systemd`) or a compose `restart: unless-stopped`. There is no supervisor process.
-The directory must be writable by the program and by the UI backend, and both must run as the **same
-user** (the file is owner-only and every writer becomes its owner), so on one box it is one shared
-volume; across hosts each program needs its own directory and the UI cannot reach it (use the
-command line there). The shipped systemd units use `ProtectSystem=strict`: give each unit
-`ReadWritePaths=` (or a `StateDirectory=`) for the directory. A program that finds a pending
-change in a directory it cannot write does not try it: it starts with the previous values and does
-not watch the file.
+Each program keeps everything in a directory of its own, `DIR/<program>/` (`settings.json`, the
+flag list `schema.json` and a lock), and the UI backend needs to write there too. There are two
+ways to arrange that:
+
+- **One user** (the default, and what the solo compose bundle does): every program and the UI run
+  as the same user, and `DIR` is writable by it. The program directories are created `0700` and
+  the files `0600`.
+- **One user per program** (a program cannot read or change another program's flags): create
+  `DIR/<program>/` yourself, owned by that program's user, with a group the UI backend's user
+  belongs to (and no other program does), mode `2770`; the program's own user must be in that group too (being the owner is not enough: the files the UI backend writes belong to it and its group) (the setgid bit hands the group to new
+  files). When a program directory is group-writable its files are written `0660`, whatever the
+  umask. The UI user is then the only one besides the program that can change that program's
+  flags. A systemd tmpfiles line does it: `d /var/lib/wayhouse/settings/controller 2770 wayhouse-controller wayhouse-settings-ui -`.
+  If `DIR` itself is group-writable the program directories are created `0770` when missing; that alone does not isolate the programs from each other (anyone in `DIR`'s group can rename or replace a program directory), so for per-program isolation make `DIR` writable only by its owner and pre-create the program directories. A symlink in place of a program directory or its lock is refused, and a settings file over 1 MiB is not read. A flat `DIR/<program>.json` from the old layout is ignored with a warning.
+
+Across hosts each program needs its own directory and the UI cannot reach it (use the command line
+there). The shipped systemd units use `ProtectSystem=strict`: give each unit `ReadWritePaths=` (or
+a `StateDirectory=`) for the directory. A program that finds a pending change in a directory it
+cannot write does not try it: it starts with the previous values and does not watch the file.
 
 Not settable here: token, password and PSK flags, the flags that say where tokens go or what is
 trusted (`*-url`, `*-file`, `--controller`, `--aggregator`, `--config`, `--static-dir`, `--ha-peers`, `--ha-join`, `--ha-import-source`, `--instance-url-allow`, `--acme-ca`, `--acme-challenge-upstream`, TLS certificate and key paths) and the
@@ -276,12 +288,12 @@ later stops parsing has no automatic undo, so remove `--settings-dir` or the fil
 
 The UI's **Process flags** page (Settings, admin to change) edits these files: it lists each
 program's flags, applies a change as a trial and shows Confirm and Undo while it waits. It needs
-the UI itself to run with the same `--settings-dir` and as the same user. The solo compose bundle
+the UI itself to run with the same `--settings-dir`, as the same user or in the group of each program directory (above). The solo compose bundle
 sets this up (one `solo-settings` volume shared by all four programs); on systemd add
-`--settings-dir=/var/lib/wayhouse/settings` to each unit, give them one `User=`, and list the
-directory in `ReadWritePaths=` or `StateDirectory=`. The settings directory is a trust boundary:
-whoever can write it can change the other programs' ordinary flags, so keep it to the programs
-of one fleet node.
+`--settings-dir=/var/lib/wayhouse/settings` to each unit, give them one `User=` (or the per-program
+layout above), and list the directory in `ReadWritePaths=` or `StateDirectory=`. With one user the
+settings directory is a trust boundary: whoever can write it can change the other programs'
+ordinary flags, so keep it to the programs of one fleet node.
 
 ## Networking: a proxy that binds many, changing ports
 
