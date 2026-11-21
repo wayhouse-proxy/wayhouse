@@ -53,8 +53,8 @@ export function describeCapabilities(caps: PluginCapabilities): string[] {
 export function CapabilityList({ caps }: { caps: PluginCapabilities }) {
   return (
     <ul className="list-disc pl-5 text-sm text-ink-muted">
-      {describeCapabilities(caps).map((line) => (
-        <li key={line}>{line}</li>
+      {describeCapabilities(caps).map((line, i) => (
+        <li key={i}>{line}</li>
       ))}
     </ul>
   );

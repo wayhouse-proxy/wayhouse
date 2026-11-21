@@ -21,6 +21,14 @@ export interface SessionCounts {
   udp: number;
 }
 
+/** One node's pools, from `GET /api/fleet/nodes/{instance}/pools`. */
+export interface FleetNodePools {
+  instance: string;
+  last_seen_ms_ago: number;
+  pools: PoolSummary[];
+  group?: string | null;
+}
+
 export interface FleetInstanceView {
   instance: string;
   last_seen_ms_ago: number;

@@ -181,7 +181,7 @@ Plaintext HTTP on a non-loopback `--listen` refuses to start with `--plugins` an
 active key (`GET /admin/plugins/secrets/keys` lists the key ids each holds), then re-encrypts
 every secret under it; a slot an operator rewrote meanwhile is skipped and reported. A member that does not answer is skipped, so a rewrap also works while a replica is down; that replica catches up on its own once it is back, and until it has the new key in its keyring the plugins that use it are held. (3) Remove
 the old key from the file. Removing it before step 2 holds the plugins that still use it
-(`held: key <id> missing`) until it is put back. With `--acme` the account and certificate keys use the same keyring and are rewrapped by `POST /admin/acme/rewrap` ([acme.md](acme.md)), and the cluster secrets (the admin token and gossip PSK, `PUT /secrets/{name}`) by `POST /secrets/rewrap`; call all that apply before step 3, or proxies that fetch a secret sealed under the removed key fail their next start.
+(`held: key <id> missing`) until it is put back. With `--acme` the account and certificate keys use the same keyring and are rewrapped by `POST /admin/acme/rewrap` ([acme.md](acme.md)), and the cluster secrets (the admin token and gossip PSK, `PUT /secrets/{name}`) by `POST /secrets/rewrap`; call all that apply before step 3, or proxies that fetch a secret sealed under the removed key fail their next start. The web UI's Secrets page (admin role; the key-rotation panel is hidden on a controller that runs without plugins, so use the endpoints there) walks the same steps: it lists the key ids each controller holds, refuses to re-encrypt while a node lacks the active key, and has one button each for the plugin secrets (`POST /api/plugins/secrets/rewrap`), the cluster secrets (`POST /api/secrets/rewrap`) and the ACME keys (`POST /api/acme/rewrap`). It keeps each result on screen, says when entries could not be re-encrypted (the old key must stay then), and answers a controller without ACME with "no certificate keys" (`501`). Each rewrap writes an audit line with the actor and the counts.
 
 ## Routes
 
@@ -328,11 +328,13 @@ call needs every member to run a build that supports it.
 1. A per-source rate limit (IPv6 by /64) runs first, valid token or not: `429`.
    The source is the TCP peer address. Callers behind one load balancer or NAT therefore
    share a single bucket, and the limit applies to all of them together; there is no
-   trusted-proxy header. Put the webhook listener where callers reach it directly; there is
-   no setting to relax the source limit.
+   trusted-proxy header. Put the webhook listener where callers reach it directly. The budget
+   is 5 requests per second with a burst of 20; `--plugin-webhook-source-rate` and
+   `--plugin-webhook-source-burst` change it (1 to 1,000,000).
 2. The token is checked in constant time, against a dummy hash when the install is unknown,
    disabled or has no webhook. Every failure is the same `401`.
-3. A per-install rate limit: `429`.
+3. A per-install rate limit: `429` (10 per second, burst 20 by default; `--plugin-webhook-install-rate`
+   and `--plugin-webhook-install-burst`).
 4. Only then the body is read, capped at 256 KiB: `413`.
 5. The call runs as one of the install's serialized calls (at most 4 hook calls wait per install;
    the timer is never rejected). A full queue is `429` and is counted in the status

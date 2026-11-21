@@ -359,7 +359,7 @@ async fn mint(
     }
     if needs_step_up {
         if let Err(why) = step_up_ok(&st, &b) {
-            tracing::warn!(role = b.role.as_str(), name = %b.name, actor = who.as_deref().unwrap_or("-"), why, "enrollment mint refused: step-up failed");
+            tracing::warn!(role = b.role.as_str(), name = %b.name, actor = ?who.as_deref().unwrap_or("-"), why, "enrollment mint refused: step-up failed");
             return err(StatusCode::FORBIDDEN, why);
         }
     }
@@ -422,7 +422,7 @@ async fn mint(
             Err(r) => return r,
         }
     }
-    tracing::warn!(enrollment = code.id(), role = b.role.as_str(), name = %b.name, actor = who.as_deref().unwrap_or("-"), step_up = needs_step_up, "enrollment code minted");
+    tracing::warn!(enrollment = code.id(), role = b.role.as_str(), name = %b.name, actor = ?who.as_deref().unwrap_or("-"), step_up = needs_step_up, "enrollment code minted");
     let mut out = json!({
         "id": code.id(), "code": &*code.expose(), "role": b.role.as_str(), "name": b.name,
         "expires_at": created + ttl, "uses": uses,
@@ -681,7 +681,7 @@ async fn revoke(
             };
             return match apply(&st.ui, op).await {
                 Ok(Applied::Done) => {
-                    tracing::warn!(enrollment = %id, actor = actor(&headers).as_deref().unwrap_or("-"), "controller enrollment code revoked; its node id stays reserved");
+                    tracing::warn!(enrollment = %id, actor = ?actor(&headers).as_deref().unwrap_or("-"), "controller enrollment code revoked; its node id stays reserved");
                     StatusCode::NO_CONTENT.into_response()
                 }
                 Ok(_) => internal("unexpected answer to a revoke"),
@@ -701,7 +701,7 @@ async fn revoke(
     };
     match apply(&st.ui, op).await {
         Ok(Applied::Done) => {
-            tracing::warn!(enrollment = %id, actor = actor(&headers).as_deref().unwrap_or("-"), "enrollment code revoked");
+            tracing::warn!(enrollment = %id, actor = ?actor(&headers).as_deref().unwrap_or("-"), "enrollment code revoked");
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(Applied::NotFound) => err(StatusCode::NOT_FOUND, "no such code"),

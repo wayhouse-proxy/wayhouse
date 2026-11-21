@@ -550,7 +550,6 @@ listeners:
     bind: "0.0.0.0:7777"
     protocol: udp
     filters: ["block-bogons", "conn-rate"]
-    peek_max_bytes: 64
     routes:
       - match: { type: always }
         action: { resolver: matchmaker }
@@ -560,8 +559,6 @@ listeners:
   - name: public-tls
     bind: "0.0.0.0:443"
     protocol: tcp
-    peek_max_bytes: 2048
-    peek_timeout_ms: 200
     routes:
       - match: { type: sni, suffix: ".eu.example.com" }
         action: { pool: match-eu }
@@ -573,7 +570,6 @@ listeners:
   - name: public-mc
     bind: "0.0.0.0:25565"
     protocol: tcp
-    peek_max_bytes: 512
     routes:
       - match: { type: sniffer, name: minecraft, host: "survival.example.net" }
         action: { pool: match-eu }

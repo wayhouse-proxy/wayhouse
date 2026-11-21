@@ -439,7 +439,11 @@ mod tests {
         assert!(cases.len() >= 12);
         for case in cases {
             let want: Vec<u8> = serde_json::from_value(case["failedChecks"].clone()).unwrap();
-            let got = failed_checks(&run(&case["theme"]));
+            let failures = run(&case["theme"]);
+            assert_eq!(failed_checks(&failures), want, "{}", case["name"]);
+            let want: Vec<String> = serde_json::from_value(case["messages"].clone()).unwrap();
+            let mut got: Vec<_> = failures.iter().map(|f| f.message.clone()).collect();
+            got.sort();
             assert_eq!(got, want, "{}", case["name"]);
         }
     }

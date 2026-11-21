@@ -76,7 +76,7 @@ export function ConfigSaveBar({ doc, onApplied }: { doc: ConfigDoc; onApplied?: 
       ) : (
         <p className="mt-4 text-sm text-ink-muted">Changing the configuration needs the admin role.</p>
       )}
-      <Dialog open={open} onOpenChange={setOpen} title="Apply this configuration?" wide
+      <Dialog open={open} onOpenChange={(o) => !busy && setOpen(o)} title="Apply this configuration?" wide
         description="This submits one new revision. Every instance picks it up, and you can roll back from Config history.">
         <div className="flex flex-col gap-3">
           <Diff before={doc.savedText} after={doc.text} />
@@ -110,7 +110,7 @@ export function ConfigSaveBar({ doc, onApplied }: { doc: ConfigDoc; onApplied?: 
             </div>
           )}
           <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button variant="ghost" disabled={busy} onClick={() => setOpen(false)}>Cancel</Button>
             <Button variant="primary" loading={busy} disabled={blocked} onClick={apply}>Apply</Button>
           </div>
         </div>

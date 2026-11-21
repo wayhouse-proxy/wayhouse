@@ -55,6 +55,49 @@ pub const H2_PING_TIMEOUT: Duration = Duration::from_secs(20);
 /// peer traffic, so this is generous; it only has to stop a flood from using memory.
 pub const MAX_CONNECTIONS: usize = 4096;
 
+/// An accepted TCP stream is probed after this much silence...
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
+/// ...every this often...
+const KEEPALIVE_EVERY: Duration = Duration::from_secs(10);
+/// ...and a peer that leaves written data unacknowledged this long (a client that stopped
+/// reading an SSE stream, or vanished) is dropped by the kernel, which frees its slot.
+const USER_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Turns on TCP keepalive and a user timeout for `stream`. HTTP/1 has no pings, so without this
+/// a half-open or stalled client of a long-lived stream (SSE) would hold its connection, and the
+/// slot its handler took, for ever. Best effort: a failure is logged and the stream is served.
+pub fn harden(stream: &tokio::net::TcpStream) {
+    let sock = socket2::SockRef::from(stream);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(KEEPALIVE_IDLE)
+        .with_interval(KEEPALIVE_EVERY);
+    if let Err(e) = sock.set_tcp_keepalive(&keepalive) {
+        tracing::debug!(error = %e, "TCP keepalive not set");
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    if let Err(e) = sock.set_tcp_user_timeout(Some(USER_TIMEOUT)) {
+        tracing::debug!(error = %e, "TCP user timeout not set");
+    }
+}
+
+/// A plain [`tokio::net::TcpListener`] whose accepted streams are [`harden`]ed.
+pub struct HardenedListener(pub tokio::net::TcpListener);
+
+impl axum::serve::Listener for HardenedListener {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (io, addr) = axum::serve::Listener::accept(&mut self.0).await;
+        harden(&io);
+        (io, addr)
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        self.0.local_addr()
+    }
+}
+
 /// Limits for [`serve_listener`]. The defaults are the constants above; tests shrink them.
 #[derive(Debug, Clone, Copy)]
 pub struct ConnLimits {

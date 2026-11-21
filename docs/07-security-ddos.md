@@ -37,8 +37,13 @@ All steps run **before** buffer/session allocation.
   `tcp_synack_retries`.
 - `accept` backpressure: when a worker is overloaded, throttle the accept rate instead
   of letting the queue explode.
-- **Peek timeout** (`peek_timeout_ms`): anyone who sends nothing after connecting is
-  dropped before a backend connect happens.
+- **Peek wait** (fixed at 250 ms, not configurable): a TCP client that sends nothing in the
+  first 250 ms is routed on empty bytes, not dropped. Routes that need the first bytes (`sni`,
+  `first_bytes`, sniffers) do not match, and an `always` route still applies, because
+  server-speaks-first protocols must keep working. So a silent client costs one accepted
+  connection for 250 ms and then reaches whatever the default route points at; the per-source
+  caps (`per_source`), `max_connections` and the idle timeout bound that. A listener with no
+  `always` route closes it. Drop silent clients by not giving the listener an `always` route.
 - **Min-progress watchdog**: a connection with no byte progress beyond `idle_timeout`
   → close.
 - Optional per-source concurrent cap: `per_source: { max_per_ip, max_per_net }`

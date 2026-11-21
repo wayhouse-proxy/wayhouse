@@ -113,6 +113,8 @@ pub fn admin_router() -> Router<AppState> {
         .route("/api/plugins/file/plan", get(plugins_file_plan))
         .route("/api/plugins/secrets/keys", get(plugin_secret_keys))
         .route("/api/plugins/secrets/rewrap", post(rewrap_plugin_secrets))
+        .route("/api/acme/rewrap", post(rewrap_acme_keys))
+        .route("/api/secrets/rewrap", post(rewrap_cluster_secrets))
         .route("/api/plugins/{id}/secrets", get(list_plugin_secrets))
         .route(
             "/api/plugins/{id}/secrets/{slot}",
@@ -175,7 +177,7 @@ async fn put_acme_site(
     let Some(segment) = crate::proxy_util::path_segment(&name) else {
         return bad_acme_name();
     };
-    tracing::info!(actor = actor.as_deref().unwrap_or("-"), site = ?name, "acme: put site");
+    tracing::info!(actor = ?actor.as_deref().unwrap_or("-"), site = ?name, "acme: put site");
     proxy_typed(
         &state,
         Method::PUT,
@@ -196,7 +198,7 @@ async fn delete_acme_site(
     let Some(segment) = crate::proxy_util::path_segment(&name) else {
         return bad_acme_name();
     };
-    tracing::info!(actor = actor.as_deref().unwrap_or("-"), site = ?name, "acme: delete site");
+    tracing::info!(actor = ?actor.as_deref().unwrap_or("-"), site = ?name, "acme: delete site");
     proxy(
         &state,
         Method::DELETE,
@@ -375,7 +377,7 @@ async fn revoke_enrollment(
         )
             .into_response();
     };
-    tracing::info!(actor = actor.as_deref().unwrap_or("-"), enrollment = %id, "enrollment: revoke code");
+    tracing::info!(actor = ?actor.as_deref().unwrap_or("-"), enrollment = %id, "enrollment: revoke code");
     proxy(
         &state,
         Method::DELETE,
@@ -395,7 +397,7 @@ async fn revoke_acme_gateway(
     let Some(segment) = crate::proxy_util::path_segment(&name) else {
         return bad_acme_name();
     };
-    tracing::info!(actor = actor.as_deref().unwrap_or("-"), gateway = ?name, "acme: revoke gateway");
+    tracing::info!(actor = ?actor.as_deref().unwrap_or("-"), gateway = ?name, "acme: revoke gateway");
     proxy(
         &state,
         Method::DELETE,
@@ -660,6 +662,38 @@ async fn rewrap_plugin_secrets(
         &state,
         Method::POST,
         "/admin/plugins/secrets/rewrap".to_string(),
+        None,
+        actor,
+    )
+    .await
+}
+
+/// Re-encrypts the ACME account key and every certificate key under the active key (step two of
+/// a key rotation). A controller without `--acme` answers 404.
+async fn rewrap_acme_keys(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+) -> Response {
+    proxy(
+        &state,
+        Method::POST,
+        "/admin/acme/rewrap".to_string(),
+        None,
+        actor,
+    )
+    .await
+}
+
+/// Re-encrypts every cluster secret (`{ secret: name }`) under the active key (step two of a key
+/// rotation).
+async fn rewrap_cluster_secrets(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+) -> Response {
+    proxy(
+        &state,
+        Method::POST,
+        "/secrets/rewrap".to_string(),
         None,
         actor,
     )
@@ -1704,6 +1738,8 @@ mod tests {
             // The key-rotation helper: the key ids per node and the rewrap, not install ids.
             ("GET", "/api/plugins/secrets/keys"),
             ("POST", "/api/plugins/secrets/rewrap"),
+            ("POST", "/api/acme/rewrap"),
+            ("POST", "/api/secrets/rewrap"),
         ] {
             let resp = app
                 .clone()
@@ -1738,6 +1774,8 @@ mod tests {
                 "GET /plugins/file/plan",
                 "GET /admin/plugins/secrets/keys",
                 "POST /admin/plugins/secrets/rewrap",
+                "POST /admin/acme/rewrap",
+                "POST /secrets/rewrap",
             ]
         );
     }

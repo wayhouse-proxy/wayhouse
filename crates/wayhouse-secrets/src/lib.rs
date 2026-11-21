@@ -401,14 +401,14 @@ pub fn reload_if_changed(handle: &KeyringHandle, path: &Path, seen: &mut Seen) {
     }
     match Keyring::from_file(path) {
         Ok(k) => {
-            tracing::info!(keys = ?k.key_ids(), "reloaded the plugin secret keyring");
+            tracing::info!(keys = ?k.key_ids(), "reloaded the secret keyring");
             handle.set(k);
             seen.loaded = now;
             seen.failed = None;
         }
         Err(e) => {
             if seen.failed != Some(now) {
-                tracing::warn!(error = %e, "the plugin secret key file changed but did not load; keeping the old keys and retrying");
+                tracing::warn!(error = %e, "the secret key file changed but did not load; keeping the old keys and retrying");
             }
             seen.failed = Some(now);
         }

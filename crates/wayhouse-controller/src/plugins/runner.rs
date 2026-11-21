@@ -1023,10 +1023,14 @@ mod tests {
     const NO_TIMER: &str = r#"{"log":true}"#;
 
     fn guest(caps: &str, funcs: &str) -> Vec<u8> {
+        guest_with_abi(ABI, caps, funcs)
+    }
+
+    fn guest_with_abi(abi: &str, caps: &str, funcs: &str) -> Vec<u8> {
         let caps = caps.replace('\\', "\\\\").replace('"', "\\\"");
         let src = format!(
             r#"(module
-  (@custom "wayhouse.plugin-abi" "{ABI}")
+  (@custom "wayhouse.plugin-abi" "{abi}")
   (@custom "wayhouse.plugin-caps" "{caps}")
   (import "wayhouse" "log" (func $log (param i32 i32 i32)))
   (import "wayhouse" "state_get" (func $get (param i32 i32 i32 i32) (result i32)))
@@ -1074,6 +1078,15 @@ mod tests {
     }
 
     fn install(store: &PluginStore, id: &str, module: &[u8]) {
+        install_approved(store, id, module, inspect(module).unwrap().caps);
+    }
+
+    fn install_approved(
+        store: &PluginStore,
+        id: &str,
+        module: &[u8],
+        approved: wayhouse_plugin_host::Capabilities,
+    ) {
         let sha = format!("{id:0>64}");
         store.put_blob(&sha, module).unwrap();
         store
@@ -1082,7 +1095,7 @@ mod tests {
                 name: "demo".into(),
                 sha256: sha,
                 size: module.len(),
-                approved: inspect(module).unwrap().caps,
+                approved,
                 config: serde_json::json!({}),
                 enabled: true,
                 created_at: 1,
@@ -1197,6 +1210,36 @@ mod tests {
         assert_eq!(r.status("a").unwrap().ticks, 1, "no hot loop");
         r.run_due(secs(t0, 60)).await;
         assert_eq!(r.status("a").unwrap().consecutive_failures, 2);
+    }
+
+    #[tokio::test]
+    async fn an_installed_abi_0_1_plugin_shows_the_abi_error_and_does_not_run() {
+        // What a 0.3 upgrade does to a blob stored under ABI 0.1 (docs/migrating-0.3-to-0.4.md).
+        let (r, store, _d) = fixture(1, 4);
+        let module = guest_with_abi(
+            "\\00\\00\\01\\00",
+            TIMER,
+            r#"(func (export "init") (param i32 i32))
+                   (func (export "on_timer") (drop (call $put (i32.const 16) (i32.const 1) (i32.const 0) (i32.const 1))))"#,
+        );
+        let approved = wayhouse_plugin_host::Capabilities::parse(TIMER.as_bytes()).unwrap();
+        install_approved(&store, "old", &module, approved);
+        let t0 = Instant::now();
+        r.run_due(t0).await;
+        r.run_due(secs(t0, 30)).await;
+        let st = r.status("old").unwrap();
+        assert_eq!(st.last_ok, Some(false), "{st:?}");
+        assert!(
+            st.last_error
+                .as_deref()
+                .is_some_and(|e| e.to_lowercase().contains("abi")),
+            "{:?}",
+            st.last_error
+        );
+        assert!(
+            store.state("old").unwrap().1.is_empty(),
+            "the module never ran"
+        );
     }
 
     #[tokio::test]

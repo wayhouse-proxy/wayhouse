@@ -184,8 +184,8 @@ Skip this unless you want to publish HTTP(S) sites through the same entry node.
 - Run **`wayhouse-web-sync`** (a binary inside the `wayhouse` image, started with
   `entrypoint: /usr/local/bin/wayhouse-web-sync`) next to `wayhouse` and a Caddy. Without
   a `web:` section it sends nothing and Caddy keeps its base configuration.
-- Use the **`wayhouse-caddy`** image (stock Caddy 2.11.7 built with a patched Go and
-  `golang.org/x/net`, uid 65532, high ports, no capabilities) rather than the upstream
+- Use the **`wayhouse-caddy`** image (stock Caddy 2.11.7 built with a patched Go,
+  `golang.org/x/net` and `go-jose/v4`, without `curl`, uid 65532, high ports, no capabilities) rather than the upstream
   `caddy` image. Recipes: [`deploy/compose/compose.web.yml`](../deploy/compose/compose.web.yml),
   [`deploy/k8s/overlays/web-gateway/web-gateway.yaml`](../deploy/k8s/overlays/web-gateway/web-gateway.yaml).
 - Caddy's own ACME is off; certificates come from files or from controller ACME

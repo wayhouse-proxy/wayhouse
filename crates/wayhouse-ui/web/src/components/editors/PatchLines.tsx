@@ -1,4 +1,4 @@
-import { describeRoute, routeTarget, type Json } from "../../lib/editors/listeners";
+import { describeMatch, describeRoute, routeTarget, type Json } from "../../lib/editors/listeners";
 import type { State } from "../ui/StatusMark";
 import { StatusMark } from "../ui/StatusMark";
 import { Table, TBody, TD, TH, THead, TR } from "../ui/Table";
@@ -40,7 +40,7 @@ export function PatchLines({ listener, stateOf }: { listener: PatchListener; sta
   const routes: Json[] = listener.routes?.length ? listener.routes : listener.pool ? [{ match: { type: "always" }, action: { pool: listener.pool } }] : [];
   const rows = routes.map((r) => {
     const t = routeTarget(r);
-    return { text: describeRoute(r), target: t, state: (t ? stateOf(t.kind, t.name) : "unknown") as State };
+    return { text: describeRoute(r), match: describeMatch(r), target: t, state: (t ? stateOf(t.kind, t.name) : "unknown") as State };
   });
   const height = Math.max(rows.length, 1) * ROW + 16;
   const mid = height / 2;
@@ -66,7 +66,7 @@ export function PatchLines({ listener, stateOf }: { listener: PatchListener; sta
                 <path d={`M${LEFT - 30} ${mid} H${LEFT + 20} V${y} H${LEFT + MID}`} className="fill-none stroke-control" strokeWidth={1.5} />
                 <text x={LEFT + 26} y={y - 4} className="fill-ink-muted text-xs">
                   <title>{r.text}</title>
-                  {clip(`${i + 1}. ${r.text.split(" to ")[0]}`)}
+                  {clip(`${i + 1}. ${r.match}`)}
                 </text>
                 <Mark x={LEFT + MID + 6} y={y} state={r.state} />
                 <text x={LEFT + MID + 18} y={y + 4} className="fill-ink text-xs font-mono">
@@ -99,7 +99,7 @@ export function PatchLines({ listener, stateOf }: { listener: PatchListener; sta
             {rows.map((r, i) => (
               <TR key={i}>
                 <TD numeric>{i + 1}</TD>
-                <TD>{r.text.split(" to ")[0]}</TD>
+                <TD>{r.match}</TD>
                 <TD className="font-mono">{r.target ? `${r.target.kind} ${r.target.name}` : "nothing yet"}</TD>
                 <TD>
                   <StatusMark state={r.state} word={WORD[r.state]} />

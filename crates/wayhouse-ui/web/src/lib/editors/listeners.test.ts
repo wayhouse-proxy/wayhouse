@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { DEFAULT_LAYOUT } from "../form/layout";
-import { MATCH_TYPES, changeMatchType, describeRoute, moveRoute, newListener, newRoute, routeTarget, uniqueName } from "./listeners";
+import { MATCH_TYPES, changeMatchType, describeMatch, describeRoute, moveRoute, newListener, newRoute, routeTarget, uniqueName } from "./listeners";
 
 describe("listener helpers", () => {
   it("picks a name not used yet", () => {
@@ -47,6 +47,7 @@ describe("listener helpers", () => {
     expect(describeRoute({ match: { type: "port", ports: [30001, "30010-30020"] }, action: { resolver: "r" } })).toBe("destination port 30001, 30010-30020 to resolver r");
     expect(describeRoute({ match: { type: "always" }, action: { pool: "p" } })).toBe("everything to pool p");
     expect(describeRoute({ match: { type: "always" }, action: {} })).toBe("everything to nothing yet");
+    expect(describeMatch({ match: { type: "sni", host: ["a.example"] }, action: { pool: "eu" } })).toBe("SNI a.example");
   });
 });
 
@@ -71,6 +72,10 @@ describe("coverage guard: every listener, route and match field is rendered, han
 
   it("RawListener", () => expect(missing("RawListener", "listener", form("listeners.*."))).toEqual([]));
   it("RawRoute", () => expect(missing("RawRoute", "route", new Set())).toEqual([]));
+  it("every field a match type takes is a real RawMatch property", () => {
+    const real = props("RawMatch");
+    expect(Object.values(MATCH_TYPES).flatMap((t) => t.fields).filter((f) => !real.includes(f))).toEqual([]);
+  });
   it("RawMatch", () => expect(missing("RawMatch", "match", new Set())).toEqual([]));
   it("RawAction", () => expect(missing("RawAction", "action", new Set())).toEqual([]));
   it("nested listener objects: every field of geo, per_source, rate_limit and plugin_routes is on the listener page", () => {

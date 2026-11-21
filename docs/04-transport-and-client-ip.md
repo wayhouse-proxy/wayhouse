@@ -8,7 +8,7 @@
   routed prefix; the concrete destination IP of the accepted connection comes from
   `getsockname()`. (In transparent mode `getsockname()` already returns the real IP
   the client addressed.)
-- **Peek for routing**: `recv(MSG_PEEK)` up to `peek_max_bytes` / `peek_timeout_ms`.
+- **Peek for routing**: `recv(MSG_PEEK)` of the bytes the routes need (at most 4096), for up to 250 ms (fixed).
   If the client sends nothing first (server-speaks-first), the default route applies
   immediately.
 - **Upstream connect**: non-blocking, `connect_timeout`. `TCP_NODELAY` set; the

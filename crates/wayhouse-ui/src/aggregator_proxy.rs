@@ -38,6 +38,7 @@ pub fn viewer_router() -> Router<AppState> {
         .route("/api/fleet/features", get(get_features))
         .route("/api/fleet/nodes", get(get_nodes))
         .route("/api/fleet/nodes/resolve", post(resolve_nodes))
+        .route("/api/fleet/nodes/{instance}/pools", get(get_node_pools))
         .route(
             "/api/fleet/instances/{instance}/sniffers",
             get(get_instance_sniffers),
@@ -261,7 +262,7 @@ async fn node_tags(
 #[derive(serde::Deserialize, Default)]
 struct Confirm {
     #[serde(default)]
-    names: Vec<String>,
+    names: std::collections::HashSet<String>,
 }
 
 /// `POST /api/fleet/node-tags/prune[?dry_run=true|false]`, body `{"names": [...]}` (optional):
@@ -304,7 +305,10 @@ async fn prune_node_tags(
     };
     let mut removed = Vec::new();
     if !dry_run {
-        for name in unlisted.iter().filter(|n| confirm.names.contains(n)) {
+        for name in unlisted
+            .iter()
+            .filter(|n| confirm.names.contains(n.as_str()))
+        {
             let Some(segment) = crate::proxy_util::path_segment(name) else {
                 continue;
             };
@@ -424,6 +428,23 @@ fn with_query(path: &str, query: Option<String>) -> String {
         Some(q) => format!("{path}?{q}"),
         None => path.to_string(),
     }
+}
+
+/// `GET /api/fleet/nodes/{instance}/pools`: one node's pools and backend state (the fleet inspector), so the
+/// browser need not read the whole fleet.
+async fn get_node_pools(
+    State(state): State<AppState>,
+    Extension(Actor(actor)): Extension<Actor>,
+    Path(instance): Path<String>,
+) -> Response {
+    proxy_segments(
+        &state,
+        Method::GET,
+        &["nodes", &instance, "pools"],
+        None,
+        actor,
+    )
+    .await
 }
 
 async fn get_instance_sniffers(
@@ -885,17 +906,15 @@ mod tests {
     #[tokio::test]
     async fn pruning_refuses_when_the_aggregator_lists_nothing_and_a_typo_never_deletes() {
         let (empty, _) = spawn_logging(StatusCode::OK, r#"{"count":0,"instances":[]}"#).await;
-        let (ctl, deleted) = tag_controller().await;
+        let (ctl, refused) = tag_controller().await;
         let (app, op) = app_with(empty, Some(ctl), crate::role::Role::Operator);
         let uri = "/api/fleet/node-tags/prune";
         let r = send(&app, &op, "POST", uri, r#"{"names":["gone"]}"#).await;
         assert_eq!(r.status(), StatusCode::CONFLICT);
+        assert!(refused.lock().unwrap().is_empty(), "nothing was deleted");
         let (agg, _) = spawn_logging(StatusCode::OK, r#"{"count":1,"instances":["fra-1"]}"#).await;
-        let (app, op) = app_with(
-            agg,
-            Some(tag_controller().await.0),
-            crate::role::Role::Operator,
-        );
+        let (ctl, deleted) = tag_controller().await;
+        let (app, op) = app_with(agg, Some(ctl), crate::role::Role::Operator);
         for q in ["dry_run=1", "dry_run=True", "dry_run=yes", "dry_run="] {
             let r = send(
                 &app,
@@ -1056,6 +1075,7 @@ mod tests {
         for name in hostile {
             for (method, path) in [
                 ("GET", format!("/api/fleet/instances/{name}/sniffers")),
+                ("GET", format!("/api/fleet/nodes/{name}/pools")),
                 ("POST", format!("/api/fleet/instances/{name}/drain")),
                 ("DELETE", format!("/api/fleet/sniffers/{name}")),
                 ("POST", format!("/api/fleet/sniffers/{name}/rollback")),
@@ -1083,6 +1103,7 @@ mod tests {
         for uri in seen.lock().unwrap().iter() {
             assert!(
                 uri.starts_with("/fleet/instances/")
+                    || uri.starts_with("/fleet/nodes/")
                     || uri.starts_with("/fleet/sniffers/")
                     || uri.starts_with("/fleet/pools/"),
                 "escaped to {uri}"
