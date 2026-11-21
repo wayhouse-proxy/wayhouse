@@ -18,6 +18,7 @@ mod keys;
 mod matcher;
 mod parse;
 pub mod plugin_routes;
+mod redact;
 mod resolved;
 mod schema;
 mod secret;
@@ -36,6 +37,7 @@ pub use matcher::{
     client_hello_state, extract_sni, HelloState, HostPattern, MatchContext, Matcher, RouteHint,
     PEEK_MAX,
 };
+pub use redact::{has_redacted_secret, redact_secrets, REDACTED};
 pub use resolved::{
     Action, Balancer, CacheConfig, CacheKeyPart, Config, GlobalLimits, GossipConfig, HashOn,
     HealthCheck, HealthCheckKind, ListenerConfig, OnError, PerSourceLimit, PoolConfig, Protocol,
