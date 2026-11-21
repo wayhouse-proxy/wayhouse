@@ -338,19 +338,19 @@ struct Args {
     plugin_webhook_tls_key: Option<PathBuf>,
 
     /// Webhook requests per second one source address may make (IPv6 by /64), valid token or not.
-    #[arg(long, requires = "plugin_webhook_listen", default_value_t = 5.0, value_parser = positive_rate)]
+    #[arg(long, requires = "plugin_webhook_listen", default_value_t = crate::plugins::hooks::SOURCE_RATE.0, value_parser = positive_rate)]
     plugin_webhook_source_rate: f64,
 
     /// Burst of `--plugin-webhook-source-rate`.
-    #[arg(long, requires = "plugin_webhook_listen", default_value_t = 20.0, value_parser = positive_rate)]
+    #[arg(long, requires = "plugin_webhook_listen", default_value_t = crate::plugins::hooks::SOURCE_RATE.1, value_parser = positive_rate)]
     plugin_webhook_source_burst: f64,
 
     /// Webhook requests per second one install accepts, over all sources.
-    #[arg(long, requires = "plugin_webhook_listen", default_value_t = 10.0, value_parser = positive_rate)]
+    #[arg(long, requires = "plugin_webhook_listen", default_value_t = crate::plugins::hooks::INSTALL_RATE.0, value_parser = positive_rate)]
     plugin_webhook_install_rate: f64,
 
     /// Burst of `--plugin-webhook-install-rate`.
-    #[arg(long, requires = "plugin_webhook_listen", default_value_t = 20.0, value_parser = positive_rate)]
+    #[arg(long, requires = "plugin_webhook_listen", default_value_t = crate::plugins::hooks::INSTALL_RATE.1, value_parser = positive_rate)]
     plugin_webhook_install_burst: f64,
 
     #[command(flatten)]
@@ -1214,6 +1214,16 @@ type HaParts = (
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rate_flag_takes_a_finite_number_from_one_up() {
+        for good in ["1", "5", "20.5", "1000000"] {
+            assert!(super::positive_rate(good).is_ok(), "{good}");
+        }
+        for bad in ["0", "0.5", "-1", "NaN", "inf", "1e9", "", "fast"] {
+            assert!(super::positive_rate(bad).is_err(), "{bad}");
+        }
+    }
+
     use clap::Parser;
 
     use super::Args;

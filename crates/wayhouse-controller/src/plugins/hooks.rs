@@ -47,7 +47,7 @@ use crate::ha::HaHandle;
 /// routes use the same budget.
 pub(crate) const SOURCE_RATE: (f64, f64) = (5.0, 20.0);
 /// Requests per second and burst one install's webhook accepts.
-const INSTALL_RATE: (f64, f64) = (10.0, 20.0);
+pub(crate) const INSTALL_RATE: (f64, f64) = (10.0, 20.0);
 /// Headers the guest is shown at most.
 const MAX_HEADERS: usize = 32;
 
