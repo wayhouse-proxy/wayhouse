@@ -122,7 +122,7 @@ describe("SecretsPage", () => {
     await screen.findByRole("table", { name: "Keys per node" });
     await user.click(screen.getByRole("button", { name: "Re-encrypt cluster secrets" }));
     expect(api.rewrapClusterSecrets).toHaveBeenCalledTimes(1);
-    expect(await screen.findByText(/Re-encrypted 1 cluster secret under k2\. 1 could not be re-encrypted: gossip-psk/)).toBeInTheDocument();
+    expect(await screen.findByText(/Re-encrypted 1 cluster secret under k2\. 1 could not be re-encrypted \(gossip-psk\): keep the old key/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Re-encrypt certificate keys" }));
     expect(await screen.findByText(/Re-encrypted 2 certificate keys under k2/)).toBeInTheDocument();
     expect(api.rewrapPluginSecrets).not.toHaveBeenCalled();
@@ -130,12 +130,37 @@ describe("SecretsPage", () => {
 
   it("says so when the controller runs without ACME", async () => {
     api.getPluginSecretKeys.mockResolvedValue({ key_ids: ["k1", "k2"], active: "k2", nodes: {} });
-    api.rewrapAcmeKeys.mockRejectedValue(new ApiError(404, "not found"));
+    api.rewrapAcmeKeys.mockRejectedValue(new ApiError(501, "not implemented"));
     const user = userEvent.setup();
     page();
     await screen.findByRole("table", { name: "Keys per node" });
     await user.click(screen.getByRole("button", { name: "Re-encrypt certificate keys" }));
     expect(await screen.findByText(/no certificate keys to re-encrypt/)).toBeInTheDocument();
+  });
+
+  it("treats a 404 on a rewrap as an error, never as nothing to re-encrypt", async () => {
+    api.getPluginSecretKeys.mockResolvedValue({ key_ids: ["k1", "k2"], active: "k2", nodes: {} });
+    api.rewrapClusterSecrets.mockRejectedValue(new ApiError(404, "not found"));
+    const user = userEvent.setup();
+    page();
+    await screen.findByRole("table", { name: "Keys per node" });
+    await user.click(screen.getByRole("button", { name: "Re-encrypt cluster secrets" }));
+    expect(await screen.findByText(/cluster secret: /)).toBeInTheDocument();
+    expect(screen.queryByText(/nothing to re-encrypt|no cluster secrets/)).toBeNull();
+  });
+
+  it("keeps the result of every kind on screen", async () => {
+    api.getPluginSecretKeys.mockResolvedValue({ key_ids: ["k1", "k2"], active: "k2", nodes: {} });
+    api.rewrapClusterSecrets.mockResolvedValue({ rewrapped: 1, skipped: [], unreadable: [], active_key_id: "k2" });
+    api.rewrapAcmeKeys.mockResolvedValue({ rewrapped: 2, skipped: [], unreadable: [], active_key_id: "k2" });
+    const user = userEvent.setup();
+    page();
+    await screen.findByRole("table", { name: "Keys per node" });
+    await user.click(screen.getByRole("button", { name: "Re-encrypt cluster secrets" }));
+    await screen.findByText(/Re-encrypted 1 cluster secret/);
+    await user.click(screen.getByRole("button", { name: "Re-encrypt certificate keys" }));
+    await screen.findByText(/Re-encrypted 2 certificate keys/);
+    expect(screen.getByText(/Re-encrypted 1 cluster secret/)).toBeInTheDocument();
   });
 
   it("will not re-encrypt while a node lacks the active key", async () => {
