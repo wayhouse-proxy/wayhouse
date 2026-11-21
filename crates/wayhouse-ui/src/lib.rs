@@ -42,6 +42,7 @@ pub mod registries;
 pub mod registry_api;
 pub mod registry_client;
 pub mod registry_keys;
+pub mod release_watch;
 pub mod role;
 pub mod serve;
 pub mod session;

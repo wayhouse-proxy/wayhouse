@@ -6,6 +6,10 @@ async function stub(page: Page, role: string) {
   );
   await page.route("**/ws/**", (r) => r.abort());
   await page.route("**/api/**", (r) => r.fulfill({ status: 200, contentType: "application/json", body: "[]" }));
+  // The plugin overlay is an object, not a list: `[]` would crash the plugins page after it loads.
+  await page.route("**/api/plugin-routes", (r) =>
+    r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ routes: [], conflicts: [] }) }),
+  );
   await page.route("**/api/fleet/nodes**", (r) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [], total: 0, page: 1, size: 25, rollup: { nodes: 0, degraded: 0, stale: 0, sessions: 0 } }) }),
   );

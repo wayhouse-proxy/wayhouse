@@ -150,6 +150,22 @@ struct Args {
     #[arg(skip)]
     controller_token: Option<String>,
 
+    /// Admin API base URL of a proxy that runs from a config file (e.g. "http://127.0.0.1:9100"),
+    /// for the config editor when there is no `--controller-url`: it reads and saves that proxy's
+    /// file (`GET`/`PUT /config/file`; saving needs the proxy's `--allow-config-write`). With a
+    /// controller this is not used.
+    #[arg(long)]
+    proxy_url: Option<String>,
+
+    /// Bearer token of that proxy's admin API (`settings.admin.auth_token`).
+    #[arg(long, value_name = "PATH")]
+    proxy_token_file: Option<std::path::PathBuf>,
+
+    /// Resolved from `--proxy-token-file`, `$CREDENTIALS_DIRECTORY/proxy-token` or `$WAYHOUSE_PROXY_TOKEN`;
+    /// never a command-line value.
+    #[arg(skip)]
+    proxy_token: Option<String>,
+
     /// Directory holding the built frontend (`web/`'s `npm run build`
     /// output — `make ui`). Default assumes the process runs from the repo
     /// root, matching every other `cargo run -p ...` example in this repo.
@@ -174,6 +190,12 @@ struct Args {
     /// add it, or any other, by URL).
     #[arg(long)]
     no_default_registry: bool,
+
+    /// Signed release feed that tells the console a newer wayhouse release exists (checked
+    /// once a day, report only; nothing is downloaded or installed). An empty value turns the
+    /// check off, for an air-gapped install.
+    #[arg(long, default_value = crate::release_watch::DEFAULT_FEED_URL)]
+    release_feed_url: String,
 
     #[command(flatten)]
     tls: wayhouse_http::tls::TlsArgs,
@@ -210,6 +232,10 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
         args.controller_token_file.as_deref(),
     )
     .map_err(anyhow::Error::msg)?;
+
+    args.proxy_token =
+        wayhouse_http::secret_arg::resolve("proxy-token", args.proxy_token_file.as_deref())
+            .map_err(anyhow::Error::msg)?;
 
     if args.hash_password {
         // No server, no logging setup — a one-shot CLI utility mode.
@@ -249,6 +275,7 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
             &args.aggregator_token,
         ),
         ("--web-sync-url", &args.web_sync_url, &args.web_sync_token),
+        ("--proxy-url", &args.proxy_url, &args.proxy_token),
     ] {
         if let Some(url) = url {
             wayhouse_http::bearer::check_bearer_transport(
@@ -304,6 +331,12 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
     let registries =
         crate::registries::Registries::load(args.registries_file, !args.no_default_registry)?;
     state = state.with_registries(std::sync::Arc::new(registries), persistent);
+    let release_watch = crate::release_watch::ReleaseWatch::new(
+        env!("CARGO_PKG_VERSION"),
+        Some(args.release_feed_url.clone()),
+    );
+    let _release_task = release_watch.spawn(state.registry_client.clone());
+    state = state.with_release_watch(release_watch);
     if let Some(dir) = &args.settings_dir {
         state = state.with_settings_dir(dir.clone());
     }
@@ -323,6 +356,9 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
     }
     if let Some(controller_url) = args.controller_url {
         state = state.with_controller(controller_url, args.controller_token);
+    }
+    if let Some(proxy_url) = args.proxy_url {
+        state = state.with_proxy_admin(proxy_url, args.proxy_token);
     }
     tracing::info!(
         login_required,
