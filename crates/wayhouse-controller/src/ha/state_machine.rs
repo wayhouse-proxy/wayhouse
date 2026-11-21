@@ -142,6 +142,9 @@ pub struct SnapshotCopy {
 pub struct SnapshotBuilder {
     copy: Result<SnapshotCopy, StorageError<NodeId>>,
     snapshots: crate::kv::Tree,
+    /// Scrubs the persisted snapshot once it is saved: the copy was taken before a later apply
+    /// may have retired a revision it still holds in plaintext.
+    state: Arc<StateMachineStore>,
 }
 
 pub struct StateMachineStore {
@@ -163,6 +166,8 @@ pub struct StateMachineStore {
     meta: crate::kv::Tree,
     /// The last built or installed snapshot (`meta`, `data`).
     snapshots: crate::kv::Tree,
+    /// The Raft log's entries (`ha::log_store`), whose retired configs are scrubbed in place.
+    log: crate::kv::Tree,
 }
 
 /// The audit line of a plugin secret change: install, slot, key id and actor, never the
@@ -182,7 +187,7 @@ impl StateMachineStore {
         intent: Arc<IntentState>,
         registries: Registries,
     ) -> Result<Self, crate::kv::Error> {
-        Ok(StateMachineStore {
+        let state = StateMachineStore {
             config,
             intent,
             peers: registries.peers,
@@ -195,7 +200,63 @@ impl StateMachineStore {
             pre_ha_notice: None,
             meta: db.open_tree("raft_sm_meta")?,
             snapshots: db.open_tree("raft_snapshot")?,
-        })
+            log: db.open_tree("raft_log")?,
+        };
+        // The one-time scrub of a store written before #474, and a catch-up after a crash that
+        // fell between a revision's scrub and its log entry's. Idempotent, so it runs every start.
+        state.config.redact_retired();
+        state.purge_secrets();
+        Ok(state)
+    }
+
+    /// Scrubs the plaintext secrets out of every retained copy of a retired config revision that
+    /// this node holds outside the config store: the already-applied entries of the Raft log
+    /// and the persisted snapshot. What stays whole is exactly what the config store keeps
+    /// whole ([`AppState::kept_bytes`]), so a revision is never scrubbed in one place while it
+    /// is still live in another. Errors are logged: the next config write, or the next start, tries again.
+    /// `true` when both ran.
+    pub fn purge_secrets(&self) -> bool {
+        let kept = match self.config.kept_bytes() {
+            Ok(kept) => kept,
+            Err(e) => {
+                tracing::error!(error = %e, "reading the kept config revisions failed; log and snapshot not scrubbed");
+                return false;
+            }
+        };
+        let mut ok = true;
+        let applied = match self.read_meta() {
+            Ok(meta) => meta.last_applied_log.map(|l| l.index),
+            Err(e) => {
+                ok = false;
+                tracing::error!(error = %e, "reading the applied index failed; log not scrubbed");
+                None
+            }
+        };
+        let mut scrubbed = 0;
+        // Nothing applied yet means no applied entry to scrub.
+        if let Some(applied) = applied {
+            match super::log_store::redact_applied(&self.log, applied, &kept) {
+                Ok(n) => scrubbed += n,
+                Err(e) => {
+                    ok = false;
+                    tracing::error!(error = %e, "scrubbing the raft log failed");
+                }
+            }
+        }
+        match redact_snapshot(&self.snapshots, &kept) {
+            Ok(n) => scrubbed += n,
+            Err(e) => {
+                ok = false;
+                tracing::error!(error = %e, "scrubbing the persisted snapshot failed");
+            }
+        }
+        if scrubbed > 0 {
+            tracing::info!(
+                copies = scrubbed,
+                "redacted secrets in retired revisions' raft log entries and snapshot"
+            );
+        }
+        ok
     }
 
     /// Makes an applied `Import` warn on a node that set its own pre-HA data
@@ -507,6 +568,58 @@ impl StateMachineStore {
     }
 }
 
+/// Scrubs the retired revisions out of the persisted snapshot's content, in place: its `meta` is
+/// unchanged and the new `data` is written only if the stored one is still the one that was read.
+/// A revision whose bytes are one of `kept` stays whole. Returns how many revisions it scrubbed.
+fn redact_snapshot(tree: &crate::kv::Tree, kept: &[Vec<u8>]) -> Result<usize, String> {
+    let Some(data) = tree.get(SNAPSHOT_DATA_KEY).map_err(|e| e.to_string())? else {
+        return Ok(0);
+    };
+    let mut content: SnapshotContent = match serde_json::from_slice(&data) {
+        Ok(content) => content,
+        // A snapshot an older build wrote and this one cannot read is also one it never sends.
+        Err(_) => return Ok(0),
+    };
+    let mut scrubbed = 0;
+    for r in &mut content.config {
+        if kept.contains(&r.bytes) {
+            continue;
+        }
+        let Some(text) = std::str::from_utf8(&r.bytes).ok() else {
+            continue;
+        };
+        if let Some(new) = wayhouse_config::redact_secrets(text) {
+            r.bytes = new.into_bytes();
+            scrubbed += 1;
+        }
+    }
+    if scrubbed == 0 {
+        return Ok(0);
+    }
+    let new = serde_json::to_vec(&content).map_err(|e| e.to_string())?;
+    let written = tree
+        .transaction::<_, _, std::convert::Infallible>(|t| {
+            if t.get(SNAPSHOT_DATA_KEY)?
+                .is_some_and(|now| now.as_ref() == &*data)
+            {
+                t.insert(SNAPSHOT_DATA_KEY, new.as_slice())?;
+                return Ok(true);
+            }
+            Ok(false)
+        })
+        .map_err(|e| match e {
+            TransactionError::Storage(e) => e.to_string(),
+            TransactionError::Abort(never) => match never {},
+        })?;
+    if written {
+        tree.flush().map_err(|e| e.to_string())?;
+        Ok(scrubbed)
+    } else {
+        // A newer snapshot landed meanwhile: it was built from the live stores, so look again.
+        redact_snapshot(tree, kept)
+    }
+}
+
 /// Persists `meta` + `data` as the current snapshot, in one transaction,
 /// unless the stored one already reaches as far (`last_log_id` >= the new
 /// one's). `build_snapshot` runs in a task of its own, concurrently with
@@ -563,6 +676,8 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
             snapshot_id,
         };
         save_snapshot(&self.snapshots, &snapshot_meta, &data)?;
+        // The copy this was built from may predate a retiring apply.
+        self.state.purge_secrets();
 
         Ok(Snapshot {
             meta: snapshot_meta,
@@ -594,6 +709,9 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
     {
         let mut meta = self.read_meta()?;
         let mut out = Vec::new();
+        // Whether a config revision may have retired in this batch (the stores scrub themselves
+        // as they apply; the Raft log and the saved snapshot are scrubbed once, after).
+        let mut config_changed = false;
 
         for entry in entries {
             meta.last_applied_log = Some(entry.log_id);
@@ -603,6 +721,15 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
             let response = match entry.payload {
                 EntryPayload::Blank => WriteResponse::Revision(None),
                 EntryPayload::Normal(req) => {
+                    config_changed |= matches!(
+                        req,
+                        WriteRequest::Config { .. }
+                            | WriteRequest::RelayConfig { .. }
+                            | WriteRequest::ConfirmConfig { .. }
+                            | WriteRequest::RevertConfig { .. }
+                            | WriteRequest::Promote(_)
+                            | WriteRequest::PromoteTrial { .. }
+                    );
                     // Each step is skipped when its database already
                     // absorbed `index` — openraft re-delivers entries
                     // after a crash that lost `last_applied_log`, and the
@@ -926,6 +1053,9 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
         // save_committed`'s doc names, which means the log store's default
         // (never persisting `committed`) is correct as-is.
         self.write_meta(&meta)?;
+        if config_changed {
+            self.purge_secrets();
+        }
         Ok(out)
     }
 
@@ -933,6 +1063,7 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
         SnapshotBuilder {
             copy: self.copy(),
             snapshots: self.snapshots.clone(),
+            state: Arc::clone(self),
         }
     }
 
@@ -960,6 +1091,10 @@ impl RaftStateMachine<TypeConfig> for Arc<StateMachineStore> {
             last_membership: meta.last_membership.clone(),
         })?;
         save_snapshot(&self.snapshots, meta, snapshot.get_ref())?;
+        // A leader that has not scrubbed yet (an older build) sends plaintext history: scrub what
+        // was installed, in the stores, the saved snapshot and the log entries kept here.
+        self.config.redact_retired();
+        self.purge_secrets();
         Ok(())
     }
 
@@ -2815,5 +2950,173 @@ mod tests {
         json.as_object_mut().unwrap().remove("acme");
         let content = decode_snapshot(&serde_json::to_vec(&json).unwrap()).unwrap();
         assert_eq!(content.acme, crate::acme::AcmeSnapshot::default());
+    }
+
+    const TOKEN: &str = "plain-admin-token-0123456789";
+
+    fn cfg(tag: &str) -> Vec<u8> {
+        format!("# {tag}\nsettings:\n  admin:\n    auth_token: \"{TOKEN}\"\n").into_bytes()
+    }
+
+    /// Applies `entries` the way the Raft core does: they are in the log first.
+    async fn append_and_apply(sm: &mut Arc<StateMachineStore>, entries: Vec<Entry<TypeConfig>>) {
+        for e in &entries {
+            sm.log
+                .insert(e.log_id.index.to_be_bytes(), serde_json::to_vec(e).unwrap())
+                .unwrap();
+        }
+        sm.apply(entries).await.unwrap();
+    }
+
+    fn log_text(sm: &StateMachineStore, index: u64) -> String {
+        let raw = sm.log.get(index.to_be_bytes()).unwrap().unwrap();
+        let entry: Entry<TypeConfig> = serde_json::from_slice(&raw).unwrap();
+        match entry.payload {
+            EntryPayload::Normal(WriteRequest::Config { bytes, .. }) => {
+                String::from_utf8(bytes).unwrap()
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn saved_revisions(sm: &StateMachineStore) -> Vec<String> {
+        let data = sm.snapshots.get(SNAPSHOT_DATA_KEY).unwrap().unwrap();
+        decode_snapshot(&data)
+            .unwrap()
+            .config
+            .into_iter()
+            .map(|r| String::from_utf8(r.bytes).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_retiring_apply_scrubs_the_log_entry_and_the_saved_snapshot_but_not_the_live_one() {
+        let (mut sm, _dirs) = test_sm();
+        append_and_apply(&mut sm, vec![config_entry(1, &cfg("one"))]).await;
+        sm.get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
+        assert!(saved_revisions(&sm)[0].contains(TOKEN), "live, so whole");
+        assert!(log_text(&sm, 1).contains(TOKEN));
+
+        append_and_apply(&mut sm, vec![config_entry(2, &cfg("two"))]).await;
+
+        assert!(!log_text(&sm, 1).contains(TOKEN), "retired entry scrubbed");
+        assert!(log_text(&sm, 1).contains("# one"), "and otherwise intact");
+        assert!(
+            log_text(&sm, 2).contains(TOKEN),
+            "the live revision's entry is whole"
+        );
+        // The saved snapshot only ever held revision 1, now retired.
+        let saved = saved_revisions(&sm);
+        assert!(saved.len() == 1 && !saved[0].contains(TOKEN), "{saved:?}");
+        // The live config store agrees.
+        assert!(!String::from_utf8(sm.config.store.get(1).unwrap().unwrap())
+            .unwrap()
+            .contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn an_entry_this_node_has_not_applied_yet_keeps_its_original() {
+        let (mut sm, _dirs) = test_sm();
+        append_and_apply(&mut sm, vec![config_entry(1, &cfg("one"))]).await;
+        // Entries 2 and 3 are in the log (committed on the leader) but not applied here.
+        for (i, tag) in [(2, "two"), (3, "three")] {
+            let e = config_entry(i, &cfg(tag));
+            sm.log
+                .insert(i.to_be_bytes(), serde_json::to_vec(&e).unwrap())
+                .unwrap();
+        }
+        sm.apply(vec![config_entry(2, &cfg("two"))]).await.unwrap();
+        assert!(!log_text(&sm, 1).contains(TOKEN));
+        assert!(
+            log_text(&sm, 3).contains(TOKEN),
+            "not applied here: still needed to apply it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_built_before_a_retiring_apply_is_scrubbed_when_it_is_saved() {
+        let (mut sm, _dirs) = test_sm();
+        append_and_apply(&mut sm, vec![config_entry(1, &cfg("one"))]).await;
+        // `openraft` builds in a task of its own: the copy is taken, then an apply lands.
+        let mut builder = sm.get_snapshot_builder().await;
+        append_and_apply(&mut sm, vec![config_entry(2, &cfg("two"))]).await;
+        builder.build_snapshot().await.unwrap();
+        let saved = saved_revisions(&sm);
+        assert!(
+            !saved
+                .iter()
+                .any(|r| r.contains("# one") && r.contains(TOKEN)),
+            "{saved:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn installing_a_plaintext_snapshot_from_an_old_leader_leaves_nothing_retired_in_plaintext(
+    ) {
+        let (mut old, _d1) = test_sm();
+        append_and_apply(
+            &mut old,
+            vec![config_entry(1, &cfg("one")), config_entry(2, &cfg("two"))],
+        )
+        .await;
+        let built = old
+            .get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
+        // What an older build would have sent: the history in plaintext.
+        let mut content = decode_snapshot(built.snapshot.get_ref()).unwrap();
+        content.config[0].bytes = cfg("one");
+        let data = serde_json::to_vec(&content).unwrap();
+
+        let (mut fresh, _d2) = test_sm();
+        fresh
+            .install_snapshot(&built.meta, Box::new(std::io::Cursor::new(data)))
+            .await
+            .unwrap();
+        assert!(
+            !String::from_utf8(fresh.config.store.get(1).unwrap().unwrap())
+                .unwrap()
+                .contains(TOKEN)
+        );
+        assert!(
+            String::from_utf8(fresh.config.store.get(2).unwrap().unwrap())
+                .unwrap()
+                .contains(TOKEN)
+        );
+        let saved = saved_revisions(&fresh);
+        assert!(
+            !saved[0].contains(TOKEN) && saved[1].contains(TOKEN),
+            "{saved:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_scrub_is_repeatable_after_a_crash_between_the_store_and_the_log() {
+        let (mut sm, _dirs) = test_sm();
+        append_and_apply(
+            &mut sm,
+            vec![config_entry(1, &cfg("one")), config_entry(2, &cfg("two"))],
+        )
+        .await;
+        // A crash after the store was scrubbed but before the log entry was: the old text is back.
+        sm.log
+            .insert(
+                1u64.to_be_bytes(),
+                serde_json::to_vec(&config_entry(1, &cfg("one"))).unwrap(),
+            )
+            .unwrap();
+        assert!(log_text(&sm, 1).contains(TOKEN));
+        assert!(sm.purge_secrets());
+        assert!(!log_text(&sm, 1).contains(TOKEN));
+        assert!(
+            sm.purge_secrets(),
+            "a second run finds nothing and succeeds"
+        );
     }
 }
