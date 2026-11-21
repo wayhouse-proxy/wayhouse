@@ -23,9 +23,11 @@ net_want=$(sed -n 's/^ARG GOLANG_X_NET_VERSION=\([0-9][0-9.]*\)$/\1/p' deploy/Do
 jose_want=$(sed -n 's/^ARG GO_JOSE_VERSION=\([0-9][0-9.]*\)$/\1/p' deploy/Dockerfile)
 [ -n "$go_want" ] && [ -n "$net_want" ] && [ -n "$jose_want" ] || { echo "check-caddy-image: cannot read the Go, x/net and go-jose pins from deploy/Dockerfile" >&2; exit 1; }
 info=$(docker run --rm --cap-drop ALL --user 65532:65532 "$img" build-info)
-echo "$info" | grep -q "go$go_want" || { echo "check-caddy-image: the binary was not built with Go $go_want; build-info says:" >&2; echo "$info" >&2; exit 1; }
-echo "$info" | grep -q "golang.org/x/net.* v$net_want" || { echo "check-caddy-image: the binary does not carry golang.org/x/net v$net_want; build-info says:" >&2; echo "$info" >&2; exit 1; }
-echo "$info" | grep -q "go-jose/v4.* v$jose_want" || { echo "check-caddy-image: the binary does not carry go-jose/v4 v$jose_want; build-info says:" >&2; echo "$info" >&2; exit 1; }
+echo "$info" | grep -Eq "^go[[:space:]]+go$go_want\$" || { echo "check-caddy-image: the binary was not built with Go $go_want; build-info says:" >&2; echo "$info" >&2; exit 1; }
+# `caddy build-info` prints `dep<TAB>module<TAB>version`, and a replaced module's new version on the
+# next line as `=><TAB>module<TAB>version<TAB>hash`.
+echo "$info" | grep -Eq "^=>[[:space:]]+golang\.org/x/net[[:space:]]+v$net_want([[:space:]]|\$)" || { echo "check-caddy-image: the binary does not carry golang.org/x/net v$net_want; build-info says:" >&2; echo "$info" >&2; exit 1; }
+echo "$info" | grep -Eq "^=>[[:space:]]+github\.com/go-jose/go-jose/v4[[:space:]]+v$jose_want([[:space:]]|\$)" || { echo "check-caddy-image: the binary does not carry go-jose/v4 v$jose_want; build-info says:" >&2; echo "$info" >&2; exit 1; }
 # Our --replace pins must not go below what Caddy's own go.mod asks for, or a bump of Caddy would
 # silently downgrade a dependency. A failed download is a warning, a confirmed downgrade fails.
 mod=$(curl -fsS --max-time 20 "https://raw.githubusercontent.com/caddyserver/caddy/v$want/go.mod" 2>/dev/null || true)
