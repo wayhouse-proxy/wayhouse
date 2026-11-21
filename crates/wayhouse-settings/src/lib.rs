@@ -1,7 +1,7 @@
 //! Process flags from a settings file (G1, #477).
 //!
 //! Every program (proxy, controller, aggregator, UI) can be started with `--settings-dir DIR`.
-//! It then reads `DIR/<program>.json` and passes the values it holds as flags the command line
+//! It then reads `DIR/<program>/settings.json` and passes the values it holds as flags the command line
 //! did not give, so the command line always wins (the programs read no environment variables for
 //! their flags). The UI writes these files; the flag list it offers comes from each program's own
 //! clap definition ([`schema`]) and a new value is checked by running that same parser
@@ -81,7 +81,7 @@ pub struct Pending {
     pub attempts: u32,
 }
 
-/// `DIR/<program>.json`.
+/// `DIR/<program>/settings.json`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct File {
     /// Counts every write, so a writer can tell that the file moved under it.
@@ -100,8 +100,53 @@ pub struct File {
     pub error: Option<String>,
 }
 
+/// `DIR/<program>/`: everything one program reads and writes lives in a directory of its own, so
+/// access can be given per program (see [`ensure_dir`]).
+pub fn program_dir(dir: &Path, program: &str) -> PathBuf {
+    dir.join(program)
+}
+
 pub fn path(dir: &Path, program: &str) -> PathBuf {
-    dir.join(format!("{program}.json"))
+    program_dir(dir, program).join("settings.json")
+}
+
+/// The mode of the files in a program directory: owner-only, or owner and group when the directory
+/// itself is group-writable. That is the switch for giving the UI backend write access to one
+/// program's files without giving that program (or any other) access to the rest.
+fn file_mode(pdir: &Path) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::metadata(pdir).is_ok_and(|m| m.permissions().mode() & 0o020 != 0) {
+            return 0o660;
+        }
+    }
+    0o600
+}
+
+/// Creates `DIR/<program>` when it is missing: `0700`, or `0770` when `DIR` is itself
+/// group-writable (a setgid `DIR` hands the group on). An operator who runs the programs as
+/// different users creates each program directory beforehand, owned by that program's user with
+/// a group the UI backend's user belongs to, and nothing here changes it.
+pub fn ensure_dir(dir: &Path, program: &str) -> std::io::Result<PathBuf> {
+    let pdir = program_dir(dir, program);
+    if !pdir.is_dir() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+            let group = std::fs::metadata(dir).is_ok_and(|m| m.permissions().mode() & 0o020 != 0);
+            let mode = if group { 0o770 } else { 0o700 };
+            match std::fs::DirBuilder::new().mode(mode).create(&pdir) {
+                Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
+                _ => {}
+            }
+            // The creation mode is masked by the umask; the group bit is the point.
+            std::fs::set_permissions(&pdir, std::fs::Permissions::from_mode(mode))?;
+        }
+        #[cfg(not(unix))]
+        std::fs::create_dir_all(&pdir)?;
+    }
+    Ok(pdir)
 }
 
 /// The file, or `None` when there is none yet.
@@ -117,38 +162,54 @@ pub fn read(dir: &Path, program: &str) -> Result<Option<File>, String> {
         .map_err(|e| format!("{}: {e}", p.display()))
 }
 
-/// Writes the file whole: a temporary file in the same directory (its name is this process's
-/// own, so the UI backend and the program cannot tear each other's write), synced, then renamed
-/// over the old one, owner-only. The writer becomes the owner, so the UI backend and the programs
-/// must run as the same user.
+/// Writes the file whole: a temporary file in the program's directory (its name is this
+/// process's own, so the UI backend and the program cannot tear each other's write), synced, then
+/// renamed over the old one, owner-only (owner and group in a group-writable directory). The
+/// writer becomes the owner; the UI backend and a program either run as the same user or share
+/// that one directory's group.
 pub fn write(dir: &Path, program: &str, file: &File) -> Result<(), String> {
     let body = serde_json::to_vec_pretty(file).map_err(|e| e.to_string())?;
-    write_atomic(dir, &format!("{program}.json"), &body)
+    write_atomic(dir, program, "settings.json", &body)
 }
 
-/// Holds an exclusive lock on `DIR/.<program>.lock` for a read-modify-write, so the UI backend's
+/// Holds an exclusive lock on `DIR/<program>/.lock` for a read-modify-write, so the UI backend's
 /// apply/confirm/undo and the program's own guard cannot interleave (two lost updates). Released
 /// when dropped. A directory that cannot be written has no lock to take and no file to change.
 fn lock(dir: &Path, program: &str) -> Result<std::fs::File, String> {
-    let p = dir.join(format!(".{program}.lock"));
+    let pdir = ensure_dir(dir, program).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let p = pdir.join(".lock");
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create(true).truncate(false);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+        opts.mode(file_mode(&pdir));
     }
     let f = opts.open(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    set_mode(&f, file_mode(&pdir));
     f.lock().map_err(|e| format!("{}: {e}", p.display()))?;
     Ok(f)
 }
 
-fn write_atomic(dir: &Path, name: &str, body: &[u8]) -> Result<(), String> {
+/// The umask masks the creation mode; the group bit of a shared program directory must survive it.
+fn set_mode(f: &std::fs::File, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = f.set_permissions(std::fs::Permissions::from_mode(mode));
+    }
+    #[cfg(not(unix))]
+    let _ = (f, mode);
+}
+
+fn write_atomic(dir: &Path, program: &str, name: &str, body: &[u8]) -> Result<(), String> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
-    let p = dir.join(name);
-    let tmp = dir.join(format!(
+    let pdir = ensure_dir(dir, program).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mode = file_mode(&pdir);
+    let p = pdir.join(name);
+    let tmp = pdir.join(format!(
         ".{name}.{}.{}.tmp",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
@@ -158,11 +219,14 @@ fn write_atomic(dir: &Path, name: &str, body: &[u8]) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+        opts.mode(mode);
     }
     let result = opts
         .open(&tmp)
-        .and_then(|mut f| f.write_all(body).and_then(|()| f.sync_all()))
+        .and_then(|mut f| {
+            set_mode(&f, mode);
+            f.write_all(body).and_then(|()| f.sync_all())
+        })
         .and_then(|()| std::fs::rename(&tmp, &p));
     if let Err(e) = result {
         let _ = std::fs::remove_file(&tmp);
@@ -171,10 +235,10 @@ fn write_atomic(dir: &Path, name: &str, body: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// `DIR/<program>.schema.json`: the flags the running program offers, written by the program at
+/// `DIR/<program>/schema.json`: the flags the running program offers, written by the program at
 /// each start so the UI backend (which does not link the other programs) can show and check them.
 pub fn schema_path(dir: &Path, program: &str) -> PathBuf {
-    dir.join(format!("{program}.schema.json"))
+    program_dir(dir, program).join("schema.json")
 }
 
 #[derive(Serialize, Deserialize)]
@@ -574,7 +638,7 @@ pub fn layer(program: &str, cmd: &Command, argv: Vec<OsString>) -> Layered {
     if !dry {
         let body =
             serde_json::to_vec_pretty(&SchemaFile { flags: schema(cmd) }).unwrap_or_default();
-        if let Err(e) = write_atomic(&dir, &format!("{program}.schema.json"), &body) {
+        if let Err(e) = write_atomic(&dir, program, "schema.json", &body) {
             warn(format!("could not publish the flag list: {e}"));
         }
     }
@@ -989,6 +1053,7 @@ mod tests {
         assert_eq!(l.argv, argv(&["--listen=x"]));
         assert!(l.guard.is_none());
         let dir = tempfile::tempdir().unwrap();
+        ensure_dir(dir.path(), "demo").unwrap();
         std::fs::write(path(dir.path(), "demo"), "{ not json").unwrap();
         let d = dir.path().to_str().unwrap();
         let l = layer("demo", &cmd(), argv(&["--settings-dir", d, "--listen=x"]));
@@ -1268,6 +1333,48 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn each_program_gets_its_own_owner_only_directory_unless_the_parent_is_shared() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        write(dir.path(), "a", &File::default()).unwrap();
+        write(dir.path(), "b", &File::default()).unwrap();
+        for prog in ["a", "b"] {
+            let pd = program_dir(dir.path(), prog);
+            assert_eq!(mode(&pd), 0o700, "{prog}");
+            assert_eq!(mode(&path(dir.path(), prog)), 0o600, "{prog}");
+        }
+        assert!(!dir.path().join("a").join("b").exists());
+        assert!(path(dir.path(), "a").starts_with(dir.path().join("a")));
+        // The lock lives with its program too.
+        let _l = lock(dir.path(), "a").unwrap();
+        assert_eq!(mode(&dir.path().join("a").join(".lock")), 0o600);
+
+        // A group-writable parent makes group-writable program directories and files, whatever
+        // the umask: that is how the UI backend's group reaches them.
+        let shared = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(shared.path(), std::fs::Permissions::from_mode(0o770)).unwrap();
+        write(shared.path(), "a", &File::default()).unwrap();
+        assert_eq!(mode(&program_dir(shared.path(), "a")), 0o770);
+        assert_eq!(mode(&path(shared.path(), "a")), 0o660);
+        drop(lock(shared.path(), "a").unwrap());
+        assert_eq!(mode(&shared.path().join("a").join(".lock")), 0o660);
+        // An operator-made program directory is left as it is, and its mode picks the file mode.
+        let own = tempfile::tempdir().unwrap();
+        let pd = own.path().join("a");
+        std::fs::create_dir(&pd).unwrap();
+        std::fs::set_permissions(&pd, std::fs::Permissions::from_mode(0o2770)).unwrap();
+        write(own.path(), "a", &File::default()).unwrap();
+        assert_eq!(mode(&path(own.path(), "a")) & 0o777, 0o660);
+        assert_eq!(
+            std::fs::metadata(&pd).unwrap().permissions().mode() & 0o7777,
+            0o2770
+        );
+    }
+
     #[test]
     fn an_alias_on_the_command_line_beats_the_file_instead_of_clashing_with_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -1341,7 +1448,7 @@ mod tests {
             now(),
         )
         .unwrap();
-        if !read_only(dir.path()) {
+        if !read_only(&program_dir(dir.path(), "demo")) {
             return;
         }
         let d = dir.path().to_str().unwrap();

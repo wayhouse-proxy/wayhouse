@@ -272,6 +272,7 @@ mod tests {
             flag("auth-token", Kind::Text, Some("a credential")),
         ];
         let body = serde_json::to_vec(&json!({ "flags": flags })).unwrap();
+        wayhouse_settings::ensure_dir(dir.path(), "controller").unwrap();
         std::fs::write(
             wayhouse_settings::schema_path(dir.path(), "controller"),
             body,
@@ -350,6 +351,7 @@ mod tests {
     async fn a_viewer_sees_that_a_change_is_waiting_but_not_the_values() {
         let dir = tempfile::tempdir().unwrap();
         let flags = vec![flag("listen", Kind::Text, None)];
+        wayhouse_settings::ensure_dir(dir.path(), "controller").unwrap();
         std::fs::write(
             wayhouse_settings::schema_path(dir.path(), "controller"),
             serde_json::to_vec(&json!({ "flags": flags })).unwrap(),
