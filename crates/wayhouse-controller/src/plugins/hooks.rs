@@ -139,6 +139,14 @@ impl HookState {
             install: Arc::new(Limiter::new(INSTALL_RATE)),
         }
     }
+
+    /// Replaces the two budgets (`(per second, burst)`): one source address, one install.
+    #[must_use]
+    pub fn with_rates(mut self, source: (f64, f64), install: (f64, f64)) -> Self {
+        self.source = Arc::new(Limiter::new(source));
+        self.install = Arc::new(Limiter::new(install));
+        self
+    }
 }
 
 /// The webhook listener's app: only the hook route.
