@@ -334,6 +334,9 @@ mod tests {
             panic!("expected a refusal")
         };
         assert!(msg.contains("--secret-delete"), "{msg}");
+        // Doing what the message says clears the way.
+        assert!(remove(&q, "stale").unwrap());
+        set(&q, &b, "new", VALUE).unwrap();
     }
 
     #[test]
