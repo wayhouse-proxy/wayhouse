@@ -127,6 +127,11 @@ impl RuntimeHandle {
     /// [`Reconciled::failed`] and keeps its previous group running.
     pub async fn reconcile_listeners(&self) -> Reconciled {
         let snap = self.snapshot.load_full();
+        if snap.listeners.is_empty() {
+            // Validation refuses a config with no listeners at all, so this is every one parked
+            // with `enabled: false`: nothing accepts connections and `ready()` stays false.
+            tracing::warn!("every listener is parked (enabled: false); this instance answers nothing and is not ready");
+        }
         self.listeners.reconcile(&snap).await
     }
 
