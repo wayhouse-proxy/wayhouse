@@ -329,7 +329,8 @@ Including `compose.solo-acme.yml` is your agreement to the CA's terms of service
 production rate limits.
 
 - **HTTP-01, no plugin.** Needs the name to resolve to this box and port 80 reachable from the
-  internet. Add `compose.web.yml` (Caddy and `wayhouse-web-sync`) and start the sync with
+  internet. Add `compose.web.yml` (Caddy and `wayhouse-web-sync`) and edit the sync's `command` in it (the
+  flags are hard-coded there) to add
   `--acme-challenge-upstream https://127.0.0.1:9901 --acme-challenge-ca-file /tls/ca.pem`: the
   solo controller serves https from the certificate `init` made, so Caddy needs that CA too.
   Mount `tls/ca.pem` into the `caddy` service (`${WAYHOUSE_TLS_DIR}/ca.pem:/tls/ca.pem:ro`). Then
