@@ -932,6 +932,28 @@ mod tests {
         assert_eq!(verify_and_strip("secret", &tagged, edge), Ok(&b"hello"[..]));
     }
 
+    /// A `{ secret: name }` that was not resolved before the mesh starts is a bug in the caller:
+    /// the mesh must not run on a guessed or empty key, so `run` returns at once and binds nothing.
+    #[tokio::test]
+    async fn an_unresolved_psk_reference_stops_the_mesh_before_it_binds() {
+        let cfg = GossipConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            seeds: vec![],
+            quorum_fraction: 0.66,
+            psk: wayhouse_config::SecretOr::Ref("gossip-psk".into()),
+        };
+        let (handle, inbox) = GossipHandle::new();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        // No shutdown is sent: a mesh that started would still be running after the timeout.
+        let ended = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            run(cfg, handle.clone(), inbox, shutdown_rx),
+        )
+        .await;
+        assert!(ended.is_ok(), "the mesh started on an unresolved key");
+        assert_eq!(handle.member_count(), 0);
+    }
+
     #[tokio::test]
     async fn two_instances_discover_each_other() {
         let psk = "test-psk".to_string();
