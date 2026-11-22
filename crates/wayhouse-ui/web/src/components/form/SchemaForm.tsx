@@ -202,8 +202,9 @@ function NumberW(p: WidgetProps) {
   );
 }
 
+// An absent key means the schema default: a default-true field (`enabled`) shows on until it is switched off.
 const Bool = (p: WidgetProps) => (
-  <Switch id={p.id} checked={!!p.value} onCheckedChange={(v) => p.onChange(v)} disabled={p.disabled || p.readonly} {...describe(p)} />
+  <Switch id={p.id} checked={p.value === undefined ? p.schema["x-wayhouse-default"] === true : !!p.value} onCheckedChange={(v) => p.onChange(v)} disabled={p.disabled || p.readonly} {...describe(p)} />
 );
 
 const Choice = (p: WidgetProps) => (

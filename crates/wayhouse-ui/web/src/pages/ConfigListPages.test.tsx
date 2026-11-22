@@ -223,6 +223,28 @@ describe("Backend sources editor", () => {
   });
 });
 
+describe("Parking an item (enabled: false)", () => {
+  it("a backend source can be parked and its comment survives", async () => {
+    sources();
+    await userEvent.click(await screen.findByLabelText(/^Enabled/));
+    const text = await apply();
+    expect(text).toMatch(/enabled: false/);
+    expect(text).toContain("# edge");
+  });
+
+  it("a resolver can be parked", async () => {
+    resolvers();
+    await userEvent.click(await screen.findByLabelText(/^Enabled/));
+    expect(await apply()).toMatch(/enabled: false/);
+  });
+
+  it("a web site can be parked", async () => {
+    web();
+    await userEvent.click(await screen.findByLabelText(/^Enabled/));
+    expect(await apply()).toMatch(/enabled: false/);
+  });
+});
+
 describe("Resolvers editor", () => {
   it("edits the endpoint as a patch", async () => {
     resolvers();
