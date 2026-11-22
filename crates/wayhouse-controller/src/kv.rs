@@ -151,7 +151,15 @@ impl Db {
     /// Opens (or creates) the database in directory `path`.
     pub fn open(path: impl AsRef<Path>) -> Result<Db> {
         let path = path.as_ref();
+        let existed = path.exists();
         std::fs::create_dir_all(path)?;
+        if !existed {
+            // The data holds config revisions, token hashes and sealed secrets: owner only,
+            // whatever the umask. A directory that already exists keeps the mode its owner chose
+            // (a systemd `StateDirectory`, a volume).
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        }
         let file = path.join(DB_FILE);
         if !file.exists() && (path.join("conf").exists() || path.join("db").exists()) {
             return Err(Error::LegacySled(path.to_owned()));
@@ -811,6 +819,26 @@ mod tests {
         let big = vec![7u8; 3 * 1024 * 1024];
         t.insert(b"module", &big).unwrap();
         assert_eq!(t.get(b"module").unwrap().unwrap().to_vec(), big);
+    }
+
+    #[test]
+    fn a_new_data_directory_is_owner_only_and_an_existing_one_is_left_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let root = tempfile::tempdir().unwrap();
+        let fresh = root.path().join("data");
+        drop(Db::open(&fresh).unwrap());
+        assert_eq!(mode(&fresh), 0o700);
+
+        let shared = root.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o750)).unwrap();
+        drop(Db::open(&shared).unwrap());
+        assert_eq!(
+            mode(&shared),
+            0o750,
+            "a directory that was there is not touched"
+        );
     }
 
     /// Measures what a heartbeat costs the store (#430): every `insert` is its own write
