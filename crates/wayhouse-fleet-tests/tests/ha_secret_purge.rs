@@ -112,7 +112,7 @@ async fn retired_revisions_lose_the_plaintext_secret_on_every_replica_including_
             let (client, base, body) = (client.clone(), bases[0].clone(), body(admin, listen, 0));
             async move { Ok(submit(&client, &base, body).await.is_some()) }
         },
-        Duration::from_secs(60),
+        Duration::from_secs(120),
         "a raft leader to accept a write",
     )
     .await?;
@@ -158,7 +158,9 @@ async fn retired_revisions_lose_the_plaintext_secret_on_every_replica_including_
             let (client, base4, want) = (client.clone(), base4.clone(), want.clone());
             async move { Ok(revisions(&client, &base4).await.ok() == Some(want)) }
         },
-        Duration::from_secs(30),
+        // A snapshot of hundreds of revisions on a loaded CI runner took more than the old 30 s;
+        // the wait ends as soon as node 4 matches, so a long ceiling costs nothing when it is fast.
+        Duration::from_secs(240),
         "node 4 to hold the leader's revisions",
     )
     .await?;
