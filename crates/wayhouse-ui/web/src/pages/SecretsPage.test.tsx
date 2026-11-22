@@ -79,6 +79,23 @@ describe("SecretsPage", () => {
     expect(api.putClusterSecret).not.toHaveBeenCalled();
   });
 
+  it("refuses a value outside 8 to 4096 bytes before sending, counting bytes not characters", async () => {
+    const user = userEvent.setup();
+    page();
+    await screen.findByText("gossip-psk");
+    await user.click(screen.getByRole("button", { name: "Add secret" }));
+    await user.type(screen.getByLabelText("Name"), "admin-token");
+    const save = screen.getByRole("button", { name: "Save secret" });
+    await user.type(screen.getByLabelText("Value"), "short");
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText(/now 5/)).toBeInTheDocument();
+    // Four characters, eight bytes: long enough.
+    await user.clear(screen.getByLabelText("Value"));
+    await user.type(screen.getByLabelText("Value"), "éééé");
+    expect(save).not.toHaveAttribute("aria-disabled", "true");
+    expect(api.putClusterSecret).not.toHaveBeenCalled();
+  });
+
   it("deletes after naming the secret in the button", async () => {
     const user = userEvent.setup();
     page();

@@ -70,6 +70,7 @@ export function ConfigListPage(p: ListPageProps) {
   const labelOf = p.labelOf ?? ((it: Json) => String(it.name ?? ""));
   const index = Math.min(Math.max(0, Number(params.get("i")) || 0), Math.max(0, items.length - 1));
   const current = items[index];
+  const renamed = renameWarning(p.refKind, root, doc.savedValue as Json | undefined, p.listPath, index);
 
   if (doc.loading) return <Loading />;
   if (doc.error || !doc.schema) return <ErrorState onRetry={doc.reload}>{doc.error ?? "The configuration schema is not available."}</ErrorState>;
@@ -158,9 +159,9 @@ export function ConfigListPage(p: ListPageProps) {
                   <Trash2 aria-hidden size={14} strokeWidth={1.5} /> Remove {p.noun}
                 </Button>
               </div>
-              {renameWarning(p.refKind, root, doc.savedValue as Json | undefined, p.listPath, index) && (
+              {renamed && (
                 <p role="status" className="mb-2 text-sm text-ink">
-                  {renameWarning(p.refKind, root, doc.savedValue as Json | undefined, p.listPath, index)}
+                  {renamed}
                 </p>
               )}
               {p.above?.({ item: current, index, items, root, canWrite, update: (item) => put([...p.listPath, index], item) })}
