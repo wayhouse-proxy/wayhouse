@@ -1420,9 +1420,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_loser_of_a_racing_put_gets_a_retryable_409() {
-        // Two PUTs sealed against the same revision: the second one applies as stale. (The
-        // state machine's side of this is `a_secret_only_moves_to_a_higher_revision`.)
+    async fn a_stale_apply_answers_a_retryable_409_and_a_resend_succeeds() {
+        // The answer for a PUT that applied as stale (sealed against a revision that is no longer
+        // the newest). The race itself is not run here: the state machine's side is
+        // `a_secret_only_moves_to_a_higher_revision`.
         let r = answer(&Applied::Stale, || StatusCode::OK.into_response());
         assert_eq!(r.status(), StatusCode::CONFLICT);
         let body = axum::body::to_bytes(r.into_body(), 4096).await.unwrap();
@@ -1430,7 +1431,7 @@ mod tests {
         assert_eq!(v["code"], "stale");
         assert!(v["error"].as_str().unwrap().contains("try again"), "{v}");
 
-        // And the same request, sent again, wins: it reads the newer revision first.
+        // Two PUTs one after the other both succeed: each reads the revision the last one left.
         let (app, _store, _d) = app(None);
         let put = || call(&app, "PUT", "/secrets/psk", json!({"value": VALUE}), None);
         assert_eq!(put().await.0, StatusCode::OK);
