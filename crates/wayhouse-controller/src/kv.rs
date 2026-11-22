@@ -150,24 +150,47 @@ pub struct Db {
 impl Db {
     /// Opens (or creates) the database in directory `path`.
     pub fn open(path: impl AsRef<Path>) -> Result<Db> {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
         let path = path.as_ref();
-        let existed = path.exists();
-        std::fs::create_dir_all(path)?;
-        if !existed {
-            // The data holds config revisions, token hashes and sealed secrets: owner only,
-            // whatever the umask. A directory that already exists keeps the mode its owner chose
-            // (a systemd `StateDirectory`, a volume).
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        // The data holds config revisions, token hashes and sealed secrets: a directory made here
+        // is owner only from its first moment (no window under the umask), and only the last
+        // component, not the parents. One that already exists keeps the mode its owner chose (a
+        // systemd `StateDirectory`, a volume), but a loose one is reported.
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::DirBuilder::new().mode(0o700).create(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if let Ok(m) = std::fs::metadata(path) {
+                    if m.mode() & 0o077 != 0 {
+                        tracing::warn!(
+                            path = %path.display(),
+                            mode = format!("{:o}", m.mode() & 0o777),
+                            "the data directory is accessible to other users; it holds token hashes and sealed secrets (chmod 700 it)"
+                        );
+                    }
+                }
+            }
+            Err(e) => return Err(e.into()),
         }
         let file = path.join(DB_FILE);
         if !file.exists() && (path.join("conf").exists() || path.join("db").exists()) {
             return Err(Error::LegacySled(path.to_owned()));
         }
         match redb::Database::create(&file) {
-            Ok(db) => Ok(Db {
-                inner: Arc::new(db),
-            }),
+            Ok(db) => {
+                // redb creates the file under the umask; narrow it. A failure is a warning: the
+                // directory is the real guard and a volume may not allow chmod.
+                if let Err(e) =
+                    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+                {
+                    tracing::warn!(path = %file.display(), error = %e, "could not restrict the database file to its owner");
+                }
+                Ok(Db {
+                    inner: Arc::new(db),
+                })
+            }
             Err(redb::DatabaseError::DatabaseAlreadyOpen) => Err(Error::Locked(path.to_owned())),
             Err(e) => Err(Error::Storage(e.to_string())),
         }
@@ -829,6 +852,13 @@ mod tests {
         let fresh = root.path().join("data");
         drop(Db::open(&fresh).unwrap());
         assert_eq!(mode(&fresh), 0o700);
+        assert_eq!(mode(&fresh.join(DB_FILE)), 0o600);
+
+        // Only the last component is made owner-only; a missing parent keeps the default.
+        let nested = root.path().join("var").join("lib").join("wayhouse");
+        drop(Db::open(&nested).unwrap());
+        assert_eq!(mode(&nested), 0o700);
+        assert_ne!(mode(nested.parent().unwrap()), 0o700);
 
         let shared = root.path().join("shared");
         std::fs::create_dir(&shared).unwrap();
