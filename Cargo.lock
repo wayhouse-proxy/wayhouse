@@ -4996,6 +4996,7 @@ dependencies = [
  "clap",
  "hickory-resolver",
  "metrics",
+ "nix 0.29.0",
  "openraft",
  "percent-encoding",
  "rand 0.8.8",

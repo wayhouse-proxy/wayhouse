@@ -82,7 +82,7 @@ fn existing_names(cert_pem: &str) -> Result<Vec<String>, String> {
                 }
                 other => {
                     return Err(format!(
-                        "it carries a name this command does not write ({other}); it was not made by `init`, so it is left alone"
+                        "it carries a name this command does not write ({other}); it was not made by `init`, so it is left alone; delete it to have a new one issued"
                     ))
                 }
             }
@@ -154,7 +154,7 @@ fn make(args: &CertArgs) -> Result<Vec<Made>, InitError> {
                 if !signed_by(&p, &ca) {
                     return Err(bad(
                         &cert_path,
-                        "it was not issued by this CA, so it is left alone",
+                        "it was not issued by this CA, so it is left alone; delete it to have a new one issued",
                     ));
                 }
                 Some(existing_names(&p).map_err(|e| bad(&cert_path, e))?)
@@ -207,7 +207,12 @@ fn replace(path: &Path, mode: u32, data: &[u8]) -> Result<(), InitError> {
         // Same owner and group as the file it replaces (the server may run as another user).
         if let Ok(old) = std::fs::metadata(path) {
             use std::os::unix::fs::MetadataExt;
-            let _ = std::os::unix::fs::fchown(&f, Some(old.uid()), Some(old.gid()));
+            if let Err(e) = std::os::unix::fs::fchown(&f, Some(old.uid()), Some(old.gid())) {
+                eprintln!(
+                    "warning: could not keep the owner of {}: {e}",
+                    path.display()
+                );
+            }
         }
         f.sync_all().map_err(io(&tmp))?;
         std::fs::rename(&tmp, path).map_err(io(path))
@@ -221,11 +226,13 @@ fn replace(path: &Path, mode: u32, data: &[u8]) -> Result<(), InitError> {
 /// Runs the command; `summary` gets the result, which never contains a secret value.
 pub fn run(args: &CertArgs, summary: &mut dyn Write) -> Result<(), InitError> {
     // One run at a time: two overlapping runs could pair a key with the other run's certificate.
+    use std::os::unix::fs::OpenOptionsExt as _;
     let lock_path = args.tls_dir.join(".cert.lock");
     let _lock = match std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
+        .custom_flags(nix::libc::O_NOFOLLOW)
         .open(&lock_path)
     {
         Ok(f) => {
