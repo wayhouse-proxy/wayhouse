@@ -696,6 +696,7 @@ mod tests {
             key_id: "k1".into(),
             nonce: "n".into(),
             ciphertext: "c".into(),
+            rev: None,
         }
     }
 

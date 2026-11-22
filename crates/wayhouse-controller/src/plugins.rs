@@ -2129,6 +2129,7 @@ mod tests {
             key_id: "0123456789abcdef".into(),
             nonce: b.encode([nonce_byte; 24]),
             ciphertext: b.encode([9u8; 40]),
+            rev: None,
         }
     }
 

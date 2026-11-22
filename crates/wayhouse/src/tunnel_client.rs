@@ -418,6 +418,9 @@ fn open_psk(
     let crate::secrets::Fetched::Sealed(sealed) = fetched else {
         return Err("its tunnel key is not stored on the controller".into());
     };
+    wayhouse_secrets::process_floor()
+        .admit(name, &sealed)
+        .map_err(|e| format!("its tunnel key: {e}"))?;
     let value = keyring
         .open_cluster(name, &sealed)
         .map_err(|_| "its tunnel key does not open with this proxy's secret key".to_string())?;

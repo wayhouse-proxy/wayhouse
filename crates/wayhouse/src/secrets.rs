@@ -60,6 +60,14 @@ pub fn open_all(
             Fetched::Sealed(s) => s,
             Fetched::Absent => return Err(SecretError::Missing(name.clone())),
         };
+        // A controller (or anything in its place) that serves an older revision than one already
+        // accepted is refused: that would bring back a secret that has been rotated away.
+        wayhouse_secrets::process_floor()
+            .admit(name, &sealed)
+            .map_err(|e| SecretError::Unreadable {
+                name: name.clone(),
+                why: e.to_string(),
+            })?;
         let value = keyring
             .open_cluster(name, &sealed)
             .map_err(|e| SecretError::Unreadable {
