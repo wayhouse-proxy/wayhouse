@@ -166,8 +166,9 @@ function AddDialog({ taken, onClose }: { taken: Set<string>; onClose: (saved: bo
           Value
           <Input type="password" autoComplete="off" mono value={value} aria-describedby="secret-size-hint" onChange={(e) => setValue(e.target.value)} />
         </label>
-        <p id="secret-size-hint" role="status" className={value !== "" && !sizeOk ? "text-sm text-bad" : "text-sm text-ink-muted"}>
-          Between 8 and 4096 bytes{value !== "" ? ` (now ${size})` : ""}. It is sent to the controller and never shown again.
+        <p id="secret-size-hint" className={value !== "" && !sizeOk ? "text-sm text-bad" : "text-sm text-ink-muted"}>
+          Between 8 and 4096 bytes. It is sent to the controller and never shown again.{" "}
+          <span role="status">{value !== "" ? `Now ${size} bytes.` : ""}</span>
         </p>
         {error && <ErrorState>{error}</ErrorState>}
         <div className="flex justify-end gap-2">
