@@ -187,13 +187,17 @@ where
 /// protocol is clear the timer is off for good (the header-read timeout and the HTTP/2 pings
 /// take over).
 struct FirstByte<Io> {
+    // Field order matters: fields drop in order, so the socket closes before the slot is given
+    // back and the cap never admits a new connection while the old socket is still open.
     inner: Io,
     sleep: Option<Pin<Box<tokio::time::Sleep>>>,
     /// What has been read while the timer runs; only ever a prefix of [`H2_PREFACE`].
     head: Vec<u8>,
     /// The connection's slot in the cap. It lives in the stream, not in the task that serves
     /// the connection: hyper's connection future ends at an upgrade (a WebSocket), but the
-    /// upgraded stream still holds this one, so the slot is freed when the socket is.
+    /// upgraded stream still holds this one, so the slot is freed when the socket is. That relies
+    /// on hyper dropping the type-erased io inside `Upgraded` when the upgraded stream drops;
+    /// `an_upgraded_connection_still_counts_against_the_cap` pins that behaviour.
     _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
