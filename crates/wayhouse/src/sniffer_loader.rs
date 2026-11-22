@@ -2127,14 +2127,13 @@ listeners:
             .await;
     }
 
-    /// A tiny per-test-process unique scratch dir under the system temp dir.
+    /// A fresh scratch directory per call (never reused: a name made of the process id and thread
+    /// id could be another run's leftover once a pid repeats).
     fn tempdir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "wayhouse-sniffer-loader-test-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        tempfile::Builder::new()
+            .prefix("wayhouse-sniffer-loader-test-")
+            .tempdir()
+            .unwrap()
+            .keep()
     }
 }
