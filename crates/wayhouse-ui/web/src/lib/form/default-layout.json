@@ -627,6 +627,52 @@
       "advanced": true,
       "help": "A range such as 19000-19999.",
       "page": "web"
+    },
+    "listeners.*.enabled": {
+      "label": "Enabled",
+      "group": "Listener",
+      "order": 5,
+      "help": "Turn off to park the listener (it is not run and does not take its bind): it stays in the document and is still validated, but it is not used until you turn it back on.",
+      "page": "listener"
+    },
+    "backend_sources.*.enabled": {
+      "label": "Enabled",
+      "group": "Source",
+      "order": 2,
+      "help": "Turn off to park the source (it stops refreshing and its pool keeps the last backends it found): it stays in the document and is still validated, but it is not used until you turn it back on.",
+      "page": "source"
+    },
+    "resolvers.*.enabled": {
+      "label": "Enabled",
+      "group": "Resolver",
+      "order": 4,
+      "help": "Turn off to park the resolver (routes that name it are skipped): it stays in the document and is still validated, but it is not used until you turn it back on.",
+      "page": "resolver"
+    },
+    "web.sites.*.enabled": {
+      "label": "Enabled",
+      "group": "Site",
+      "order": 3,
+      "help": "Turn off to park the site (it is not checked or rendered until it is enabled): it stays in the document and is still validated, but it is not used until you turn it back on.",
+      "page": "site"
+    },
+    "listeners.*.geo.enabled": {
+      "label": "Enabled",
+      "help": "Turn off to park the country filter: the settings stay here but are not applied.",
+      "page": "listener",
+      "order": 0
+    },
+    "listeners.*.per_source.enabled": {
+      "label": "Enabled",
+      "help": "Turn off to park the per-client connection limits: the settings stay here but are not applied.",
+      "page": "listener",
+      "order": 0
+    },
+    "listeners.*.rate_limit.enabled": {
+      "label": "Enabled",
+      "help": "Turn off to park the session rate limits: the settings stay here but are not applied.",
+      "page": "listener",
+      "order": 0
     }
   }
 }

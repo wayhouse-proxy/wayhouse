@@ -191,7 +191,7 @@ export function WebEditorPage() {
         { label: "Certificate", cell: (s) => (s.tls ? "files" : "from the controller") },
       ]}
       create={newSite}
-      fieldsOf={() => ["hosts", "upstreams", "tls", "health_path"]}
+      fieldsOf={() => ["hosts", "enabled", "upstreams", "tls", "health_path"]}
       above={({ item, update, canWrite }) => {
         const { mode, caFile } = upstreamTls(item);
         return (
