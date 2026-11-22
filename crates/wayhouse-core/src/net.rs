@@ -115,7 +115,9 @@ pub fn bind_reuseport_tcp(
 /// sockets that set `SO_REUSEPORT`; see [`probe_exclusive_udp`] for why the
 /// shared bind cannot detect that itself. The probe keeps `SO_REUSEADDR` (so a
 /// port in `TIME_WAIT` is not a conflict) but not `SO_REUSEPORT`, and is
-/// closed before returning.
+/// closed before returning. That leaves a gap before the real bind in which another process can
+/// take the port: the probe is a check that catches a conflict early, not a reservation, and the
+/// real bind still has to handle `AddrInUse`.
 pub fn probe_exclusive_tcp(
     addr: SocketAddr,
     freebind: bool,

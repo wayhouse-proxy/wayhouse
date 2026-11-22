@@ -814,8 +814,9 @@ mod tests {
     }
 
     /// Measures what a heartbeat costs the store (#430): every `insert` is its own write
-    /// transaction and fsync. Run with `cargo test -p wayhouse-controller --release
-    /// write_rate -- --ignored --nocapture`; the numbers depend on the disk, so it asserts nothing.
+    /// transaction and fsync. Run with `cargo test -p wayhouse-controller write_rate --
+    /// --ignored --nocapture` (the table in HANDOVER.md is from a debug build; add `--release`
+    /// for the optimised numbers); they depend on the disk, so it asserts nothing.
     #[test]
     #[ignore = "a measurement, not a test"]
     fn write_rate_of_single_inserts() {
