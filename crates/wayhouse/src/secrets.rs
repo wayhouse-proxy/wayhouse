@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use wayhouse_config::{SecretError, SecretResolver};
-use wayhouse_secrets::{Keyring, OpenError, Sealed};
+use wayhouse_secrets::{FloorError, Keyring, OpenError, Sealed};
 
 /// The secrets a config names, already opened.
 #[derive(Default)]
@@ -32,6 +32,22 @@ impl SecretResolver for Resolved {
             .get(name)
             .cloned()
             .ok_or_else(|| SecretError::Missing(name.to_owned()))
+    }
+}
+
+/// The floor every fetched secret goes through. In tests each thread has its own, so one test's
+/// revisions never hold another's back.
+pub(crate) fn floor() -> &'static wayhouse_secrets::RevFloor {
+    #[cfg(test)]
+    {
+        thread_local! {
+            static F: &'static wayhouse_secrets::RevFloor = Box::leak(Box::default());
+        }
+        F.with(|f| *f)
+    }
+    #[cfg(not(test))]
+    {
+        wayhouse_secrets::process_floor()
     }
 }
 
@@ -61,30 +77,27 @@ pub fn open_all(
             Fetched::Absent => return Err(SecretError::Missing(name.clone())),
         };
         // A controller (or anything in its place) that serves an older revision than one already
-        // accepted is refused: that would bring back a secret that has been rotated away.
-        wayhouse_secrets::process_floor()
-            .admit(name, &sealed)
-            .map_err(|e| SecretError::Unreadable {
-                name: name.clone(),
-                why: e.to_string(),
-            })?;
-        let value = keyring
-            .open_cluster(name, &sealed)
-            .map_err(|e| SecretError::Unreadable {
-                name: name.clone(),
-                why: match e {
-                    OpenError::KeyMissing(id) => format!(
-                        "it is sealed under key {id}, which is not in this proxy's key file"
-                    ),
-                    OpenError::Auth => {
-                        "the stored value does not authenticate (wrong key, or it was changed)"
-                            .into()
-                    }
-                    OpenError::Malformed | OpenError::Name => {
-                        "the stored value is malformed".into()
-                    }
-                },
-            })?;
+        // opened is refused: that would bring back a secret that has been rotated away.
+        let value =
+            floor()
+                .open_cluster(keyring, name, &sealed)
+                .map_err(|e| SecretError::Unreadable {
+                    name: name.clone(),
+                    why: match e {
+                        FloorError::Open(OpenError::KeyMissing(id)) => format!(
+                            "it is sealed under key {id}, which is not in this proxy's key file"
+                        ),
+                        FloorError::Open(OpenError::Auth) => {
+                            "the stored value does not authenticate (wrong key, or it was changed)"
+                                .into()
+                        }
+                        FloorError::Open(OpenError::Malformed | OpenError::Name) => {
+                            "the stored value is malformed".into()
+                        }
+                        // A rollback, or a blob from before revisions.
+                        other => other.to_string(),
+                    },
+                })?;
         let text = String::from_utf8(zeroize::Zeroizing::new(value.expose().to_vec()).to_vec())
             .map_err(|_| SecretError::Unreadable {
                 name: name.clone(),
@@ -440,7 +453,7 @@ mod tests {
     #[test]
     fn a_secret_sealed_under_the_proxys_key_opens_and_resolves() {
         let sealed = ring(KEY_A)
-            .seal_cluster("gossip-psk", VALUE.as_bytes())
+            .seal_cluster_rev("gossip-psk", VALUE.as_bytes(), wayhouse_secrets::unix_now())
             .unwrap();
         let r = open_all(&names(&["gossip-psk"]), Some(&ring(KEY_A)), |_| {
             Ok(Fetched::Sealed(sealed.clone()))
@@ -475,7 +488,7 @@ mod tests {
     #[test]
     fn an_absent_secret_a_wrong_key_and_a_swapped_name_each_fail_with_a_reason() {
         let sealed = ring(KEY_A)
-            .seal_cluster("gossip-psk", VALUE.as_bytes())
+            .seal_cluster_rev("gossip-psk", VALUE.as_bytes(), wayhouse_secrets::unix_now())
             .unwrap();
         let absent = open_all(&names(&["gossip-psk"]), Some(&ring(KEY_A)), |_| {
             Ok(Fetched::Absent)
@@ -565,12 +578,17 @@ mod tests {
         let url = stub(HashMap::from([
             (
                 "admin-token".to_owned(),
-                ring.seal_cluster("admin-token", b"the-admin-token-value")
-                    .unwrap(),
+                ring.seal_cluster_rev(
+                    "admin-token",
+                    b"the-admin-token-value",
+                    wayhouse_secrets::unix_now(),
+                )
+                .unwrap(),
             ),
             (
                 "gossip-psk".to_owned(),
-                ring.seal_cluster("gossip-psk", VALUE.as_bytes()).unwrap(),
+                ring.seal_cluster_rev("gossip-psk", VALUE.as_bytes(), wayhouse_secrets::unix_now())
+                    .unwrap(),
             ),
         ]))
         .await;
@@ -598,12 +616,17 @@ mod tests {
         let both = HashMap::from([
             (
                 "admin-token".to_owned(),
-                ring.seal_cluster("admin-token", b"the-admin-token-value")
-                    .unwrap(),
+                ring.seal_cluster_rev(
+                    "admin-token",
+                    b"the-admin-token-value",
+                    wayhouse_secrets::unix_now(),
+                )
+                .unwrap(),
             ),
             (
                 "gossip-psk".to_owned(),
-                ring.seal_cluster("gossip-psk", VALUE.as_bytes()).unwrap(),
+                ring.seal_cluster_rev("gossip-psk", VALUE.as_bytes(), wayhouse_secrets::unix_now())
+                    .unwrap(),
             ),
         ]);
         let url = stub(both.clone()).await;

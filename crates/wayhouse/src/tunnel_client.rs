@@ -418,12 +418,14 @@ fn open_psk(
     let crate::secrets::Fetched::Sealed(sealed) = fetched else {
         return Err("its tunnel key is not stored on the controller".into());
     };
-    wayhouse_secrets::process_floor()
-        .admit(name, &sealed)
-        .map_err(|e| format!("its tunnel key: {e}"))?;
-    let value = keyring
-        .open_cluster(name, &sealed)
-        .map_err(|_| "its tunnel key does not open with this proxy's secret key".to_string())?;
+    let value = crate::secrets::floor()
+        .open_cluster(keyring, name, &sealed)
+        .map_err(|e| match e {
+            wayhouse_secrets::FloorError::Open(_) => {
+                "its tunnel key does not open with this proxy's secret key".to_string()
+            }
+            other => format!("its tunnel key: {other}"),
+        })?;
     let text = std::str::from_utf8(value.expose())
         .map_err(|_| "its tunnel key is malformed".to_string())?;
     Key::try_from(text)
@@ -732,8 +734,12 @@ mod tests {
     fn sealed_psk(origin: &str, psk: &str) -> crate::secrets::Fetched {
         let ring = wayhouse_secrets::Keyring::parse(RING).unwrap();
         crate::secrets::Fetched::Sealed(
-            ring.seal_cluster(&wayhouse_enroll::psk_secret_name(origin), psk.as_bytes())
-                .unwrap(),
+            ring.seal_cluster_rev(
+                &wayhouse_enroll::psk_secret_name(origin),
+                psk.as_bytes(),
+                wayhouse_secrets::unix_now(),
+            )
+            .unwrap(),
         )
     }
 

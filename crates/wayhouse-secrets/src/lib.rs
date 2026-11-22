@@ -360,34 +360,45 @@ impl Keyring {
     }
 }
 
-/// The highest revision of each cluster secret a process has accepted. A reader that checks every
-/// blob it is served against it cannot be walked back to an older secret (a rotated token or
-/// PSK), and cannot be handed a legacy blob, which has no revision, for a name that has had one.
-/// It lives in memory: after a restart it starts empty, so a hostile server can roll a reader
-/// back once per restart.
+/// The highest revision of each cluster secret a process has opened. A reader that opens every
+/// blob it is served through it cannot be walked back to an older secret (a rotated token or
+/// PSK). It lives in memory: after a restart it starts empty, so a hostile server can roll a
+/// reader back once per restart.
 #[derive(Default)]
 pub struct RevFloor(std::sync::Mutex<std::collections::HashMap<String, u64>>);
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-#[error("the served secret is older than one already accepted (a rollback)")]
-pub struct Rollback;
+pub enum FloorError {
+    #[error("the served secret is older than one already accepted (a rollback)")]
+    Rollback,
+    /// A blob from before revisions: it cannot be told apart from an old one.
+    #[error("the served secret carries no revision; have the controller rewrap it (POST /secrets/rewrap)")]
+    NoRevision,
+    #[error(transparent)]
+    Open(#[from] OpenError),
+}
 
 impl RevFloor {
-    /// Accepts `sealed` for `name`, or refuses it as older than what was accepted before.
-    pub fn admit(&self, name: &str, sealed: &Sealed) -> Result<(), Rollback> {
+    /// Opens the cluster secret `name`. A blob with no revision, or with one below what this
+    /// process has already opened, is refused. The floor rises only once the blob has
+    /// authenticated, so a forged blob with a huge revision cannot lock the real one out.
+    pub fn open_cluster(
+        &self,
+        ring: &Keyring,
+        name: &str,
+        sealed: &Sealed,
+    ) -> Result<SecretValue, FloorError> {
+        let rev = sealed.rev.ok_or(FloorError::NoRevision)?;
         let mut seen = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match (seen.get(name).copied(), sealed.rev) {
-            (Some(_), None) => Err(Rollback),
-            (Some(floor), Some(rev)) if rev < floor => Err(Rollback),
-            (_, Some(rev)) => {
-                seen.insert(name.to_owned(), rev);
-                Ok(())
-            }
-            (None, None) => Ok(()),
+        if seen.get(name).is_some_and(|floor| rev < *floor) {
+            return Err(FloorError::Rollback);
         }
+        let value = ring.open_cluster(name, sealed)?;
+        seen.insert(name.to_owned(), rev);
+        Ok(value)
     }
 }
 
@@ -397,11 +408,20 @@ pub fn process_floor() -> &'static RevFloor {
     FLOOR.get_or_init(RevFloor::default)
 }
 
+/// Seconds since the Unix epoch, as the clock the revisions follow.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 /// The next revision of a secret that is at `current` (0: none yet). It follows the clock when
 /// that is ahead, so a name that is deleted and set again never goes back to a revision a reader
-/// has already accepted.
+/// has already accepted. That relies on the controller's clock not being set back past a revision
+/// it has issued while a reader still remembers it; such a reader is refused (a rollback) until
+/// the clock catches up or it restarts.
 pub fn next_rev(current: u64, now_unix: u64) -> u64 {
-    (current + 1).max(now_unix)
+    current.saturating_add(1).max(now_unix)
 }
 
 /// The node's keyring, swapped whole when the key file changes.
@@ -816,18 +836,55 @@ mod tests {
     }
 
     #[test]
-    fn the_floor_refuses_older_revisions_and_legacy_blobs_after_a_revision() {
+    fn the_floor_refuses_older_revisions_and_blobs_without_one() {
         let r = ring(&[1]);
         let floor = RevFloor::default();
         let at = |n| r.seal_cluster_rev("psk", b"some-secret-value", n).unwrap();
         let legacy = r.seal_cluster("psk", b"some-secret-value").unwrap();
-        floor.admit("psk", &legacy).unwrap();
-        floor.admit("psk", &at(5)).unwrap();
-        floor.admit("psk", &at(5)).unwrap();
-        floor.admit("psk", &at(9)).unwrap();
-        assert_eq!(floor.admit("psk", &at(8)), Err(Rollback));
-        assert_eq!(floor.admit("psk", &legacy), Err(Rollback));
-        floor.admit("other", &legacy).unwrap();
+        assert!(matches!(
+            floor.open_cluster(&r, "psk", &legacy),
+            Err(FloorError::NoRevision)
+        ));
+        floor.open_cluster(&r, "psk", &at(5)).unwrap();
+        floor.open_cluster(&r, "psk", &at(5)).unwrap();
+        floor.open_cluster(&r, "psk", &at(9)).unwrap();
+        assert!(matches!(
+            floor.open_cluster(&r, "psk", &at(8)),
+            Err(FloorError::Rollback)
+        ));
+        assert!(matches!(
+            floor.open_cluster(&r, "psk", &legacy),
+            Err(FloorError::NoRevision)
+        ));
+        floor
+            .open_cluster(
+                &r,
+                "other",
+                &r.seal_cluster_rev("other", b"some-secret-value", 1)
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_blob_that_does_not_authenticate_never_raises_the_floor() {
+        let r = ring(&[1]);
+        let floor = RevFloor::default();
+        let real = r.seal_cluster_rev("psk", b"some-secret-value", 5).unwrap();
+        // Garbage with a huge revision arrives first (a hostile or broken controller).
+        let junk = Sealed {
+            rev: Some(u64::MAX),
+            ..real.clone()
+        };
+        assert!(matches!(
+            floor.open_cluster(&r, "psk", &junk),
+            Err(FloorError::Open(OpenError::Auth))
+        ));
+        // The real one still opens.
+        assert_eq!(
+            floor.open_cluster(&r, "psk", &real).unwrap().expose(),
+            b"some-secret-value"
+        );
     }
 
     #[test]

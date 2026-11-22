@@ -1420,6 +1420,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_loser_of_a_racing_put_gets_a_retryable_409() {
+        // Two PUTs sealed against the same revision: the second one applies as stale. (The
+        // state machine's side of this is `a_secret_only_moves_to_a_higher_revision`.)
+        let r = answer(&Applied::Stale, || StatusCode::OK.into_response());
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(r.into_body(), 4096).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["code"], "stale");
+        assert!(v["error"].as_str().unwrap().contains("try again"), "{v}");
+
+        // And the same request, sent again, wins: it reads the newer revision first.
+        let (app, _store, _d) = app(None);
+        let put = || call(&app, "PUT", "/secrets/psk", json!({"value": VALUE}), None);
+        assert_eq!(put().await.0, StatusCode::OK);
+        assert_eq!(put().await.0, StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn a_secret_can_be_replaced_and_deleted() {
         let (app, _s, _d) = app(None);
         call(

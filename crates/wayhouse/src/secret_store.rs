@@ -123,11 +123,16 @@ pub fn set(path: &Path, keyring: &Keyring, name: &str, value: &[u8]) -> Result<(
     if !valid_cluster_name(name) {
         return Err(StoreError::Name);
     }
-    let sealed = keyring
-        .seal_cluster(name, value)
-        .map_err(|e| StoreError::Seal(e.to_string()))?;
     let _lock = lock(path)?;
     let mut store = read(path)?;
+    // A revision like the controller's: the readers refuse a secret without one.
+    let rev = wayhouse_secrets::next_rev(
+        store.get(name).and_then(|s| s.rev).unwrap_or(0),
+        wayhouse_secrets::unix_now(),
+    );
+    let sealed = keyring
+        .seal_cluster_rev(name, value, rev)
+        .map_err(|e| StoreError::Seal(e.to_string()))?;
     // A key typed wrong would start a store that no one key opens: refuse it while the file
     // still holds a secret to check against.
     if let Some((existing, sealed)) = store.iter().next() {
