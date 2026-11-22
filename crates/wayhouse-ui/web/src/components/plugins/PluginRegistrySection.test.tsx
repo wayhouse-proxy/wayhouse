@@ -168,7 +168,8 @@ describe("PluginRegistrySection", () => {
     await user.click(screen.getByRole("button", { name: "Fetch pelican-sync" }));
     unmount();
     release({ plugin: "pelican-sync", version: "0.2.0", signed: true, risk: "official", upload: MODULE });
-    await Promise.resolve();
+    // Let the resolved fetch and every promise chained on it settle, then check nothing was handed on.
+    await new Promise((r) => setTimeout(r, 0));
     expect(done).not.toHaveBeenCalled();
   });
 
