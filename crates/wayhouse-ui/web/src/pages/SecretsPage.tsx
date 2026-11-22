@@ -121,6 +121,8 @@ function AddDialog({ taken, onClose }: { taken: Set<string>; onClose: (saved: bo
   const [error, setError] = useState<string | null>(null);
   const nameOk = validSecretName(name);
   const exists = taken.has(name);
+  const size = new TextEncoder().encode(value).length;
+  const sizeOk = size >= 8 && size <= 4096;
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -150,13 +152,15 @@ function AddDialog({ taken, onClose }: { taken: Set<string>; onClose: (saved: bo
           Value
           <Input type="password" autoComplete="off" mono value={value} onChange={(e) => setValue(e.target.value)} />
         </label>
-        <p className="text-sm text-ink-muted">Between 8 and 4096 bytes. It is sent to the controller and never shown again.</p>
+        <p className={value !== "" && !sizeOk ? "text-sm text-bad" : "text-sm text-ink-muted"}>
+          Between 8 and 4096 bytes{value !== "" ? ` (now ${size})` : ""}. It is sent to the controller and never shown again.
+        </p>
         {error && <ErrorState>{error}</ErrorState>}
         <div className="flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={() => onClose(false)}>
             Cancel
           </Button>
-          <Button type="submit" variant="primary" loading={busy} disabled={!nameOk || value === ""}>
+          <Button type="submit" variant="primary" loading={busy} disabled={!nameOk || !sizeOk}>
             {exists ? "Replace secret" : "Save secret"}
           </Button>
         </div>
