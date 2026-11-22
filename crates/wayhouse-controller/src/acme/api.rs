@@ -920,6 +920,7 @@ mod tests {
                         key_id: "k1".into(),
                         nonce: "NONCE".into(),
                         ciphertext: "CIPHERTEXT".into(),
+                        rev: None,
                     },
                     not_after: 2_000_000_000,
                     issued_at: 1,
@@ -956,6 +957,7 @@ mod tests {
                     key_id: "k1".into(),
                     nonce: "n".into(),
                     ciphertext: "SECRETCT".into(),
+                    rev: None,
                 },
             }))
             .unwrap();

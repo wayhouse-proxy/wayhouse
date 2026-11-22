@@ -502,8 +502,11 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
             only_keys(
                 obj,
                 "",
-                &["key_id", "nonce", "ciphertext", "set_at", "actor"],
+                &["key_id", "nonce", "ciphertext", "set_at", "actor", "rev"],
             )?;
+            if obj.get("rev").is_some_and(|r| !r.is_u64()) {
+                return Err("rev must be a number".into());
+            }
             for k in ["key_id", "nonce", "ciphertext"] {
                 string_max(obj.get(k).unwrap_or(&Value::Null), k, 6 << 10)?;
             }
@@ -811,6 +814,18 @@ impl UiStore {
                             return Ok(Err(Applied::Invalid(format!(
                                 "theme: no theme named {t:?}"
                             ))));
+                        }
+                    }
+                }
+                if *kind == Kind::ClusterSecret {
+                    // Only forwards: a stale PUT (two racing, or a replayed old one) and a
+                    // downgrade to the format without a revision both lose.
+                    if let Some(cur) = self.records.get(&k)? {
+                        let cur: Value = serde_json::from_slice(&cur)?;
+                        if let Some(have) = cur["rev"].as_u64() {
+                            if value["rev"].as_u64().is_none_or(|r| r <= have) {
+                                return Ok(Err(Applied::Stale));
+                            }
                         }
                     }
                 }
@@ -1123,6 +1138,35 @@ mod tests {
             from_nonce: nonce(from),
             value,
         }
+    }
+
+    #[test]
+    fn a_secret_only_moves_to_a_higher_revision() {
+        let (s, _d) = store();
+        let at = |rev: u64| {
+            let mut v = secret();
+            v["rev"] = rev.into();
+            v
+        };
+        let put_at = |rev| put(Kind::ClusterSecret, "gossip-psk", at(rev));
+        assert_eq!(s.apply_local(&put_at(5)).unwrap(), Applied::Done);
+        assert_eq!(
+            s.apply_local(&put_at(5)).unwrap(),
+            Applied::Stale,
+            "the same"
+        );
+        assert_eq!(s.apply_local(&put_at(4)).unwrap(), Applied::Stale, "older");
+        assert_eq!(
+            s.apply_local(&put(Kind::ClusterSecret, "gossip-psk", secret()))
+                .unwrap(),
+            Applied::Stale,
+            "a downgrade to the format without a revision"
+        );
+        assert_eq!(s.apply_local(&put_at(6)).unwrap(), Applied::Done);
+        assert_eq!(
+            s.get(Kind::ClusterSecret, "gossip-psk").unwrap().unwrap()["rev"],
+            6
+        );
     }
 
     #[test]

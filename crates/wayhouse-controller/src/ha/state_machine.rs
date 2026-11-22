@@ -2587,6 +2587,7 @@ mod tests {
                 key_id: "k".into(),
                 nonce: "n".into(),
                 ciphertext: "c".into(),
+                rev: None,
             },
             not_after: 100,
             issued_at: 1,
@@ -2961,6 +2962,7 @@ mod tests {
             key_id: stored["key_id"].as_str().unwrap().into(),
             nonce: stored["nonce"].as_str().unwrap().into(),
             ciphertext: stored["ciphertext"].as_str().unwrap().into(),
+            rev: None,
         };
         assert_eq!(
             ring.open_cluster("gossip-psk", &back).unwrap().expose(),

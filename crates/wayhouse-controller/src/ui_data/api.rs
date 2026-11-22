@@ -317,6 +317,9 @@ fn list_secrets(st: &UiState) -> Response {
                 .map(|(name, v)| {
                     let mut out =
                         json!({ "name": name, "key_id": v["key_id"], "set_at": v["set_at"] });
+                    if let Some(r) = v.get("rev") {
+                        out["rev"] = r.clone();
+                    }
                     if let Some(a) = v.get("actor") {
                         out["actor"] = a.clone();
                     }
@@ -333,10 +336,15 @@ fn list_secrets(st: &UiState) -> Response {
 /// controller token gates it, like every route here.
 fn read_sealed(st: &UiState, name: &str) -> Response {
     match st.store.get(Kind::ClusterSecret, name) {
-        Ok(Some(v)) => Json(json!({
-            "key_id": v["key_id"], "nonce": v["nonce"], "ciphertext": v["ciphertext"]
-        }))
-        .into_response(),
+        Ok(Some(v)) => {
+            let mut out = json!({
+                "key_id": v["key_id"], "nonce": v["nonce"], "ciphertext": v["ciphertext"]
+            });
+            if let Some(r) = v.get("rev") {
+                out["rev"] = r.clone();
+            }
+            Json(out).into_response()
+        }
         Ok(None) => err(StatusCode::NOT_FOUND, "no such secret"),
         Err(e) => internal(e),
     }
@@ -355,7 +363,12 @@ async fn put_secret(st: &UiState, name: String, headers: &HeaderMap, body: Bytes
         );
     };
     let value = zeroize::Zeroizing::new(parsed.value.into_bytes());
-    let sealed = match st.keyring.current().seal_cluster(&name, &value) {
+    let current = match st.store.get(Kind::ClusterSecret, &name) {
+        Ok(v) => v.and_then(|v| v["rev"].as_u64()).unwrap_or(0),
+        Err(e) => return internal(e),
+    };
+    let rev = wayhouse_secrets::next_rev(current, now());
+    let sealed = match st.keyring.current().seal_cluster_rev(&name, &value, rev) {
         Ok(s) => s,
         Err(SealError::NoKey) => {
             return err(
@@ -378,7 +391,8 @@ async fn put_secret(st: &UiState, name: String, headers: &HeaderMap, body: Bytes
     drop(value);
     let (set_at, who) = (now(), actor(headers));
     let mut record = json!({
-        "key_id": sealed.key_id, "nonce": sealed.nonce, "ciphertext": sealed.ciphertext, "set_at": set_at
+        "key_id": sealed.key_id, "nonce": sealed.nonce, "ciphertext": sealed.ciphertext, "set_at": set_at,
+        "rev": rev
     });
     if let Some(a) = &who {
         record["actor"] = a.as_str().into();
@@ -450,7 +464,9 @@ async fn rewrap_secrets(st: &UiState, headers: &HeaderMap) -> Response {
     // Whatever happens in the loop, the entries already rewrapped are logged below.
     let failed: Option<Response> = async {
         for (name, mut record) in stored {
-            if record["key_id"].as_str() == Some(active.as_str()) {
+            // Under the active key already and carrying a revision: nothing to do. An entry
+            // from before revisions is sealed again even then, so every secret ends in format 3.
+            if record["key_id"].as_str() == Some(active.as_str()) && record["rev"].is_u64() {
                 continue;
             }
             let Ok(old) = serde_json::from_value::<wayhouse_secrets::Sealed>(record.clone()) else {
@@ -461,7 +477,8 @@ async fn rewrap_secrets(st: &UiState, headers: &HeaderMap) -> Response {
                 unreadable.push(name);
                 continue;
             };
-            let Ok(new) = ring.seal_cluster(&name, value.expose()) else {
+            let rev = wayhouse_secrets::next_rev(old.rev.unwrap_or(0), now());
+            let Ok(new) = ring.seal_cluster_rev(&name, value.expose(), rev) else {
                 unreadable.push(name);
                 continue;
             };
@@ -469,6 +486,7 @@ async fn rewrap_secrets(st: &UiState, headers: &HeaderMap) -> Response {
             record["key_id"] = new.key_id.into();
             record["nonce"] = new.nonce.into();
             record["ciphertext"] = new.ciphertext.into();
+            record["rev"] = rev.into();
             let op = UiOp::RewrapSecret {
                 name: name.clone(),
                 from_nonce: old.nonce,
@@ -1352,6 +1370,71 @@ mod tests {
         assert!(ring.open_cluster("admin-token", &sealed).is_err());
         let (st, _) = call(&app, "GET", "/secrets/nope/sealed", Value::Null, None).await;
         assert_eq!(st, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn every_put_moves_the_revision_forward_and_rewrap_upgrades_a_legacy_entry() {
+        let (app, store, _d) = app(None);
+        let rev = |v: &Value| v["rev"].as_u64().unwrap();
+        let sealed = |app: &Router| {
+            let app = app.clone();
+            async move {
+                call(&app, "GET", "/secrets/psk/sealed", Value::Null, None)
+                    .await
+                    .1
+            }
+        };
+        call(&app, "PUT", "/secrets/psk", json!({"value": VALUE}), None).await;
+        let first = sealed(&app).await;
+        call(&app, "PUT", "/secrets/psk", json!({"value": VALUE}), None).await;
+        let second = sealed(&app).await;
+        assert!(rev(&second) > rev(&first), "{first} {second}");
+        // The revision is bound into the tag: relabelled, it no longer opens.
+        let ring = wayhouse_secrets::Keyring::parse(KEY).unwrap();
+        let mut forged: wayhouse_secrets::Sealed = serde_json::from_value(second.clone()).unwrap();
+        assert!(ring.open_cluster("psk", &forged).is_ok());
+        forged.rev = Some(rev(&second) + 1);
+        assert!(ring.open_cluster("psk", &forged).is_err());
+
+        // An entry from before revisions: rewrap seals it again, as a revision, under the same key.
+        let old = ring.seal_cluster("legacy", VALUE.as_bytes()).unwrap();
+        let record = json!({
+            "key_id": old.key_id, "nonce": old.nonce, "ciphertext": old.ciphertext, "set_at": 1
+        });
+        store
+            .apply_local(&UiOp::Put {
+                kind: Kind::ClusterSecret,
+                name: "legacy".into(),
+                value: record,
+            })
+            .unwrap();
+        let (_, r) = call(&app, "POST", "/secrets/rewrap", Value::Null, None).await;
+        assert_eq!(r["rewrapped"], 1, "{r}");
+        let (_, now) = call(&app, "GET", "/secrets/legacy/sealed", Value::Null, None).await;
+        let now: wayhouse_secrets::Sealed = serde_json::from_value(now).unwrap();
+        assert!(now.rev.is_some());
+        assert_eq!(
+            ring.open_cluster("legacy", &now).unwrap().expose(),
+            VALUE.as_bytes()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_loser_of_a_racing_put_gets_a_retryable_409() {
+        // Two PUTs sealed against the same revision: the second one applies as stale. (The
+        // state machine's side of this is `a_secret_only_moves_to_a_higher_revision`.)
+        let r = answer(&Applied::Stale, || StatusCode::OK.into_response());
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(r.into_body(), 4096).await.unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["code"], "stale");
+        assert!(v["error"].as_str().unwrap().contains("try again"), "{v}");
+
+        // And the same request, sent again, wins: it reads the newer revision first.
+        let (app, _store, _d) = app(None);
+        let put = || call(&app, "PUT", "/secrets/psk", json!({"value": VALUE}), None);
+        assert_eq!(put().await.0, StatusCode::OK);
+        assert_eq!(put().await.0, StatusCode::OK);
     }
 
     #[tokio::test]

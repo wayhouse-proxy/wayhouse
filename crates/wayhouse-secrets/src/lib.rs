@@ -66,6 +66,10 @@ pub struct Sealed {
     pub nonce: String,
     /// Base64 of the ciphertext with its tag.
     pub ciphertext: String,
+    /// The revision this was sealed as (format 3). It is part of what the tag covers, so a blob
+    /// cannot be relabelled as a newer one. Absent: the legacy format, which carries no revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rev: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -124,11 +128,20 @@ fn key_id(key: &[u8; 32]) -> String {
     })
 }
 
-fn aad(scope: &str, name: &str, key_id: &str) -> Vec<u8> {
+fn aad(scope: &str, name: &str, key_id: &str, rev: Option<u64>) -> Vec<u8> {
     let mut a = Vec::new();
+    // Format 3 starts with a tag no legacy AAD can have (a scope is never this text), so the two
+    // formats never authenticate as each other.
+    if rev.is_some() {
+        a.extend_from_slice(b"wayhouse-secret/3");
+        a.push(0);
+    }
     for part in [scope, name, key_id] {
         a.extend_from_slice(part.as_bytes());
         a.push(0);
+    }
+    if let Some(r) = rev {
+        a.extend_from_slice(r.to_string().as_bytes());
     }
     a
 }
@@ -240,6 +253,17 @@ impl Keyring {
 
     /// Encrypts `plaintext` for `(scope, name)` under the active key.
     pub fn seal(&self, scope: &str, name: &str, plaintext: &[u8]) -> Result<Sealed, SealError> {
+        self.seal_rev(scope, name, plaintext, None)
+    }
+
+    /// As [`Keyring::seal`], binding the revision `rev` into the tag (format 3).
+    pub fn seal_rev(
+        &self,
+        scope: &str,
+        name: &str,
+        plaintext: &[u8],
+        rev: Option<u64>,
+    ) -> Result<Sealed, SealError> {
         if !(MIN_SECRET_BYTES..=MAX_SECRET_BYTES).contains(&plaintext.len()) {
             return Err(SealError::Size);
         }
@@ -250,7 +274,7 @@ impl Keyring {
                 (&nonce).into(),
                 Payload {
                     msg: plaintext,
-                    aad: &aad(scope, name, &key.id),
+                    aad: &aad(scope, name, &key.id, rev),
                 },
             )
             .map_err(|_| SealError::Size)?;
@@ -258,6 +282,7 @@ impl Keyring {
             key_id: key.id.clone(),
             nonce: STANDARD.encode(nonce),
             ciphertext: STANDARD.encode(ciphertext),
+            rev,
         })
     }
 
@@ -281,7 +306,7 @@ impl Keyring {
                 (&nonce).into(),
                 Payload {
                     msg: &ciphertext,
-                    aad: &aad(scope, name, &key.id),
+                    aad: &aad(scope, name, &key.id, sealed.rev),
                 },
             )
             .map_err(|_| OpenError::Auth)?;
@@ -313,6 +338,19 @@ impl Keyring {
         self.seal(CLUSTER_SCOPE, name, plaintext)
     }
 
+    /// Seals a cluster secret as revision `rev` (format 3).
+    pub fn seal_cluster_rev(
+        &self,
+        name: &str,
+        plaintext: &[u8],
+        rev: u64,
+    ) -> Result<Sealed, SealError> {
+        if !valid_cluster_name(name) {
+            return Err(SealError::Name);
+        }
+        self.seal_rev(CLUSTER_SCOPE, name, plaintext, Some(rev))
+    }
+
     /// Opens a cluster secret sealed under `name`.
     pub fn open_cluster(&self, name: &str, sealed: &Sealed) -> Result<SecretValue, OpenError> {
         if !valid_cluster_name(name) {
@@ -320,6 +358,70 @@ impl Keyring {
         }
         self.open(CLUSTER_SCOPE, name, sealed)
     }
+}
+
+/// The highest revision of each cluster secret a process has opened. A reader that opens every
+/// blob it is served through it cannot be walked back to an older secret (a rotated token or
+/// PSK). It lives in memory: after a restart it starts empty, so a hostile server can roll a
+/// reader back once per restart.
+#[derive(Default)]
+pub struct RevFloor(std::sync::Mutex<std::collections::HashMap<String, u64>>);
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum FloorError {
+    #[error("the served secret is older than one already accepted (a rollback)")]
+    Rollback,
+    /// A blob from before revisions: it cannot be told apart from an old one.
+    #[error("the served secret carries no revision; have the controller rewrap it (POST /secrets/rewrap)")]
+    NoRevision,
+    #[error(transparent)]
+    Open(#[from] OpenError),
+}
+
+impl RevFloor {
+    /// Opens the cluster secret `name`. A blob with no revision, or with one below what this
+    /// process has already opened, is refused. The floor rises only once the blob has
+    /// authenticated, so a forged blob with a huge revision cannot lock the real one out.
+    pub fn open_cluster(
+        &self,
+        ring: &Keyring,
+        name: &str,
+        sealed: &Sealed,
+    ) -> Result<SecretValue, FloorError> {
+        let rev = sealed.rev.ok_or(FloorError::NoRevision)?;
+        let mut seen = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if seen.get(name).is_some_and(|floor| rev < *floor) {
+            return Err(FloorError::Rollback);
+        }
+        let value = ring.open_cluster(name, sealed)?;
+        seen.insert(name.to_owned(), rev);
+        Ok(value)
+    }
+}
+
+/// The floor of this process, for the readers (proxy, agent) that fetch sealed secrets.
+pub fn process_floor() -> &'static RevFloor {
+    static FLOOR: std::sync::OnceLock<RevFloor> = std::sync::OnceLock::new();
+    FLOOR.get_or_init(RevFloor::default)
+}
+
+/// Seconds since the Unix epoch, as the clock the revisions follow.
+pub fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// The next revision of a secret that is at `current` (0: none yet). It follows the clock when
+/// that is ahead, so a name that is deleted and set again never goes back to a revision a reader
+/// has already accepted. That relies on the controller's clock not being set back past a revision
+/// it has issued while a reader still remembers it; such a reader is refused (a rollback) until
+/// the clock catches up or it restarts.
+pub fn next_rev(current: u64, now_unix: u64) -> u64 {
+    current.saturating_add(1).max(now_unix)
 }
 
 /// The node's keyring, swapped whole when the key file changes.
@@ -501,6 +603,7 @@ mod tests {
             key_id: "4559e316c2d041bb".into(),
             nonce: "6qSK5zM1/dc9IASHmYjCZOGJSU/tT8AB".into(),
             ciphertext: "Ozj/AXqO3XulpUCPVKVo1R31jNEC7T0DuA8CYLyLwK00wbRd/w==".into(),
+            rev: None,
         };
         assert_eq!(r.active_id(), Some("4559e316c2d041bb"));
         assert_eq!(
@@ -697,5 +800,101 @@ mod tests {
             "reported as a failure, not as 'nothing failed'"
         );
         assert_eq!(handle.current().key_ids().len(), 1, "the old keys stay");
+    }
+
+    #[test]
+    fn a_revision_is_part_of_the_tag_and_legacy_blobs_still_open() {
+        let r = ring(&[1]);
+        let a = r.seal_cluster_rev("psk", b"first-secret-value", 7).unwrap();
+        assert_eq!(a.rev, Some(7));
+        assert_eq!(
+            r.open_cluster("psk", &a).unwrap().expose(),
+            b"first-secret-value"
+        );
+
+        // Relabelled as another revision, or stripped of it: does not authenticate.
+        for rev in [Some(8), Some(6), None] {
+            let relabelled = Sealed { rev, ..a.clone() };
+            assert!(matches!(
+                r.open_cluster("psk", &relabelled),
+                Err(OpenError::Auth)
+            ));
+        }
+        // A legacy blob (no revision) opens as before, and its JSON has no `rev`.
+        let old = r.seal_cluster("psk", b"legacy-secret-value").unwrap();
+        assert_eq!(old.rev, None);
+        assert_eq!(
+            r.open_cluster("psk", &old).unwrap().expose(),
+            b"legacy-secret-value"
+        );
+        // A revision cannot be added to a legacy blob either.
+        let upgraded = Sealed {
+            rev: Some(1),
+            ..old
+        };
+        assert!(r.open_cluster("psk", &upgraded).is_err());
+    }
+
+    #[test]
+    fn the_floor_refuses_older_revisions_and_blobs_without_one() {
+        let r = ring(&[1]);
+        let floor = RevFloor::default();
+        let at = |n| r.seal_cluster_rev("psk", b"some-secret-value", n).unwrap();
+        let legacy = r.seal_cluster("psk", b"some-secret-value").unwrap();
+        assert!(matches!(
+            floor.open_cluster(&r, "psk", &legacy),
+            Err(FloorError::NoRevision)
+        ));
+        floor.open_cluster(&r, "psk", &at(5)).unwrap();
+        floor.open_cluster(&r, "psk", &at(5)).unwrap();
+        floor.open_cluster(&r, "psk", &at(9)).unwrap();
+        assert!(matches!(
+            floor.open_cluster(&r, "psk", &at(8)),
+            Err(FloorError::Rollback)
+        ));
+        assert!(matches!(
+            floor.open_cluster(&r, "psk", &legacy),
+            Err(FloorError::NoRevision)
+        ));
+        floor
+            .open_cluster(
+                &r,
+                "other",
+                &r.seal_cluster_rev("other", b"some-secret-value", 1)
+                    .unwrap(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_blob_that_does_not_authenticate_never_raises_the_floor() {
+        let r = ring(&[1]);
+        let floor = RevFloor::default();
+        let real = r.seal_cluster_rev("psk", b"some-secret-value", 5).unwrap();
+        // Garbage with a huge revision arrives first (a hostile or broken controller).
+        let junk = Sealed {
+            rev: Some(u64::MAX),
+            ..real.clone()
+        };
+        assert!(matches!(
+            floor.open_cluster(&r, "psk", &junk),
+            Err(FloorError::Open(OpenError::Auth))
+        ));
+        // The real one still opens.
+        assert_eq!(
+            floor.open_cluster(&r, "psk", &real).unwrap().expose(),
+            b"some-secret-value"
+        );
+    }
+
+    #[test]
+    fn the_next_revision_never_goes_back() {
+        assert_eq!(next_rev(0, 1_000), 1_000);
+        assert_eq!(next_rev(1_000, 1_000), 1_001);
+        assert_eq!(
+            next_rev(5_000, 1_000),
+            5_001,
+            "a clock set back changes nothing"
+        );
     }
 }

@@ -1174,10 +1174,13 @@ async fn release_claim(ui: &UiState, name: &str) {
 /// Seals `psk` as the cluster secret `name`, without storing it.
 #[allow(clippy::result_large_err)]
 async fn seal_psk(ui: &UiState, name: &str, psk: &Zeroizing<String>) -> Result<Value, Response> {
+    // The clock is ahead of any revision an earlier key of this name had, so a name enrolled
+    // again after a delete never goes back to a revision a proxy has accepted.
+    let rev = wayhouse_secrets::next_rev(0, now());
     let sealed = ui
         .keyring
         .current()
-        .seal_cluster(name, psk.as_bytes())
+        .seal_cluster_rev(name, psk.as_bytes(), rev)
         .map_err(internal)?;
     if let Some(ha) = &ui.ha {
         // As for any cluster secret: sealed under a key every node must already hold.
@@ -1192,6 +1195,7 @@ async fn seal_psk(ui: &UiState, name: &str, psk: &Zeroizing<String>) -> Result<V
     }
     let record = json!({
         "key_id": sealed.key_id, "nonce": sealed.nonce, "ciphertext": sealed.ciphertext, "set_at": now(),
+        "rev": rev,
         "actor": "enrollment",
     });
     Ok(record)
@@ -1444,7 +1448,8 @@ mod tests {
         let name = wayhouse_enroll::psk_secret_name("home-nas");
         let rec = t.store.get(Kind::ClusterSecret, &name).unwrap().unwrap();
         let sealed: wayhouse_secrets::Sealed = serde_json::from_value(json!({
-            "key_id": rec["key_id"], "nonce": rec["nonce"], "ciphertext": rec["ciphertext"]
+            "key_id": rec["key_id"], "nonce": rec["nonce"], "ciphertext": rec["ciphertext"],
+            "rev": rec["rev"]
         }))
         .unwrap();
         let opened = t.keyring.current().open_cluster(&name, &sealed).unwrap();
