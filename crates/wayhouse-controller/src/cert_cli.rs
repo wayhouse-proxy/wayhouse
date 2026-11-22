@@ -5,7 +5,9 @@
 //! `--san`); a missing one is issued for `localhost`, the loopback addresses and the `--san`s,
 //! like `init`. The key is always new. Nothing is written until every certificate has been made
 //! and checked against the CA, and each file is replaced atomically, so a failed run changes
-//! nothing and a reader never sees half a file. The servers re-read the pair on their own (every
+//! nothing and a reader never sees half a file. A certificate that this CA did not sign, or that
+//! carries a name `init` never writes (a URI or an email), is refused rather than rewritten; the
+//! owner of the files is kept; runs are serialised by a lock in the TLS directory. The servers re-read the pair on their own (every
 //! 30 s); compose copies it again on the next `docker compose up`.
 
 use std::io::Write;
@@ -60,7 +62,9 @@ fn pem_der(pem: &str) -> Result<Vec<u8>, String> {
     Ok(p.contents)
 }
 
-/// The DNS names and IP addresses an existing certificate is valid for.
+/// The DNS names (wildcards included) and IP addresses an existing certificate is valid for.
+/// A name of another kind (URI, e-mail, ...) is an error: `init` never writes one, so the
+/// certificate was made by hand and renewing it here would drop that name without a word.
 fn existing_names(cert_pem: &str) -> Result<Vec<String>, String> {
     let der = pem_der(cert_pem)?;
     let (_, cert) = parse_x509_certificate(&der).map_err(|e| e.to_string())?;
@@ -76,11 +80,23 @@ fn existing_names(cert_pem: &str) -> Result<Vec<String>, String> {
                         out.push(std::net::Ipv6Addr::from(a).to_string());
                     }
                 }
-                _ => {}
+                other => {
+                    return Err(format!(
+                        "it carries a name this command does not write ({other}); it was not made by `init`, so it is left alone"
+                    ))
+                }
             }
         }
     }
     Ok(out)
+}
+
+/// Whether `cert_pem` was signed by the CA whose public key is `ca`.
+fn signed_by(cert_pem: &str, ca: &X509Certificate<'_>) -> bool {
+    pem_der(cert_pem).is_ok_and(|der| {
+        parse_x509_certificate(&der)
+            .is_ok_and(|(_, c)| c.verify_signature(Some(ca.public_key())).is_ok())
+    })
 }
 
 struct Made {
@@ -107,7 +123,19 @@ fn make(args: &CertArgs) -> Result<Vec<Made>, InitError> {
     let ca_path = args.tls_dir.join("ca.pem");
     let key_path = args.tls_dir.join("ca.key");
     let ca_pem = read(&ca_path)?;
-    let ca_key = KeyPair::from_pem(&read(&key_path)?).map_err(|e| bad(&key_path, e))?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let m = std::fs::metadata(&key_path).map_err(io(&key_path))?;
+        if m.permissions().mode() & 0o077 != 0 {
+            return Err(bad(
+                &key_path,
+                "ca.key is readable by group or others; `chmod 600` it first",
+            ));
+        }
+    }
+    let key_pem = zeroize::Zeroizing::new(read(&key_path)?);
+    let ca_key = KeyPair::from_pem(&key_pem).map_err(|e| bad(&key_path, e))?;
+    drop(key_pem);
     let issuer = Issuer::from_ca_cert_pem(&ca_pem, &ca_key).map_err(|e| bad(&ca_path, e))?;
     let ca_der = pem_der(&ca_pem).map_err(|e| bad(&ca_path, e))?;
     let (_, ca) = parse_x509_certificate(&ca_der).map_err(|e| bad(&ca_path, e))?;
@@ -122,7 +150,15 @@ fn make(args: &CertArgs) -> Result<Vec<Made>, InitError> {
         }
         let cert_path = args.tls_dir.join(format!("{}.pem", which.file()));
         let old = match std::fs::read_to_string(&cert_path) {
-            Ok(p) => Some(existing_names(&p).map_err(|e| bad(&cert_path, e))?),
+            Ok(p) => {
+                if !signed_by(&p, &ca) {
+                    return Err(bad(
+                        &cert_path,
+                        "it was not issued by this CA, so it is left alone",
+                    ));
+                }
+                Some(existing_names(&p).map_err(|e| bad(&cert_path, e))?)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(io(&cert_path)(e)),
         };
@@ -168,6 +204,11 @@ fn replace(path: &Path, mode: u32, data: &[u8]) -> Result<(), InitError> {
             .open(&tmp)
             .map_err(io(&tmp))?;
         f.write_all(data).map_err(io(&tmp))?;
+        // Same owner and group as the file it replaces (the server may run as another user).
+        if let Ok(old) = std::fs::metadata(path) {
+            use std::os::unix::fs::MetadataExt;
+            let _ = std::os::unix::fs::fchown(&f, Some(old.uid()), Some(old.gid()));
+        }
         f.sync_all().map_err(io(&tmp))?;
         std::fs::rename(&tmp, path).map_err(io(path))
     })();
@@ -179,6 +220,22 @@ fn replace(path: &Path, mode: u32, data: &[u8]) -> Result<(), InitError> {
 
 /// Runs the command; `summary` gets the result, which never contains a secret value.
 pub fn run(args: &CertArgs, summary: &mut dyn Write) -> Result<(), InitError> {
+    // One run at a time: two overlapping runs could pair a key with the other run's certificate.
+    let lock_path = args.tls_dir.join(".cert.lock");
+    let _lock = match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+    {
+        Ok(f) => {
+            f.lock().map_err(io(&lock_path))?;
+            Some(f)
+        }
+        // No TLS directory: `make` says which file is missing.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(io(&lock_path)(e)),
+    };
     let made = make(args)?;
     for m in &made {
         let f = m.which.file();
@@ -342,5 +399,29 @@ mod tests {
             std::fs::read(d.path().join("tls/controller.pem")).unwrap(),
             before
         );
+    }
+
+    #[test]
+    fn foreign_certs_and_loose_ca_keys_are_refused_and_wildcards_survive() {
+        let d = tempfile::tempdir().unwrap();
+        init_into(d.path(), false, &["*.example.org"]);
+        let tls = d.path().join("tls");
+        run(&args(d.path(), &[Which::Controller], &[]), &mut Vec::new()).unwrap();
+        assert!(names_of(&tls.join("controller.pem")).contains(&"*.example.org".to_owned()));
+
+        // Signed by some other CA: left alone.
+        let other = tempfile::tempdir().unwrap();
+        init_into(other.path(), false, &[]);
+        let foreign = std::fs::read(other.path().join("tls/controller.pem")).unwrap();
+        std::fs::write(tls.join("controller.pem"), &foreign).unwrap();
+        let err = run(&args(d.path(), &[Which::Controller], &[]), &mut Vec::new()).unwrap_err();
+        assert!(err.to_string().contains("not issued by this CA"), "{err}");
+        assert_eq!(std::fs::read(tls.join("controller.pem")).unwrap(), foreign);
+
+        // A world-readable ca.key is refused.
+        std::fs::set_permissions(tls.join("ca.key"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        let err = run(&args(d.path(), &[Which::Aggregator], &[]), &mut Vec::new()).unwrap_err();
+        assert!(err.to_string().contains("chmod 600"), "{err}");
     }
 }

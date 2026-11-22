@@ -201,7 +201,10 @@ issues a new leaf certificate under the CA that `init` left in the TLS directory
 `--san` is added to them; one that does not exist is issued for `localhost`, the loopback addresses
 and the `--san`s. The key is always new. The leaf never outlives the CA, a `ca.key` that does not
 belong to `ca.pem` is refused, and nothing is written unless every requested certificate was made
-and verified, so a failed run changes nothing. Each file is replaced atomically (key first).
+and verified, so a failed run changes nothing. Each file is replaced atomically (key first) and keeps
+its owner and group. `ca.key` must not be readable by group or others. A certificate that this CA
+did not sign, or that carries a URI or email name, is refused, not rewritten. Runs take a lock in the
+TLS directory, so two at once wait for each other.
 Servers reload the pair within 30 s with no restart. The command prints the new fingerprint: an
 agent enrolled with `--pin` needs the new one. Kubernetes keeps its certificates in Secrets: run
 `init --target k8s-secret` again for a fresh set instead. The CA itself is not renewed (ten years):
