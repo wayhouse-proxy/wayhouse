@@ -570,6 +570,10 @@ sudo wayhouse install --systemd --controller-url https://controller.example:9901
   `--instance-token`: enrollment does not deliver them (the controller does not hold them).
 - Running without systemd: `CREDENTIALS_DIRECTORY=<data-dir> wayhouse --secret-key-file <data-dir>/secret.keys ...`
   reads the same files.
+- The controller's data directory holds token hashes, config revisions and sealed secrets. A
+  directory it creates is mode 0700; one that already exists keeps its mode and is reported at
+  startup if others can read it. Under systemd set `StateDirectoryMode=0700` (the units
+  `install --systemd` writes do).
 
 ### Adding a controller replica by code
 

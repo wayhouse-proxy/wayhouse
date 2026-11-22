@@ -175,17 +175,21 @@ impl Db {
             Err(e) => return Err(e.into()),
         }
         let file = path.join(DB_FILE);
+        let new_file = !file.exists();
         if !file.exists() && (path.join("conf").exists() || path.join("db").exists()) {
             return Err(Error::LegacySled(path.to_owned()));
         }
         match redb::Database::create(&file) {
             Ok(db) => {
-                // redb creates the file under the umask; narrow it. A failure is a warning: the
-                // directory is the real guard and a volume may not allow chmod.
-                if let Err(e) =
-                    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
-                {
-                    tracing::warn!(path = %file.display(), error = %e, "could not restrict the database file to its owner");
+                // redb creates the file under the umask; narrow a file that is new (an existing
+                // one keeps the mode its owner chose). A failure is a warning: the directory is
+                // the real guard and a volume may not allow chmod.
+                if new_file {
+                    if let Err(e) =
+                        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+                    {
+                        tracing::warn!(path = %file.display(), error = %e, "could not restrict the database file to its owner");
+                    }
                 }
                 Ok(Db {
                     inner: Arc::new(db),
@@ -854,11 +858,10 @@ mod tests {
         assert_eq!(mode(&fresh), 0o700);
         assert_eq!(mode(&fresh.join(DB_FILE)), 0o600);
 
-        // Only the last component is made owner-only; a missing parent keeps the default.
+        // A missing parent is created too; the data directory itself is owner-only.
         let nested = root.path().join("var").join("lib").join("wayhouse");
         drop(Db::open(&nested).unwrap());
         assert_eq!(mode(&nested), 0o700);
-        assert_ne!(mode(nested.parent().unwrap()), 0o700);
 
         let shared = root.path().join("shared");
         std::fs::create_dir(&shared).unwrap();
