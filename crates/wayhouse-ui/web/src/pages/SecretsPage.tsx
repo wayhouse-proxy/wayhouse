@@ -21,6 +21,14 @@ export function SecretsPage() {
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
+  // The row whose Delete button gets focus back after Keep: the confirm buttons it replaced had it.
+  const [refocus, setRefocus] = useState<string | null>(null);
+  useEffect(() => {
+    if (refocus !== null) {
+      document.getElementById(`delete-${refocus}`)?.focus();
+      setRefocus(null);
+    }
+  }, [refocus]);
 
   const load = useCallback(async () => {
     try {
@@ -82,12 +90,18 @@ export function SecretsPage() {
                       <Button variant="danger" className="mr-2" onClick={() => remove(s.name)}>
                         Yes, delete
                       </Button>
-                      <Button variant="ghost" onClick={() => setConfirming(null)}>
+                      <Button
+                        variant="ghost"
+                        onClick={() => {
+                          setConfirming(null);
+                          setRefocus(s.name);
+                        }}
+                      >
                         Keep
                       </Button>
                     </>
                   ) : (
-                    <Button variant="danger" disabled={!canWrite} aria-label={`Delete ${s.name}`} onClick={() => setConfirming(s.name)}>
+                    <Button id={`delete-${s.name}`} variant="danger" disabled={!canWrite} aria-label={`Delete ${s.name}`} onClick={() => setConfirming(s.name)}>
                       Delete
                     </Button>
                   )}
@@ -150,9 +164,9 @@ function AddDialog({ taken, onClose }: { taken: Set<string>; onClose: (saved: bo
         )}
         <label className="flex flex-col gap-1 text-sm text-ink-muted">
           Value
-          <Input type="password" autoComplete="off" mono value={value} onChange={(e) => setValue(e.target.value)} />
+          <Input type="password" autoComplete="off" mono value={value} aria-describedby="secret-size-hint" onChange={(e) => setValue(e.target.value)} />
         </label>
-        <p className={value !== "" && !sizeOk ? "text-sm text-bad" : "text-sm text-ink-muted"}>
+        <p id="secret-size-hint" role="status" className={value !== "" && !sizeOk ? "text-sm text-bad" : "text-sm text-ink-muted"}>
           Between 8 and 4096 bytes{value !== "" ? ` (now ${size})` : ""}. It is sent to the controller and never shown again.
         </p>
         {error && <ErrorState>{error}</ErrorState>}

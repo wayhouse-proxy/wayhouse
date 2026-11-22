@@ -5,9 +5,16 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { Shell } from "./Shell";
 import { RequireRole } from "./Guard";
-import { breadcrumbFor, type NavGroup } from "./nav";
+import { breadcrumbFor, NAV as REAL_NAV, type NavGroup } from "./nav";
 import { useInspector } from "./Inspector";
 import { SessionProvider, type Role } from "../../lib/session";
+
+describe("the real navigation", () => {
+  it("lists Secrets for admins only", () => {
+    const settings = REAL_NAV.flatMap((g) => g.items).find((i) => i.to === "/settings");
+    expect(settings?.children?.find((c) => c.to === "/settings/secrets")?.minRole).toBe("admin");
+  });
+});
 
 const NAV: NavGroup[] = [
   { label: "Operate", items: [{ to: "/fleet", label: "Fleet" }] },

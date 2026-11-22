@@ -116,6 +116,7 @@ export function ConfigListPage(p: ListPageProps) {
                       <Link replace className="underline" aria-current={i === index || undefined} to={`?i=${i}`}>
                         {labelOf(it) || "(unnamed)"}
                       </Link>
+                      {it.enabled === false && <span className="ml-2 font-sans text-xs text-ink-muted">(parked)</span>}
                     </TD>
                     {p.columns.map((c) => (
                       <TD key={c.label} numeric={c.numeric}>
