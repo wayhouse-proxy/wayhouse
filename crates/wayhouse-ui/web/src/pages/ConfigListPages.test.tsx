@@ -230,6 +230,18 @@ describe("Parking an item (enabled: false)", () => {
     const text = await apply();
     expect(text).toMatch(/enabled: false/);
     expect(text).toContain("# edge");
+    // An older proxy rejects the field, so the document must say it needs a newer schema.
+    expect(text).toMatch(/schema_version: 4/);
+  });
+
+  it("marks a parked item in the table, and switching it back on removes the key", async () => {
+    sources();
+    const sw = await screen.findByLabelText(/^Enabled/);
+    await userEvent.click(sw);
+    expect(await screen.findByText("(parked)")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText(/^Enabled/));
+    expect(screen.queryByText("(parked)")).not.toBeInTheDocument();
+    expect(await apply()).not.toMatch(/enabled:/);
   });
 
   it("a resolver can be parked", async () => {

@@ -94,6 +94,7 @@ export function ListenersEditorPage() {
                       <Link replace className="underline" aria-current={i === index || undefined} to={`?l=${i}`}>
                         {String(l.name ?? "(unnamed)")}
                       </Link>
+                      {l.enabled === false && <span className="ml-2 font-sans text-xs text-ink-muted">(parked)</span>}
                     </TD>
                     <TD className="font-mono">{String(l.bind ?? "")}</TD>
                     <TD>{String(l.protocol ?? "")}</TD>

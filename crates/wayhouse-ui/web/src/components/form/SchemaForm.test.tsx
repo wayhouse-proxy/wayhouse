@@ -228,6 +228,13 @@ describe("SchemaForm on the real schema", () => {
     expect(yaml()).toContain("name: mc");
   });
 
+  it("a boolean with no declared default keeps an explicit false; one with a default drops the key when switched back", async () => {
+    // `features.acl` declares no default: false is how an operator turns the feature off.
+    render(<Harness path={["features"]} initial={"features:\n  acl: true\n"} />);
+    await userEvent.click(screen.getByRole("switch", { name: /acl/i }));
+    expect(yaml()).toMatch(/acl: false/);
+  });
+
   it("a layout override reorders and relabels; the YAML is untouched", () => {
     const layout = mergeLayout(DEFAULT_LAYOUT, { version: 1, fields: { "settings.workers": { label: "Threads" } } });
     render(<Harness path={["settings"]} layout={layout} />);

@@ -1732,6 +1732,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cluster_secret_name_stays_one_path_segment() {
+        let (url, seen) = recording_controller(StatusCode::OK).await;
+        let app = app_with_controller(url, None);
+        let call = |method: &'static str, path: &'static str| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+        // A slash in the name is sent encoded, so it cannot reach another controller route.
+        assert_eq!(call("PUT", "/api/secrets/a%2Fb").await, StatusCode::OK);
+        assert_eq!(call("DELETE", "/api/secrets/a%2Fb").await, StatusCode::OK);
+        // `..` is refused outright, whether written plain or encoded.
+        for path in ["/api/secrets/%2E%2E", "/api/secrets/.."] {
+            for method in ["PUT", "DELETE"] {
+                let status = call(method, path).await;
+                assert!(
+                    status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND,
+                    "{method} {path}: {status}"
+                );
+            }
+        }
+        let paths: Vec<_> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(m, p, _, _)| format!("{m} {p}"))
+            .collect();
+        assert_eq!(paths, ["PUT /secrets/a%2Fb", "DELETE /secrets/a%2Fb"]);
+    }
+
+    #[tokio::test]
     async fn plugin_config_secrets_webhook_and_status_hit_the_right_controller_paths() {
         let (url, seen) = recording_controller(StatusCode::OK).await;
         let app = app_with_controller(url, None);

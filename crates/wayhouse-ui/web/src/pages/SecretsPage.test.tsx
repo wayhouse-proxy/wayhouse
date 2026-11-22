@@ -88,7 +88,11 @@ describe("SecretsPage", () => {
     const save = screen.getByRole("button", { name: "Save secret" });
     await user.type(screen.getByLabelText("Value"), "short");
     expect(save).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText(/now 5/)).toBeInTheDocument();
+    expect(screen.getByText(/Now 5 bytes/)).toBeInTheDocument();
+    // The hint is announced as it changes and is the field's description.
+    expect(screen.getByLabelText("Value")).toHaveAccessibleDescription(/Now 5 bytes/);
+    // Only the count is announced; the rest of the sentence is the static description.
+    expect(screen.getByText("Now 5 bytes.")).toHaveAttribute("role", "status");
     // Four characters, eight bytes: long enough.
     await user.clear(screen.getByLabelText("Value"));
     await user.type(screen.getByLabelText("Value"), "éééé");
@@ -103,6 +107,16 @@ describe("SecretsPage", () => {
     await user.click(screen.getByRole("button", { name: "Delete gossip-psk" }));
     await user.click(screen.getByRole("button", { name: "Yes, delete" }));
     expect(api.deleteClusterSecret).toHaveBeenCalledWith("gossip-psk");
+  });
+
+  it("puts focus back on the Delete button after Keep", async () => {
+    const user = userEvent.setup();
+    page();
+    await screen.findByText("gossip-psk");
+    await user.click(screen.getByRole("button", { name: "Delete gossip-psk" }));
+    await user.click(screen.getByRole("button", { name: "Keep" }));
+    expect(screen.getByRole("button", { name: "Delete gossip-psk" })).toHaveFocus();
+    expect(api.deleteClusterSecret).not.toHaveBeenCalled();
   });
 
   it("gives a viewer no way to write", async () => {
