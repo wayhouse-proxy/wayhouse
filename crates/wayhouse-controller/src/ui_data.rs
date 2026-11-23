@@ -373,6 +373,40 @@ fn string_max<'a>(v: &'a Value, path: &str, max: usize) -> Result<&'a str, Strin
     }
 }
 
+/// The shape of a saved filter: the fleet filter's fields and their limits (`docs/ui-data.md`).
+/// Checked where a `PUT` is taken, not in [`validate`], which every replica runs on every entry.
+pub(crate) fn check_saved_filter(value: &Value) -> Result<(), String> {
+    let obj = object(value, "the record")?;
+    only_keys(obj, "", &["name", "q", "state", "region", "tags"])?;
+    if obj.get("name").is_some_and(|v| !v.is_string()) {
+        return Err("name must be a string".into());
+    }
+    for (k, max) in [("q", 200), ("region", MAX_REGION)] {
+        if let Some(v) = obj.get(k) {
+            string_max(v, k, max)?;
+        }
+    }
+    if obj
+        .get("state")
+        .is_some_and(|v| !matches!(v.as_str(), Some("ok" | "degraded" | "stale")))
+    {
+        return Err("state must be \"ok\", \"degraded\" or \"stale\"".into());
+    }
+    if let Some(tags) = obj.get("tags") {
+        let tags = tags.as_array().ok_or("tags must be an array")?;
+        if tags.len() > 16 {
+            return Err("tags can hold at most 16 entries".into());
+        }
+        for (i, t) in tags.iter().enumerate() {
+            let at = format!("tags[{i}]");
+            if string_max(t, &at, 128)?.starts_with('=') {
+                return Err(format!("{at} must be \"key\" or \"key=value\""));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Shape, size and name checks for one record. Deterministic: it runs on the proposing node and
 /// again when each replica applies the entry.
 pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
@@ -383,36 +417,9 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
     }
     let obj = object(value, "the record")?;
     match kind {
-        Kind::SavedFilter => {
-            only_keys(obj, "", &["name", "q", "state", "region", "tags"])?;
-            if obj.get("name").is_some_and(|v| !v.is_string()) {
-                return Err("name must be a string".into());
-            }
-            for (k, max) in [("q", 200), ("region", MAX_REGION)] {
-                if let Some(v) = obj.get(k) {
-                    string_max(v, k, max)?;
-                }
-            }
-            if obj
-                .get("state")
-                .is_some_and(|v| !matches!(v.as_str(), Some("ok" | "degraded" | "stale")))
-            {
-                return Err("state must be \"ok\", \"degraded\" or \"stale\"".into());
-            }
-            if let Some(tags) = obj.get("tags") {
-                let tags = tags.as_array().ok_or("tags must be an array")?;
-                if tags.len() > 16 {
-                    return Err("tags can hold at most 16 entries".into());
-                }
-                for (i, t) in tags.iter().enumerate() {
-                    let at = format!("tags[{i}]");
-                    if string_max(t, &at, 128)?.starts_with('=') {
-                        return Err(format!("{at} must be \"key\" or \"key=value\""));
-                    }
-                }
-            }
-            Ok(())
-        }
+        // The shape of a saved filter is `check_saved_filter`'s, run by the API that proposes
+        // the write: a rule added here later would apply differently on a replica of another build.
+        Kind::SavedFilter => Ok(()),
         Kind::Dashboard => {
             only_keys(obj, "", &["name", "version", "widgets", "revision"])?;
             let widgets = obj
@@ -2210,23 +2217,13 @@ mod tests {
 
     #[test]
     fn a_saved_filter_holds_only_the_fleet_filter_fields() {
-        let (s, _d) = store();
         let ok = json!({"name": "gpus", "q": "fra", "state": "degraded", "region": "eu", "tags": ["env=prod", "gpu"]});
-        assert_eq!(
-            s.apply_local(&put(Kind::SavedFilter, "gpus", ok.clone()))
-                .unwrap(),
-            Applied::Done
-        );
-        assert_eq!(s.get(Kind::SavedFilter, "gpus").unwrap(), Some(ok));
+        assert_eq!(check_saved_filter(&ok), Ok(()));
         // An empty filter is fine: the UI only refuses to save one.
-        let none = json!({"tags": []});
-        assert_eq!(
-            s.apply_local(&put(Kind::SavedFilter, "none", none))
-                .unwrap(),
-            Applied::Done
-        );
+        assert_eq!(check_saved_filter(&json!({"tags": []})), Ok(()));
         let many: Vec<String> = (0..17).map(|i| format!("k{i}")).collect();
         for (bad, needle) in [
+            (json!("not an object"), "must be an object"),
             (json!({"x": 1}), "known key"),
             (json!({"state": "broken"}), "state"),
             (json!({"q": 5}), "q must"),
@@ -2239,9 +2236,34 @@ mod tests {
             (json!({"name": 5}), "name must"),
             (json!({"tags": ["=prod"]}), "key=value"),
         ] {
-            let why = invalid(s.apply_local(&put(Kind::SavedFilter, "bad", bad)).unwrap());
+            let why = check_saved_filter(&bad).unwrap_err();
             assert!(why.contains(needle), "{why}");
         }
+    }
+
+    /// Replicas must agree on every entry of the log, whatever build wrote or replays it, so the
+    /// shape rules of a saved filter live in the API that proposes the write (like the theme
+    /// contrast maths), and apply only keeps what every build has always kept: an object.
+    #[test]
+    fn applying_a_saved_filter_does_not_depend_on_its_shape() {
+        let (s, _d) = store();
+        for (name, rec) in [
+            ("plain", json!({"name": "plain", "q": "fra"})),
+            ("older", json!({"x": 1, "sort": "name"})),
+        ] {
+            assert_eq!(
+                s.apply_local(&put(Kind::SavedFilter, name, rec.clone()))
+                    .unwrap(),
+                Applied::Done,
+                "{rec}"
+            );
+            assert_eq!(s.get(Kind::SavedFilter, name).unwrap(), Some(rec));
+        }
+        assert!(matches!(
+            s.apply_local(&put(Kind::SavedFilter, "no", json!([1])))
+                .unwrap(),
+            Applied::Invalid(_)
+        ));
     }
 
     #[test]
