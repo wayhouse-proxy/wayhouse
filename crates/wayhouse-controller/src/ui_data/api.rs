@@ -609,6 +609,13 @@ async fn put_one(
             o.insert("name".into(), name.clone().into());
         }
     }
+    // Like the colour maths below, a saved filter's shape is checked here, on the node that takes
+    // the request, so that replicas apply every entry alike whatever build they run.
+    if kind == Kind::SavedFilter {
+        if let Err(why) = super::check_saved_filter(&value) {
+            return err(StatusCode::UNPROCESSABLE_ENTITY, why);
+        }
+    }
     // The colour maths runs here, on the node that takes the request, and not when replicas
     // apply the entry (see `contrast`). A shape error is left to the usual validation.
     if kind == Kind::Theme && super::validate(kind, &name, &value).is_ok() {
@@ -1153,6 +1160,30 @@ mod tests {
         );
         let (st, _) = call(&app, "PUT", "/ui/dashboards/ops", json!([1, 2]), None).await;
         assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn a_saved_filter_of_the_wrong_shape_is_a_422_and_a_good_one_is_stored() {
+        let (app, store, _d) = app(None);
+        let (st, body) = call(
+            &app,
+            "PUT",
+            "/ui/filters/gpus",
+            json!({"q": "fra", "tags": ["gpu"]}),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        for bad in [
+            json!({"x": 1}),
+            json!({"state": "broken"}),
+            json!({"tags": ["=a"]}),
+        ] {
+            let (st, body) = call(&app, "PUT", "/ui/filters/bad", bad, None).await;
+            assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        }
+        assert!(store.get(Kind::SavedFilter, "bad").unwrap().is_none());
+        assert!(store.get(Kind::SavedFilter, "gpus").unwrap().is_some());
     }
 
     #[tokio::test]
