@@ -171,9 +171,11 @@ Modules (for example DNS-01) would mean building it with `xcaddy` instead; the D
 `wayhouse` user with the hardening of the other units. Install `wayhouse-web-sync` and `wayhouse-certsync` into `/usr/local/bin` (from `cargo build --release` or the
 `wayhouse` image, where they sit in that directory), Caddy from the `wayhouse-caddy` image (`/usr/bin/caddy`, with
 `docker create` and `docker cp`; a distribution's Caddy is a different build and brings its own `caddy.service`),
-and the base configuration:
+and the base configuration. The units run as the `wayhouse` user, which the solo bundle's sysusers file creates
+(skip that first command if you already installed the solo units):
 
 ```sh
+sudo install -m 0644 deploy/systemd/wayhouse.sysusers /etc/sysusers.d/wayhouse.conf && sudo systemd-sysusers
 sudo install -m 0755 caddy /usr/local/bin/caddy           # the build from the wayhouse-caddy image
 sudo install -D -m 0644 deploy/caddy/base.json /etc/wayhouse/caddy/base.json
 sudo install -m 0644 deploy/systemd/wayhouse-caddy.service deploy/systemd/wayhouse-web-sync.service /etc/systemd/system/

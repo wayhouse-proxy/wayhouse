@@ -2,7 +2,8 @@
 Description=wayhouse-certsync (certificate bundles from the controller, docs/acme.md)
 Documentation=https://github.com/wayhouse-proxy/wayhouse/blob/main/docs/acme.md
 Wants=wayhouse-controller.service
-After=wayhouse-controller.service network.target
+# wayhouse-control.service: the all-in-one process serves the controller API.
+After=wayhouse-controller.service wayhouse-control.service network.target
 
 [Service]
 User=wayhouse
