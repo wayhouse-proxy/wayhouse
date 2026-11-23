@@ -316,7 +316,7 @@ function FilterBar({ q, update }: { q: NodeQuery; update: Update }) {
       <div className="flex flex-wrap items-end gap-2">
         <label className="flex flex-col gap-0.5 text-xs text-ink-muted">
           Search
-          <Input value={text} onChange={(e) => onText(e.target.value)} placeholder="node, region, version, tag" className="w-56" />
+          <Input value={text} onChange={(e) => onText(e.target.value)} placeholder="node, region, version, tag" maxLength={200} className="w-56" />
         </label>
         <label className="flex flex-col gap-0.5 text-xs text-ink-muted">
           State
@@ -329,7 +329,7 @@ function FilterBar({ q, update }: { q: NodeQuery; update: Update }) {
         </label>
         <label className="flex flex-col gap-0.5 text-xs text-ink-muted">
           Region
-          <Input value={region} onChange={(e) => onRegion(e.target.value)} placeholder="any" className="w-32" />
+          <Input value={region} onChange={(e) => onRegion(e.target.value)} placeholder="any" maxLength={64} className="w-32" />
         </label>
         <form
           className="flex items-end gap-1"
@@ -342,7 +342,7 @@ function FilterBar({ q, update }: { q: NodeQuery; update: Update }) {
         >
           <label className="flex flex-col gap-0.5 text-xs text-ink-muted">
             Tag
-            <Input value={tagDraft} onChange={(e) => setTagDraft(e.target.value)} placeholder="key or key=value" className="w-40" mono />
+            <Input value={tagDraft} onChange={(e) => setTagDraft(e.target.value)} placeholder="key or key=value" maxLength={128} className="w-40" mono />
           </label>
           <Button type="submit">Add tag</Button>
         </form>
