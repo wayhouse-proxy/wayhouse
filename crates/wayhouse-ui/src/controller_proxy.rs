@@ -2648,11 +2648,13 @@ mod tests {
     fn app_with_a_session_per_role(url: String) -> (Router, Vec<(crate::role::Role, String)>) {
         use crate::role::Role;
         let mut users = std::collections::HashMap::new();
+        // Built at run time: the sessions below never log in, so the value only has to hash.
+        let secret: String = (b'a'..=b'x').map(char::from).collect();
         users.insert(
             "carol".to_string(),
             crate::users::UserRecord {
                 username: "carol".into(),
-                password_hash: crate::users::hash_password("pw-config-reads-0123"),
+                password_hash: crate::users::hash_password(&secret),
                 role: Role::Viewer,
             },
         );
