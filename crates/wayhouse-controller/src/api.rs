@@ -1504,6 +1504,9 @@ struct GetConfigParams {
     /// The newest config schema the caller parses: the answer is the newest
     /// visible revision that needs no more. Absent means no limit (operators).
     max_schema: Option<u32>,
+    /// Scrub the inline secrets from the text (the console asks for it below the Admin role).
+    #[serde(default)]
+    redact: bool,
 }
 
 /// `GET /config[?group=<name>][&max_schema=<n>]` — the current revision *visible to `group`*
@@ -1515,7 +1518,7 @@ async fn get_current_config(
 ) -> Response {
     match state.current_for_group(params.group.as_deref(), params.max_schema) {
         Ok(Some((revision, bytes))) => {
-            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let text = scrubbed(&bytes, params.redact);
             (
                 StatusCode::OK,
                 [("X-Config-Revision", revision.to_string())],
@@ -1582,15 +1585,22 @@ async fn list_revisions(State(state): State<AppState>) -> Response {
 /// `GET /config/revisions/{revision}` — one past revision's raw text (the
 /// same shape `GET /config` returns for the current one), `404` if it never
 /// existed.
-async fn get_revision(State(state): State<AppState>, Path(revision): Path<u64>) -> Response {
+async fn get_revision(
+    State(state): State<AppState>,
+    Path(revision): Path<u64>,
+    Query(params): Query<RedactParam>,
+) -> Response {
     match state.store.get(revision) {
-        Ok(Some(bytes)) => {
-            let text = String::from_utf8_lossy(&bytes).into_owned();
-            (StatusCode::OK, text).into_response()
-        }
+        Ok(Some(bytes)) => (StatusCode::OK, scrubbed(&bytes, params.redact)).into_response(),
         Ok(None) => revision_not_found(revision),
         Err(e) => store_error_response(e),
     }
+}
+
+#[derive(Deserialize)]
+struct RedactParam {
+    #[serde(default)]
+    redact: bool,
 }
 
 #[derive(Deserialize)]
@@ -1599,6 +1609,21 @@ struct DiffParams {
     /// revision and now" is the common question; diffing two arbitrary past
     /// revisions is still possible by passing this explicitly.
     against: Option<u64>,
+    /// Diff the text with its inline secrets scrubbed (`wayhouse_config::redact_secrets`); the
+    /// console asks for it on behalf of a role below Admin.
+    #[serde(default)]
+    redact: bool,
+}
+
+/// The text of a stored config; with `redact`, its inline secrets (`settings.admin.auth_token`,
+/// `settings.gossip.psk`) are replaced, for a reader who must not learn them.
+fn scrubbed(bytes: &[u8], redact: bool) -> String {
+    let text = String::from_utf8_lossy(bytes).into_owned();
+    if redact {
+        wayhouse_config::redact_secrets(&text).unwrap_or(text)
+    } else {
+        text
+    }
 }
 
 /// `GET /config/revisions/{revision}/diff[?against=<revision>]` — a
@@ -1636,8 +1661,7 @@ async fn diff_revision(
         },
     };
 
-    let old_text = String::from_utf8_lossy(&old).into_owned();
-    let new_text = String::from_utf8_lossy(&new).into_owned();
+    let (old_text, new_text) = (scrubbed(&old, params.redact), scrubbed(&new, params.redact));
     let diff = similar::TextDiff::from_lines(&old_text, &new_text);
     let mut out = format!("--- revision {revision}\n+++ revision {against}\n");
     for change in diff.iter_all_changes() {
@@ -2461,6 +2485,46 @@ listeners:
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_redacted_read_hides_inline_secrets_in_the_config_a_revision_and_a_diff() {
+        let (state, _dir) = test_state();
+        let app = router(state);
+        // `submit` wants 'static text.
+        let with = |token: &str| -> &'static str {
+            Box::leak(
+                format!("{VALID_CONFIG}settings:\n  admin:\n    auth_token: \"{token}\"\n")
+                    .into_boxed_str(),
+            )
+        };
+        let rev1 = submit(&app, with("first-admin-token-0123456789")).await;
+        submit(&app, with("second-admin-token-0123456789")).await;
+        let read = |uri: String| {
+            let app = app.clone();
+            async move {
+                let resp = app
+                    .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                String::from_utf8(bytes.to_vec()).unwrap()
+            }
+        };
+        for path in [
+            "/config".to_string(),
+            format!("/config/revisions/{rev1}"),
+            format!("/config/revisions/{rev1}/diff"),
+        ] {
+            let plain = read(path.clone()).await;
+            assert!(plain.contains("admin-token-0123"), "{path}: {plain}");
+            let sep = if path.contains('?') { '&' } else { '?' };
+            let redacted = read(format!("{path}{sep}redact=true")).await;
+            assert!(!redacted.contains("admin-token-0123"), "{path}: {redacted}");
+        }
     }
 
     #[tokio::test]

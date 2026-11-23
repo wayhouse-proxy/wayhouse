@@ -875,7 +875,11 @@ users:
 ### Three roles, matching the verb tiers the API surface already has
 
 - **`viewer`** — every `GET`: fleet reads, config/revision reads and diffs.
-  No verb that changes anything.
+  No verb that changes anything. Below `admin` the console asks the controller for
+  the config text with the inline secrets (`settings.admin.auth_token`,
+  `settings.gossip.psk`) replaced by `[redacted]` (`?redact=true` on `GET /config`,
+  `GET /config/revisions/{revision}` and its `/diff`), so a read-only login cannot
+  learn a token. A `{ secret: name }` reference holds no value to hide.
 - **`operator`** — `viewer` + the phase-5 intent verbs already fanned out
   through the aggregator (drain / undrain an instance, backend add / patch /
   delete, route-hint) and their controller-intent-log equivalents (slice 3).

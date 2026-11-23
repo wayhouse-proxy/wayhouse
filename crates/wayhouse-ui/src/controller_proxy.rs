@@ -34,7 +34,8 @@ use axum::{Json, Router};
 use serde::Serialize;
 
 use crate::api::AppState;
-use crate::auth::Actor;
+use crate::auth::{Actor, ActorRole};
+use crate::role::Role;
 
 /// `GET` config reads — `Role::Viewer`.
 pub fn viewer_router() -> Router<AppState> {
@@ -841,7 +842,30 @@ fn file_proxy(state: &AppState) -> Option<&crate::api::ControllerTarget> {
         .map_or(state.proxy_admin.as_ref(), |_| None)
 }
 
-async fn get_config(State(state): State<AppState>) -> Response {
+/// `path` for a config read: below Admin it asks the controller to scrub the inline secrets
+/// (`settings.admin.auth_token`, `settings.gossip.psk`), which would otherwise hand a proxy's
+/// admin API and the gossip mesh to a Viewer or Operator. The caller's own `redact` is dropped.
+/// (A file-config proxy hides them itself, `GET /config/file`.)
+fn config_read(role: Role, path: String, query: Option<&str>) -> String {
+    let mut pairs: Vec<&str> = query
+        .unwrap_or("")
+        .split('&')
+        .filter(|p| !p.is_empty() && !p.starts_with("redact"))
+        .collect();
+    if role < Role::Admin {
+        pairs.push("redact=true");
+    }
+    if pairs.is_empty() {
+        path
+    } else {
+        format!("{path}?{}", pairs.join("&"))
+    }
+}
+
+async fn get_config(
+    State(state): State<AppState>,
+    Extension(ActorRole(role)): Extension<ActorRole>,
+) -> Response {
     if let Some(target) = file_proxy(&state) {
         return send(
             &state,
@@ -855,7 +879,8 @@ async fn get_config(State(state): State<AppState>) -> Response {
         )
         .await;
     }
-    proxy(&state, Method::GET, "/config".to_string(), None, None).await
+    let path = config_read(role, "/config".into(), None);
+    proxy(&state, Method::GET, path, None, None).await
 }
 
 async fn config_schema(State(state): State<AppState>) -> Response {
@@ -964,26 +989,26 @@ async fn list_revisions(State(state): State<AppState>) -> Response {
     .await
 }
 
-async fn get_revision(State(state): State<AppState>, Path(revision): Path<u64>) -> Response {
-    proxy(
-        &state,
-        Method::GET,
-        format!("/config/revisions/{revision}"),
-        None,
-        None,
-    )
-    .await
+async fn get_revision(
+    State(state): State<AppState>,
+    Extension(ActorRole(role)): Extension<ActorRole>,
+    Path(revision): Path<u64>,
+) -> Response {
+    let path = config_read(role, format!("/config/revisions/{revision}"), None);
+    proxy(&state, Method::GET, path, None, None).await
 }
 
 async fn diff_revision(
     State(state): State<AppState>,
+    Extension(ActorRole(role)): Extension<ActorRole>,
     Path(revision): Path<u64>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    let suffix = match query {
-        Some(q) => format!("/config/revisions/{revision}/diff?{q}"),
-        None => format!("/config/revisions/{revision}/diff"),
-    };
+    let suffix = config_read(
+        role,
+        format!("/config/revisions/{revision}/diff"),
+        query.as_deref(),
+    );
     proxy(&state, Method::GET, suffix, None, None).await
 }
 
@@ -2603,5 +2628,88 @@ mod tests {
             .unwrap();
         assert_eq!(proxy_calls.lock().unwrap().len(), before);
         assert_eq!(controller_calls.lock().unwrap()[0].1, "/config");
+    }
+
+    /// A controller that echoes the query of every config read, so a test sees what the console
+    /// asked for.
+    async fn mock_query_echo() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let echo = || get(|RawQuery(q): RawQuery| async move { q.unwrap_or_default() });
+        let mock = Router::new()
+            .route("/config", echo())
+            .route("/config/revisions/{r}", echo())
+            .route("/config/revisions/{r}/diff", echo());
+        tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    /// The router plus a cookie per role.
+    fn app_with_a_session_per_role(url: String) -> (Router, Vec<(crate::role::Role, String)>) {
+        use crate::role::Role;
+        let mut users = std::collections::HashMap::new();
+        users.insert(
+            "carol".to_string(),
+            crate::users::UserRecord {
+                username: "carol".into(),
+                password_hash: crate::users::hash_password("pw-config-reads-0123"),
+                role: Role::Viewer,
+            },
+        );
+        let state = crate::api::AppState::new(None)
+            .with_controller(url, None)
+            .with_users(users);
+        let cookies = [Role::Viewer, Role::Operator, Role::Admin]
+            .map(|role| {
+                let id = state.sessions.create(crate::session::Session {
+                    role,
+                    username: Some("carol".into()),
+                });
+                (role, format!("{}={id}", crate::api::SESSION_COOKIE))
+            })
+            .to_vec();
+        (crate::api::router(state), cookies)
+    }
+
+    #[tokio::test]
+    async fn below_admin_the_console_asks_the_controller_to_hide_inline_secrets() {
+        let (app, cookies) = app_with_a_session_per_role(mock_query_echo().await);
+        for (role, cookie) in cookies {
+            for (uri, own) in [
+                ("/api/config", ""),
+                ("/api/config/revisions/3", ""),
+                (
+                    "/api/config/revisions/3/diff?against=2&redact=false",
+                    "against=2",
+                ),
+            ] {
+                let resp = app
+                    .clone()
+                    .oneshot(
+                        Request::get(uri)
+                            .header(axum::http::header::COOKIE, &cookie)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+                let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                let sent = String::from_utf8(bytes.to_vec()).unwrap();
+                // The caller's own `redact` is never passed on; its other parameters are.
+                let expected = if role < crate::role::Role::Admin {
+                    if own.is_empty() {
+                        "redact=true".into()
+                    } else {
+                        format!("{own}&redact=true")
+                    }
+                } else {
+                    own.to_string()
+                };
+                assert_eq!(sent, expected, "{role:?} {uri}");
+            }
+        }
     }
 }
