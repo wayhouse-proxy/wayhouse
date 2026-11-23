@@ -408,7 +408,9 @@ store that never forgets a revision (ADR 20):
   subscriber just re-runs the catch-up query against the store — no delivery
   state kept on the writer side.
 - `GET /config/revisions` — history (revision, size, whether it's `current`).
-- `GET /config/revisions/{revision}` — a past revision's raw text.
+- `GET /config/revisions/{revision}` — a past revision's raw text. `GET /config`, this route and
+  its `/diff` take `?redact=true`, which replaces inline `settings.admin.auth_token` and
+  `settings.gossip.psk` with `[redacted]`; the console sets it for roles below admin.
 - `GET /config/revisions/{revision}/diff[?against=<revision>]` — a line diff
   against `current` or another revision.
 - `POST /config/rollback/{revision}` — re-submits that revision's exact bytes
