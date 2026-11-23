@@ -844,13 +844,14 @@ fn file_proxy(state: &AppState) -> Option<&crate::api::ControllerTarget> {
 
 /// `path` for a config read: below Admin it asks the controller to scrub the inline secrets
 /// (`settings.admin.auth_token`, `settings.gossip.psk`), which would otherwise hand a proxy's
-/// admin API and the gossip mesh to a Viewer or Operator. The caller's own `redact` is dropped.
+/// admin API and the gossip mesh to a Viewer or Operator. Only the caller's `against` is passed on, so no `redact` of theirs
+/// (in any spelling) reaches the controller.
 /// (A file-config proxy hides them itself, `GET /config/file`.)
 fn config_read(role: Role, path: String, query: Option<&str>) -> String {
     let mut pairs: Vec<&str> = query
         .unwrap_or("")
         .split('&')
-        .filter(|p| !p.is_empty() && !p.starts_with("redact"))
+        .filter(|p| p.starts_with("against="))
         .collect();
     if role < Role::Admin {
         pairs.push("redact=true");
@@ -2671,6 +2672,26 @@ mod tests {
             })
             .to_vec();
         (crate::api::router(state), cookies)
+    }
+
+    #[test]
+    fn a_config_read_passes_on_only_the_against_pair() {
+        use crate::role::Role;
+        let diff = || "/config/revisions/3/diff".to_string();
+        // A percent-encoded `redact`, a repeated one and unknown pairs never reach the controller.
+        let q = "%72edact=false&against=2&redact=false&x=1";
+        assert_eq!(
+            config_read(Role::Viewer, diff(), Some(q)),
+            "/config/revisions/3/diff?against=2&redact=true"
+        );
+        assert_eq!(
+            config_read(Role::Admin, diff(), Some(q)),
+            "/config/revisions/3/diff?against=2"
+        );
+        assert_eq!(
+            config_read(Role::Admin, "/config".into(), Some("x=1")),
+            "/config"
+        );
     }
 
     #[tokio::test]

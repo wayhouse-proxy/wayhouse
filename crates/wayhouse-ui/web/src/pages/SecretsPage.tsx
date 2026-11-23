@@ -237,7 +237,7 @@ function KeyRotation() {
     <section aria-label="Key rotation" className="mt-8">
       <h2 className="mb-1 text-lg font-semibold">Key rotation</h2>
       <p className="mb-2 max-w-(--measure) text-sm text-ink-muted">
-        Plugin secrets, cluster secrets and ACME keys are sealed under the controller key. To rotate: add the new key to every controller&apos;s key file, restart them, check below that every node holds the active key, then re-encrypt each kind below. Remove the old key only after all three. Nodes that are unreachable are skipped: check the table above before you remove it.
+        Plugin secrets, cluster secrets and ACME keys are sealed under the controller key. To rotate: add the new key to every controller&apos;s key file, restart them, check below that every node holds the active key, then re-encrypt each kind below. Add the new key to every proxy and agent key file too, before re-encrypting cluster secrets: they open the admin token and gossip key with their own key file, and the check below covers controllers only. Remove the old key only after all three. Nodes that are unreachable are skipped: check the table above before you remove it.
       </p>
       {problem && <ErrorState onRetry={load}>{problem}</ErrorState>}
       {keys && (

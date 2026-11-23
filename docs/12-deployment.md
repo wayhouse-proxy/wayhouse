@@ -526,7 +526,7 @@ sudo wayhouse install --systemd --controller-url https://controller.example:9901
   most 60 ahead, so clocks may differ by about 30 seconds). The controller holds only
   the public key (`--enroll-step-up-pubkey-file`, `$CREDENTIALS_DIRECTORY/enroll-step-up-pubkey`
   or `$WAYHOUSE_ENROLL_STEP_UP_PUBKEY`), so a stolen admin token cannot forge one, and an
-  assertion cannot be reused for another mint (each nonce is accepted once). Without
+  assertion cannot be reused for another mint (each nonce is accepted once, on every controller replica: the minted code records it and keeps it, even when revoked, until the assertion has expired). Without
   that flag those roles cannot be minted. The key file is replicated and readable by anyone who
   reads the controller's disk, and it lets them **guess the passphrase offline** (argon2id, 64 MiB,
   3 passes, slows each guess but cannot stop a weak passphrase). Use a random passphrase, not a
