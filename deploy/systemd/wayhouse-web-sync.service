@@ -1,0 +1,30 @@
+[Unit]
+Description=wayhouse-web-sync (renders the `web:` section into Caddy)
+Documentation=https://github.com/wayhouse-proxy/wayhouse/blob/main/docs/web-proxy.md
+# Requires: a Caddy restart removes the admin socket and the sync's loaded sites, so the sync restarts with it.
+Requires=wayhouse-caddy.service
+Wants=wayhouse.service
+After=wayhouse-caddy.service wayhouse.service
+
+[Service]
+User=wayhouse
+# The solo proxy's admin API has no token. If yours has (`settings.admin.auth_token`), add
+# `LoadCredential=admin-token:/etc/wayhouse/credentials/admin-token` in a drop-in; the sync reads it
+# from $CREDENTIALS_DIRECTORY. Metrics stay on loopback (127.0.0.1:9904), so they need no token.
+ExecStart=/usr/local/bin/wayhouse-web-sync \
+  --wayhouse-admin=http://127.0.0.1:9900 \
+  --caddy-admin=/run/caddy/admin.sock
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

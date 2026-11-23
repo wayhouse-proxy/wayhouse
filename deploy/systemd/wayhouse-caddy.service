@@ -1,0 +1,34 @@
+[Unit]
+Description=Caddy for the wayhouse web front door (docs/web-proxy.md)
+Documentation=https://github.com/wayhouse-proxy/wayhouse/blob/main/docs/web-proxy.md
+After=network.target
+
+[Service]
+User=wayhouse
+# Caddy starts with only the base configuration (`deploy/caddy/base.json`: the admin socket);
+# wayhouse-web-sync loads the sites over that socket. The socket is owner-only, so Caddy and the
+# sync run as the same user. The directory is `caddy` because base.json names /run/caddy/admin.sock.
+RuntimeDirectory=caddy
+RuntimeDirectoryMode=0750
+StateDirectory=wayhouse-caddy
+Environment=XDG_DATA_HOME=/var/lib/wayhouse-caddy XDG_CONFIG_HOME=/var/lib/wayhouse-caddy
+# The same build as the wayhouse-caddy image (the modules in deploy/caddy/MODULES), not a distribution
+# package, which has other defaults and its own caddy.service.
+ExecStart=/usr/local/bin/caddy run --config /etc/wayhouse/caddy/base.json
+# wayhouse forwards to a high port on loopback (`web.listen`), so Caddy binds nothing privileged.
+CapabilityBoundingSet=
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+# AF_NETLINK: Go lists the interfaces at start, and Caddy must see the tunnel interface to reach
+# origins behind wayhouse-agent.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

@@ -307,6 +307,23 @@ Dir["deploy/systemd/*.service"].each do |f|
   errs << "#{f}: serves the UI but passes no --static-dir (every page would be a 404)" if t =~ /ExecStart=\S*wayhouse-(ui|control)\b/ && t !~ /--(ui-)?static-dir=\S/
 end
 
+# Web front door on systemd (docs/web-proxy.md): Caddy, the sync and the certificate sync are opt-in
+# units outside the solo target. The sync and Caddy must agree on the admin socket, both run as the
+# solo user, and every unit keeps the hardening of the solo units.
+unit = ->(n) { File.read("deploy/systemd/#{n}.service") }
+caddy_admin = JSON.parse(File.read("deploy/caddy/base.json"))["admin"]["listen"].sub("unix/", "")
+%w[wayhouse-caddy wayhouse-web-sync wayhouse-certsync].each do |n|
+  t = unit.(n)
+  %w[NoNewPrivileges=yes ProtectSystem=strict ProtectHome=yes PrivateTmp=yes PrivateDevices=yes ProtectKernelTunables=yes ProtectControlGroups=yes CapabilityBoundingSet= User=wayhouse Restart=on-failure].each { |d| errs << "#{n}.service: #{d} missing" unless t.lines.map(&:chomp).include?(d) }
+  errs << "#{n}.service: must not be part of the solo target (it needs a `web:` section or a gateway token)" if t =~ /PartOf=wayhouse-solo|WantedBy=wayhouse-solo/
+end
+errs << "wayhouse-caddy.service: must run caddy with /etc/wayhouse/caddy/base.json" unless unit.("wayhouse-caddy") =~ /ExecStart=\S*caddy run --config \/etc\/wayhouse\/caddy\/base\.json/
+errs << "wayhouse-caddy.service: RuntimeDirectory must hold #{caddy_admin}" unless unit.("wayhouse-caddy").include?("RuntimeDirectory=#{File.basename(File.dirname(caddy_admin))}")
+errs << "wayhouse-web-sync.service: must point at the socket Caddy serves (#{caddy_admin})" unless unit.("wayhouse-web-sync").include?("--caddy-admin=#{caddy_admin}")
+errs << "wayhouse-web-sync.service: must start after Caddy" unless unit.("wayhouse-web-sync") =~ /^After=.*wayhouse-caddy\.service/
+errs << "wayhouse-certsync.service: the gateway token must arrive as a credential" unless unit.("wayhouse-certsync") =~ /LoadCredential=gateway-token:\S+/ && unit.("wayhouse-certsync").include?("--token-file=%d/gateway-token")
+errs << "wayhouse-certsync.service: must trust the init CA for the https controller" unless unit.("wayhouse-certsync").include?("--ca-file=/etc/wayhouse/tls/ca.pem")
+
 # No compose or k8s command carries a token value: only `--<name>-file` flags. A secret is read
 # from its /run/secrets file inside the container (`docker inspect` shows the command of an exited one).
 [base, tunnel, web, solo, solo_acme].each do |cfg|

@@ -1,0 +1,35 @@
+[Unit]
+Description=wayhouse-certsync (certificate bundles from the controller, docs/acme.md)
+Documentation=https://github.com/wayhouse-proxy/wayhouse/blob/main/docs/acme.md
+Wants=wayhouse-controller.service
+After=wayhouse-controller.service network.target
+
+[Service]
+User=wayhouse
+# The gateway token (`POST /acme/gateways` shows it once) arrives as a credential, never on the
+# command line; create /etc/wayhouse/credentials/gateway-token with mode 0600 first. The sync
+# refuses a token file that others can read; systemd hands over a copy only this user reads.
+LoadCredential=gateway-token:/etc/wayhouse/credentials/gateway-token
+# Bundles go to /var/lib/wayhouse/certs/<site>/{fullchain.pem,privkey.pem}: point the site's
+# `tls:` paths there. wayhouse-web-sync reads them and loads a renewal into Caddy by itself.
+StateDirectory=wayhouse/certs
+StateDirectoryMode=0700
+ExecStart=/usr/local/bin/wayhouse-certsync \
+  --controller=https://127.0.0.1:9901 \
+  --ca-file=/etc/wayhouse/tls/ca.pem \
+  --token-file=%d/gateway-token \
+  --dir=/var/lib/wayhouse/certs
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

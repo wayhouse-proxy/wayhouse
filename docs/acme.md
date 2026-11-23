@@ -212,7 +212,7 @@ from the sites it should no longer serve and, for a wildcard, renew early.
 ### `wayhouse-certsync`
 
 `wayhouse-certsync` runs on the gateway host (it ships in the `wayhouse` image next to
-`wayhouse-web-sync`: start it with `entrypoint: /usr/local/bin/wayhouse-certsync`). Create the
+`wayhouse-web-sync`: start it with `entrypoint: /usr/local/bin/wayhouse-certsync`; on systemd see `deploy/systemd/wayhouse-certsync.service` and [Without containers](web-proxy.md#without-containers)). Create the
 gateway, put its token in a file only the sync user can read, and point the sync at every
 controller replica:
 
