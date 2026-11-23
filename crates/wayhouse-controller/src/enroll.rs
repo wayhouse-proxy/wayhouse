@@ -1174,9 +1174,16 @@ async fn release_claim(ui: &UiState, name: &str) {
 /// Seals `psk` as the cluster secret `name`, without storing it.
 #[allow(clippy::result_large_err)]
 async fn seal_psk(ui: &UiState, name: &str, psk: &Zeroizing<String>) -> Result<Value, Response> {
-    // The clock is ahead of any revision an earlier key of this name had, so a name enrolled
-    // again after a delete never goes back to a revision a proxy has accepted.
-    let rev = wayhouse_secrets::next_rev(0, now());
+    // Above the stored revision (the same name enrolled again in this second, or by a replica
+    // whose clock runs ahead) and above the clock (a name enrolled again after a delete never goes
+    // back to a revision a proxy has accepted); the store refuses a revision that does not rise.
+    let current = ui
+        .store
+        .get(Kind::ClusterSecret, name)
+        .map_err(internal)?
+        .and_then(|v| v["rev"].as_u64())
+        .unwrap_or(0);
+    let rev = wayhouse_secrets::next_rev(current, now());
     let sealed = ui
         .keyring
         .current()
@@ -1705,6 +1712,53 @@ mod tests {
         // The refusal spent no use: 3 uses, 2 spent.
         let rec = t.store.list(Kind::Enrollment).unwrap();
         assert_eq!(rec[0].1["uses_left"], 1);
+    }
+
+    #[tokio::test]
+    async fn storing_a_tunnel_key_again_always_moves_to_a_higher_revision() {
+        let t = setup(Some(KEY));
+        let ui = UiState {
+            store: t.store.clone(),
+            auth_token: Some(Arc::from(ADMIN)),
+            ha: None,
+            keyring: t.keyring.clone(),
+        };
+        let key = wayhouse_enroll::psk_secret_name("k8s-a");
+        let rev = || {
+            t.store.get(Kind::ClusterSecret, &key).unwrap().unwrap()["rev"]
+                .as_u64()
+                .unwrap()
+        };
+        // A host enrolled again within the same second.
+        store_psk(&ui, "k8s-a", &wayhouse_enroll::generate_psk())
+            .await
+            .unwrap();
+        let first = rev();
+        store_psk(&ui, "k8s-a", &wayhouse_enroll::generate_psk())
+            .await
+            .unwrap();
+        assert!(rev() > first);
+        // And after a replica whose clock is ahead stored the earlier key.
+        let ahead = rev() + 1000;
+        let sealed = t
+            .keyring
+            .current()
+            .seal_cluster_rev(&key, b"a-key-from-the-future", ahead)
+            .unwrap();
+        let record = json!({
+            "key_id": sealed.key_id, "nonce": sealed.nonce, "ciphertext": sealed.ciphertext,
+            "set_at": now(), "rev": ahead
+        });
+        let put = UiOp::Put {
+            kind: Kind::ClusterSecret,
+            name: key.clone(),
+            value: record,
+        };
+        assert_eq!(t.store.apply_local(&put).unwrap(), Applied::Done);
+        store_psk(&ui, "k8s-a", &wayhouse_enroll::generate_psk())
+            .await
+            .unwrap();
+        assert!(rev() > ahead);
     }
 
     #[tokio::test]
