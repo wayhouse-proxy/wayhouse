@@ -1620,15 +1620,14 @@ struct DiffParams {
 fn scrubbed(bytes: &[u8], redact: bool) -> String {
     let text = String::from_utf8_lossy(bytes).into_owned();
     if redact {
-        // `None` means nothing to hide in a document, or no document at all: text that does not
-        // parse is withheld, since the redactor could not have looked inside it.
-        wayhouse_config::redact_secrets(&text).unwrap_or_else(|| {
-            if serde_norway::from_str::<serde_norway::Value>(&text).is_ok() {
-                text
-            } else {
+        match wayhouse_config::redact(&text) {
+            wayhouse_config::Redaction::Clean => text,
+            wayhouse_config::Redaction::Scrubbed(out) => out,
+            // The redactor could not look inside it, so nothing of it goes out.
+            wayhouse_config::Redaction::Unreadable => {
                 "# this revision cannot be read as a config, so it is not shown\n".to_owned()
             }
-        })
+        }
     } else {
         text
     }
