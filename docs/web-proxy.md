@@ -164,6 +164,32 @@ volumes only for Caddy's state. It carries the Apache-2.0 text and a NOTICE unde
 adding modules.
 Modules (for example DNS-01) would mean building it with `xcaddy` instead; the Dockerfile says where.
 
+## Without containers
+
+`deploy/systemd/` has three opt-in units next to the solo bundle (they are not part of `wayhouse-solo.target`):
+`wayhouse-caddy.service`, `wayhouse-web-sync.service` and `wayhouse-certsync.service`. They run as the solo
+`wayhouse` user with the hardening of the other units. Install `wayhouse-web-sync` and `wayhouse-certsync` into `/usr/local/bin` (from `cargo build --release` or the
+`wayhouse` image, where they sit in that directory), Caddy from the `wayhouse-caddy` image (`/usr/bin/caddy`, with
+`docker create` and `docker cp`; a distribution's Caddy is a different build and brings its own `caddy.service`),
+and the base configuration. The units run as the `wayhouse` user, which the solo bundle's sysusers file creates
+(skip that first command if you already installed the solo units):
+
+```sh
+sudo install -m 0644 deploy/systemd/wayhouse.sysusers /etc/sysusers.d/wayhouse.conf && sudo systemd-sysusers
+sudo install -m 0755 caddy /usr/local/bin/caddy           # the build from the wayhouse-caddy image
+sudo install -D -m 0644 deploy/caddy/base.json /etc/wayhouse/caddy/base.json
+sudo install -m 0644 deploy/systemd/wayhouse-caddy.service deploy/systemd/wayhouse-web-sync.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now wayhouse-caddy.service wayhouse-web-sync.service
+```
+
+Give the proxy a config with a `web:` section ([`wayhouse-web.yaml`](../deploy/compose/wayhouse-web.yaml) shows one).
+The sync reads the proxy's admin API at `127.0.0.1:9900`; if that API has a token, add
+`LoadCredential=admin-token:PATH` in a drop-in. For certificates from the controller, put the gateway token in
+`/etc/wayhouse/credentials/gateway-token` (mode 0600; [`acme.md`](acme.md#wayhouse-certsync)), install
+`wayhouse-certsync.service` and enable it, and point each site's `tls:` paths at
+`/var/lib/wayhouse/certs/<site>/{fullchain.pem,privkey.pem}`.
+
 ## Topologies
 
 - **Single node.** `wayhouse`, Caddy and the sync on one host, as in the compose file. Caddy listens on
@@ -190,7 +216,7 @@ Modules (for example DNS-01) would mean building it with `xcaddy` instead; the D
   cycles when `wayhouse-ui` runs with `--web-sync-url` (the sync's `--metrics-listen` address, as
   `http://127.0.0.1:9904`) and, if the sync asks for a metrics token, `--web-sync-token-file` (credential
   `web-sync-token`, or env `WAYHOUSE_WEB_SYNC_TOKEN`). It reads `GET /metrics`; without the flag the page says
-  so. `compose.web.yml` wires this up (the token is `WAYHOUSE_WEB_SYNC_TOKEN` in `.env`; the sync's metrics then listen on `0.0.0.0:9904` of the host, behind that token). The systemd bundle has no web sync unit.
+  so. `compose.web.yml` wires this up (the token is `WAYHOUSE_WEB_SYNC_TOKEN` in `.env`; the sync's metrics then listen on `0.0.0.0:9904` of the host, behind that token). On systemd, `wayhouse-web-sync.service` runs the sync with loopback metrics (no token needed); add `--web-sync-url=http://127.0.0.1:9904` to the UI unit's `ExecStart` (see [Without containers](#without-containers)).
 - `GET /web` on the Wayhouse admin API (404 without a `web:` section) is what the sync reads; use it to
   see what Wayhouse resolved.
 - The Caddy end-to-end test (`crates/wayhouse-fleet-tests/tests/web.rs`, CI job `web-e2e`) runs

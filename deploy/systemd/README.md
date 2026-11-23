@@ -23,6 +23,10 @@ enable `wayhouse-solo-control.target` (it conflicts with `wayhouse-solo.target`)
 `control.pem`, serves the controller and the aggregator; the binary is `wayhouse-control`. See
 [`docs/12-deployment.md`](../../docs/12-deployment.md#all-in-one-process-wayhouse-control).
 
+**Web front door (optional):** `wayhouse-caddy.service`, `wayhouse-web-sync.service` and `wayhouse-certsync.service`
+are not part of the solo target; install and enable them as [`docs/web-proxy.md`](../../docs/web-proxy.md#without-containers)
+describes.
+
 The UI is at <http://127.0.0.1:9903>. Both UI units serve the built frontend from
 `/usr/share/wayhouse/web`: copy the build output there (`make ui` builds `web/dist`; the container
 images carry it as `/web`), or every page is a 404. The password is in
