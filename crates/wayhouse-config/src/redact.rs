@@ -79,14 +79,41 @@ pub fn has_redacted_secret(yaml: &str) -> bool {
         .any(|p| lookup(&doc, p).and_then(scalar_text).as_deref() == Some(REDACTED))
 }
 
+/// What [`redact`] found in a config text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Redaction {
+    /// A document with no plaintext secret in it: nothing to hide.
+    Clean,
+    /// The text with its plaintext secrets replaced by [`REDACTED`].
+    Scrubbed(String),
+    /// Not a document, or one that could not be scrubbed: the text may still hold a secret, so
+    /// a caller that must not leak one withholds it.
+    Unreadable,
+}
+
+/// Looks for plaintext secrets in `yaml` and scrubs them; see [`Redaction`].
+#[must_use]
+pub fn redact(yaml: &str) -> Redaction {
+    let Ok(doc) = serde_norway::from_str::<Value>(yaml) else {
+        return Redaction::Unreadable;
+    };
+    if plaintext(&doc).is_empty() {
+        return Redaction::Clean;
+    }
+    scrub(yaml, doc).map_or(Redaction::Unreadable, Redaction::Scrubbed)
+}
+
 /// `yaml` with its plaintext secrets replaced by [`REDACTED`], or `None` when it holds none (or is
 /// not a document at all). Idempotent: its own output gives `None`.
 #[must_use]
 pub fn redact_secrets(yaml: &str) -> Option<String> {
-    let doc: Value = serde_norway::from_str(yaml).ok()?;
-    if plaintext(&doc).is_empty() {
-        return None;
+    match redact(yaml) {
+        Redaction::Scrubbed(out) => Some(out),
+        Redaction::Clean | Redaction::Unreadable => None,
     }
+}
+
+fn scrub(yaml: &str, doc: Value) -> Option<String> {
     let mut values = sweep_values(&doc);
     let edited = edit_in_place(yaml).filter(|(t, _)| scrubbed(t));
     let mut raw_tokens = Vec::new();
@@ -272,6 +299,18 @@ mod tests {
 
     fn leaks(out: &str) -> bool {
         out.contains(SECRET)
+    }
+
+    #[test]
+    fn redact_tells_nothing_to_hide_from_text_it_could_not_read() {
+        assert_eq!(redact("pools: []\n"), Redaction::Clean);
+        assert_eq!(redact("settings: [auth_token: \"x"), Redaction::Unreadable);
+        let leaky = doc(&format!("  admin:\n    auth_token: \"{SECRET}\"\n"));
+        let Redaction::Scrubbed(out) = redact(&leaky) else {
+            panic!("a plaintext token is scrubbed");
+        };
+        assert!(!out.contains(SECRET));
+        assert_eq!(redact(&out), Redaction::Clean, "idempotent");
     }
 
     #[test]

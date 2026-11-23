@@ -648,6 +648,12 @@ async fn revoke(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
+    if let Ok(Some(rec)) = st.ui.store.get(Kind::Enrollment, &id) {
+        // Already a tombstone that holds a step-up nonce: nothing left to revoke.
+        if rec["revoked"] == true && rec["step_up_nonce"].is_string() {
+            return StatusCode::NO_CONTENT.into_response();
+        }
+    }
     let issued = match st.ui.store.get(Kind::Enrollment, &id) {
         Ok(Some(rec))
             if rec["role"] == "agent"
@@ -714,9 +720,6 @@ async fn revoke(
     // let that assertion be replayed on another replica. It stays as a revoked tombstone and the
     // sweep removes it once the assertion has expired.
     if let Ok(Some(mut rec)) = st.ui.store.get(Kind::Enrollment, &id) {
-        if rec["revoked"] == true && rec["step_up_nonce"].is_string() {
-            return StatusCode::NO_CONTENT.into_response();
-        }
         if rec["step_up_until"].as_u64().is_some_and(|u| now() < u) {
             if let Some(o) = rec.as_object_mut() {
                 o.insert("uses_left".into(), 0.into());
@@ -1544,6 +1547,42 @@ mod tests {
         assert_eq!(st, StatusCode::NO_CONTENT);
         assert_eq!(find(&token), None);
         assert!(t.store.list(Kind::ClusterSecret).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoking_a_spent_agent_code_inside_its_assertions_life_leaves_a_tombstone() {
+        let t = setup(Some(KEY));
+        let other = second_replica(&t);
+        let mut body = json!({"role": "agent", "name": "home-nas"});
+        body["step_up"] = assertion_for(&body);
+        let (st, minted) = call_as_ui(&t, body.clone()).await;
+        assert_eq!(st, StatusCode::OK, "{minted}");
+        let code = minted["code"].as_str().unwrap().to_owned();
+        let (_, v) = redeem(&t, &code, "10.0.0.2").await;
+        let token = v["files"]["agent-token"].as_str().unwrap().to_owned();
+        let find = crate::origin::lookup(t.store.clone());
+        let uri = format!("/enrollments/{}", minted["id"].as_str().unwrap());
+        for _ in 0..2 {
+            let (st, _) = call(&t.app, "DELETE", &uri, Value::Null, Some(ADMIN), "10.0.0.1").await;
+            assert_eq!(st, StatusCode::NO_CONTENT);
+        }
+        assert_eq!(find(&token), None, "the credentials are revoked");
+        assert!(t.store.list(Kind::ClusterSecret).unwrap().is_empty());
+        let (st, v) = call_with(
+            &other,
+            "POST",
+            "/enrollments",
+            body,
+            Some(ADMIN),
+            "10.0.0.1",
+            Some(Caller::Ui),
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::FORBIDDEN,
+            "the nonce outlives the code: {v}"
+        );
     }
 
     #[tokio::test]

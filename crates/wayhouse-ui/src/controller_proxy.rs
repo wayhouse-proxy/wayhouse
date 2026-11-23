@@ -844,8 +844,8 @@ fn file_proxy(state: &AppState) -> Option<&crate::api::ControllerTarget> {
 
 /// `path` for a config read: below Admin it asks the controller to scrub the inline secrets
 /// (`settings.admin.auth_token`, `settings.gossip.psk`), which would otherwise hand a proxy's
-/// admin API and the gossip mesh to a Viewer or Operator. Only the caller's `against` is passed on, so no `redact` of theirs
-/// (in any spelling) reaches the controller.
+/// admin API and the gossip mesh to a Viewer or Operator. Only the caller's `against` is passed
+/// on, so no `redact` of theirs (in any spelling) reaches the controller.
 /// (A file-config proxy hides them itself, `GET /config/file`.)
 fn config_read(role: Role, path: String, query: Option<&str>) -> String {
     let mut pairs: Vec<&str> = query
