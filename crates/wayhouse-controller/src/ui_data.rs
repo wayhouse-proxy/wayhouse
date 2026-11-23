@@ -232,6 +232,8 @@ const THEME_TOKENS: [&str; 23] = [
 /// Theme names the UI reserves for its built-ins (also valid as a default theme).
 const BUILTIN_THEMES: [&str; 3] = ["light", "dark", "system"];
 const MAX_NAME: usize = 64;
+/// Longest region label of a saved filter.
+const MAX_REGION: usize = 64;
 const MAX_WIDGETS: usize = 100;
 
 impl Kind {
@@ -381,7 +383,10 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
     match kind {
         Kind::SavedFilter => {
             only_keys(obj, "", &["name", "q", "state", "region", "tags"])?;
-            for (k, max) in [("q", 200), ("region", MAX_NAME)] {
+            if obj.get("name").is_some_and(|v| !v.is_string()) {
+                return Err("name must be a string".into());
+            }
+            for (k, max) in [("q", 200), ("region", MAX_REGION)] {
                 if let Some(v) = obj.get(k) {
                     string_max(v, k, max)?;
                 }
@@ -398,7 +403,10 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                     return Err("tags can hold at most 16 entries".into());
                 }
                 for (i, t) in tags.iter().enumerate() {
-                    string_max(t, &format!("tags[{i}]"), 128)?;
+                    let at = format!("tags[{i}]");
+                    if string_max(t, &at, 128)?.starts_with('=') {
+                        return Err(format!("{at} must be \"key\" or \"key=value\""));
+                    }
                 }
             }
             Ok(())
@@ -2106,6 +2114,13 @@ mod tests {
             Applied::Done
         );
         assert_eq!(s.get(Kind::SavedFilter, "gpus").unwrap(), Some(ok));
+        // An empty filter is fine: the UI only refuses to save one.
+        let none = json!({"tags": []});
+        assert_eq!(
+            s.apply_local(&put(Kind::SavedFilter, "none", none))
+                .unwrap(),
+            Applied::Done
+        );
         let many: Vec<String> = (0..17).map(|i| format!("k{i}")).collect();
         for (bad, needle) in [
             (json!({"x": 1}), "known key"),
@@ -2116,6 +2131,9 @@ mod tests {
             (json!({"tags": "gpu"}), "tags must"),
             (json!({"tags": [1]}), "tags[0]"),
             (json!({"tags": many}), "at most 16"),
+            (json!({"state": 5}), "state must"),
+            (json!({"name": 5}), "name must"),
+            (json!({"tags": ["=prod"]}), "key=value"),
         ] {
             let why = invalid(s.apply_local(&put(Kind::SavedFilter, "bad", bad)).unwrap());
             assert!(why.contains(needle), "{why}");
