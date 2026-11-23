@@ -379,7 +379,30 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
     }
     let obj = object(value, "the record")?;
     match kind {
-        Kind::SavedFilter => Ok(()),
+        Kind::SavedFilter => {
+            only_keys(obj, "", &["name", "q", "state", "region", "tags"])?;
+            for (k, max) in [("q", 200), ("region", MAX_NAME)] {
+                if let Some(v) = obj.get(k) {
+                    string_max(v, k, max)?;
+                }
+            }
+            if obj
+                .get("state")
+                .is_some_and(|v| !matches!(v.as_str(), Some("ok" | "degraded" | "stale")))
+            {
+                return Err("state must be \"ok\", \"degraded\" or \"stale\"".into());
+            }
+            if let Some(tags) = obj.get("tags") {
+                let tags = tags.as_array().ok_or("tags must be an array")?;
+                if tags.len() > 16 {
+                    return Err("tags can hold at most 16 entries".into());
+                }
+                for (i, t) in tags.iter().enumerate() {
+                    string_max(t, &format!("tags[{i}]"), 128)?;
+                }
+            }
+            Ok(())
+        }
         Kind::Dashboard => {
             only_keys(obj, "", &["name", "version", "widgets", "revision"])?;
             let widgets = obj
@@ -2071,6 +2094,32 @@ mod tests {
             s.apply_local(&del(Kind::Dashboard, "nope")).unwrap(),
             Applied::NotFound
         );
+    }
+
+    #[test]
+    fn a_saved_filter_holds_only_the_fleet_filter_fields() {
+        let (s, _d) = store();
+        let ok = json!({"name": "gpus", "q": "fra", "state": "degraded", "region": "eu", "tags": ["env=prod", "gpu"]});
+        assert_eq!(
+            s.apply_local(&put(Kind::SavedFilter, "gpus", ok.clone()))
+                .unwrap(),
+            Applied::Done
+        );
+        assert_eq!(s.get(Kind::SavedFilter, "gpus").unwrap(), Some(ok));
+        let many: Vec<String> = (0..17).map(|i| format!("k{i}")).collect();
+        for (bad, needle) in [
+            (json!({"x": 1}), "known key"),
+            (json!({"state": "broken"}), "state"),
+            (json!({"q": 5}), "q must"),
+            (json!({"q": "x".repeat(201)}), "q must"),
+            (json!({"region": ""}), "region must"),
+            (json!({"tags": "gpu"}), "tags must"),
+            (json!({"tags": [1]}), "tags[0]"),
+            (json!({"tags": many}), "at most 16"),
+        ] {
+            let why = invalid(s.apply_local(&put(Kind::SavedFilter, "bad", bad)).unwrap());
+            assert!(why.contains(needle), "{why}");
+        }
     }
 
     #[test]
