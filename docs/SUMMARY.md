@@ -27,5 +27,6 @@
 - [Sniffers](sniffers.md)
 - [Web proxy (Caddy)](web-proxy.md)
 - [Certificates (ACME)](acme.md)
+- [Global client steering](global-steering.md)
 - [Stored UI data](ui-data.md)
 - [Third-party notices](third-party-notices.md)
