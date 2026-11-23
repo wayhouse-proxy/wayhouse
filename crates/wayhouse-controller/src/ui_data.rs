@@ -798,6 +798,19 @@ impl UiStore {
         self.apply_locked(&guard, index, op)
     }
 
+    /// Whether a sealed secret may replace the stored one at `k`: only forwards, so a stale write
+    /// (two racing, or a replayed old one) and a downgrade to the format without a revision both
+    /// lose. A name with no stored revision takes anything.
+    fn secret_rev_rises(&self, k: &impl AsRef<[u8]>, value: &Value) -> Result<bool, UiStoreError> {
+        let Some(cur) = self.records.get(k)? else {
+            return Ok(true);
+        };
+        let cur: Value = serde_json::from_slice(&cur)?;
+        Ok(cur["rev"]
+            .as_u64()
+            .is_none_or(|have| value["rev"].as_u64().is_some_and(|r| r > have)))
+    }
+
     fn plan(&self, op: &UiOp) -> Result<Result<Vec<Write>, Applied>, UiStoreError> {
         match op {
             UiOp::Put { kind, name, value } => {
@@ -869,17 +882,8 @@ impl UiStore {
                         }
                     }
                 }
-                if *kind == Kind::ClusterSecret {
-                    // Only forwards: a stale PUT (two racing, or a replayed old one) and a
-                    // downgrade to the format without a revision both lose.
-                    if let Some(cur) = self.records.get(&k)? {
-                        let cur: Value = serde_json::from_slice(&cur)?;
-                        if let Some(have) = cur["rev"].as_u64() {
-                            if value["rev"].as_u64().is_none_or(|r| r <= have) {
-                                return Ok(Err(Applied::Stale));
-                            }
-                        }
-                    }
+                if *kind == Kind::ClusterSecret && !self.secret_rev_rises(&k, value)? {
+                    return Ok(Err(Applied::Stale));
                 }
                 Ok(Ok(vec![Write::Insert(k, serde_json::to_vec(value)?)]))
             }
@@ -978,6 +982,9 @@ impl UiStore {
                     let secret = wayhouse_enroll::psk_secret_name(name);
                     if validate(Kind::ClusterSecret, &secret, psk).is_err() {
                         return Ok(Err(Applied::Refused));
+                    }
+                    if !self.secret_rev_rises(&key(Kind::ClusterSecret, &secret), psk)? {
+                        return Ok(Err(Applied::Stale));
                     }
                     let max = Kind::ClusterSecret.max_records_for(&secret);
                     if let Some(max) = max.filter(|m| {
@@ -1452,6 +1459,82 @@ mod tests {
         );
         let rec = store.get(Kind::Enrollment, "abcd1234").unwrap().unwrap();
         assert_eq!(rec["uses_left"], 2, "only the winner spent a use");
+    }
+
+    #[test]
+    fn a_step_up_nonce_belongs_to_one_code_and_has_a_fixed_shape() {
+        let (store, _d) = store();
+        let with_nonce = |n: &str| {
+            let mut v = code_record(H1, 1, 1000);
+            v["step_up_nonce"] = n.into();
+            v["step_up_until"] = 500.into();
+            v
+        };
+        let nonce = "n".repeat(16);
+        let first = put(Kind::Enrollment, "abcd1234", with_nonce(&nonce));
+        assert_eq!(store.apply_local(&first).unwrap(), Applied::Done);
+        assert_eq!(
+            store
+                .apply_local(&put(Kind::Enrollment, "abcd1235", with_nonce(&nonce)))
+                .unwrap(),
+            Applied::NonceUsed
+        );
+        assert!(store.get(Kind::Enrollment, "abcd1235").unwrap().is_none());
+        // The code's own record may be written again (a redeem, a revoke) with its nonce.
+        assert_eq!(store.apply_local(&first).unwrap(), Applied::Done);
+        assert_eq!(
+            store
+                .apply_local(&put(
+                    Kind::Enrollment,
+                    "abcd1235",
+                    with_nonce(&"m".repeat(16))
+                ))
+                .unwrap(),
+            Applied::Done
+        );
+        let mut long = with_nonce(&"n".repeat(65));
+        assert!(validate(Kind::Enrollment, "abcd1236", &long).is_err());
+        long = with_nonce(&nonce);
+        long["step_up_until"] = "soon".into();
+        assert!(validate(Kind::Enrollment, "abcd1236", &long).is_err());
+    }
+
+    #[test]
+    fn a_redeem_cannot_store_a_tunnel_key_at_or_below_the_stored_revision() {
+        let (store, _d) = store();
+        let rec = json!({"role": "agent", "origin": "nas", "hash": H1, "created_at": 100,
+            "expires_at": 1000, "uses": 2, "uses_left": 2});
+        store
+            .apply_local(&put(Kind::Enrollment, "abcd1234", rec))
+            .unwrap();
+        let key_at = |rev: u64| json!({"key_id": "k", "nonce": "n", "ciphertext": "c", "set_at": 200, "rev": rev});
+        let secret = wayhouse_enroll::psk_secret_name("nas");
+        store
+            .apply_local(&put(Kind::ClusterSecret, &secret, key_at(50)))
+            .unwrap();
+        let claim = |rev: u64| {
+            let mut op = redeem("abcd1234", H1, 200);
+            let UiOp::Redeem { name, psk, .. } = &mut op else {
+                unreachable!()
+            };
+            *name = Some("nas".into());
+            *psk = Some(key_at(rev));
+            op
+        };
+        for rev in [49, 50] {
+            assert_eq!(
+                store.apply_local(&claim(rev)).unwrap(),
+                Applied::Stale,
+                "{rev}"
+            );
+        }
+        let rec = store.get(Kind::Enrollment, "abcd1234").unwrap().unwrap();
+        assert_eq!(rec["uses_left"], 2, "a refused redeem spends nothing");
+        assert_eq!(store.apply_local(&claim(51)).unwrap(), Applied::Done);
+        assert_eq!(
+            store.get(Kind::ClusterSecret, &secret).unwrap().unwrap()["rev"],
+            51
+        );
     }
 
     #[test]

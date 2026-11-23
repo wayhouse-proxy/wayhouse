@@ -542,6 +542,8 @@ async fn list(State(st): State<EnrollState>) -> Response {
             if let Some(o) = v.as_object_mut() {
                 o.remove("hash");
                 o.remove("join_hash");
+                o.remove("step_up_nonce");
+                o.remove("step_up_until");
                 o.insert("id".into(), id.into());
                 o.insert("status".into(), status.into());
             }
@@ -706,6 +708,33 @@ async fn revoke(
     if let Some(origin) = &issued {
         if let Err(r) = crate::origin::revoke(&st.ui, origin).await {
             return r;
+        }
+    }
+    // A code minted by a step-up assertion that is still good keeps its nonce: deleting it would
+    // let that assertion be replayed on another replica. It stays as a revoked tombstone and the
+    // sweep removes it once the assertion has expired.
+    if let Ok(Some(mut rec)) = st.ui.store.get(Kind::Enrollment, &id) {
+        if rec["revoked"] == true && rec["step_up_nonce"].is_string() {
+            return StatusCode::NO_CONTENT.into_response();
+        }
+        if rec["step_up_until"].as_u64().is_some_and(|u| now() < u) {
+            if let Some(o) = rec.as_object_mut() {
+                o.insert("uses_left".into(), 0.into());
+                o.insert("revoked".into(), true.into());
+            }
+            let op = UiOp::Put {
+                kind: Kind::Enrollment,
+                name: id.clone(),
+                value: rec,
+            };
+            return match apply(&st.ui, op).await {
+                Ok(Applied::Done) => {
+                    tracing::warn!(enrollment = %id, actor = ?actor(&headers).as_deref().unwrap_or("-"), "enrollment code revoked; its step-up nonce stays until the assertion expires");
+                    StatusCode::NO_CONTENT.into_response()
+                }
+                Ok(_) => internal("unexpected answer to a revoke"),
+                Err(r) => r,
+            };
         }
     }
     let op = UiOp::Delete {
@@ -905,6 +934,15 @@ async fn redeem(
             // The code was valid: this is not a guess, so it does not count against the code.
             st.limiter.refund(&id_key);
             return err(StatusCode::CONFLICT, NAME_TAKEN);
+        }
+        // The name's tunnel key was stored again since this redeem sealed its own; the code is
+        // still good, so it is not charged and the host can ask again.
+        Ok(Applied::Stale) if claimed.is_some() => {
+            st.limiter.refund(&id_key);
+            return err(
+                StatusCode::CONFLICT,
+                "that name's tunnel key changed while enrolling; try again",
+            );
         }
         // An agent redeem writes a tunnel key: the key store filled up since the early check.
         Ok(Applied::Full(_)) if claimed.is_some() => {
@@ -2349,10 +2387,8 @@ mod tests {
     }
 
     /// Another controller replica: its own nonce memory, the same replicated store.
-    #[tokio::test]
-    async fn an_assertion_used_on_one_replica_is_refused_on_another() {
-        let t = setup(Some(KEY));
-        let other = router(
+    fn second_replica(t: &T) -> Router {
+        router(
             UiState {
                 store: t.store.clone(),
                 auth_token: Some(Arc::from(ADMIN)),
@@ -2367,8 +2403,18 @@ mod tests {
                 step_up: Some(step_up_key().1.clone()),
                 tunnel_network: Some(Arc::from("10.60.0.0/24")),
             },
-        );
-        let body = json!({"role": "proxy", "name": "edge-1", "step_up": assertion_for(&json!({"role": "proxy", "name": "edge-1"}))});
+        )
+    }
+
+    fn proxy_mint_body() -> Value {
+        json!({"role": "proxy", "name": "edge-1", "step_up": assertion_for(&json!({"role": "proxy", "name": "edge-1"}))})
+    }
+
+    #[tokio::test]
+    async fn an_assertion_used_on_one_replica_is_refused_on_another() {
+        let t = setup(Some(KEY));
+        let other = second_replica(&t);
+        let body = proxy_mint_body();
         let url = "/enrollments";
         let first = call(&t.app, "POST", url, body.clone(), Some(ADMIN), "10.0.0.1").await;
         assert_eq!(first.0, StatusCode::OK);
@@ -2376,6 +2422,66 @@ mod tests {
         assert_eq!(st, StatusCode::FORBIDDEN, "{v}");
         assert!(v["error"].as_str().unwrap().contains("already used"), "{v}");
         assert_eq!(t.store.list(Kind::Enrollment).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn revoking_a_code_inside_its_assertions_life_keeps_the_nonce_until_it_expires() {
+        let t = setup(Some(KEY));
+        let other = second_replica(&t);
+        let body = proxy_mint_body();
+        let (st, minted) = call(
+            &t.app,
+            "POST",
+            "/enrollments",
+            body.clone(),
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{minted}");
+        let uri = format!("/enrollments/{}", minted["id"].as_str().unwrap());
+        for _ in 0..2 {
+            let (st, _) = call(&t.app, "DELETE", &uri, json!(null), Some(ADMIN), "10.0.0.1").await;
+            assert_eq!(
+                st,
+                StatusCode::NO_CONTENT,
+                "a second revoke answers the same"
+            );
+        }
+        let (st, v) = call(
+            &other,
+            "POST",
+            "/enrollments",
+            body,
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{v}");
+        // The code itself is dead and listed as revoked.
+        let (_, list) = call(
+            &t.app,
+            "GET",
+            "/enrollments",
+            json!(null),
+            Some(ADMIN),
+            "10.0.0.1",
+        )
+        .await;
+        assert_eq!(list["items"][0]["status"], "revoked", "{list}");
+        assert!(list["items"][0].get("step_up_nonce").is_none(), "{list}");
+        // Once the assertion has expired the sweep reaps the tombstone.
+        let mut rec = t.store.get(Kind::Enrollment, &uri[13..]).unwrap().unwrap();
+        rec["step_up_until"] = (now() - 1).into();
+        put(&t, Kind::Enrollment, uri[13..].to_owned(), rec);
+        let ui = UiState {
+            store: t.store.clone(),
+            auth_token: Some(Arc::from(ADMIN)),
+            ha: None,
+            keyring: t.keyring.clone(),
+        };
+        sweep_finished_codes(&ui).await.unwrap();
+        assert!(t.store.list(Kind::Enrollment).unwrap().is_empty());
     }
 
     #[tokio::test]

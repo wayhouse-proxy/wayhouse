@@ -1620,7 +1620,15 @@ struct DiffParams {
 fn scrubbed(bytes: &[u8], redact: bool) -> String {
     let text = String::from_utf8_lossy(bytes).into_owned();
     if redact {
-        wayhouse_config::redact_secrets(&text).unwrap_or(text)
+        // `None` means nothing to hide in a document, or no document at all: text that does not
+        // parse is withheld, since the redactor could not have looked inside it.
+        wayhouse_config::redact_secrets(&text).unwrap_or_else(|| {
+            if serde_norway::from_str::<serde_norway::Value>(&text).is_ok() {
+                text
+            } else {
+                "# this revision cannot be read as a config, so it is not shown\n".to_owned()
+            }
+        })
     } else {
         text
     }
@@ -2485,6 +2493,16 @@ listeners:
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn a_redacted_read_never_hands_out_text_it_cannot_parse() {
+        // Not a document, so the redactor finds nothing; the text must still not go out as is.
+        let broken = b"settings: [admin: {auth_token: \"leaky-admin-token-0123456789\"";
+        assert!(!scrubbed(broken, true).contains("leaky-admin-token"));
+        assert!(scrubbed(broken, false).contains("leaky-admin-token"));
+        // A document with nothing to hide is returned as it is.
+        assert_eq!(scrubbed(b"pools: {}\n", true), "pools: {}\n");
     }
 
     #[tokio::test]
