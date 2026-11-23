@@ -379,6 +379,15 @@ async fn mint(
     if let Some(p) = &b.name_prefix {
         record["name_prefix"] = p.as_str().into();
     }
+    // The code remembers the assertion that minted it, so no replica accepts that nonce again
+    // until the assertion has expired (the sweep keeps the code until then).
+    if let Some(a) = b.step_up.as_ref().filter(|_| needs_step_up) {
+        record["step_up_nonce"] = a.nonce.as_str().into();
+        record["step_up_until"] = a
+            .exp
+            .min(created + wayhouse_enroll::step_up::MAX_ASSERTION_TTL_SECS)
+            .into();
+    }
     // A controller code carries the node id the replica will have. The id is picked above every
     // member and every other code; the store refuses a duplicate atomically, so a clash with a
     // code minted at the same moment elsewhere moves on to the next id.
@@ -405,6 +414,7 @@ async fn mint(
                 return err(StatusCode::CONFLICT, "could not find a free node id; retry")
             }
             Ok(Applied::Invalid(why)) => return err(StatusCode::UNPROCESSABLE_ENTITY, why),
+            Ok(Applied::NonceUsed) => return err(StatusCode::FORBIDDEN, STEP_UP_USED),
             // Spent and expired single-node codes are history; drop them once to make room.
             Ok(Applied::Full(_)) if !swept => {
                 swept = true;
@@ -451,6 +461,8 @@ fn next_node_id(st: &EnrollState) -> u64 {
     members.into_iter().chain(codes).max().unwrap_or(0) + 1
 }
 
+const STEP_UP_USED: &str = "this step-up assertion was already used";
+
 /// Checks the step-up assertion of a mint: the signature over this exact request, the clock, and
 /// that the nonce has not been used. A refusal counts against one shared bucket (the admin token
 /// is already required, so this only slows a stolen admin token); a good one is refunded.
@@ -483,7 +495,7 @@ fn step_up_ok(st: &EnrollState, b: &MintBody) -> Result<(), &'static str> {
             .insert(a.nonce.clone(), a.exp.min(t + MAX_ASSERTION_TTL_SECS))
             .is_some()
         {
-            return Err("this step-up assertion was already used");
+            return Err(STEP_UP_USED);
         }
     }
     st.limiter.refund("step-up");
@@ -570,6 +582,7 @@ async fn sweep_finished_codes(ui: &UiState) -> Result<(), Response> {
         .into_iter()
         .filter(|(_, v)| {
             v["role"] != "controller"
+                && v["step_up_until"].as_u64().is_none_or(|u| t >= u)
                 && (v["uses_left"] == 0 || v["expires_at"].as_u64().is_some_and(|e| t >= e))
         })
         .map(|(id, _)| id)
@@ -1174,9 +1187,16 @@ async fn release_claim(ui: &UiState, name: &str) {
 /// Seals `psk` as the cluster secret `name`, without storing it.
 #[allow(clippy::result_large_err)]
 async fn seal_psk(ui: &UiState, name: &str, psk: &Zeroizing<String>) -> Result<Value, Response> {
-    // The clock is ahead of any revision an earlier key of this name had, so a name enrolled
-    // again after a delete never goes back to a revision a proxy has accepted.
-    let rev = wayhouse_secrets::next_rev(0, now());
+    // Above the stored revision (the same name enrolled again in this second, or by a replica
+    // whose clock runs ahead) and above the clock (a name enrolled again after a delete never goes
+    // back to a revision a proxy has accepted); the store refuses a revision that does not rise.
+    let current = ui
+        .store
+        .get(Kind::ClusterSecret, name)
+        .map_err(internal)?
+        .and_then(|v| v["rev"].as_u64())
+        .unwrap_or(0);
+    let rev = wayhouse_secrets::next_rev(current, now());
     let sealed = ui
         .keyring
         .current()
@@ -1639,6 +1659,11 @@ mod tests {
         };
         put(&t, Kind::Enrollment, "aaaaaaaa".into(), spent("agent"));
         put(&t, Kind::Enrollment, "bbbbbbbb".into(), spent("controller"));
+        // A spent code still inside its assertion's life keeps the nonce, so the sweep leaves it.
+        let mut held = spent("agent");
+        held["step_up_nonce"] = "n".repeat(16).into();
+        held["step_up_until"] = (now() + 30).into();
+        put(&t, Kind::Enrollment, "cccccccc".into(), held);
         let ui = UiState {
             store: t.store.clone(),
             auth_token: Some(Arc::from(ADMIN)),
@@ -1648,6 +1673,7 @@ mod tests {
         sweep_finished_codes(&ui).await.unwrap();
         assert!(t.store.get(Kind::Enrollment, "aaaaaaaa").unwrap().is_none());
         assert!(t.store.get(Kind::Enrollment, "bbbbbbbb").unwrap().is_some());
+        assert!(t.store.get(Kind::Enrollment, "cccccccc").unwrap().is_some());
     }
 
     #[tokio::test]
@@ -1705,6 +1731,53 @@ mod tests {
         // The refusal spent no use: 3 uses, 2 spent.
         let rec = t.store.list(Kind::Enrollment).unwrap();
         assert_eq!(rec[0].1["uses_left"], 1);
+    }
+
+    #[tokio::test]
+    async fn storing_a_tunnel_key_again_always_moves_to_a_higher_revision() {
+        let t = setup(Some(KEY));
+        let ui = UiState {
+            store: t.store.clone(),
+            auth_token: Some(Arc::from(ADMIN)),
+            ha: None,
+            keyring: t.keyring.clone(),
+        };
+        let key = wayhouse_enroll::psk_secret_name("k8s-a");
+        let rev = || {
+            t.store.get(Kind::ClusterSecret, &key).unwrap().unwrap()["rev"]
+                .as_u64()
+                .unwrap()
+        };
+        // A host enrolled again within the same second.
+        store_psk(&ui, "k8s-a", &wayhouse_enroll::generate_psk())
+            .await
+            .unwrap();
+        let first = rev();
+        store_psk(&ui, "k8s-a", &wayhouse_enroll::generate_psk())
+            .await
+            .unwrap();
+        assert!(rev() > first);
+        // And after a replica whose clock is ahead stored the earlier key.
+        let ahead = rev() + 1000;
+        let sealed = t
+            .keyring
+            .current()
+            .seal_cluster_rev(&key, b"a-key-from-the-future", ahead)
+            .unwrap();
+        let record = json!({
+            "key_id": sealed.key_id, "nonce": sealed.nonce, "ciphertext": sealed.ciphertext,
+            "set_at": now(), "rev": ahead
+        });
+        let put = UiOp::Put {
+            kind: Kind::ClusterSecret,
+            name: key.clone(),
+            value: record,
+        };
+        assert_eq!(t.store.apply_local(&put).unwrap(), Applied::Done);
+        store_psk(&ui, "k8s-a", &wayhouse_enroll::generate_psk())
+            .await
+            .unwrap();
+        assert!(rev() > ahead);
     }
 
     #[tokio::test]
@@ -2273,6 +2346,36 @@ mod tests {
                 .0,
             StatusCode::OK
         );
+    }
+
+    /// Another controller replica: its own nonce memory, the same replicated store.
+    #[tokio::test]
+    async fn an_assertion_used_on_one_replica_is_refused_on_another() {
+        let t = setup(Some(KEY));
+        let other = router(
+            UiState {
+                store: t.store.clone(),
+                auth_token: Some(Arc::from(ADMIN)),
+                ha: None,
+                keyring: t.keyring.clone(),
+            },
+            Grants {
+                agent_token: Some(Arc::from(AGENT)),
+                ui_token: Some(Arc::from(UI)),
+                proxy_token: Some(Arc::from(PROXY)),
+                ingest_token: Some(Arc::from(INGEST)),
+                step_up: Some(step_up_key().1.clone()),
+                tunnel_network: Some(Arc::from("10.60.0.0/24")),
+            },
+        );
+        let body = json!({"role": "proxy", "name": "edge-1", "step_up": assertion_for(&json!({"role": "proxy", "name": "edge-1"}))});
+        let url = "/enrollments";
+        let first = call(&t.app, "POST", url, body.clone(), Some(ADMIN), "10.0.0.1").await;
+        assert_eq!(first.0, StatusCode::OK);
+        let (st, v) = call(&other, "POST", url, body, Some(ADMIN), "10.0.0.1").await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("already used"), "{v}");
+        assert_eq!(t.store.list(Kind::Enrollment).unwrap().len(), 1);
     }
 
     #[tokio::test]

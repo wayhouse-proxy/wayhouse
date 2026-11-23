@@ -721,6 +721,10 @@ fn answer(applied: &Applied, ok: impl FnOnce() -> Response) -> Response {
             "a record with that name already exists",
         ),
         Applied::Taken => err(StatusCode::CONFLICT, "that node id is already taken"),
+        Applied::NonceUsed => err(
+            StatusCode::FORBIDDEN,
+            "this step-up assertion was already used",
+        ),
         Applied::NameTaken => err(StatusCode::CONFLICT, "that name is already enrolled"),
         Applied::Replayed | Applied::Allocated(_) => {
             internal("a write was answered as a replay or a redeem")

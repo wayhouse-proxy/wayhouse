@@ -143,6 +143,8 @@ pub enum Applied {
     Refused,
     /// A controller code asked for a node id another code already holds.
     Taken,
+    /// A code was minted with a step-up nonce another code already carries: a replayed assertion.
+    NonceUsed,
     /// A prefix-code redeem named an origin that already holds a token or a tunnel key.
     NameTaken,
     /// A rename's target name already holds a record.
@@ -572,6 +574,8 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
                     "parent_url",
                     "name_prefix",
                     "node_id",
+                    "step_up_nonce",
+                    "step_up_until",
                     "join_hash",
                     "join_until",
                     "joined",
@@ -622,6 +626,12 @@ pub fn validate(kind: Kind, name: &str, value: &Value) -> Result<(), String> {
             }
             if obj.get("joined").is_some_and(|j| !j.is_boolean()) {
                 return Err("joined must be true or false".into());
+            }
+            if let Some(n) = obj.get("step_up_nonce") {
+                string_max(n, "step_up_nonce", 64)?;
+            }
+            if obj.get("step_up_until").is_some_and(|u| !u.is_u64()) {
+                return Err("step_up_until must be a unix time".into());
             }
             if obj.get("revoked").is_some_and(|j| !j.is_boolean()) {
                 return Err("revoked must be true or false".into());
@@ -828,6 +838,17 @@ impl UiStore {
                             && rec["node_id"] == value["node_id"]
                         {
                             return Ok(Err(Applied::Taken));
+                        }
+                    }
+                }
+                // A step-up nonce is single-use across the cluster: the code minted with it holds
+                // it, and a second mint with the same one is refused on every replica alike.
+                if *kind == Kind::Enrollment {
+                    if let Some(n) = value.get("step_up_nonce") {
+                        for (other, rec) in self.list(Kind::Enrollment)? {
+                            if other != *name && rec.get("step_up_nonce") == Some(n) {
+                                return Ok(Err(Applied::NonceUsed));
+                            }
                         }
                     }
                 }
