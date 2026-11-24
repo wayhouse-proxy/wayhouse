@@ -673,7 +673,8 @@ fn redact_snapshot(
             r.bytes = new.into_bytes();
             scrubbed += 1;
         }
-        // Scrubbed or found clean, either way what is held now holds no plaintext secret.
+        // Scrubbed, or `scrub` had nothing to do with it (clean, or text it cannot read): a
+        // rerun on this exact text gives the same answer, so it is not asked again.
         clean.remember(r.revision, &r.bytes);
     }
     if scrubbed == 0 {
@@ -3145,6 +3146,32 @@ mod tests {
             .unwrap();
         assert_eq!(
             redact_snapshot(&sm.snapshots, &kept, &clean, &counting).unwrap(),
+            1
+        );
+        assert!(!saved_revisions(&sm)[0].contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn a_revision_kept_whole_while_live_is_scrubbed_once_it_retires() {
+        let (mut sm, _dirs) = test_sm();
+        append_and_apply(&mut sm, vec![config_entry(1, &cfg("one"))]).await;
+        sm.get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
+        let clean = CleanRevisions::default();
+        let scrub = wayhouse_config::redact_secrets;
+        // Pass one: revision 1 is live, so it stays whole and must not be remembered as clean.
+        let live = sm.config.kept_bytes().unwrap();
+        assert_eq!(
+            redact_snapshot(&sm.snapshots, &live, &clean, &scrub).unwrap(),
+            0
+        );
+        assert!(saved_revisions(&sm)[0].contains(TOKEN));
+        // Pass two: it has retired.
+        assert_eq!(
+            redact_snapshot(&sm.snapshots, &[], &clean, &scrub).unwrap(),
             1
         );
         assert!(!saved_revisions(&sm)[0].contains(TOKEN));

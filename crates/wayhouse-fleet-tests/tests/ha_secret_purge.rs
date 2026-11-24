@@ -35,7 +35,9 @@ async fn submit(client: &reqwest::Client, base: &str, body: String) -> Result<u6
         return Err(format!("{status}: {text}"));
     }
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{status}: {e}"))?;
-    v["revision"].as_u64().ok_or(format!("{status}: {text}"))
+    v["revision"]
+        .as_u64()
+        .ok_or_else(|| format!("{status}: {text}"))
 }
 
 /// `GET /config/revisions` as parsed JSON.
