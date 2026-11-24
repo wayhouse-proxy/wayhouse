@@ -147,7 +147,7 @@ ENV CGO_ENABLED=0 GOTOOLCHAIN=local
 RUN retry() { for d in 0 10 30 60; do sleep $d; "$@" && return 0; done; return 1; }; \
     retry go install github.com/caddyserver/xcaddy/cmd/xcaddy@v${XCADDY_VERSION}
 RUN retry() { for d in 0 10 30 60; do sleep $d; "$@" && return 0; done; return 1; }; \
-    GOOS=$TARGETOS GOARCH=$TARGETARCH retry xcaddy build v${CADDY_VERSION} \
+    retry env GOOS=$TARGETOS GOARCH=$TARGETARCH xcaddy build v${CADDY_VERSION} \
       --replace golang.org/x/net=golang.org/x/net@v${GOLANG_X_NET_VERSION} \
       --replace github.com/go-jose/go-jose/v4=github.com/go-jose/go-jose/v4@v${GO_JOSE_VERSION} \
       --output /out/caddy
