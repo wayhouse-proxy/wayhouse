@@ -1377,6 +1377,7 @@ mod tests {
 
         const WARMUP: usize = 50;
         const ITERATIONS: usize = 2000;
+        const ROUNDS: usize = 5;
         const N1_US: f64 = 500.0; // NFR N1: added p50 < 0.5 ms
 
         let mut all_pass = true;
@@ -1394,17 +1395,30 @@ mod tests {
                     "{name} must recognise its own fixture"
                 );
             }
-            let mut samples = Vec::with_capacity(ITERATIONS);
-            for _ in 0..ITERATIONS {
-                let start = std::time::Instant::now();
-                let hint = sniffer.sniff(payload);
-                samples.push(start.elapsed());
-                assert!(hint.is_some());
-            }
-            samples.sort_unstable();
+            // A shared runner can stall for a second or more (typical p50 here is ~45 us, the gate
+            // 500 us; a stall once read 700-1000 us on every sniffer). Take the best of a few
+            // rounds: a stall passes in some round, a real regression stays slow in all of them.
             let us = |d: std::time::Duration| d.as_secs_f64() * 1e6;
-            let at = |q: f64| samples[((ITERATIONS as f64 * q) as usize).min(ITERATIONS - 1)];
-            let (p50, p90, p99, max) = (at(0.50), at(0.90), at(0.99), samples[ITERATIONS - 1]);
+            let mut best = None;
+            for _ in 0..ROUNDS {
+                let mut samples = Vec::with_capacity(ITERATIONS);
+                for _ in 0..ITERATIONS {
+                    let start = std::time::Instant::now();
+                    let hint = sniffer.sniff(payload);
+                    samples.push(start.elapsed());
+                    assert!(hint.is_some());
+                }
+                samples.sort_unstable();
+                let at = |q: f64| samples[((ITERATIONS as f64 * q) as usize).min(ITERATIONS - 1)];
+                let round = (at(0.50), at(0.90), at(0.99), samples[ITERATIONS - 1]);
+                if best.is_none_or(|b: (std::time::Duration, _, _, _)| round.0 < b.0) {
+                    best = Some(round);
+                }
+                if us(round.0) < N1_US {
+                    break;
+                }
+            }
+            let (p50, p90, p99, max) = best.unwrap();
             let pass = us(p50) < N1_US;
             all_pass &= pass;
             println!(

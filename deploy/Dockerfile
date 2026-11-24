@@ -142,8 +142,12 @@ ARG XCADDY_VERSION=0.4.7
 ARG GOLANG_X_NET_VERSION=0.62.0
 ARG GO_JOSE_VERSION=4.1.6
 ENV CGO_ENABLED=0 GOTOOLCHAIN=local
-RUN go install github.com/caddyserver/xcaddy/cmd/xcaddy@v${XCADDY_VERSION}
-RUN GOOS=$TARGETOS GOARCH=$TARGETARCH xcaddy build v${CADDY_VERSION} \
+# sum.golang.org drops the odd request (HTTP/2 INTERNAL_ERROR) and fails a CI build; retry with
+# backoff. Verification stays on: a retry re-checks every module, it never skips one.
+RUN retry() { for d in 0 10 30 60; do sleep $d; "$@" && return 0; done; return 1; }; \
+    retry go install github.com/caddyserver/xcaddy/cmd/xcaddy@v${XCADDY_VERSION}
+RUN retry() { for d in 0 10 30 60; do sleep $d; "$@" && return 0; done; return 1; }; \
+    retry env GOOS=$TARGETOS GOARCH=$TARGETARCH xcaddy build v${CADDY_VERSION} \
       --replace golang.org/x/net=golang.org/x/net@v${GOLANG_X_NET_VERSION} \
       --replace github.com/go-jose/go-jose/v4=github.com/go-jose/go-jose/v4@v${GO_JOSE_VERSION} \
       --output /out/caddy
