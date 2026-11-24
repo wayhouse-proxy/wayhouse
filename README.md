@@ -162,6 +162,24 @@ configuration and fleet-wide operation once you run more than one proxy.
 </details>
 
 <details>
+<summary><b>Plugins, secrets and web sites (optional)</b></summary>
+
+- **Plugins**: sandboxed WASM modules hosted by the controller (timers, webhooks, events), acting only
+  through capabilities an operator approved; installed from the UI, a registry or a plugins file
+  ([docs/plugins.md](docs/plugins.md)).
+- **Sealed secrets**: the admin token and gossip key can be `{ secret: name }` references to the
+  controller's encrypted secret store; reload applies a rotated value and the Secrets page re-encrypts
+  under a new key ([docs/06](docs/06-operations-observability.md)).
+- **Web sites**: a `web:` section is rendered into a packaged Caddy, with certificates issued by the
+  controller (ACME, DNS-01 through a plugin) ([docs/web-proxy.md](docs/web-proxy.md), [docs/acme.md](docs/acme.md)).
+- **Feature flags** with a runtime kill-switch, and `enabled: false` to park a listener, source,
+  resolver or site without deleting it ([docs/05](docs/05-configuration.md)).
+- **One box**: the solo bundle (Compose or systemd, https from the first start) and the all-in-one
+  `wayhouse-control` process ([docs/12](docs/12-deployment.md)).
+
+</details>
+
+<details>
 <summary><b>Backend transport over WireGuard (optional)</b></summary>
 
 - **`wayhouse-agent`** runs next to game servers that are not on a network the proxy can
@@ -208,7 +226,7 @@ The admin API listens on `127.0.0.1:9900` by default:
 
 Set the log level with `WAYHOUSE_LOG` (for example `WAYHOUSE_LOG=debug`).
 
-Container images (seven targets in one `Dockerfile`), a Docker Compose demo and plain
+Container images (eight targets in one `Dockerfile`), a Docker Compose demo and plain
 Kubernetes manifests live in [`deploy/`](deploy/); they are reference material, not a
 supported deployment. Web sites go through a packaged Caddy: [`docs/web-proxy.md`](docs/web-proxy.md). Sniffers are described in [`docs/sniffers.md`](docs/sniffers.md).
 
@@ -217,29 +235,34 @@ supported deployment. Web sites go through a packaged Caddy: [`docs/web-proxy.md
 > **Sniffers vs plugins.** _Sniffers_ are the WASM protocol/hostname sniffer modules; the
 > official ones live in
 > [`wayhouse-proxy/sniffers`](https://github.com/wayhouse-proxy/sniffers). _Plugins_ are
-> integrations with other systems (e.g. the Pelican panel) and will live in
-> [`wayhouse-proxy/plugins`](https://github.com/wayhouse-proxy/plugins); their design is
-> still open.
+> integrations with other systems (e.g. the Pelican panel); the official ones live in
+> [`wayhouse-proxy/plugins`](https://github.com/wayhouse-proxy/plugins) and the design is in
+> [docs/plugins.md](docs/plugins.md).
 
 The design documents in [`docs/`](docs/) are the source of truth for how the proxy is
 meant to work. Start with the overview and the architecture chapter; the rest can be
 read as needed. See [docs/README.md](docs/README.md) for a guided index.
 
-| Document                                                               | Contents                                                       |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------- |
-| [00 Overview](docs/00-overview.md)                                     | Goals, non-goals, use cases, glossary                          |
-| [01 Requirements](docs/01-requirements.md)                             | Functional and non-functional requirements                     |
-| [02 Architecture](docs/02-architecture.md)                             | Components, data plane / control plane, data flows             |
-| [03 Routing](docs/03-routing.md)                                       | Routing strategies in detail                                   |
-| [04 Transport and client IP](docs/04-transport-and-client-ip.md)       | TCP/UDP handling, client-IP preservation, PROXY protocol       |
-| [05 Configuration](docs/05-configuration.md)                           | Configuration schema and examples                              |
-| [06 Operations and observability](docs/06-operations-observability.md) | Metrics, logging, health checks, draining, fleet endpoints     |
-| [07 Security and DDoS](docs/07-security-ddos.md)                       | Rate limiting, ACLs, DDoS mitigation                           |
-| [08 Roadmap](docs/08-roadmap.md)                                       | Phased implementation and milestones                           |
-| [09 Technology choices](docs/09-technology-choices.md)                 | Language, libraries, alternatives, decision records            |
-| [10 Distributed control plane](docs/10-distributed-control-plane.md)   | Controller, aggregator, admin GUI, regional health             |
-| [11 Backend transport](docs/11-backend-transport.md)                   | WireGuard transport for origins on other networks              |
-| [12 Deployment](docs/12-deployment.md)                                 | Container images and many-port proxies under Docker/Kubernetes |
+| Document                                                               | Contents                                                        |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------- |
+| [00 Overview](docs/00-overview.md)                                     | Goals, non-goals, use cases, glossary                           |
+| [01 Requirements](docs/01-requirements.md)                             | Functional and non-functional requirements                      |
+| [02 Architecture](docs/02-architecture.md)                             | Components, data plane / control plane, data flows              |
+| [03 Routing](docs/03-routing.md)                                       | Routing strategies in detail                                    |
+| [04 Transport and client IP](docs/04-transport-and-client-ip.md)       | TCP/UDP handling, client-IP preservation, PROXY protocol        |
+| [05 Configuration](docs/05-configuration.md)                           | Configuration schema and examples                               |
+| [06 Operations and observability](docs/06-operations-observability.md) | Metrics, logging, health checks, draining, fleet endpoints      |
+| [07 Security and DDoS](docs/07-security-ddos.md)                       | Rate limiting, ACLs, DDoS mitigation                            |
+| [08 Roadmap](docs/08-roadmap.md)                                       | Phased implementation and milestones                            |
+| [09 Technology choices](docs/09-technology-choices.md)                 | Language, libraries, alternatives, decision records             |
+| [10 Distributed control plane](docs/10-distributed-control-plane.md)   | Controller, aggregator, admin GUI, regional health              |
+| [11 Backend transport](docs/11-backend-transport.md)                   | WireGuard transport for origins on other networks               |
+| [12 Deployment](docs/12-deployment.md)                                 | Container images, the one-box solo bundle, systemd, Kubernetes  |
+| [Plugins](docs/plugins.md)                                             | Controller-hosted WASM plugins, capabilities, secrets, registry |
+| [Sniffers](docs/sniffers.md)                                           | Sniffer modules, the registry index and its verification        |
+| [Web proxy](docs/web-proxy.md) and [ACME](docs/acme.md)                | HTTP(S) sites through Caddy, controller-issued certificates     |
+| [Global client steering](docs/global-steering.md)                      | Sending players to the nearest healthy node                     |
+| [Upgrading](docs/upgrading.md)                                         | Compatibility window, version table, per-release migration      |
 
 ## Project status
 
