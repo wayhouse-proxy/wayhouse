@@ -7,10 +7,10 @@ ports actually works once it's namespaced by a container runtime.
 ## Container images
 
 The reference build is [`deploy/Dockerfile`](../deploy/Dockerfile): one file, a
-shared `rust:1-trixie` builder and seven runtime targets (the five binaries, `wayhouse-minimal`, below, and
+shared `rust:1-trixie` builder and eight runtime targets (the six binaries, including `wayhouse-control`, `wayhouse-minimal`, below, and
 `wayhouse-caddy`, [web proxy](web-proxy.md)) on
 `gcr.io/distroless/cc-debian13:nonroot` (Caddy on its own pinned base; see [`deploy/README.md`](../deploy/README.md);
-`make deploy-images` builds all seven; `make deploy-scan` runs an informational Trivy
+`make deploy-images` builds all eight; `make deploy-scan` runs an informational Trivy
 scan of them and of the lockfiles they're built from — CI's `deploy` and `trivy` jobs).
 `wayhouse-minimal` is `wayhouse` built with `--no-default-features` (issue #62): no WASM sniffer loader,
 gRPC resolver, `dns_srv` source, Tier-2 gossip fabric or WireGuard tunnel client, so the
@@ -909,7 +909,7 @@ To check it works:
 
 ```sh
 curl -fsS https://controller.example.com/healthz
-wayhouse --check --controller https://controller.example.com --controller-token "$TOKEN"
+wayhouse --check --controller https://controller.example.com --controller-token-file /etc/wayhouse/proxy-token
 ```
 
 **Private or self-signed CA.** Every binary (`wayhouse`, `wayhouse-agent`, `wayhouse-controller`,
@@ -972,7 +972,7 @@ change to the leader. `X-Actor` is logged.
 ```sh
 # A new or replacement node always starts empty with --ha-join (never --ha-peers: a
 # node with --ha-peers calls initialize and could split the cluster).
-wayhouse-controller --listen 0.0.0.0:7070 --ha-node-id 4 --ha-token "$HA_TOKEN" \
+wayhouse-controller --listen 0.0.0.0:7070 --ha-node-id 4 --ha-token-file /etc/wayhouse/ha-token \
   --tunnel-network 10.60.0.0/24 --ha-join
 
 curl -H "Authorization: Bearer $TOKEN" http://ctl-1:7070/admin/ha/members            # voters, learners, leader

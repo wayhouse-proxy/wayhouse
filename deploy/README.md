@@ -11,8 +11,8 @@ background: [`docs/12-deployment.md`](../docs/12-deployment.md).
 
 | Path                               | Purpose                                                                                                                                                                                           |
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Dockerfile`                       | one file, seven targets: `wayhouse`, `wayhouse-minimal`, `wayhouse-controller`, `wayhouse-aggregator`, `wayhouse-ui`, `wayhouse-agent`, `wayhouse-caddy`                                          |
-| `build-images.sh`                  | builds all seven, checks each (`--version`; `check-caddy-image.sh` for Caddy), prints sizes                                                                                                       |
+| `Dockerfile`                       | one file, eight targets: `wayhouse`, `wayhouse-minimal`, `wayhouse-controller`, `wayhouse-aggregator`, `wayhouse-ui`, `wayhouse-control`, `wayhouse-agent`, `wayhouse-caddy`                      |
+| `build-images.sh`                  | builds all eight, checks each (`--version`; `check-caddy-image.sh` for Caddy), prints sizes                                                                                                       |
 | `compose/`                         | runnable control-plane demo (+ `compose.tunnel.yml` WireGuard override, `compose.web.yml` Caddy web front door)                                                                                   |
 | `compose/compose.solo.yml`         | the single-box bundle: the demo plus plugins, a sealed secret store and https (`wayhouse-controller init --target compose` writes the tokens and certificates; `compose.solo-acme.yml` adds ACME) |
 | `compose/compose.solo-control.yml` | a third overlay: controller, aggregator and UI as one `wayhouse-control` process in the `controller` service (`init --target compose --control`; the UI serves https)                             |
@@ -139,7 +139,7 @@ Ingress/LoadBalancer (with TLS) in front of it.
 - Aggregator intent fan-out (drain etc.) cannot reach `wayhouse` from these examples: the
   `admin_url` a `wayhouse` reports is derived from `settings.admin.listen` and no flag
   overrides it. Fleet _reads_ (pools, sessions) work.
-- `make deploy-scan` runs Trivy over the seven images (OS packages, secrets, and the
+- `make deploy-scan` runs Trivy over the eight images (OS packages, secrets, and the
   Rust crates each binary embeds — they're built with `cargo auditable`) and over
   `Cargo.lock` and the UI's `package-lock.json`. It reports
   HIGH/CRITICAL findings that have a fix available, writes JSON + SARIF to

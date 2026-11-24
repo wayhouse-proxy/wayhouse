@@ -78,11 +78,19 @@ All steps run **before** buffer/session allocation.
 - Secrets (admin token, mTLS keys) via env/file with `0600`, not in the YAML.
 - Bind the admin API and metrics to a separate internal interface; never on the public
   listener IPs.
-- The HTTP servers of the fleet binaries (controller, aggregator, UI backend) close a client that
-  does not finish its request head within 30 s (this also ends idle keep-alive connections), ping
-  HTTP/2 peers every 30 s and drop one that does not answer within 20 s, and hold at most 4096
+- The HTTP servers of the fleet binaries (controller, aggregator, UI backend) close a connection
+  that sends no first byte within 30 s or does not finish its request head within 60 s (the same
+  timer ends an idle keep-alive connection), close one that has had no request in flight for 60 s,
+  ping HTTP/2 peers every 30 s and drop one that does not answer within 20 s, and hold at most 4096
   connections at once; past that, new peers wait in the kernel's accept queue. Streams that are
-  already running (SSE, WebSocket) are not affected.
+  already running (SSE, WebSocket) keep their connection for as long as the response runs, and an
+  upgraded connection keeps its slot in the cap. Every accepted TCP stream also gets TCP keepalive
+  (probe after 30 s of silence, every 10 s) and, on Linux, a 60 s user timeout, so a client that
+  vanished or stopped reading a long-lived stream is dropped by the kernel and frees its slot.
+- The controller caps its SSE streams per kind at 1024 each (`GET /config/subscribe`, `/intent/subscribe`,
+  `/plugin-routes/subscribe`, and each registry's `/subscribe`); a stream past the cap answers
+  `503` with `Retry-After: 5` and a warning in the log, and the subscriber retries. Each stream
+  sends an SSE comment line as a keep-alive when idle.
 - Rate-limit and ACL state is per instance; behind anycast HA, size it per node (an
   attack is spread across all nodes).
 

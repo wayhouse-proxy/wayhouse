@@ -51,7 +51,10 @@ finished. They are kept as a record of why things were built the way they were; 
 - [`migrating-0.2-to-0.3.md`](migrating-0.2-to-0.3.md): the 0.2.0 to 0.3.0 migration (the
   controller's `sled` to `redb` change has no migration; what is lost and how to restore it).
 - [`migrating-0.3-to-0.4.md`](migrating-0.3-to-0.4.md): the 0.3.0 to 0.4.0 migration checklist
-  (skeleton; filled in as the 0.4.0 slices land).
+  (upgrade order, tokens as files, plugin rebuilds, secrets, deploy layout).
+- [`plugins.md`](plugins.md): controller-hosted plugins, capabilities, secrets, the registry and
+  the plugins file.
+- [`acme.md`](acme.md) and [`global-steering.md`](global-steering.md): see the table above.
 - [`web-proxy.md`](web-proxy.md): publishing HTTP(S) sites through the packaged Caddy
   (`wayhouse-web-sync`, the `wayhouse-caddy` image, compose and Kubernetes recipes).
 - [`sniffers.md`](sniffers.md): sniffer manifest, registry index and verification formats.

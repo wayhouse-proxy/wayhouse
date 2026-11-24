@@ -460,7 +460,7 @@ last-applied config and retries the subscribe connection with capped
 exponential backoff (500ms → 30s); nothing about the data path pauses.
 
 **Role (phase 12 slice 1)**: `--role standalone` (default) is everything
-above unchanged. `--role slave --parent-url <url> [--parent-token <token>]`
+above unchanged. `--role slave --parent-url <url> [--parent-token-file <path>]`
 makes this controller a relay: it never accepts a write of its own (`POST
 /config` and `POST /config/rollback/*` both `403`, `"this controller is a
 slave tier..."`) and instead seeds from the parent's `GET /config` at
@@ -679,7 +679,7 @@ corresponding `--*-url` was never given.
 **RBAC and audit (phase 12 slice 8, `docs/10` "RBAC and audit (design)")**:
 two login modes, mutually exclusive.
 
-- **`--ui-password <secret>`** (legacy, unchanged from phase 10+11) — one
+- **`--ui-password-file <path>`** (legacy, unchanged from phase 10+11) — one
   shared secret, `POST /ui/login {"password":"..."}`, every session
   implicitly `admin`.
 - **`--users-file <path>`** — multi-operator accounts, a YAML list of
