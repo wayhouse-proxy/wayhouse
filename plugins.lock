@@ -2,4 +2,4 @@
 # conformance check (`wayhouse-plugin-check`), pinned by commit of the plugins repository.
 # Move it with the plugins repo's ABI pin whenever the plugin ABI changes (docs/plugins.md).
 repo = "wayhouse-proxy/plugins"
-rev = "fd00be6e140d6e9cf0ecaed7ebc590ec6e7e97c4"
+rev = "5b26c30aff1c94b27c0498192fae83975facfe53"
