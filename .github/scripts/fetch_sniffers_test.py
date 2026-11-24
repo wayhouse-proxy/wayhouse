@@ -136,5 +136,35 @@ class FetchTest(unittest.TestCase):
         self.assertNotEqual(self.run_fetch(bad).returncode, 0)
 
 
+class Retry(unittest.TestCase):
+    def test_a_dropped_request_is_retried_then_succeeds(self):
+        calls, waits = [], []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) < 3:
+                raise OSError("reset")
+            return "ok"
+
+        sys.path.insert(0, str(SCRIPT.parent))
+        from fetch_sniffers import retry
+
+        self.assertEqual(retry(flaky, OSError, sleep=waits.append), "ok")
+        self.assertEqual(waits, [5, 15])
+
+    def test_a_persistent_error_surfaces_and_a_404_is_not_retried(self):
+        import urllib.error
+        from fetch_sniffers import retry
+
+        waits = []
+        with self.assertRaises(OSError):
+            retry(lambda: (_ for _ in ()).throw(OSError("down")), OSError, sleep=waits.append)
+        self.assertEqual(len(waits), 3)
+        waits.clear()
+        with self.assertRaises(urllib.error.HTTPError):
+            retry(lambda: (_ for _ in ()).throw(urllib.error.HTTPError("u", 404, "nf", {}, None)), OSError, sleep=waits.append)
+        self.assertEqual(waits, [])
+
+
 if __name__ == "__main__":
     unittest.main()
