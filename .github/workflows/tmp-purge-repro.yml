@@ -1,0 +1,35 @@
+# TEMPORARY: repeats the secret-purge late-joiner test to catch its rare hang. Never merged.
+name: tmp purge repro
+on:
+  push:
+    branches: [claude/project-thread-8rba8a]
+    paths: [.github/workflows/tmp-purge-repro.yml]
+permissions:
+  contents: read
+jobs:
+  repro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: ./.github/actions/apt-install
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - uses: ./.github/actions/cargo-cache
+        with: { name: test }
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: nextest
+      - name: Build
+        run: cargo nextest run -p wayhouse-fleet-tests --no-run
+      # Same shape as the nightly: the two snapshot tests side by side, nothing else.
+      - name: Run
+        run: cargo nextest run -p wayhouse-fleet-tests --no-fail-fast --no-capture -E 'test(ha_secret_purge) | test(ha_snapshots)' 2>&1 | tee run.log
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: failure()
+        with:
+          name: run-${{ matrix.n }}
+          path: run.log

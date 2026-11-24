@@ -153,7 +153,7 @@ async fn retired_revisions_lose_the_plaintext_secret_on_every_replica_including_
     bases.push(base4.clone());
 
     let want = revisions(&client, &bases[0]).await?;
-    wait_until(
+    let caught_up = wait_until(
         || {
             let (client, base4, want) = (client.clone(), base4.clone(), want.clone());
             async move { Ok(revisions(&client, &base4).await.ok() == Some(want)) }
@@ -163,7 +163,26 @@ async fn retired_revisions_lose_the_plaintext_secret_on_every_replica_including_
         Duration::from_secs(240),
         "node 4 to hold the leader's revisions",
     )
-    .await?;
+    .await;
+    if let Err(e) = caught_up {
+        // Say how node 4 differs, and what the nodes logged, so a hang explains itself.
+        let got = revisions(&client, &base4).await.unwrap_or_default();
+        let diff: Vec<_> = want
+            .as_array()
+            .into_iter()
+            .flatten()
+            .zip(got.as_array().into_iter().flatten())
+            .filter(|(a, b)| a != b)
+            .take(5)
+            .collect();
+        let logs: Vec<String> = procs.iter().map(Proc::log).collect();
+        anyhow::bail!(
+            "{e}: leader holds {}, node 4 {}; first differing: {diff:?}\n{}",
+            want.as_array().map_or(0, Vec::len),
+            got.as_array().map_or(0, Vec::len),
+            logs.join("\n=====\n")
+        );
+    }
     let on_node4: serde_json::Value = client
         .get(format!("{base4}/admin/ha/members"))
         .send()
