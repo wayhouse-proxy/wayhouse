@@ -235,7 +235,7 @@ async fn list_gateways(State(st): State<AcmeState>) -> Response {
 
 /// Registers a gateway. The token is in this response only; the store keeps its hash.
 async fn create_gateway(State(st): State<AcmeState>, headers: HeaderMap, body: Bytes) -> Response {
-    let Ok(parsed) = serde_json::from_slice::<GatewayBody>(&body) else {
+    let Ok(parsed) = wayhouse_http::json::from_body::<GatewayBody>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
             "the body must be {\"name\": \"...\"}",
@@ -301,7 +301,7 @@ async fn put_site(
     Path(name): Path<String>,
     body: Bytes,
 ) -> Response {
-    let Ok(parsed) = serde_json::from_slice::<SiteBody>(&body) else {
+    let Ok(parsed) = wayhouse_http::json::from_body::<SiteBody>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
             "the body must be {\"names\": [...], \"dns_plugin\": \"...\", \"gateways\": [...]} (dns-01) or {\"names\": [...], \"challenge\": \"http-01\"}",

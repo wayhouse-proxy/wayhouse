@@ -31,6 +31,7 @@ pub const LONG_VERSION: &str = env!("WAYHOUSE_LONG_VERSION");
 pub mod bearer;
 #[cfg(feature = "server")]
 pub mod conn;
+pub mod json;
 pub mod labels;
 #[cfg(feature = "server")]
 pub mod metrics;

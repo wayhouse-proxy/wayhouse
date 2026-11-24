@@ -334,7 +334,7 @@ pub fn parse_operator(body: &[u8]) -> Result<OperatorTags, String> {
     if body.iter().all(u8::is_ascii_whitespace) {
         return Ok(OperatorTags::new());
     }
-    let b: OverlayBody = serde_json::from_slice(body).map_err(|e| format!("body: {e}"))?;
+    let b: OverlayBody = wayhouse_http::json::from_body(body).map_err(|e| format!("body: {e}"))?;
     for (instance, tags) in &b.operator_tags {
         check_labels(None, tags).map_err(|e| format!("operator_tags[{instance:?}]: {e}"))?;
     }

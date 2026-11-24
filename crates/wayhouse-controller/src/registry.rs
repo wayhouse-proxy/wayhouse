@@ -676,7 +676,7 @@ async fn register<R: Registration>(
     body: String,
 ) -> Response {
     let words = wording(R::ROLE);
-    let mut reg: R = match serde_json::from_str(&body) {
+    let mut reg: R = match wayhouse_http::json::from_body(&body) {
         Ok(reg) => reg,
         Err(e) => return unprocessable(format!("malformed {} registration: {e}", words.noun)),
     };

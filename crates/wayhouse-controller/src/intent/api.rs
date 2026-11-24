@@ -217,7 +217,7 @@ async fn submit_intent(
             .into_response();
     }
 
-    let op: IntentOp = match serde_json::from_str(&body) {
+    let op: IntentOp = match wayhouse_http::json::from_body(&body) {
         Ok(op) => op,
         Err(e) => {
             return (

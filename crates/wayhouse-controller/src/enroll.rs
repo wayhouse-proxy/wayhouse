@@ -284,7 +284,7 @@ async fn mint(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Ok(b) = serde_json::from_slice::<MintBody>(&body) else {
+    let Ok(b) = wayhouse_http::json::from_body::<MintBody>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
             "the body must be {\"role\"?: \"agent|proxy|aggregator|ui|controller\", \"name\": \"...\", \"ttl_secs\"?, \"uses\"?, \"parent_url\"?, \"name_prefix\"?, \"step_up\"?}",
@@ -781,7 +781,7 @@ async fn redeem(
     if !st.limiter.take(&ip, PER_IP) {
         return too_many();
     }
-    let Ok(req) = serde_json::from_slice::<RedeemRequest>(&body) else {
+    let Ok(req) = wayhouse_http::json::from_body::<RedeemRequest>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
             "the body must be {\"code\": \"...\", \"role\": \"agent|proxy|aggregator|ui|controller\", \"name\"?: \"...\"}",
@@ -1036,7 +1036,7 @@ async fn ha_join(
     if !st.limiter.take(&ip, JOIN_PER_IP) {
         return too_many();
     }
-    let Ok(req) = serde_json::from_slice::<JoinBody>(&body) else {
+    let Ok(req) = wayhouse_http::json::from_body::<JoinBody>(&body) else {
         return err(
             StatusCode::BAD_REQUEST,
             "the body must be {\"proof\": \"...\", \"addr\": \"...\"}",

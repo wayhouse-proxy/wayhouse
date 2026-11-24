@@ -207,7 +207,7 @@ async fn backend_health(
     {
         return forwarded;
     }
-    let report: HealthReport = match serde_json::from_slice(&body) {
+    let report: HealthReport = match wayhouse_http::json::from_body(&body) {
         Ok(r) => r,
         Err(e) => return err(StatusCode::BAD_REQUEST, format!("bad report: {e}")),
     };
@@ -419,7 +419,7 @@ pub(super) async fn install_inner(
     {
         return Err(forwarded);
     }
-    let req: InstallRequest = serde_json::from_slice(&body).map_err(|e| {
+    let req: InstallRequest = wayhouse_http::json::from_body(&body).map_err(|e| {
         err(
             if e.is_data() {
                 StatusCode::UNPROCESSABLE_ENTITY
@@ -880,7 +880,7 @@ pub(super) async fn put_config_inner(
     {
         return Err(forwarded);
     }
-    let req: ConfigRequest = serde_json::from_slice(&body).map_err(|e| {
+    let req: ConfigRequest = wayhouse_http::json::from_body(&body).map_err(|e| {
         err(
             if e.is_data() {
                 StatusCode::UNPROCESSABLE_ENTITY
@@ -1268,7 +1268,7 @@ async fn put_secret(
     if let Err(r) = approved_slot(&st, &id, &slot).await {
         return r;
     }
-    let Ok(parsed) = serde_json::from_slice::<SecretBody>(&body) else {
+    let Ok(parsed) = wayhouse_http::json::from_body::<SecretBody>(&body) else {
         // Never the parser's message: it can quote the submitted text.
         return err(
             StatusCode::BAD_REQUEST,
