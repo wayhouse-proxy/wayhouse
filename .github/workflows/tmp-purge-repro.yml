@@ -27,7 +27,7 @@ jobs:
         run: cargo nextest run -p wayhouse-fleet-tests --no-run
       # Same shape as the nightly: the two snapshot tests side by side, nothing else.
       - name: Run
-        run: cargo nextest run -p wayhouse-fleet-tests --no-fail-fast --no-capture -E 'test(ha_secret_purge) | test(ha_snapshots)' 2>&1 | tee run.log
+        run: cargo nextest run -p wayhouse-fleet-tests --no-fail-fast --no-capture --no-tests=fail -E 'binary(ha_secret_purge) | binary(ha_snapshots)' 2>&1 | tee run.log
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure()
         with:
