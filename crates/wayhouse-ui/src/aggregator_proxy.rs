@@ -294,7 +294,7 @@ async fn prune_node_tags(
     let confirm: Confirm = if body.iter().all(u8::is_ascii_whitespace) {
         Confirm::default()
     } else {
-        match serde_json::from_slice(&body) {
+        match wayhouse_http::json::from_body(&body) {
             Ok(c) => c,
             Err(_) => return prune_error(StatusCode::BAD_REQUEST, "body is {\"names\": [...]}"),
         }

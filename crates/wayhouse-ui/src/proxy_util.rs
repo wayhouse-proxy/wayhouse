@@ -29,15 +29,27 @@ pub(crate) fn path_segment(name: &str) -> Option<String> {
     if name == "." || name == ".." {
         return None;
     }
-    let mut segment = String::with_capacity(name.len());
-    for b in name.bytes() {
+    Some(encode_segment(name))
+}
+
+/// `value` with everything but the URL-unreserved bytes percent-encoded: one path segment or one
+/// query value, whatever it holds. Building the text byte by byte (not by `format!`-ing the input
+/// into the URL) also keeps request-derived text out of the URL as itself.
+pub(crate) fn encode_segment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-            segment.push(b as char);
+            out.push(b as char);
         } else {
-            segment.push_str(&format!("%{b:02X}"));
+            out.push_str(&format!("%{b:02X}"));
         }
     }
-    Some(segment)
+    out
+}
+
+/// A revision number as a URL segment (`42`): digits only, so encoding changes nothing.
+pub(crate) fn number_segment(n: u64) -> String {
+    encode_segment(&n.to_string())
 }
 
 /// Most bytes of an upstream reply the UI buffers before answering the browser.
@@ -225,5 +237,19 @@ mod header_contract {
         assert!(out.get(header::TRANSFER_ENCODING).is_none());
         assert!(out.get(header::CONTENT_LENGTH).is_none());
         assert_eq!(out.get("x-config-revision").unwrap(), "7");
+    }
+}
+
+#[cfg(test)]
+mod segment_tests {
+    use super::*;
+
+    #[test]
+    fn a_number_is_its_digits_and_text_cannot_leave_its_segment() {
+        assert_eq!(number_segment(0), "0");
+        assert_eq!(number_segment(u64::MAX), "18446744073709551615");
+        assert_eq!(encode_segment("a/b?c=d#e%f g"), "a%2Fb%3Fc%3Dd%23e%25f%20g");
+        assert_eq!(path_segment(".."), None);
+        assert_eq!(path_segment("ok-1.x").as_deref(), Some("ok-1.x"));
     }
 }

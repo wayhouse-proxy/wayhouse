@@ -35,6 +35,7 @@ use serde::Serialize;
 
 use crate::api::AppState;
 use crate::auth::{Actor, ActorRole};
+use crate::proxy_util::{encode_segment, number_segment};
 use crate::role::Role;
 
 /// `GET` config reads — `Role::Viewer`.
@@ -285,7 +286,7 @@ fn mint_error(status: StatusCode, error: impl Into<String>) -> Response {
 #[allow(clippy::result_large_err)] // the Err is the HTTP answer to send as is
 async fn sign_step_up(state: &AppState, body: Bytes) -> Result<Bytes, Response> {
     use zeroize::Zeroizing;
-    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(&body) else {
+    let Ok(mut v) = wayhouse_http::json::from_body::<serde_json::Value>(&body) else {
         return Ok(body);
     };
     let Some(pass) = v
@@ -848,13 +849,14 @@ fn file_proxy(state: &AppState) -> Option<&crate::api::ControllerTarget> {
 /// on, so no `redact` of theirs (in any spelling) reaches the controller.
 /// (A file-config proxy hides them itself, `GET /config/file`.)
 fn config_read(role: Role, path: String, query: Option<&str>) -> String {
-    let mut pairs: Vec<&str> = query
+    let mut pairs: Vec<String> = query
         .unwrap_or("")
         .split('&')
-        .filter(|p| p.starts_with("against="))
+        .filter_map(|p| p.strip_prefix("against="))
+        .map(|v| format!("against={}", encode_segment(v)))
         .collect();
     if role < Role::Admin {
-        pairs.push("redact=true");
+        pairs.push("redact=true".to_string());
     }
     if pairs.is_empty() {
         path
@@ -944,21 +946,50 @@ async fn tunnel_addresses(State(state): State<AppState>) -> Response {
     .await
 }
 
+/// What `POST /api/config` forwards: the four parameters the controller's submit takes. Anything
+/// else in the query is dropped, and each value is re-encoded as one query value.
+#[derive(serde::Deserialize)]
+struct SubmitQuery {
+    base: Option<u64>,
+    stage: Option<String>,
+    group: Option<String>,
+    confirm_within: Option<u64>,
+}
+
+impl SubmitQuery {
+    fn controller_suffix(&self) -> String {
+        let mut pairs = Vec::new();
+        if let Some(n) = self.base {
+            pairs.push(format!("base={}", number_segment(n)));
+        }
+        if let Some(v) = &self.stage {
+            pairs.push(format!("stage={}", encode_segment(v)));
+        }
+        if let Some(v) = &self.group {
+            pairs.push(format!("group={}", encode_segment(v)));
+        }
+        if let Some(n) = self.confirm_within {
+            pairs.push(format!("confirm_within={}", number_segment(n)));
+        }
+        if pairs.is_empty() {
+            "/config".to_string()
+        } else {
+            format!("/config?{}", pairs.join("&"))
+        }
+    }
+}
+
 async fn submit_config(
     State(state): State<AppState>,
     Extension(Actor(actor)): Extension<Actor>,
-    RawQuery(query): RawQuery,
+    axum::extract::Query(params): axum::extract::Query<SubmitQuery>,
     body: Bytes,
 ) -> Response {
     if let Some(target) = file_proxy(&state) {
         // A file has no canary stage or confirm window: only the revision the edit is based on goes on.
-        let base = query
-            .as_deref()
-            .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("base=")))
-            .filter(|n| n.chars().all(|c| c.is_ascii_digit()));
-        let suffix = base.map_or_else(
+        let suffix = params.base.map_or_else(
             || "/config/file".to_string(),
-            |n| format!("/config/file?base={n}"),
+            |n| format!("/config/file?base={}", number_segment(n)),
         );
         return send(
             &state,
@@ -972,11 +1003,14 @@ async fn submit_config(
         )
         .await;
     }
-    let suffix = match query {
-        Some(q) => format!("/config?{q}"),
-        None => "/config".to_string(),
-    };
-    proxy(&state, Method::POST, suffix, Some(body), actor).await
+    proxy(
+        &state,
+        Method::POST,
+        params.controller_suffix(),
+        Some(body),
+        actor,
+    )
+    .await
 }
 
 async fn list_revisions(State(state): State<AppState>) -> Response {
@@ -995,7 +1029,11 @@ async fn get_revision(
     Extension(ActorRole(role)): Extension<ActorRole>,
     Path(revision): Path<u64>,
 ) -> Response {
-    let path = config_read(role, format!("/config/revisions/{revision}"), None);
+    let path = config_read(
+        role,
+        format!("/config/revisions/{}", number_segment(revision)),
+        None,
+    );
     proxy(&state, Method::GET, path, None, None).await
 }
 
@@ -1007,7 +1045,7 @@ async fn diff_revision(
 ) -> Response {
     let suffix = config_read(
         role,
-        format!("/config/revisions/{revision}/diff"),
+        format!("/config/revisions/{}/diff", number_segment(revision)),
         query.as_deref(),
     );
     proxy(&state, Method::GET, suffix, None, None).await
@@ -1021,7 +1059,7 @@ async fn rollback(
     proxy(
         &state,
         Method::POST,
-        format!("/config/rollback/{revision}"),
+        format!("/config/rollback/{}", number_segment(revision)),
         None,
         actor,
     )
@@ -1048,7 +1086,7 @@ async fn confirm_revision(
     proxy(
         &state,
         Method::POST,
-        format!("/config/confirm/{revision}"),
+        format!("/config/confirm/{}", number_segment(revision)),
         None,
         actor,
     )
@@ -1067,7 +1105,7 @@ async fn revert_config(
     axum::extract::Query(params): axum::extract::Query<RevertParams>,
 ) -> Response {
     let suffix = match params.revision {
-        Some(revision) => format!("/config/revert?revision={revision}"),
+        Some(revision) => format!("/config/revert?revision={}", number_segment(revision)),
         None => "/config/revert".to_string(),
     };
     proxy(&state, Method::POST, suffix, None, actor).await
@@ -1081,7 +1119,7 @@ async fn promote(
     proxy(
         &state,
         Method::POST,
-        format!("/config/promote/{revision}"),
+        format!("/config/promote/{}", number_segment(revision)),
         None,
         actor,
     )
@@ -1397,6 +1435,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bytes, r#"{"error":"moved","current":5}"#.as_bytes());
+    }
+
+    #[test]
+    fn submit_forwards_only_its_known_parameters_encoded() {
+        let q = SubmitQuery {
+            base: Some(4),
+            stage: Some("canary".into()),
+            group: Some("eu/..?x=1".into()),
+            confirm_within: Some(30),
+        };
+        assert_eq!(
+            q.controller_suffix(),
+            "/config?base=4&stage=canary&group=eu%2F..%3Fx%3D1&confirm_within=30"
+        );
+        let none = SubmitQuery {
+            base: None,
+            stage: None,
+            group: None,
+            confirm_within: None,
+        };
+        assert_eq!(none.controller_suffix(), "/config");
     }
 
     #[tokio::test]

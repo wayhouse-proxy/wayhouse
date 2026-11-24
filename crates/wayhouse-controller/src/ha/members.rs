@@ -405,7 +405,8 @@ struct AddrBody {
 }
 
 fn parse<T: serde::de::DeserializeOwned>(body: &str) -> Result<T, Response> {
-    serde_json::from_str(body).map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))
+    wayhouse_http::json::from_body(body)
+        .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))
 }
 
 fn check_addr(addr: &str) -> Result<(), Response> {
