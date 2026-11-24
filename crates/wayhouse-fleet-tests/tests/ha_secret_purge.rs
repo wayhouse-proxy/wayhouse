@@ -21,19 +21,21 @@ const HA_TOKEN: &str = "ha-secret-purge-test-token";
 /// The secret the configs carry in plaintext; it must survive only in the live revision.
 const SECRET: &str = "purge-me-0123456789abcdef";
 
-/// `POST /config`; `Some(revision)` on 2xx.
-async fn submit(client: &reqwest::Client, base: &str, body: String) -> Option<u64> {
+/// `POST /config`: the new revision on 2xx, otherwise what the node answered (or why it did not).
+async fn submit(client: &reqwest::Client, base: &str, body: String) -> Result<u64, String> {
     let resp = client
         .post(format!("{base}/config"))
         .body(body)
         .send()
         .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
+        .map_err(|e| format!("no answer: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| format!("{status}: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("{status}: {text}"));
     }
-    let v: serde_json::Value = resp.json().await.ok()?;
-    v["revision"].as_u64()
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{status}: {e}"))?;
+    v["revision"].as_u64().ok_or(format!("{status}: {text}"))
 }
 
 /// `GET /config/revisions` as parsed JSON.
@@ -110,19 +112,16 @@ async fn retired_revisions_lose_the_plaintext_secret_on_every_replica_including_
     wait_until(
         || {
             let (client, base, body) = (client.clone(), bases[0].clone(), body(admin, listen, 0));
-            async move { Ok(submit(&client, &base, body).await.is_some()) }
+            async move { Ok(submit(&client, &base, body).await.is_ok()) }
         },
         Duration::from_secs(120),
         "a raft leader to accept a write",
     )
     .await?;
     for i in 1..WRITES {
-        ensure!(
-            submit(&client, &bases[0], body(admin, listen, i))
-                .await
-                .is_some(),
-            "write {i} was refused"
-        );
+        if let Err(why) = submit(&client, &bases[0], body(admin, listen, i)).await {
+            anyhow::bail!("write {i} was refused: {why}");
+        }
     }
 
     // The log has been purged on the leader, so the fourth node can only install a snapshot.
