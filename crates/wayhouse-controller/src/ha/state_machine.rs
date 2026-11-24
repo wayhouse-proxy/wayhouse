@@ -170,6 +170,42 @@ pub struct StateMachineStore {
     snapshots: crate::kv::Tree,
     /// The Raft log's entries (`ha::log_store`), whose retired configs are scrubbed in place.
     log: crate::kv::Tree,
+    /// What the saved snapshot's scrub pass already found clean, so a pass reads only what is new.
+    clean: CleanRevisions,
+}
+
+/// Revisions of the saved snapshot a scrub pass found free of plaintext secrets, by number and a
+/// keyed hash of their text (keyed per process, so no config can be crafted to collide). A pass
+/// runs after every config apply; without this it re-parses every stored revision each time, a
+/// cost that grows with the history and reached seconds per write on a loaded host. Text that
+/// changed under the same number hashes differently and is looked at again.
+#[derive(Default)]
+struct CleanRevisions {
+    hasher: std::collections::hash_map::RandomState,
+    seen: std::sync::Mutex<std::collections::HashMap<u64, u64>>,
+}
+
+impl CleanRevisions {
+    fn hash(&self, bytes: &[u8]) -> u64 {
+        use std::hash::BuildHasher;
+        self.hasher.hash_one(bytes)
+    }
+
+    fn knows(&self, revision: u64, bytes: &[u8]) -> bool {
+        let seen = self
+            .seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        seen.get(&revision) == Some(&self.hash(bytes))
+    }
+
+    fn remember(&self, revision: u64, bytes: &[u8]) {
+        let mut seen = self
+            .seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        seen.insert(revision, self.hash(bytes));
+    }
 }
 
 /// The audit line of a plugin secret change: install, slot, key id and actor, never the
@@ -203,6 +239,7 @@ impl StateMachineStore {
             meta: db.open_tree("raft_sm_meta")?,
             snapshots: db.open_tree("raft_snapshot")?,
             log: db.open_tree("raft_log")?,
+            clean: CleanRevisions::default(),
         };
         // The one-time scrub of a store written before #474, and a catch-up after a crash that
         // fell between a revision's scrub and its log entry's. Idempotent, so it runs every start.
@@ -277,7 +314,12 @@ impl StateMachineStore {
                 }
             }
         }
-        match redact_snapshot(&self.snapshots, &kept) {
+        match redact_snapshot(
+            &self.snapshots,
+            &kept,
+            &self.clean,
+            &wayhouse_config::redact_secrets,
+        ) {
             Ok(n) => scrubbed += n,
             Err(e) => {
                 ok = false;
@@ -605,7 +647,12 @@ impl StateMachineStore {
 /// Scrubs the retired revisions out of the persisted snapshot's content, in place: its `meta` is
 /// unchanged and the new `data` is written only if the stored one is still the one that was read.
 /// A revision whose bytes are one of `kept` stays whole. Returns how many revisions it scrubbed.
-fn redact_snapshot(tree: &crate::kv::Tree, kept: &[Vec<u8>]) -> Result<usize, String> {
+fn redact_snapshot(
+    tree: &crate::kv::Tree,
+    kept: &[Vec<u8>],
+    clean: &CleanRevisions,
+    scrub: &dyn Fn(&str) -> Option<String>,
+) -> Result<usize, String> {
     let Some(data) = tree.get(SNAPSHOT_DATA_KEY).map_err(|e| e.to_string())? else {
         return Ok(0);
     };
@@ -616,16 +663,19 @@ fn redact_snapshot(tree: &crate::kv::Tree, kept: &[Vec<u8>]) -> Result<usize, St
     };
     let mut scrubbed = 0;
     for r in &mut content.config {
-        if kept.contains(&r.bytes) {
+        if kept.contains(&r.bytes) || clean.knows(r.revision, &r.bytes) {
             continue;
         }
         let Some(text) = std::str::from_utf8(&r.bytes).ok() else {
             continue;
         };
-        if let Some(new) = wayhouse_config::redact_secrets(text) {
+        if let Some(new) = scrub(text) {
             r.bytes = new.into_bytes();
             scrubbed += 1;
         }
+        // Scrubbed, or `scrub` had nothing to do with it (clean, or text it cannot read): a
+        // rerun on this exact text gives the same answer, so it is not asked again.
+        clean.remember(r.revision, &r.bytes);
     }
     if scrubbed == 0 {
         return Ok(0);
@@ -650,7 +700,7 @@ fn redact_snapshot(tree: &crate::kv::Tree, kept: &[Vec<u8>]) -> Result<usize, St
         Ok(scrubbed)
     } else {
         // A newer snapshot landed meanwhile: it was built from the live stores, so look again.
-        redact_snapshot(tree, kept)
+        redact_snapshot(tree, kept, clean, scrub)
     }
 }
 
@@ -3052,6 +3102,79 @@ mod tests {
         assert!(!String::from_utf8(sm.config.store.get(1).unwrap().unwrap())
             .unwrap()
             .contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn a_pass_does_not_rescan_a_revision_it_already_found_clean() {
+        let (mut sm, _dirs) = test_sm();
+        append_and_apply(
+            &mut sm,
+            vec![
+                config_entry(1, &cfg("one")),
+                config_entry(2, &cfg("two")),
+                config_entry(3, &cfg("three")),
+            ],
+        )
+        .await;
+        sm.get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
+        let kept = sm.config.kept_bytes().unwrap();
+        let (clean, calls) = (CleanRevisions::default(), std::cell::Cell::new(0));
+        let counting = |text: &str| {
+            calls.set(calls.get() + 1);
+            wayhouse_config::redact_secrets(text)
+        };
+        redact_snapshot(&sm.snapshots, &kept, &clean, &counting).unwrap();
+        let first = calls.get();
+        assert!(first > 0, "the first pass looks at the retired revisions");
+        redact_snapshot(&sm.snapshots, &kept, &clean, &counting).unwrap();
+        assert_eq!(
+            calls.get(),
+            first,
+            "the second pass reads nothing it did before"
+        );
+
+        // Text that changed under a number already found clean is looked at again.
+        let data = sm.snapshots.get(SNAPSHOT_DATA_KEY).unwrap().unwrap();
+        let mut content = decode_snapshot(&data).unwrap();
+        content.config[0].bytes = cfg("one");
+        sm.snapshots
+            .insert(SNAPSHOT_DATA_KEY, serde_json::to_vec(&content).unwrap())
+            .unwrap();
+        assert_eq!(
+            redact_snapshot(&sm.snapshots, &kept, &clean, &counting).unwrap(),
+            1
+        );
+        assert!(!saved_revisions(&sm)[0].contains(TOKEN));
+    }
+
+    #[tokio::test]
+    async fn a_revision_kept_whole_while_live_is_scrubbed_once_it_retires() {
+        let (mut sm, _dirs) = test_sm();
+        append_and_apply(&mut sm, vec![config_entry(1, &cfg("one"))]).await;
+        sm.get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .unwrap();
+        let clean = CleanRevisions::default();
+        let scrub = wayhouse_config::redact_secrets;
+        // Pass one: revision 1 is live, so it stays whole and must not be remembered as clean.
+        let live = sm.config.kept_bytes().unwrap();
+        assert_eq!(
+            redact_snapshot(&sm.snapshots, &live, &clean, &scrub).unwrap(),
+            0
+        );
+        assert!(saved_revisions(&sm)[0].contains(TOKEN));
+        // Pass two: it has retired.
+        assert_eq!(
+            redact_snapshot(&sm.snapshots, &[], &clean, &scrub).unwrap(),
+            1
+        );
+        assert!(!saved_revisions(&sm)[0].contains(TOKEN));
     }
 
     #[tokio::test]

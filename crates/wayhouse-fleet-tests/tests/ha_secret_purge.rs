@@ -21,19 +21,23 @@ const HA_TOKEN: &str = "ha-secret-purge-test-token";
 /// The secret the configs carry in plaintext; it must survive only in the live revision.
 const SECRET: &str = "purge-me-0123456789abcdef";
 
-/// `POST /config`; `Some(revision)` on 2xx.
-async fn submit(client: &reqwest::Client, base: &str, body: String) -> Option<u64> {
+/// `POST /config`: the new revision on 2xx, otherwise what the node answered (or why it did not).
+async fn submit(client: &reqwest::Client, base: &str, body: String) -> Result<u64, String> {
     let resp = client
         .post(format!("{base}/config"))
         .body(body)
         .send()
         .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
+        .map_err(|e| format!("no answer: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| format!("{status}: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("{status}: {text}"));
     }
-    let v: serde_json::Value = resp.json().await.ok()?;
-    v["revision"].as_u64()
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{status}: {e}"))?;
+    v["revision"]
+        .as_u64()
+        .ok_or_else(|| format!("{status}: {text}"))
 }
 
 /// `GET /config/revisions` as parsed JSON.
@@ -110,19 +114,16 @@ async fn retired_revisions_lose_the_plaintext_secret_on_every_replica_including_
     wait_until(
         || {
             let (client, base, body) = (client.clone(), bases[0].clone(), body(admin, listen, 0));
-            async move { Ok(submit(&client, &base, body).await.is_some()) }
+            async move { Ok(submit(&client, &base, body).await.is_ok()) }
         },
         Duration::from_secs(120),
         "a raft leader to accept a write",
     )
     .await?;
     for i in 1..WRITES {
-        ensure!(
-            submit(&client, &bases[0], body(admin, listen, i))
-                .await
-                .is_some(),
-            "write {i} was refused"
-        );
+        if let Err(why) = submit(&client, &bases[0], body(admin, listen, i)).await {
+            anyhow::bail!("write {i} was refused: {why}");
+        }
     }
 
     // The log has been purged on the leader, so the fourth node can only install a snapshot.
@@ -153,7 +154,7 @@ async fn retired_revisions_lose_the_plaintext_secret_on_every_replica_including_
     bases.push(base4.clone());
 
     let want = revisions(&client, &bases[0]).await?;
-    wait_until(
+    let caught_up = wait_until(
         || {
             let (client, base4, want) = (client.clone(), base4.clone(), want.clone());
             async move { Ok(revisions(&client, &base4).await.ok() == Some(want)) }
@@ -163,7 +164,26 @@ async fn retired_revisions_lose_the_plaintext_secret_on_every_replica_including_
         Duration::from_secs(240),
         "node 4 to hold the leader's revisions",
     )
-    .await?;
+    .await;
+    if let Err(e) = caught_up {
+        // Say how node 4 differs, and what the nodes logged, so a hang explains itself.
+        let got = revisions(&client, &base4).await.unwrap_or_default();
+        let diff: Vec<_> = want
+            .as_array()
+            .into_iter()
+            .flatten()
+            .zip(got.as_array().into_iter().flatten())
+            .filter(|(a, b)| a != b)
+            .take(5)
+            .collect();
+        let logs: Vec<String> = procs.iter().map(Proc::log).collect();
+        anyhow::bail!(
+            "{e}: leader holds {}, node 4 {}; first differing: {diff:?}\n{}",
+            want.as_array().map_or(0, Vec::len),
+            got.as_array().map_or(0, Vec::len),
+            logs.join("\n=====\n")
+        );
+    }
     let on_node4: serde_json::Value = client
         .get(format!("{base4}/admin/ha/members"))
         .send()
