@@ -3,7 +3,7 @@ name: Release PR
 # Keeps one release PR open on main (release-please, manifest mode): it bumps
 # [workspace.package] version, refreshes Cargo.lock and writes CHANGELOG.md from the
 # conventional-commit titles. It never tags or publishes (skip-github-release): the
-# maintainer tags by hand, see RELEASING.md. Versions stay 0.x; the `release-policy`
+# maintainer tags by hand, see RELEASING.md. Versions stay 0.x; the `checks`
 # CI job fails a release PR that would reach 1.0.
 #
 # PRs created with GITHUB_TOKEN do not start workflows, and `ci-ok` is required, so
@@ -71,7 +71,7 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
       # release-please edits Cargo.toml only; its TOML updater cannot address the
       # ten Cargo.lock entries reliably, so the lockfile is refreshed here. The
-      # `release-policy` job then proves Cargo.toml and Cargo.lock agree.
+      # `checks` job then proves Cargo.toml and Cargo.lock agree.
       - name: Refresh Cargo.lock
         if: steps.rp.outputs.prs_created == 'true'
         env:

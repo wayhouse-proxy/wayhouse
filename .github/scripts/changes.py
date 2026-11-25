@@ -52,7 +52,7 @@ ROOTS = {
 RUSTWIDE = re.compile(r"^(Cargo\.toml|rust-toolchain\.toml)$|^\.cargo/")
 
 # A change touching only these needs no code job (test, audit, ...); they only
-# exist as a PR gate. Mirrors the push trigger's paths-ignore in ci.yml.
+# exist as a PR gate. Mirrors cache-warm.yml's push paths-ignore.
 DOCS_ONLY = re.compile(r"\.md$|^docs/|^LICENSE-")
 
 # Non-Cargo paths per area, on top of the package graph.

@@ -239,14 +239,14 @@ built; verified live in 4 Docker containers (`--cap-add=NET_ADMIN
 - **`make audit`** runs `cargo audit` over both lockfiles (root and
   the fuzz harness; `.github/scripts/cargo_audit.sh`, JSON in `target/cargo-audit/`;
   needs `cargo install cargo-audit --locked`). In CI since 2026-10-02 as the
-  **informational** `audit` job (every push/PR + nightly; summary table, warnings,
+  **informational** `cargo audit` step of the `checks` job (every PR/queue run + nightly; summary table, warnings,
   `cargo-audit` artifact).
   New advisories land on a schedule you don't control — on 2026-10-01 it caught
   `rustls` (RUSTSEC-2026-0285) and two `wasmtime` fuel-accounting advisories
   (RUSTSEC-2026-0315/0316), fixed by lockfile-only patch bumps (`rustls` 0.23.45,
   `wasmtime` 48.0.3). Three "unmaintained crate" warnings (`atomic-polyfill`,
   `fxhash`, `instant`) are informational and don't fail the target; they show in
-  the `audit` job's summary (still present on 2026-10-02 — replacing them means moving off
+  the `checks` job's audit summary (still present on 2026-10-02 — replacing them means moving off
   the crates that pull them in).
 - **Fixed-sleep test flakes (fixed 2026-10-01)**: `resolver_target_gets_a_proxy_protocol_header`
   and `acl_deny_drops_the_connection_before_routing` slept 150 ms then `connect().unwrap()`,

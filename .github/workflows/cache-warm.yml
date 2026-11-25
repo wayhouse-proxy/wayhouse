@@ -1,0 +1,114 @@
+name: Cache warm
+
+# Pushes to main no longer run the full CI (ci.yml): the merge queue already tested
+# this exact tree. What a push still has to do is save the cargo caches that PRs and
+# the merge queue only restore (.github/actions/cargo-cache). Each entry compiles
+# what the same-named ci.yml job compiles, with no test execution, no images and no
+# scans. Keep the commands in step with ci.yml: a drifted command only makes the
+# cache less useful (a slower PR), never a wrong result. Nightly CI (a full run on
+# main) saves the same caches again as a backstop.
+
+on:
+  push:
+    branches: [main]
+    # Docs-only pushes compile nothing new.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE-*"
+  workflow_dispatch:
+
+# A newer main push supersedes an older, still-running warm-up.
+concurrency:
+  group: cache-warm
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    name: warm ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}   # pinned like ci.yml
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: lint
+            runner: ubuntu-24.04
+            run: |
+              cargo clippy --all-targets --all-features
+              cargo check -p wayhouse-agent --locked
+          - name: test
+            runner: ubuntu-24.04
+            run: cargo test --workspace --no-run
+          - name: test-minimal
+            runner: ubuntu-24.04
+            run: |
+              cargo clippy -p wayhouse --no-default-features --all-targets
+              cargo test -p wayhouse --no-default-features --no-run
+              cargo clippy -p wayhouse-core --no-default-features --all-targets
+              cargo test -p wayhouse-core --no-default-features --no-run
+              cargo check -p wayhouse-controller --no-default-features --lib --bins
+              cargo clippy -p wayhouse-controller --no-default-features --all-targets
+              cargo test -p wayhouse-controller --no-default-features --no-run
+          - name: musl
+            runner: ubuntu-24.04
+            packages: protobuf-compiler musl-tools
+            targets: x86_64-unknown-linux-musl
+            run: |
+              export CC_x86_64_unknown_linux_musl=musl-gcc
+              cargo build --locked --target x86_64-unknown-linux-musl -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-agent
+              cargo test --locked --target x86_64-unknown-linux-musl -p wayhouse-core --lib --no-run
+          - name: release
+            runner: ubuntu-24.04
+            auditable: true
+          - name: release-arm64
+            runner: ubuntu-24.04-arm
+            auditable: true
+          - name: sniffers-e2e-amd64
+            runner: ubuntu-24.04
+            targets: wasm32-unknown-unknown
+            run: cargo test -p wayhouse --release --no-run
+          - name: sniffers-e2e-arm64
+            runner: ubuntu-24.04-arm
+            targets: wasm32-unknown-unknown
+            run: cargo test -p wayhouse --release --no-run
+          - name: web-e2e
+            runner: ubuntu-24.04
+            run: cargo test -p wayhouse-fleet-tests --test web --locked --no-run
+          - name: tunnel
+            runner: ubuntu-24.04
+            run: |
+              cargo build -p wayhouse -p wayhouse-agent -p wayhouse-controller --features wayhouse-http/test-protocol-override
+              cargo test -p wayhouse-fleet-tests --test tunnel --no-run
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install protoc (and musl-gcc)
+        uses: ./.github/actions/apt-install
+        with: { packages: "${{ matrix.packages || 'protobuf-compiler' }}" }
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          targets: ${{ matrix.targets }}
+          components: rustfmt, clippy   # as rust-toolchain.toml: no extra install mid-job
+      # On main this step saves the snapshot in its post step.
+      - uses: ./.github/actions/cargo-cache
+        with: { name: "${{ matrix.name }}" }
+      - name: Compile
+        if: matrix.run
+        run: ${{ matrix.run }}
+      # The release builds, as the build-release jobs in ci.yml (cargo-auditable, minimal first).
+      - name: Compile the release binaries
+        if: matrix.auditable
+        run: |
+          cargo install cargo-auditable --locked --version 0.7.7
+          cargo auditable build --release --locked -p wayhouse --no-default-features
+          cargo auditable build --release --locked -p wayhouse -p wayhouse-controller -p wayhouse-aggregator -p wayhouse-ui -p wayhouse-control -p wayhouse-agent -p wayhouse-web-sync -p wayhouse-certsync
