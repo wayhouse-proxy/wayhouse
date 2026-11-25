@@ -19,14 +19,14 @@
 # With $TRIVY_ARCH set (CI's trivy-arm64 job, scanning the arm64 images), the report
 # names get a "-<arch>" suffix so they never collide with the amd64 ones, and the
 # lockfile scans are skipped (the same files, the same findings).
-# Accepted findings go in .trivyignore at the repo root, each with a reason.
+# Accepted findings go in deploy/.trivyignore, each with a reason.
 set -eu
 cd "$(dirname "$0")/.."
 command -v trivy >/dev/null || { echo "trivy not found on PATH" >&2; exit 2; }
 out=${TRIVY_REPORT_DIR:-target/trivy}
 rm -rf "$out" && mkdir -p "$out"
 set -- --exit-code 1 --severity "${TRIVY_SEVERITY:-HIGH,CRITICAL}" --ignore-unfixed \
-  --ignorefile .trivyignore --no-progress --format json
+  --ignorefile deploy/.trivyignore --no-progress --format json
 rc=0
 # scan <report-name> <scanners> <trivy subcommand + target...>. <scanners> is
 # also handed to `convert`, which needs it to build the log table's columns.

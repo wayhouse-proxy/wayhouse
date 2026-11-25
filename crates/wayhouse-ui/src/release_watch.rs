@@ -1,6 +1,6 @@
 //! "A newer wayhouse release exists": the UI backend reads the signed release feed once a day
 //! and tells the console (`GET /api/release`). It only reports; nothing is downloaded or
-//! installed. See `wayhouse_registry::release_feed` for the format and `RELEASING.md` for
+//! installed. See `wayhouse_registry::release_feed` for the format and `.github/RELEASING.md` for
 //! who publishes it.
 //!
 //! The fetch goes through [`RegistryClient`], so it has the same guards as every registry fetch

@@ -567,9 +567,9 @@ jobs:
       - name: cargo audit (informational)
         continue-on-error: true
         run: sh .github/scripts/cargo_audit.sh target/cargo-audit
-      # Licenses, registries and git sources (deny.toml). Advisories stay with cargo audit above.
+      # Licenses, registries and git sources (.cargo/deny.toml). Advisories stay with cargo audit above.
       - name: cargo deny (licenses, sources, bans)
-        run: cargo deny check licenses sources bans
+        run: cargo deny --config .cargo/deny.toml check licenses sources bans
       - name: cargo audit report
         if: always()
         run: |

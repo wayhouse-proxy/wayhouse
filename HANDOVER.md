@@ -41,7 +41,7 @@ tracker issue lists the review nits (reload does not re-check secret references,
 
 **Releases:** the workspace is at 0.3.0. Releases are published to GHCR (six public images,
 amd64 + arm64) by `release.yml` on a `vX.Y.Z` tag. Tags stay manual (release-please runs with
-`skip-github-release`); the steps are in [`RELEASING.md`](RELEASING.md). Automating the tag is
+`skip-github-release`); the steps are in [`RELEASING.md`](.github/RELEASING.md). Automating the tag is
 backlog #210.
 
 **Sniffer registry (Wave 3, #183):** the `wayhouse-registry` crate (index, verify, `wayhouse-registry-gen`),
@@ -346,7 +346,7 @@ than here. Where the items that used to live here went:
 ## Workflow gotcha: run `cargo fmt --all` as its own step before `make check`
 
 `make check` only reports formatting diffs, so an earlier fmt pass does not cover later edits.
-See [`CONTRIBUTING.md`](CONTRIBUTING.md#build-and-test). Piping `make check` through `tail` hides
+See [`CONTRIBUTING.md`](.github/CONTRIBUTING.md#build-and-test). Piping `make check` through `tail` hides
 an early `fmt-check` failure; read from the top or check the exit code.
 
 ---

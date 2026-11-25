@@ -55,7 +55,7 @@ or approve pull requests"; a `RELEASE_PLEASE_TOKEN` secret works instead of the 
    Until the tag is pushed the label stays, and release-please opens no further release PR
    (it logs "untagged, merged release PRs outstanding"; the job stays green).
 
-The first release PR carried `"release-as": "0.1.0"` in `release-please-config.json`; it was
+The first release PR carried `"release-as": "0.1.0"` in `.github/release-please/config.json`; it was
 removed once `0.1.0` was out, so later versions follow the commit types. The config has
 `bump-patch-for-minor-pre-major`, so under 0.x both `feat` and `fix` bump the patch and only a
 breaking change (`!`) bumps the minor. To get a minor bump for compatible additions, set

@@ -43,7 +43,7 @@ the `FROM` line); the Dockerfile header says how to bump one.
 HEAD, and `release.yml` the tagged commit; an `unknown` commit fails
 `deploy/check-image-commit.sh` (builder builds) and `deploy/smoke.sh`.
 
-**Releasing.** `release.yml` publishes the images when a `v<version>` tag is pushed; the steps and the branching models are in [`RELEASING.md`](../RELEASING.md).
+**Releasing.** `release.yml` publishes the images when a `v<version>` tag is pushed; the steps and the branching models are in [`RELEASING.md`](../.github/RELEASING.md).
 
 **Pre-releases.** A pre-release tag such as `v0.1.0-rc.1` publishes the images but never moves `latest`.
 
@@ -147,7 +147,7 @@ Ingress/LoadBalancer (with TLS) in front of it.
   job (after `deploy`, and nightly) shows the results on the run's summary page and as
   warnings, and never fails on them. For crates it sees GHSA advisories only —
   RustSec ones come from `make audit` (`cargo audit`), also an informational CI job. Accepted findings go in
-  `.trivyignore` (repo root), each with a reason.
+  `deploy/.trivyignore`, each with a reason.
 - `make deploy-lint` runs daemon-free static checks; `make deploy-smoke` uses its own
   compose project (`wayhouse-smoke`) so it never tears down a demo you started by hand.
 

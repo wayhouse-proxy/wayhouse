@@ -364,7 +364,7 @@ fn warns_on_a_trusted_proxy_that_covers_everything() {
 /// The commented `web:` block of `config.example.yaml`, uncommented, must parse.
 #[test]
 fn the_example_web_block_parses() {
-    let example = include_str!("../../../../config.example.yaml");
+    let example = include_str!("../../../../deploy/config.example.yaml");
     let block: String = example
         .lines()
         .skip_while(|l| *l != "# web:")
