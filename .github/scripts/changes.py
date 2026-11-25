@@ -36,8 +36,8 @@ AREAS = ("ui", "sniffers", "tunnel", "deploy", "fuzz", "web", "release")
 # "/" for every package under it.
 ROOTS = {
     # `cargo nextest -p wayhouse --run-ignored only` over the pinned official sniffers
-    # (sniffers.lock); no sniffer is built from this repository any more. The same job
-    # builds the pinned official plugins (plugins.lock) and checks them with the plugin host.
+    # (.github/pins/sniffers.lock); no sniffer is built from this repository any more. The same job
+    # builds the pinned official plugins (.github/pins/plugins.lock) and checks them with the plugin host.
     "sniffers": ["wayhouse", "wayhouse-plugin-host", "wayhouse-plugin-abi"],
     # make tunnel-e2e-ci: debug-builds the five binaries, runs wayhouse-fleet-tests.
     "tunnel": ["wayhouse", "wayhouse-agent", "wayhouse-controller", "wayhouse-aggregator", "wayhouse-ui", "wayhouse-fleet-tests"],
@@ -59,10 +59,10 @@ DOCS_ONLY = re.compile(r"\.md$|^docs/|^LICENSE-")
 EXTRA = {
     # The UI forms are generated from the config JSON schema, so a schema change tests them.
     "ui": re.compile(r"^crates/wayhouse-ui/web/|^crates/wayhouse-config/schema/"),
-    # .config/nextest.toml holds the `ci` profile the job runs under; sniffers.lock and
-    # plugins.lock pin the modules it fetches and builds. (fetch_sniffers.py and
-    # check_plugins.py live under .github/, which already runs everything.)
-    "sniffers": re.compile(r"^\.config/|^(sniffers|plugins)\.lock$"),
+    # .config/nextest.toml holds the `ci` profile the job runs under; the .github/pins/
+    # locks pin the modules it fetches and builds. (fetch_sniffers.py and check_plugins.py
+    # live under .github/, which already runs everything.)
+    "sniffers": re.compile(r"^\.config/|^\.github/pins/"),
     "tunnel": re.compile(r"^Makefile$|^\.config/"),
     # The Caddy under test comes out of the wayhouse-caddy image (deploy/Dockerfile).
     "web": re.compile(r"^deploy/(Dockerfile|caddy/|check-caddy-image\.sh)"),
@@ -187,8 +187,9 @@ def _roots(area: str, g: Graph) -> Set[str]:
 
 def areas(files: List[str], g: Graph) -> Dict[str, bool]:
     files = [f for f in files if f]
-    # Workflows, scripts and actions run everything; the community Markdown files there do not.
-    if any(f.startswith(".github/") and not DOCS_ONLY.search(f) for f in files):
+    # Workflows, scripts and actions run everything; the community Markdown files and the
+    # pin files (a pin bump needs only the e2e job that reads them) do not.
+    if any(f.startswith(".github/") and not (DOCS_ONLY.search(f) or f.startswith(".github/pins/")) for f in files):
         return {a: True for a in AREAS}
     # Documentation builds and scans nothing, even under a scoped dir (deploy/README.md).
     files = [f for f in files if not DOCS_ONLY.search(f)]
@@ -206,7 +207,7 @@ def areas(files: List[str], g: Graph) -> Dict[str, bool]:
             rustwide = True  # unknown crate path: don't guess
         changed |= o or set()
     hit = dependents(changed, g) | locked
-    # The e2e job reads sniffers.lock and .config/, which build nothing: they must not
+    # The e2e job reads the .github/pins/ locks and .config/, which build nothing: they must not
     # start the release build, so `release` looks at the Rust packages alone.
     rust_sniffers = rustwide or bool(_roots("sniffers", g) & hit)
     for a in ROOTS:

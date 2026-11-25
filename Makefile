@@ -64,7 +64,7 @@ fuzz:
 		cargo +nightly fuzz run $$t fuzz/corpus/$$t fuzz/seeds/$$t -- -max_total_time=$(FUZZ_TIME) || exit 1; \
 	done
 
-## sniffers-fetch: download the official sniffers pinned in sniffers.lock to target/sniffers
+## sniffers-fetch: download the official sniffers pinned in .github/pins/sniffers.lock to target/sniffers
 ## (needs network); then `cargo test -p wayhouse --release -- --ignored` runs the e2e tests on them
 sniffers-fetch:
 	python3 .github/scripts/fetch_sniffers.py

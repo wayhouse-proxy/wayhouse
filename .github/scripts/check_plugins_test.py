@@ -22,7 +22,7 @@ class CheckPlugins(unittest.TestCase):
 
     def test_the_repo_lock_parses(self):
         root = pathlib.Path(__file__).resolve().parents[2]
-        repo, rev = cp.load_lock(root / "plugins.lock")
+        repo, rev = cp.load_lock(root / ".github" / "pins" / "plugins.lock")
         self.assertEqual(repo, "wayhouse-proxy/plugins")
         self.assertEqual(len(rev), 40)
 

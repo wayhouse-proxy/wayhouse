@@ -88,8 +88,8 @@ class RealRepo(unittest.TestCase):
 
     def test_the_sniffer_pins_only_run_the_e2e_job(self):
         # No build is involved, so the shared release build does not start.
-        self.assertEqual(self.areas("sniffers.lock"), {"sniffers"})
-        self.assertEqual(self.areas("plugins.lock"), {"sniffers"})
+        self.assertEqual(self.areas(".github/pins/sniffers.lock"), {"sniffers"})
+        self.assertEqual(self.areas(".github/pins/plugins.lock"), {"sniffers"})
 
     def test_the_plugin_host_and_abi_run_the_e2e_job_that_checks_the_official_plugins(self):
         for f in ("crates/wayhouse-plugin-host/src/runtime.rs", "crates/wayhouse-plugin-abi/src/lib.rs"):
