@@ -17,12 +17,12 @@
 - [10 Distributed control plane](10-distributed-control-plane.md)
 - [11 Backend transport](11-backend-transport.md)
 - [12 Deployment](12-deployment.md)
+- [Latency ledger](latency-ledger.md)
 
 # Guides
 
 - [Upgrading a fleet](upgrading.md)
-- [Migrating from 0.2.0 to 0.3.0](migrating-0.2-to-0.3.md)
-- [Migrating from 0.3.0 to 0.4.0](migrating-0.3-to-0.4.md)
+- [Migrating](migrating.md)
 - [Plugins](plugins.md)
 - [Sniffers](sniffers.md)
 - [Web proxy (Caddy)](web-proxy.md)

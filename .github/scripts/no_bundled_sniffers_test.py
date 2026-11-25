@@ -3,7 +3,7 @@
 
 Fails when `crates/sniffers` exists again, or when a tracked file still points at
 `crates/sniffers` or says `make sniffers` (the removed target; `make sniffers-fetch` is fine).
-`docs/superpowers/` (dated plans and specs) and CHANGELOG.md are history and exempt.
+CHANGELOG.md is history and exempt.
 
 Run: python3 .github/scripts/no_bundled_sniffers_test.py   (needs git)
 """
@@ -15,7 +15,7 @@ import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 STALE = re.compile(r"crates/sniffers\b|make sniffers(?![-\w])")
-EXEMPT = ("docs/superpowers/", "CHANGELOG.md", ".github/scripts/no_bundled_sniffers_test.py")
+EXEMPT = ("CHANGELOG.md", ".github/scripts/no_bundled_sniffers_test.py")
 
 
 class NoBundledSniffers(unittest.TestCase):

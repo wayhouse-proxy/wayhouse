@@ -133,7 +133,7 @@ docs-fmt-check:
 
 ## docs-links: check that relative Markdown links and anchors resolve
 docs-links:
-	python3 .github/scripts/check_md_links.py $$(git ls-files '*.md' | grep -v '^docs/superpowers/')
+	python3 .github/scripts/check_md_links.py $$(git ls-files '*.md')
 
 ## deploy-lint: static checks on deploy/ (needs the docker CLI + ruby, no daemon)
 deploy-lint:
