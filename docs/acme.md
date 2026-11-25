@@ -3,7 +3,7 @@
 The controller can issue and renew TLS certificates from an ACME CA (Let's Encrypt or any
 other) for the sites you publish, and keep their private keys sealed. It is **off by
 default**; start it with `--acme`. Design and reasoning:
-[`superpowers/specs/2026-10-15-controller-acme-design.md`](superpowers/specs/2026-10-15-controller-acme-design.md).
+`superpowers/specs/2026-10-15-controller-acme-design.md`.
 
 Status: built are the sites, the sealed store, replication, the issuance and renewal loop,
 the admin API, HTTP-01, external account binding, CNAME-delegated challenge zones, the
@@ -371,7 +371,7 @@ reissued (the CA does not care), so keep the key backup the secret-storage desig
 anyway.
 
 **Rotating the key.** The steps are those of plugin secrets
-([`superpowers/specs/2026-10-08-plugin-secret-storage-design.md`](superpowers/specs/2026-10-08-plugin-secret-storage-design.md),
+(`superpowers/specs/2026-10-08-plugin-secret-storage-design.md`,
 [`plugins.md`](plugins.md)), but the rewrap is a separate call for the ACME keys: (1) append the new key to the
 keyring file on every controller, (2) `POST /admin/plugins/secrets/rewrap` for the plugin secrets (if plugins are on) **and**
 `POST /admin/acme/rewrap` for the account key and every certificate key **and** `POST /secrets/rewrap` for the cluster secrets, (3) remove the old key. The ACME call refuses until

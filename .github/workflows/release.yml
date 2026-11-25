@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes the seven reference images (deploy/Dockerfile) to GHCR for linux/amd64
+# Publishes the eight reference images (deploy/Dockerfile) to GHCR for linux/amd64
 # and linux/arm64 when a version tag is pushed. Nothing else triggers it, so it
 # costs one build per architecture per release. Kubernetes packaging: issue #88.
 #
@@ -8,7 +8,7 @@ name: Release
 #   1. the tag is v<workspace version>, so the tag, the image tags and what
 #      `--version` / wayhouse_build_info report agree;
 #   2. the tagged commit is on main and CI succeeded on it;
-#   3. all seven images build on a native runner of each architecture (no
+#   3. all eight images build on a native runner of each architecture (no
 #      emulation, no cross-compiling), each reports the version and carries the
 #      commit, and the compose smoke test passes on them;
 #   4. only then does the `publish` job push them: first the per-architecture
@@ -72,7 +72,7 @@ jobs:
             exit 1
           }
 
-  # One native build per architecture. Builds, tests and labels the seven images,
+  # One native build per architecture. Builds, tests and labels the eight images,
   # then hands them to `publish` as a tarball; nothing is pushed from here.
   images:
     needs: verify
@@ -99,7 +99,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Build all seven images, check version and commit, run the compose smoke test
+      - name: Build all eight images, check version and commit, run the compose smoke test
         env:
           WAYHOUSE_GIT_SHA: ${{ github.sha }}
           VERSION: ${{ needs.verify.outputs.version }}

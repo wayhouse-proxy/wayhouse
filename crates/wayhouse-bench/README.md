@@ -152,7 +152,7 @@ inspectable without re-running them. Machine: 16 cores, 27 GiB RAM, loopback,
 `--release`. Config for the concurrency ramp is minimal (one pool, a bare
 `pool:` route — no `routes:` list, ACL, rate limiter, GeoIP, or sniffer on the
 per-connection path); a production config with those enabled will cost more
-than this baseline (see the "latency ledger" in `HANDOVER.md` for what each
+than this baseline (see the "latency ledger" in [docs/latency-ledger.md](../../docs/latency-ledger.md) for what each
 feature adds).
 
 ### `latency` mode

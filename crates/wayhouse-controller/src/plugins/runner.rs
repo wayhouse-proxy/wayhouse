@@ -1214,7 +1214,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_installed_abi_0_1_plugin_shows_the_abi_error_and_does_not_run() {
-        // What a 0.3 upgrade does to a blob stored under ABI 0.1 (docs/migrating-0.3-to-0.4.md).
+        // What a 0.3 upgrade does to a blob stored under ABI 0.1 (docs/migrating.md).
         let (r, store, _d) = fixture(1, 4);
         let module = guest_with_abi(
             "\\00\\00\\01\\00",

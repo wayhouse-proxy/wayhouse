@@ -5,11 +5,11 @@ datagram and returns a routing hint (a hostname or a tag). This page is the form
 reference for authors and registry operators. The ABI itself is documented in
 [`crates/wayhouse-sniffer-abi/README.md`](../crates/wayhouse-sniffer-abi/README.md) and the module doc of
 `crates/wayhouse/src/sniffer_loader.rs`; the design and its reasons are in the
-[registry spec](superpowers/specs/2026-10-05-plugin-registry-design.md).
+registry spec.
 
 Sniffers are not **plugins**: plugins are integrations with other systems (for
 example the Pelican panel) and have their own design, see the
-[plugin system design](superpowers/specs/2026-10-07-plugin-system-design.md).
+plugin system design.
 
 ## What the crate does
 
@@ -129,7 +129,8 @@ In this order: size equals the index, sha256 equals the index, the signature (wh
 published and the official key is known) verifies, and the module itself passes the
 requirements above and declares the ABI the index says. A signature that is present but
 invalid is an error, never a quiet downgrade to "unsigned". Signatures (minisign) are
-optional for now, and an unsigned sniffer is shown as unsigned. The official key (minisign key id
+optional in the format: a registry may omit them, and an unsigned sniffer is shown as unsigned.
+The latest release of every official sniffer is signed. The official key (minisign key id
 `C44491B8C8BF6083`, shared with the official plugins) is built in; a release signed with it shows as signed. The signature must also say what it signs: its minisign _trusted comment_ has to be exactly
 `wayhouse-v1 <kind> <name> <version> <abi> <sha256>` (`kind` is `sniffer` or `plugin`, `abi` is `major.minor`). A
 signature made for other bytes, another name or another version is refused, so an index host

@@ -829,7 +829,7 @@ surfaces; not designed here.
 > it by that name.
 
 `docs/10`'s original text placed "Auth / RBAC / audit log" on the
-controller. The phase 10+11 slice-11 redesign (see `HANDOVER.md`) already
+controller. The phase 10+11 slice-11 redesign already
 diverged from that once, for a good reason that still holds: **`wayhouse-ui` is
 the only place a *human* ever authenticates** — the controller and
 aggregator each still gate on one shared machine bearer token apiece, and
@@ -1022,7 +1022,7 @@ from nothing is still startup-only, per its existing design.
 Every surface that two components share carries a version, and a node that cannot
 understand its peer says so instead of misbehaving. The design (the N / N-1 window,
 the upgrade order) is in
-[`docs/superpowers/specs/2026-10-05-component-versioning-design.md`](superpowers/specs/2026-10-05-component-versioning-design.md);
+`docs/superpowers/specs/2026-10-05-component-versioning-design.md`;
 this is what is built.
 
 | Surface | Carrier | Rule |
