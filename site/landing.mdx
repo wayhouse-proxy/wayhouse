@@ -1,0 +1,36 @@
+---
+title: wayhouse
+description: A game-agnostic reverse proxy for game servers, written in Rust.
+template: splash
+hero:
+  tagline: A game-agnostic reverse proxy for game servers, written in Rust. One entry point for TCP and UDP, backend IPs stay hidden, and it can run as a highly available fleet.
+  actions:
+    - text: Read the manual
+      link: /manual/
+      icon: open-book
+    - text: Deep dive
+      link: /deep-dive/
+      variant: secondary
+    - text: GitHub
+      link: https://github.com/wayhouse-proxy/wayhouse
+      variant: minimal
+      icon: external
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+<CardGrid>
+  <Card title="Manual" icon="open-book">
+    For everyday use: install, configure, operate and upgrade. Task-oriented pages with the
+    config snippet, the UI path and what to check afterwards.
+  </Card>
+  <Card title="Deep dive" icon="puzzle">
+    Developer documentation: how every feature is built, which libraries, protocols and
+    techniques it uses and why, and the trade-offs behind the design.
+  </Card>
+</CardGrid>
+
+:::caution[Work in progress]
+Releases exist, but the project is not production-ready and the major version is 0, so
+breaking changes land in minor versions.
+:::

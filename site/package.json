@@ -1,0 +1,16 @@
+{
+  "name": "wayhouse-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync": "python3 scripts/sync_docs.py",
+    "dev": "npm run sync && astro dev",
+    "build": "npm run sync && astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "0.43.1",
+    "astro": "7.4.13",
+    "starlight-links-validator": "0.27.0"
+  }
+}
