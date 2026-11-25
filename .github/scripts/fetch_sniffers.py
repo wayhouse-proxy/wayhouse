@@ -21,6 +21,7 @@ import pathlib
 import re
 import sys
 import tempfile
+import time
 import tomllib
 import urllib.error
 import urllib.request
@@ -61,9 +62,25 @@ def load_lock(path):
     return repo, entries
 
 
+def retry(fn, errors, delays=(5, 15, 45), sleep=time.sleep):
+    """Call fn(); on one of `errors`, wait and try again, so one dropped request does not fail CI."""
+    for d in delays:
+        try:
+            return fn()
+        except errors as e:
+            if isinstance(e, urllib.error.HTTPError) and e.code == 404:
+                raise  # a missing file will not appear in a minute
+            print(f"retrying in {d}s: {e}", file=sys.stderr, flush=True)
+            sleep(d)
+    return fn()
+
+
 def download(url, opener):
-    with opener.open(url, timeout=60) as r:
-        data = r.read(MAX_BYTES + 1)
+    def get():
+        with opener.open(url, timeout=60) as r:
+            return r.read(MAX_BYTES + 1)
+
+    data = retry(get, OSError)
     if len(data) > MAX_BYTES:
         raise ValueError("larger than 8 MiB")
     return data

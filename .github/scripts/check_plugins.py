@@ -18,6 +18,8 @@ import subprocess
 import sys
 import tomllib
 
+from fetch_sniffers import retry
+
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 REPO = re.compile(r"^wayhouse-proxy/[A-Za-z0-9_-][A-Za-z0-9_.-]*$")
 SECTION = b"wayhouse.plugin-abi"
@@ -98,7 +100,7 @@ def main():
     if not work.is_dir():
         run(["git", "init", "-q", str(work)])
         run(["git", "-C", str(work), "remote", "add", "origin", f"https://github.com/{repo}"])
-    run(["git", "-C", str(work), "fetch", "-q", "--depth", "1", "origin", rev])
+    retry(lambda: run(["git", "-C", str(work), "fetch", "-q", "--depth", "1", "origin", rev]), subprocess.CalledProcessError)
     run(["git", "-C", str(work), "checkout", "-q", "--force", "--detach", "FETCH_HEAD"])
     run(["git", "-C", str(work), "clean", "-q", "-fdx", "-e", "target"])
     got = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()

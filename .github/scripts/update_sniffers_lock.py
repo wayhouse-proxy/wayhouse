@@ -15,7 +15,7 @@ import re
 import sys
 import urllib.request
 
-from fetch_sniffers import HttpsOnly
+from fetch_sniffers import HttpsOnly, retry
 
 OFFICIAL = "https://raw.githubusercontent.com/wayhouse-proxy/sniffers/main/index.json"
 URL = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/releases/download/([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)$")
@@ -24,8 +24,11 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 def load_index(src):
     if src.startswith("https://"):
-        with urllib.request.build_opener(HttpsOnly).open(src, timeout=60) as r:
-            return json.loads(r.read(1 << 20))
+        def get():
+            with urllib.request.build_opener(HttpsOnly).open(src, timeout=60) as r:
+                return r.read(1 << 20)
+
+        return json.loads(retry(get, OSError))
     return json.loads(pathlib.Path(src).read_text())
 
 
