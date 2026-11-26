@@ -49,6 +49,15 @@ def items():
                 yield "flag", i["flag"], re.compile(r"(?<![\w-])%s(?![\w-])" % re.escape(i["flag"]))
     for m in ref.metrics():
         yield "metric", m["name"], re.compile(r"\b%s\b" % m["name"])
+    for r in ref.api_routes():
+        if r["path"].endswith(("{*rest}", "{*any}")):
+            continue
+        pat = re.sub(r"\\\{[^}]*\\\}", r"[{:<]?[\\w.*-]+[}>]?", re.escape(r["path"]))
+        yield "api", r["path"], re.compile(r"(?<![\w/{}-])%s(?![\w/-])" % pat)
+    for s in ref.ui_screens():
+        yield "screen", s["path"], re.compile(r"`%s`|\(%s\)" % (re.escape(s["path"]), re.escape(s["path"])))
+    for e in ref.env_vars():
+        yield "env", e["name"], re.compile(r"\b%s\b" % e["name"])
     for f in ref.runtime_flags():
         yield "feature", f["name"], re.compile(r"(?<![\w.])%s(?![\w])" % re.escape(f["name"]))
     done = set()

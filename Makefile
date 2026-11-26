@@ -1,7 +1,7 @@
 # Convenience wrapper around the cargo commands CI runs.
 # Requires `cargo` on PATH (rustup: `source "$HOME/.cargo/env"`).
 
-.PHONY: check fmt lint test test-minimal audit build run fuzz bench bench-udp-batch sniffers-fetch ui ui-test ui-e2e tunnel-ns-check tunnel-e2e tunnel-e2e-ci deploy-images deploy-scan deploy-lint deploy-smoke deploy-solo-smoke deploy-solo-control-smoke docs-fmt docs-fmt-check docs-links site docs-coverage help
+.PHONY: check fmt lint test test-minimal audit build run fuzz bench bench-udp-batch sniffers-fetch ui ui-test ui-e2e tunnel-ns-check tunnel-e2e tunnel-e2e-ci deploy-images deploy-scan deploy-lint deploy-smoke deploy-solo-smoke deploy-solo-control-smoke docs-fmt docs-fmt-check docs-links site docs-coverage docs-deep-dive help
 
 ## check: everything CI runs — format check, clippy (deny warnings), tests
 check: fmt-check lint test test-minimal
@@ -64,7 +64,7 @@ fuzz:
 		cargo +nightly fuzz run $$t fuzz/corpus/$$t fuzz/seeds/$$t -- -max_total_time=$(FUZZ_TIME) || exit 1; \
 	done
 
-## sniffers-fetch: download the official sniffers pinned in sniffers.lock to target/sniffers
+## sniffers-fetch: download the official sniffers pinned in .github/pins/sniffers.lock to target/sniffers
 ## (needs network); then `cargo test -p wayhouse --release -- --ignored` runs the e2e tests on them
 sniffers-fetch:
 	python3 .github/scripts/fetch_sniffers.py
@@ -142,6 +142,10 @@ site:
 ## docs-coverage: every flag, config key, metric and feature must be in the hand-written docs
 docs-coverage:
 	python3 site/scripts/check_coverage.py
+
+## docs-deep-dive: every source file belongs to a Deep dive topic (docs/deep-dive/topics.tsv)
+docs-deep-dive:
+	python3 site/scripts/check_deep_dive.py
 
 ## deploy-lint: static checks on deploy/ (needs the docker CLI + ruby, no daemon)
 deploy-lint:

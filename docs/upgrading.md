@@ -136,7 +136,7 @@ protocol 1.2, config schema 3 (`web:` needs every proxy on 0.3.0 first), plugin 
   [`wayhouse-proxy/sniffers`](https://github.com/wayhouse-proxy/sniffers) and are no longer
   built from this repository. Get them from that repository's releases, install them from the
   UI's registry page, or copy them into the directory named by `settings.sniffers.dir`
-  (see [sniffers.md](sniffers.md)). `sniffers.lock` in this repository only pins the
+  (see [sniffers.md](sniffers.md)). `.github/pins/sniffers.lock` in this repository only pins the
   releases the CI loader tests run against; it has no effect on a deployment.
 - **Config schema 2.** `listeners.plugin_routes` is a schema 2 field. A 0.1.0 proxy cannot
   parse it, so use it only after every proxy runs 0.2.0. The controller enforces this on

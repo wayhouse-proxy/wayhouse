@@ -61,7 +61,7 @@ so hosted Actions minutes are free; the cost is wall time and queue waits.
 | Self-hosted CI runner | No: unsafe on a public repo (fork PRs would run on it). |
 | Reference images | Docker only, multi-arch, GHCR, on `vX.Y.Z` tags. Kubernetes packaging is #88. |
 | Release feed | Signed with a separate release minisign key; the secrets live in the `release` environment. |
-| Plugin and sniffer repos | `wayhouse-proxy/plugins` and `wayhouse-proxy/sniffers`; this repo keeps only the ABI crates and pins sniffer releases in `sniffers.lock`. |
+| Plugin and sniffer repos | `wayhouse-proxy/plugins` and `wayhouse-proxy/sniffers`; this repo keeps only the ABI crates and pins sniffer releases in `.github/pins/sniffers.lock`. |
 | Process | Nothing ships without a bug + security audit of every change since the last audit. Flaky tests count as bugs. |
 
 ## Workflow gotchas
@@ -142,7 +142,7 @@ wall-clock time). Not part of `make check`:
   `connect_tcp_from` fallback tests; recipe in `docs/04`) and the UDP `prefix:` e2e (needs
   Linux with `IP_PKTINFO` and loopback `127.0.0.2/3`);
 - the `#[ignore]`d sniffer tests, run by the `sniffers-e2e` CI job after
-  `make sniffers-fetch` against the sniffers pinned in `sniffers.lock`.
+  `make sniffers-fetch` against the sniffers pinned in `.github/pins/sniffers.lock`.
 
 Loader tests assemble WASM from inline WAT via the `wat` crate; `wasmtime` is a normal
 dependency and needs no `wasm32` target (only the sniffers repo does).

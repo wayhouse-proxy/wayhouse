@@ -24,5 +24,5 @@ and `wayhouse-ui` reads its `ABI_MAJOR` / `ABI_MINOR`. The official sniffers liv
 revision (cargo finds it by name, so keep the crate name); their CI builds them for
 `wasm32-unknown-unknown`. Changing the ABI (the wire format or the `wayhouse.abi` version) means:
 bump the version here and in `sniffer_loader.rs` together, bump the revision in the sniffers repo,
-rebuild and release the sniffers, and update `sniffers.lock` (the e2e job fails until all of that
+rebuild and release the sniffers, and update `.github/pins/sniffers.lock` (the e2e job fails until all of that
 agrees). See [`docs/sniffers.md`](../../docs/sniffers.md).

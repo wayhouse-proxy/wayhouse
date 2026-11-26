@@ -89,8 +89,8 @@ class RealRepo(unittest.TestCase):
 
     def test_the_sniffer_pins_only_run_the_e2e_job(self):
         # No build is involved, so the shared release build does not start.
-        self.assertEqual(self.areas("sniffers.lock"), {"sniffers"})
-        self.assertEqual(self.areas("plugins.lock"), {"sniffers"})
+        self.assertEqual(self.areas(".github/pins/sniffers.lock"), {"sniffers"})
+        self.assertEqual(self.areas(".github/pins/plugins.lock"), {"sniffers"})
 
     def test_the_plugin_host_and_abi_run_the_e2e_job_that_checks_the_official_plugins(self):
         for f in ("crates/wayhouse-plugin-host/src/runtime.rs", "crates/wayhouse-plugin-abi/src/lib.rs"):
@@ -298,6 +298,13 @@ class WorkflowGate(unittest.TestCase):
         jobs = set(re.findall(r"^  ([a-z0-9-]+):\s*$", ci.split("\njobs:\n", 1)[1], re.M))
         needs = re.search(r"^  ci-ok:.*?needs: \[([^\]]*)\]", ci, re.M | re.S).group(1)
         self.assertEqual(jobs - {"ci-ok"}, {n.strip() for n in needs.split(",")})
+
+    def test_warm_up_builds_with_the_same_profile_env_as_ci(self):
+        def env(name):
+            top = self.read(name).split("\njobs:\n", 1)[0]
+            return re.findall(r'^  ((?:CARGO_|RUSTFLAGS)\w*): "?([^"#\n]+?)"?\s*(?:#.*)?$', top, re.M)
+        self.assertIn(("CARGO_PROFILE_DEV_DEBUG", "0"), env("ci.yml"))
+        self.assertEqual(env("ci.yml"), env("cache-warm.yml"))
 
     def test_every_cargo_cache_is_warmed_on_main(self):
         ci = self.read("ci.yml")

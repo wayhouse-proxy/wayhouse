@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Download the official sniffers pinned in sniffers.lock for the e2e tests.
+"""Download the official sniffers pinned in .github/pins/sniffers.lock for the e2e tests.
 
-    python3 .github/scripts/fetch_sniffers.py [--lock sniffers.lock] [--out target/sniffers]
+    python3 .github/scripts/fetch_sniffers.py [--lock .github/pins/sniffers.lock] [--out target/sniffers]
 
 Each `[sniffers.<name>]` entry names a release tag, a file and the sha256 the file must
 have. Files are fetched from `https://github.com/<repo>/releases/download/<tag>/<file>`
@@ -88,7 +88,7 @@ def download(url, opener):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--lock", default="sniffers.lock")
+    ap.add_argument("--lock", default=".github/pins/sniffers.lock")
     ap.add_argument("--out", default="target/sniffers")
     ap.add_argument("--base-url", help=argparse.SUPPRESS)
     ap.add_argument("--allow-insecure-test-url", help=argparse.SUPPRESS)
