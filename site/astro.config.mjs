@@ -34,6 +34,10 @@ export default defineConfig({
                             items: [{ autogenerate: { directory: "manual/routing" } }],
                         },
                         {
+                            label: "Pools and backends",
+                            items: [{ autogenerate: { directory: "manual/pools" } }],
+                        },
+                        {
                             label: "Security and limits",
                             items: [{ autogenerate: { directory: "manual/security" } }],
                         },
@@ -46,7 +50,7 @@ export default defineConfig({
                             items: [{ autogenerate: { directory: "manual/certificates" } }],
                         },
                         {
-                            label: "Plugins and sniffers",
+                            label: "Resolvers, plugins and sniffers",
                             items: [{ autogenerate: { directory: "manual/extend" } }],
                         },
                         {
