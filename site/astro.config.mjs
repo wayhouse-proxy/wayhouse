@@ -22,13 +22,56 @@ export default defineConfig({
                 {
                     label: "Manual",
                     collapsed: false,
-                    items: [{ autogenerate: { directory: "manual" } }],
+                    items: [
+                        { slug: "manual" },
+                        // One entry per subfolder of docs/manual/, in reading order (a folder name is not a label).
+                        {
+                            label: "Getting started",
+                            items: [{ autogenerate: { directory: "manual/getting-started" } }],
+                        },
+                        {
+                            label: "Routing and clients",
+                            items: [{ autogenerate: { directory: "manual/routing" } }],
+                        },
+                        {
+                            label: "Pools and backends",
+                            items: [{ autogenerate: { directory: "manual/pools" } }],
+                        },
+                        {
+                            label: "Security and limits",
+                            items: [{ autogenerate: { directory: "manual/security" } }],
+                        },
+                        {
+                            label: "Operating",
+                            items: [{ autogenerate: { directory: "manual/operate" } }],
+                        },
+                        {
+                            label: "Certificates",
+                            items: [{ autogenerate: { directory: "manual/certificates" } }],
+                        },
+                        {
+                            label: "Resolvers, plugins and sniffers",
+                            items: [{ autogenerate: { directory: "manual/extend" } }],
+                        },
+                        {
+                            label: "Web sites",
+                            items: [{ autogenerate: { directory: "manual/web" } }],
+                        },
+                        {
+                            label: "Admin UI",
+                            items: [{ autogenerate: { directory: "manual/ui" } }],
+                        },
+                    ],
                 },
                 {
                     label: "Deep dive",
                     collapsed: false,
                     items: [
                         { slug: "deep-dive" },
+                        {
+                            label: "Topics",
+                            items: [{ autogenerate: { directory: "deep-dive/topics" } }],
+                        },
                         // One entry per subfolder of docs/deep-dive/ (the folder name is not a nice label).
                         {
                             label: "Design chapters",
@@ -44,7 +87,7 @@ export default defineConfig({
             ],
             // Fails the build on a broken internal link or anchor.
             customCss: ["./src/styles/custom.css"],
-      plugins: [starlightLinksValidator({ errorOnLocalLinks: false })],
+            plugins: [starlightLinksValidator({ errorOnLocalLinks: false })],
         }),
     ],
 });

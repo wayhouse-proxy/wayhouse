@@ -236,6 +236,46 @@ def cargo_features():
     return out
 
 
+def api_routes():
+    """Returns [{crate, path, methods}]: every `.route("/path", get(..).post(..))` of the axum routers."""
+    out = {}
+    for path in sorted(glob.glob(os.path.join(REPO, "crates/*/src/**/*.rs"), recursive=True)):
+        if "test" in os.path.basename(path):
+            continue
+        text = _read(path)
+        crate = os.path.relpath(path, REPO).split(os.sep)[1]
+        for m in re.finditer(r"\.route\(\s*\"(/[^\"]*)\"\s*,", text):
+            depth, i = 1, m.end()
+            while depth and i < len(text):
+                depth += (text[i] == "(") - (text[i] == ")")
+                i += 1
+            methods = sorted(set(x.upper() for x in re.findall(r"\b(get|post|put|patch|delete)\(", text[m.end():i])))
+            key = (crate, m.group(1))
+            out.setdefault(key, set()).update(methods)
+    return [{"crate": c, "path": p, "methods": sorted(v)} for (c, p), v in sorted(out.items())]
+
+
+def ui_screens():
+    """Returns [{path, component}] from the router of the UI frontend."""
+    text = _read(os.path.join(REPO, "crates/wayhouse-ui/web/src/App.tsx"))
+    return [{"path": p, "component": c} for p, c in re.findall(r'<Route path="([^"]+)" element=\{<(\w+)', text)]
+
+
+def env_vars():
+    """Returns [{name, source}]: environment variables the programs read (clap `env =` and `env::var`)."""
+    out = {}
+    for path in sorted(glob.glob(os.path.join(REPO, "crates/*/src/**/*.rs"), recursive=True)):
+        if "test" in os.path.basename(path):
+            continue
+        text = _read(path)
+        for name in re.findall(r'env\s*=\s*"([A-Z][A-Z0-9_]+)"', text) + \
+                re.findall(r'env::var(?:_os)?\(\s*"([A-Z][A-Z0-9_]+)"', text) + \
+                re.findall(r'"(WAYHOUSE_[A-Z][A-Z0-9_]+)"', text):
+            if "_TEST_" not in name and "fleet-tests" not in path and name not in ("WAYHOUSE_GIT_SHA", "WAYHOUSE_LONG_VERSION"):
+                out.setdefault(name, os.path.relpath(path, REPO).replace(os.sep, "/"))
+    return [{"name": n, "source": s} for n, s in sorted(out.items())]
+
+
 def runtime_flags():
     """The feature-flag registry (`features:` config section): [{name, scope, override, wired, protection, risk, impact}]."""
     text = _read(os.path.join(REPO, "crates/wayhouse-config/src/features.rs"))
@@ -254,4 +294,5 @@ def runtime_flags():
 
 if __name__ == "__main__":
     print(len(config_keys()), "config keys;", sum(len(c["items"]) for c in cli_flags()), "cli args in",
-          len(cli_flags()), "commands;", len(metrics()), "metrics;", len(cargo_features()), "cargo features;", len(runtime_flags()), "runtime flags")
+          len(cli_flags()), "commands;", len(metrics()), "metrics;", len(cargo_features()), "cargo features;", len(runtime_flags()), "runtime flags;", len(api_routes()), "api routes;",
+          len(ui_screens()), "ui screens;", len(env_vars()), "env vars")

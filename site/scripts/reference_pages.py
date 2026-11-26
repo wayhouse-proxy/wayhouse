@@ -84,7 +84,40 @@ def feature_flags():
                  "Two kinds of switch exist: runtime flags an operator flips, and Cargo features chosen at build time.", body)
 
 
+def api_endpoints():
+    rows = ["| Program | Path | Methods |", "| --- | --- | --- |"]
+    for r in ref.api_routes():
+        rows.append("| %s | `%s` | %s |" % (r["crate"], r["path"], ", ".join("`%s`" % m for m in r["methods"]) or "any"))
+    return _page(
+        "HTTP API endpoints", "Every HTTP route of every program.",
+        "Every route registered by the proxy's admin API, the controller, the aggregator and the UI backend, "
+        "extracted from the router definitions. A `{name}` segment is a path parameter; `{*rest}` matches "
+        "the remaining path. Each route's request and response shapes are described in the "
+        "[Manual](/manual/) page for its task.", "\n".join(rows))
+
+
+def ui_screens():
+    rows = ["| Path | Screen component |", "| --- | --- |"]
+    for s in ref.ui_screens():
+        rows.append("| `%s` | `%s` |" % (s["path"], s["component"]))
+    return _page("UI screens", "Every screen of the admin UI.",
+                 "Every route of the admin UI frontend, from its router.", "\n".join(rows))
+
+
+def env_vars():
+    rows = ["| Variable | Read by |", "| --- | --- |"]
+    for e in ref.env_vars():
+        rows.append("| `%s` | [`%s`](%s%s) |" % (e["name"], e["source"], SRC, e["source"]))
+    return _page("Environment variables", "Every environment variable the programs read.",
+                 "Every environment variable named in the source. Secrets are normally passed as files "
+                 "(`--...-file` flags or `$CREDENTIALS_DIRECTORY`); the variables listed here are fallbacks.",
+                 "\n".join(rows))
+
+
 PAGES = {
+    "reference/api-endpoints": api_endpoints,
+    "reference/ui-screens": ui_screens,
+    "reference/env-vars": env_vars,
     "reference/config-keys": config_keys,
     "reference/cli-flags": cli_flags,
     "reference/metrics": metrics,
