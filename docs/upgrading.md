@@ -2,7 +2,7 @@
 
 How to move a running deployment to a newer version one component at a time, without a
 flag day. The design and its reasoning are in the
-[component versioning spec](superpowers/specs/2026-10-05-component-versioning-design.md);
+component versioning spec;
 this page is the operator's view of what is built. Releases and tags are in
 [`RELEASING.md`](../.github/RELEASING.md).
 
@@ -30,7 +30,7 @@ this page is the operator's view of what is built. Releases and tags are in
   an older one once, on open. The one exception is the 0.3.0 engine change from `sled` to
   `redb`: the format marker did not move, a 0.3.0 controller refuses a `sled` directory
   outright and nothing is migrated (see
-  [Migrating from 0.2.0 to 0.3.0](migrating-0.2-to-0.3.md)).
+  [Migrating from 0.2.0 to 0.3.0](migrating.md#from-020-to-030)).
 
 What is and is not checked: the header check enforces protocol **majors only**. The
 N / N-1 product window itself is a rule kept by review (see the `AGENTS.md` row for wire
@@ -61,7 +61,7 @@ exact ABI match, so every plugin module is rebuilt against `wayhouse-plugin-abi`
 uploaded again; a 0.1 module answers `the plugin declares ABI 0.1, this host speaks 0.3`. Under
 HA, upgrade every controller before installing a plugin: the leader refuses installs while a
 member reports a lower level. The steps are in
-[Migrating from 0.3.0 to 0.4.0](migrating-0.3-to-0.4.md).
+[Migrating from 0.3.0 to 0.4.0](migrating.md#from-030-to-040).
 
 Protocol 1.3 adds `region` and `tags` to the proxy's push to the aggregator (`--region`,
 `--tag`, see [operations](06-operations-observability.md)). The change is additive: a proxy on
@@ -114,7 +114,7 @@ migration**: a 0.3.0 controller refuses a 0.2.0 data directory, so the directory
 aside and the config, plugin installs and secrets are restored by hand. Everything else is
 additive and opt-in (the `web:` config and Caddy, controller-issued ACME certificates,
 plugin port routes). The step-by-step guide, with what is lost and how to get it back, is
-[Migrating from 0.2.0 to 0.3.0](migrating-0.2-to-0.3.md). Version numbers in short:
+[Migrating from 0.2.0 to 0.3.0](migrating.md#from-020-to-030). Version numbers in short:
 protocol 1.2, config schema 3 (`web:` needs every proxy on 0.3.0 first), plugin ABI still
 0.1, plugin support level 4 under HA.
 
@@ -248,7 +248,7 @@ not a tested procedure.
 Roll back in the reverse order. A downgrade is safe inside the window for the protocol.
 The 0.3.0 controller database is a different engine: go back to 0.2.0 only through the
 `sled` data directory you kept when you upgraded
-([guide](migrating-0.2-to-0.3.md#rollback)).
+([guide](migrating.md#rollback)).
 A controller store that a newer build has migrated cannot be opened by an older build
 (`FormatTooNew`): restore the store from a backup taken before the upgrade, or keep the
 upgraded controller. Config documents that use a field of the newer schema are rejected

@@ -835,7 +835,7 @@ Size an instance by the **scarcest** of:
 
 - **New-session rate.** Each new TCP connection / UDP session does one
   `Pool::acquire`, one upstream `connect(2)`, one task spawn (see the latency
-  ledger in `HANDOVER.md`). Load-test with `wayhouse-bench --connections` and
+  ledger, [latency-ledger.md](latency-ledger.md)). Load-test with `wayhouse-bench --connections` and
   `tcpkali`; set `settings.limits.max_new_sessions_per_sec` to ~70 % of the
   measured knee and alert before it.
 - **Concurrent sessions / FDs.** ~1 FD per client + 1 per upstream, plus the

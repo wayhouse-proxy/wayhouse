@@ -59,8 +59,8 @@ The full command table (tunnel e2e, deploy images, audit, and so on) is in
 - **Pre-1.0: clean breaks over shims.** When the config schema changes, update the
   `wayhouse-config` types and `validate()`, `deploy/config.example.yaml` and `docs/05-configuration.md`.
   [`AGENTS.md`](../AGENTS.md#when-you-touch-x-also-touch-y) lists what else to touch for other changes.
-- **Design first for larger work.** Write a spec in `docs/superpowers/specs/` and a plan in
-  `docs/superpowers/plans/` before the code.
+- **Design first for larger work.** Write the design down before the code (an issue or the PR
+  description), and put what stays true into the matching chapter under `docs/`.
 - **Commits and PR titles** use conventional commits (`feat:`, `fix:`, `docs:`, `ci:`, ...); the
   squash title is the changelog entry (release-please, see [`RELEASING.md`](RELEASING.md)). The
   `PR title` workflow flags titles that do not parse; it is advisory, not required.

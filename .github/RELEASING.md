@@ -16,7 +16,7 @@ Versions stay `0.x`. Under 0.x:
 - **patch bump** (`0.N.P`): fixes and compatible additions.
 
 Moving to 1.0 is the maintainer's explicit call, never something tooling does.
-`.github/scripts/check_version_policy.py` (CI job `release-policy`, and `release.yml`)
+`.github/scripts/check_version_policy.py` (CI job `checks`, and `release.yml`)
 fails any `Cargo.toml` that says `1.x` or more, and any `Cargo.lock` that disagrees with
 `Cargo.toml`. Going to 1.0 means a deliberate, reviewed edit of that script (there is no environment switch).
 What changes at 1.0 (the stability promise) is not decided here.
@@ -87,8 +87,9 @@ always releasable: a red `main` is fixed before anything else merges.
 1. Land the fix on `main` through a normal PR and wait for CI to pass.
 2. Set `[workspace.package] version` in `Cargo.toml` and `Cargo.lock` to the new version
    (a new patch number for a hotfix) in a PR; merge it.
-3. Wait for CI on the merge commit. For a docs-only commit CI is skipped on push, so run
-   it by hand (Actions > CI > Run workflow on `main`).
+3. Wait for CI on the merge commit. Pushes to `main` do not start CI; the merge queue
+   already ran it on this exact commit, and `release.yml` looks for that run. If there is
+   none (a commit that bypassed the queue), run CI by hand (Actions > CI > Run workflow on `main`).
 4. Push the tag `v<version>` on that commit.
 
 `release.yml` runs on the tag and refuses it unless the tag is `v` + the workspace version,
