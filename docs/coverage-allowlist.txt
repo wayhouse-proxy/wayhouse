@@ -46,7 +46,6 @@ api /plugins/modules/{sha256}
 api /plugins/{id}/disable
 api /plugins/{id}/hook/{*suffix}
 api /pools/local/backends
-api /raft/pre-ha
 api /release-feed.json
 api /release-feed.json.minisig
 api /slow
@@ -54,7 +53,6 @@ api /sniffers/demo.json
 api /x
 env HOSTNAME
 env WAYHOUSE_SNIFFERS_DIR
-flag --ha-snapshot-after
 flag --key
 flag --releases
 flag --timeout-sec
