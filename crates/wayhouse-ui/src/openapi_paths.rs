@@ -49,7 +49,7 @@ async fn post_ui_logout() {}
     responses(
         (status = 200, description = "The session.", body = SessionStatus, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("viewer")))
 )]
@@ -64,7 +64,7 @@ async fn get_ui_session() {}
     responses(
         (status = 200, description = "The release status.", body = ReleaseStatus, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("viewer")))
 )]
@@ -80,7 +80,7 @@ async fn get_api_release() {}
         (status = 101, description = "Switching protocols to WebSocket."),
         (status = 503, description = "Too many sockets are open (plain text).", body = String, content_type = "text/plain"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("viewer")))
 )]
@@ -120,7 +120,7 @@ async fn get_metrics() {}
     responses(
         (status = 200, description = "The OpenAPI document.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("viewer")))
 )]
@@ -135,7 +135,7 @@ async fn get_openapi_json() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -152,7 +152,7 @@ async fn get_api_fleet_pools() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -169,7 +169,7 @@ async fn get_api_fleet_sessions() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -186,7 +186,7 @@ async fn get_api_fleet_healthz() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -206,7 +206,7 @@ async fn get_api_fleet_features() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -234,7 +234,7 @@ async fn get_api_fleet_stats() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -259,7 +259,7 @@ async fn get_api_fleet_nodes() {}
         (status = 502, description = "The operator tags could not be read from the controller, or the aggregator could not be reached.", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -279,7 +279,7 @@ async fn post_api_fleet_nodes_resolve() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -299,7 +299,7 @@ async fn get_api_fleet_nodes_by_instance_pools() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -319,7 +319,7 @@ async fn get_api_fleet_instances_by_instance_sniffers() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -339,7 +339,7 @@ async fn post_api_fleet_instances_by_instance_drain() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -360,7 +360,7 @@ async fn post_api_fleet_instances_by_instance_undrain() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -382,7 +382,7 @@ async fn post_api_fleet_pools_by_pool_backends() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -403,7 +403,7 @@ async fn patch_api_fleet_pools_by_pool_backends_by_addr() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -421,7 +421,7 @@ async fn delete_api_fleet_pools_by_pool_backends_by_addr() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -442,7 +442,7 @@ async fn post_api_fleet_route_hint() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -462,7 +462,7 @@ async fn post_api_fleet_sniffers() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -482,7 +482,7 @@ async fn delete_api_fleet_sniffers_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The aggregator could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No aggregator is configured (`--aggregator-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -503,7 +503,7 @@ async fn post_api_fleet_sniffers_by_name_rollback() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -523,7 +523,7 @@ async fn put_api_fleet_nodes_by_instance_tags() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -548,7 +548,7 @@ async fn delete_api_fleet_nodes_by_instance_tags() {}
         (status = 502, description = "A delete failed (the body then also carries `removed`, what went before it), or the controller or aggregator answered something unexpected.", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller or no aggregator is configured.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("operator")))
 )]
@@ -563,7 +563,7 @@ async fn post_api_fleet_node_tags_prune() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -580,7 +580,7 @@ async fn get_api_config() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -597,7 +597,7 @@ async fn get_api_config_schema() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -617,7 +617,7 @@ async fn get_api_config_revisions() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -638,7 +638,7 @@ async fn get_api_config_revisions_by_revision() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -655,7 +655,7 @@ async fn get_api_config_revisions_by_revision_diff() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -679,7 +679,7 @@ async fn get_api_config_pending() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -697,7 +697,7 @@ async fn post_api_config() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -717,7 +717,7 @@ async fn post_api_config_validate() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -737,7 +737,7 @@ async fn post_api_config_rollback_by_revision() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -757,7 +757,7 @@ async fn post_api_config_promote_by_revision() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -777,7 +777,7 @@ async fn post_api_config_confirm_by_revision() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -794,7 +794,7 @@ async fn post_api_config_revert() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -814,7 +814,7 @@ async fn get_api_tunnel_addresses() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -834,7 +834,7 @@ async fn delete_api_tunnel_origins_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -854,7 +854,7 @@ async fn delete_api_tunnel_proxies_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -874,7 +874,7 @@ async fn post_api_tunnel_origins_by_name_psk_rotate() {}
         (status = 400, description = "The step-up request could not be signed.", body = crate::openapi::ErrorBody),
         (status = 409, description = "This controller has no step-up key (`--enroll-step-up-pubkey-file`).", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -891,7 +891,7 @@ async fn post_api_enrollments() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -911,7 +911,7 @@ async fn get_api_enrollments() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -928,7 +928,7 @@ async fn delete_api_enrollments_by_id() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -945,7 +945,7 @@ async fn get_api_plugins() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -965,7 +965,7 @@ async fn get_api_plugin_routes() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -985,7 +985,7 @@ async fn get_api_plugins_by_id() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1003,7 +1003,7 @@ async fn get_api_plugins_by_id_status() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1021,7 +1021,7 @@ async fn post_api_plugins_modules() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1041,7 +1041,7 @@ async fn post_api_plugins() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1061,7 +1061,7 @@ async fn delete_api_plugins_by_id() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1081,7 +1081,7 @@ async fn post_api_plugins_by_id_enable() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1102,7 +1102,7 @@ async fn post_api_plugins_by_id_disable() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1119,7 +1119,7 @@ async fn put_api_plugins_by_id_config() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1139,7 +1139,7 @@ async fn get_api_plugins_file_plan() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1159,7 +1159,7 @@ async fn post_api_plugins_by_id_webhook() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1176,7 +1176,7 @@ async fn delete_api_plugins_by_id_webhook() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1197,7 +1197,7 @@ async fn get_api_secrets() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1217,7 +1217,7 @@ async fn put_api_secrets_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1237,7 +1237,7 @@ async fn delete_api_secrets_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1259,7 +1259,7 @@ async fn get_api_plugins_by_id_secrets() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1280,7 +1280,7 @@ async fn put_api_plugins_by_id_secrets_by_slot() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1297,7 +1297,7 @@ async fn delete_api_plugins_by_id_secrets_by_slot() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1314,7 +1314,7 @@ async fn get_api_plugins_secrets_keys() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1331,7 +1331,7 @@ async fn post_api_plugins_secrets_rewrap() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1348,7 +1348,7 @@ async fn post_api_acme_rewrap() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1365,7 +1365,7 @@ async fn post_api_secrets_rewrap() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1382,7 +1382,7 @@ async fn get_api_acme_sites() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1399,7 +1399,7 @@ async fn get_api_acme_gateways() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1420,7 +1420,7 @@ async fn get_api_acme_account() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1440,7 +1440,7 @@ async fn put_api_acme_sites_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1458,7 +1458,7 @@ async fn delete_api_acme_sites_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1478,7 +1478,7 @@ async fn post_api_acme_gateways() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1495,7 +1495,7 @@ async fn delete_api_acme_gateways_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1512,7 +1512,7 @@ async fn get_api_features() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1533,7 +1533,7 @@ async fn get_api_features_overrides() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1553,7 +1553,7 @@ async fn put_api_features_overrides_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1570,7 +1570,7 @@ async fn delete_api_features_overrides_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1588,7 +1588,7 @@ async fn get_api_ui_layout() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1605,7 +1605,7 @@ async fn put_api_ui_layout() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1622,7 +1622,7 @@ async fn delete_api_ui_layout() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1640,7 +1640,7 @@ async fn get_api_ui_defaults() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1657,7 +1657,7 @@ async fn put_api_ui_defaults() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1674,7 +1674,7 @@ async fn delete_api_ui_defaults() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1694,7 +1694,7 @@ async fn get_api_ui_dashboards() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1715,7 +1715,7 @@ async fn get_api_ui_dashboards_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1735,7 +1735,7 @@ async fn put_api_ui_dashboards_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1752,7 +1752,7 @@ async fn delete_api_ui_dashboards_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1772,7 +1772,7 @@ async fn get_api_ui_filters() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1793,7 +1793,7 @@ async fn get_api_ui_filters_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1813,7 +1813,7 @@ async fn put_api_ui_filters_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1830,7 +1830,7 @@ async fn delete_api_ui_filters_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1850,7 +1850,7 @@ async fn get_api_ui_themes() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1871,7 +1871,7 @@ async fn get_api_ui_themes_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1891,7 +1891,7 @@ async fn put_api_ui_themes_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1912,7 +1912,7 @@ async fn delete_api_ui_themes_by_name() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain"),
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain"),
         (status = 502, description = "The controller could not be reached, or its answer was too large (16 MiB).", body = crate::openapi::ErrorBody),
         (status = 503, description = "No controller is configured (`--controller-url`).", body = crate::openapi::ErrorBody)
     ),
@@ -1929,7 +1929,7 @@ async fn post_api_ui_dashboards_by_name_rename() {}
     responses(
         (status = 200, description = "The registries.", body = RegistryList, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("viewer")))
 )]
@@ -1949,7 +1949,7 @@ async fn get_api_registries() {}
         (status = 404, description = "No such registry (or one of the other kind).", body = crate::openapi::ErrorBody),
         (status = 502, description = "The registry could not be reached or its index could not be read.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("viewer")))
 )]
@@ -1970,7 +1970,7 @@ async fn get_api_registries_by_id_sniffers() {}
         (status = 404, description = "No such registry, or no such sniffer in it.", body = crate::openapi::ErrorBody),
         (status = 502, description = "The registry could not be reached or its index could not be read.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("viewer")))
 )]
@@ -1989,7 +1989,7 @@ async fn get_api_registries_by_id_sniffers_by_name() {}
         (status = 409, description = "Too many registries, or the URL is already a registry of the other kind.", body = crate::openapi::ErrorBody),
         (status = 500, description = "The registry could not be saved.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("admin")))
 )]
@@ -2009,7 +2009,7 @@ async fn post_api_registries() {}
         (status = 404, description = "No such registry.", body = crate::openapi::ErrorBody),
         (status = 500, description = "The change could not be saved.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("admin")))
 )]
@@ -2033,7 +2033,7 @@ async fn delete_api_registries_by_id() {}
         (status = 502, description = "Installed nowhere, or the registry or aggregator could not be reached.", body = crate::openapi::ErrorBody),
         (status = 503, description = "Installs are switched off (`registry_install`), or no proxy is registered with the aggregator.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("operator")))
 )]
@@ -2048,7 +2048,7 @@ async fn post_api_registries_by_id_install() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("operator")))
 )]
@@ -2063,7 +2063,7 @@ async fn post_api_registries_updates_check() {}
     responses(
         (status = 200, description = "The registries.", body = RegistryList, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("viewer")))
 )]
@@ -2083,7 +2083,7 @@ async fn get_api_plugin_registries() {}
         (status = 404, description = "No such plugin registry.", body = crate::openapi::ErrorBody),
         (status = 502, description = "The registry could not be reached or its index could not be read.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("viewer")))
 )]
@@ -2104,7 +2104,7 @@ async fn get_api_plugin_registries_by_id_plugins() {}
         (status = 404, description = "No such registry, or no such plugin in it.", body = crate::openapi::ErrorBody),
         (status = 502, description = "The registry could not be reached or its index could not be read.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("viewer")))
 )]
@@ -2123,7 +2123,7 @@ async fn get_api_plugin_registries_by_id_plugins_by_name() {}
         (status = 409, description = "Too many registries, or the URL is already a registry of the other kind.", body = crate::openapi::ErrorBody),
         (status = 500, description = "The registry could not be saved.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("admin")))
 )]
@@ -2146,7 +2146,7 @@ async fn post_api_plugin_registries() {}
         (status = 422, description = "Refused: the hash or signature is wrong, or the version is built for another plugin ABI.", body = crate::openapi::ErrorBody),
         (status = 502, description = "The registry could not be reached.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("admin")))
 )]
@@ -2161,7 +2161,7 @@ async fn post_api_plugin_registries_by_id_fetch() {}
     responses(
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("viewer")))
 )]
@@ -2183,7 +2183,7 @@ async fn get_api_process() {}
         (status = 404, description = "No such program.", body = crate::openapi::ErrorBody),
         (status = 409, description = "The file changed since `rev`.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("admin")))
 )]
@@ -2203,7 +2203,7 @@ async fn put_api_process_by_program() {}
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 409, description = "Nothing is waiting, or the revision is stale.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("admin")))
 )]
@@ -2223,7 +2223,7 @@ async fn post_api_process_by_program_confirm() {}
         (status = 200, description = "The upstream's answer; whatever status it sent is passed through.", body = serde_json::Value, content_type = "application/json"),
         (status = 409, description = "Nothing to undo, or the revision is stale.", body = crate::openapi::ErrorBody),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("admin")))
 )]
@@ -2238,7 +2238,7 @@ async fn post_api_process_by_program_undo() {}
     responses(
         (status = 200, description = "The sync status.", body = WebSyncStatus, content_type = "application/json"),
         (status = 401, description = "No valid session. Body: `unauthorized` (plain text).", body = String, content_type = "text/plain"),
-        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site.", body = String, content_type = "text/plain")
+        (status = 403, description = "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name.", body = String, content_type = "text/plain")
     ),
     extensions(("x-wayhouse-role" = json!("viewer")))
 )]

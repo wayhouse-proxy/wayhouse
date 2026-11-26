@@ -527,7 +527,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -593,7 +593,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -666,7 +666,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -744,7 +744,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -810,7 +810,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -876,7 +876,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -954,7 +954,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1039,7 +1039,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1105,7 +1105,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1224,7 +1224,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1302,7 +1302,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1368,7 +1368,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1446,7 +1446,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1526,7 +1526,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1592,7 +1592,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1670,7 +1670,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1760,7 +1760,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1838,7 +1838,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1904,7 +1904,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -1981,7 +1981,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -2047,7 +2047,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -2130,7 +2130,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "409": {
             "content": {
@@ -2218,7 +2218,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -2284,7 +2284,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -2350,7 +2350,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -2428,7 +2428,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -2513,7 +2513,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -2579,7 +2579,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -2645,7 +2645,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -2723,7 +2723,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -2801,7 +2801,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -2879,7 +2879,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -2979,7 +2979,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "409": {
             "content": {
@@ -3145,7 +3145,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -3252,7 +3252,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -3330,7 +3330,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -3408,7 +3408,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -3493,7 +3493,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -3559,7 +3559,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -3646,7 +3646,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -3734,7 +3734,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -3829,7 +3829,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -3904,7 +3904,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -3970,7 +3970,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -4064,7 +4064,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -4142,7 +4142,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -4220,7 +4220,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -4298,7 +4298,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -4366,7 +4366,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           }
         },
         "security": [
@@ -4431,7 +4431,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "409": {
             "content": {
@@ -4520,7 +4520,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "404": {
             "content": {
@@ -4618,7 +4618,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "404": {
             "content": {
@@ -4706,7 +4706,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "404": {
             "content": {
@@ -4772,7 +4772,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -4838,7 +4838,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -4911,7 +4911,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -4977,7 +4977,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -5059,7 +5059,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -5125,7 +5125,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -5191,7 +5191,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -5269,7 +5269,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -5345,7 +5345,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -5432,7 +5432,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -5510,7 +5510,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -5588,7 +5588,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -5666,7 +5666,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -5754,7 +5754,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -5849,7 +5849,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -5927,7 +5927,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -6005,7 +6005,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -6081,7 +6081,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -6147,7 +6147,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           }
         },
         "security": [
@@ -6226,7 +6226,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "404": {
             "content": {
@@ -6315,7 +6315,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "409": {
             "content": {
@@ -6394,7 +6394,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "409": {
             "content": {
@@ -6452,7 +6452,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           }
         },
         "security": [
@@ -6517,7 +6517,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "409": {
             "content": {
@@ -6583,7 +6583,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           }
         },
         "security": [
@@ -6636,7 +6636,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "404": {
             "content": {
@@ -6737,7 +6737,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "404": {
             "content": {
@@ -6835,7 +6835,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "404": {
             "content": {
@@ -6923,7 +6923,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "404": {
             "content": {
@@ -6991,7 +6991,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           }
         },
         "security": [
@@ -7037,7 +7037,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -7103,7 +7103,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -7181,7 +7181,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -7266,7 +7266,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -7332,7 +7332,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -7410,7 +7410,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -7488,7 +7488,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -7566,7 +7566,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -7632,7 +7632,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -7710,7 +7710,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -7786,7 +7786,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -7871,7 +7871,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -7958,7 +7958,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8024,7 +8024,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8088,7 +8088,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8161,7 +8161,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8227,7 +8227,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8305,7 +8305,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8381,7 +8381,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8466,7 +8466,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8532,7 +8532,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8596,7 +8596,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8669,7 +8669,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8735,7 +8735,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8813,7 +8813,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8889,7 +8889,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -8974,7 +8974,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "502": {
             "content": {
@@ -9042,7 +9042,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           }
         },
         "security": [
@@ -9148,7 +9148,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           }
         },
         "security": [
@@ -9287,7 +9287,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           }
         },
         "security": [
@@ -9328,7 +9328,7 @@
                 }
               }
             },
-            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site."
+            "description": "The session's role is below the one this route needs (`forbidden`, plain text), or the browser marked the request cross-site (`Sec-Fetch-Site`/`Origin`), or the console has no login and listens on loopback only and the request's `Host` is not a loopback name."
           },
           "503": {
             "content": {
