@@ -18,10 +18,12 @@ on:
       - "LICENSE-*"
   workflow_dispatch:
 
-# A newer main push supersedes an older, still-running warm-up.
+# Warm-ups queue (GitHub keeps only the newest waiting one) instead of cancelling a
+# running one: a cancelled run saves no cache at all, so a burst of merges could
+# leave the caches cold.
 concurrency:
   group: cache-warm
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
