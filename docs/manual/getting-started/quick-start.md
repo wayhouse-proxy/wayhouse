@@ -21,7 +21,7 @@ manual builds on it.
   (`apt install protobuf-compiler` or `brew install protobuf`).
 
 Prefer containers? The public images on GHCR need no login; see
-[`deploy/README.md`](../../deploy/README.md) for the image list and the Compose demo.
+[`deploy/README.md`](../../../deploy/README.md) for the image list and the Compose demo.
 
 ## Run it
 
@@ -53,7 +53,7 @@ curl -s localhost:9900/pools      # every pool, its backends, their health and s
 curl -s localhost:9900/sessions   # every live connection or UDP session
 ```
 
-[Monitor a proxy](monitor.md) covers the rest of the endpoints and the metrics.
+[Monitor a proxy](../operate/monitor.md) covers the rest of the endpoints and the metrics.
 
 ## Change the config
 
@@ -74,8 +74,8 @@ Set the level with the `WAYHOUSE_LOG` environment variable, for example
 
 ## Where next
 
-- [Forward a game port to backends](forward-a-port.md): your first listener and pool.
-- [Route players by rules](route-by-rules.md): several pools behind one port.
-- [Protect a listener](protect-a-listener.md): allow lists, rate limits, caps.
-- [Keep the client IP](keep-client-ip.md): so backends see real addresses.
-- [Drain and maintain](drain-and-maintain.md): restarts without kicking players.
+- [Forward a game port to backends](first-listener-and-pool.md): your first listener and pool.
+- [Route players by rules](../routing/route-by-rules.md): several pools behind one port.
+- [Protect a listener](../security/protect-a-listener.md): allow lists, rate limits, caps.
+- [Keep the client IP](../routing/keep-client-ip.md): so backends see real addresses.
+- [Drain and maintain](../operate/drain-and-maintain.md): restarts without kicking players.

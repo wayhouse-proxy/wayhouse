@@ -2,7 +2,7 @@
 title: Keep the client IP
 description: Let backends see the real player address.
 sidebar:
-    order: 5
+    order: 2
 ---
 
 By default the backend sees the proxy's address. If the game needs the real player IP, for
@@ -57,7 +57,7 @@ network work:
   backend's default gateway, or route the client prefixes back through it. Without that the
   client receives replies from the backend's own IP and the connection stalls.
 
-The [transport design chapter](../04-transport-and-client-ip.md) has a complete nftables and
+The [transport design chapter](../../04-transport-and-client-ip.md) has a complete nftables and
 `ip rule` example.
 
 ## 3. No preservation

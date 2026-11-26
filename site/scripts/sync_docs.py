@@ -27,6 +27,12 @@ SKIP_FILES = {"README.md", "SUMMARY.md"}  # the old mdBook intro and table of co
 CHAPTER = re.compile(r"^(\d\d)-(.+)\.md$")
 # Top-level pages that are reference material rather than manual pages.
 REFERENCE = {"third-party-notices"}
+# Where the older top-level guides sit in the Manual (everything else lands in manual/).
+MANUAL_SECTION = {
+    "upgrading": "operate", "migrating": "operate", "acme": "certificates", "plugins": "extend",
+    "sniffers": "extend", "web-proxy": "web", "global-steering": "routing", "ui-data": "ui",
+    "ui-form-layout": "ui",
+}
 # Top-level pages that explain how something is built.
 DEEP_DIVE = {"latency-ledger"}
 
@@ -40,7 +46,8 @@ def dest_of(rel: str):
     if m:
         return "deep-dive/design/" + m.group(2), int(m.group(1))
     name = rel[: -len(".md")].replace(".", "")  # Starlight slugs drop dots: migrating-0.2 -> migrating-02
-    section = "reference/" if name in REFERENCE else "deep-dive/" if name in DEEP_DIVE else "manual/"
+    section = "reference/" if name in REFERENCE else "deep-dive/" if name in DEEP_DIVE else \
+        "manual/" + (MANUAL_SECTION.get(name, "") + "/" if name in MANUAL_SECTION else "")
     return section + name, None
 
 

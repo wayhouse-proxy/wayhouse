@@ -2,7 +2,7 @@
 title: Protect a listener
 description: Allow and deny lists, GeoIP, rate limits and connection caps.
 sidebar:
-    order: 4
+    order: 1
 ---
 
 The proxy checks every new connection or UDP session against a filter chain **before**
@@ -64,7 +64,7 @@ are untouched.
 
 With `schema_version: 4`, `enabled: false` on a listener, or on one of its `rate_limit`, `geo`
 or `per_source` blocks, switches it off while keeping the config in the file. The
-[runtime feature flags](../reference/index.md) can also switch whole protections off, and a
+[runtime feature flags](../../reference/index.md) can also switch whole protections off, and a
 protection flag that is off needs an expiry on its override.
 
 ## Check what the filters do
@@ -78,5 +78,5 @@ The `filter` label tells you which rule dropped the client: `rate_ip`, `rate_net
 
 ## Related
 
-- [Security and DDoS design](../07-security-ddos.md) for why the chain is ordered this way and
+- [Security and DDoS design](../../07-security-ddos.md) for why the chain is ordered this way and
   what it does and does not stop.

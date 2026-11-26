@@ -1,5 +1,5 @@
 ---
-title: Forward a game port to backends
+title: Your first listener and pool
 description: Create a listener, a pool of backends and health checks.
 sidebar:
     order: 2
@@ -46,7 +46,7 @@ A pool takes its backends from one of two places, never both:
   never empties a pool.
 
 You can add or remove backends of a running proxy without touching the file, see
-[Drain and maintain](drain-and-maintain.md).
+[Drain and maintain](../operate/drain-and-maintain.md).
 
 ## Pick a balancer
 
@@ -85,6 +85,6 @@ and UDP sessions share the cap. Omit it for no cap.
 
 ## Related
 
-- Every pool and listener key: [Config keys](../reference/index.md) and
-  [Configuration](../05-configuration.md).
-- Why the proxy is built this way: [Architecture](../02-architecture.md).
+- Every pool and listener key: [Config keys](../../reference/index.md) and
+  [Configuration](../../05-configuration.md).
+- Why the proxy is built this way: [Architecture](../../02-architecture.md).

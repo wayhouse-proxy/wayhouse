@@ -2,7 +2,7 @@
 title: Drain and maintain
 description: Restart or replace backends and proxies without kicking players.
 sidebar:
-    order: 6
+    order: 1
 ---
 
 Players keep their sessions while you work if you take things out of rotation first.
@@ -52,10 +52,10 @@ under the new config; TCP connections are not cut.
 ## Take the whole fleet's view
 
 With several proxies, the controller and aggregator fan these actions out for you; see the
-[fleet documentation](../10-distributed-control-plane.md) and [Upgrading a fleet](../upgrading.md).
+[fleet documentation](../../10-distributed-control-plane.md) and [Upgrading a fleet](../../upgrading.md).
 
 ## Related
 
 - [Monitor a proxy](monitor.md) for the metrics and endpoints used above.
-- [Operations design](../06-operations-observability.md) for the full drain semantics and close
+- [Operations design](../../06-operations-observability.md) for the full drain semantics and close
   reasons.

@@ -2,7 +2,7 @@
 title: Monitor a proxy
 description: Health endpoints, Prometheus metrics, live sessions and connection logs.
 sidebar:
-    order: 7
+    order: 2
 ---
 
 ## Health endpoints
@@ -35,7 +35,7 @@ Scrape `GET /metrics`. Start with these:
 | Did the last reload work?               | `wayhouse_config_reload_total`, `wayhouse_config_version`                      |
 | Are we running out of file descriptors? | `wayhouse_fd_open` against `wayhouse_fd_limit`, `wayhouse_accept_errors_total` |
 
-The [metrics reference](../reference/index.md) lists every metric with its labels, generated
+The [metrics reference](../../reference/index.md) lists every metric with its labels, generated
 from the source.
 
 ## Connection logs
@@ -62,5 +62,5 @@ Each session writes one structured JSON event when it closes, for example:
 
 A good first alert set: no healthy backend in a pool, `readyz` failing, `wayhouse_fd_open`
 near `wayhouse_fd_limit`, and a sudden rise in `wayhouse_filter_blocked_total`. The
-[operations chapter](../06-operations-observability.md) lists dashboards and alert ideas in
+[operations chapter](../../06-operations-observability.md) lists dashboards and alert ideas in
 detail.

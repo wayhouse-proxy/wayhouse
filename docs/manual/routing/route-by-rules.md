@@ -2,7 +2,7 @@
 title: Route players by rules
 description: Send different players to different pools behind one port.
 sidebar:
-    order: 3
+    order: 1
 ---
 
 With `pool:` a listener sends everyone to one pool. With `routes:` it picks a pool per
@@ -36,7 +36,7 @@ if every player should land somewhere.
 | `port`        | The destination port: a number or a `"lo-hi"` range.                                                                                                                             |
 | `first_bytes` | The first bytes of the connection: a `prefix:` (`hex:...` or `ascii:...`, up to 512 bytes) and/or a `length: { min, max }` window. On TCP, the length is what one peek returned. |
 | `sni`         | The hostname in a TLS ClientHello, with `host:` patterns that are exact, `*.suffix` or `.suffix`. TCP only. The proxy only peeks at the hello; TLS ends at the backend.          |
-| `sniffer`     | A verdict from a WASM sniffer, see [Sniffers](../sniffers.md).                                                                                                                   |
+| `sniffer`     | A verdict from a WASM sniffer, see [Sniffers](../../sniffers.md).                                                                                                                |
 
 ## Route by hostname (TLS)
 
@@ -74,7 +74,7 @@ It needs at least one `first_bytes` rule or sniffer, otherwise it would drop eve
 
 - **Sniffers** read the first bytes with sandboxed WASM modules and report a protocol or
   hostname. Official ones cover Minecraft, A2S, QUIC, WireGuard, OpenVPN, RakNet and
-  TeamSpeak 3. See [Sniffers](../sniffers.md).
+  TeamSpeak 3. See [Sniffers](../../sniffers.md).
 - **Resolvers** ask your own service which pool to use: `action: { resolver: matchmaker }`,
   over HTTP or gRPC, with a cache and an `on_error` policy (`reject`, `fallback_route` or
   `stale_ok`). Define them under `resolvers:`.
@@ -92,5 +92,5 @@ It needs at least one `first_bytes` rule or sniffer, otherwise it would drop eve
 
 ## Related
 
-- [Routing design](../03-routing.md) for the full semantics.
-- [Plugins](../plugins.md) can add hostname routes to a listener with `plugin_routes`.
+- [Routing design](../../03-routing.md) for the full semantics.
+- [Plugins](../../plugins.md) can add hostname routes to a listener with `plugin_routes`.
