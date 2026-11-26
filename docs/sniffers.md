@@ -4,12 +4,11 @@ A **sniffer** is a WASM module that peeks at the first bytes of a connection or
 datagram and returns a routing hint (a hostname or a tag). This page is the format
 reference for authors and registry operators. The ABI itself is documented in
 [`crates/wayhouse-sniffer-abi/README.md`](../crates/wayhouse-sniffer-abi/README.md) and the module doc of
-`crates/wayhouse/src/sniffer_loader.rs`; the design and its reasons are in the
-registry spec.
+`crates/wayhouse/src/sniffer_loader.rs`; the design and its reasons are in
+[Technology choices](09-technology-choices.md) (ADR 16).
 
 Sniffers are not **plugins**: plugins are integrations with other systems (for
-example the Pelican panel) and have their own design, see the
-plugin system design.
+example the Pelican panel) and have their own guide, see [Plugins](plugins.md).
 
 ## What the crate does
 
@@ -110,8 +109,7 @@ takes categories from a fixed list (`categories.toml` in its repository, enforce
 with `--categories`), adding one is a maintainer change. Tags are free-form; the generator trims,
 lowercases and de-duplicates them.
 
-Rules a client enforces: `schema` is 2 (schema 1 is refused: regenerate the index); `kind` is `sniffer` (`plugin` is reserved for the
-plugin registry and rejected for now); names are unique and valid; versions are unique
+Rules a client enforces: `schema` is 2 (schema 1 is refused: regenerate the index); `kind` is `sniffer` (a `plugin` index is read by the plugin-index validator, `verify-plugin`, not accepted as a sniffer index); names are unique and valid; versions are unique
 and sorted newest first; every URL is `https://` with a host and no user info; `sha256` is 64 lowercase hex; `size`
 is at most 8 MiB; the whole file is at most 1 MiB. Unknown extra fields are ignored so a
 newer registry can still be read.
@@ -191,10 +189,12 @@ unsigned. Re-adding the official URL after removing it restores the official ent
   Bodies are cut off at the size limits while streaming, and requests time out. The client does not
   use `HTTPS_PROXY`/`HTTP_PROXY`: a forward proxy resolves the destination itself and would bypass
   the address check, so the UI host needs direct outbound HTTPS to the registry.
-- **ABI and `min_proxy`.** The ABI is this release's. The aggregator does not report proxy versions
-  yet, so `min_proxy` cannot be enforced and the listing says `min_proxy_checked: false`.
-- **Signatures.** The official public key is not set yet, so signatures are not checked and installs
-  are reported `signed: false`. See the maintainer to-do below.
+- **ABI and `min_proxy`.** The ABI is this release's. The UI reads each proxy's version from the
+  aggregator and enforces `min_proxy` against them. When the aggregator is unreachable, knows no
+  proxy, or one proxy reports no readable version, the listing says `min_proxy_checked: false`
+  with a note (the versions that are known are still checked).
+- **Signatures.** The official minisign key is built in, so a version of the official registry that
+  lists a signature is verified before it installs and shows as signed; a bad signature is an error.
 - **Partial installs.** The reply lists every proxy. A proxy that rejects the module because it pins
   its sniffers (`settings.sniffers.modules`) answers `409` with a reply starting `pinned:`; it is
   reported as `pinned` together with the `name` and `sha256` to add to its pin list. Any other
@@ -254,10 +254,6 @@ operator can go back, and falls back to it on its own when a new file turns out 
   fleet upload from "Installing from a registry".
 - **The page.** The module table shows a `fallback active` badge and a "roll back" button (with a
   confirmation that it acts on every instance) for modules that keep a previous version.
-
-**Maintainer to-do.** Generate the minisign key pair offline, put the public half in
-`crates/wayhouse-ui/src/registry_keys.rs`, and store the secret in the sniffers repository (see the
-bootstrap plan). Until then everything installs unsigned.
 
 ## Installing by hand
 
