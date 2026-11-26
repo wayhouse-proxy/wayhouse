@@ -20,9 +20,9 @@
   every case actually hit so far.
 - **Half-close**: propagate `shutdown(SHUT_WR)` in one direction, keep the other
   direction running until it too closes.
-- **Timeouts**: connect, idle (no byte in either direction), optional max-lifetime.
-- **Keepalive**: optionally enable `TCP_KEEPALIVE` toward the backend to detect dead
-  sessions in NAT-free internal networks.
+- **Timeouts**: connect (`connect_timeout_ms`) and idle (no byte in either direction for
+  `idle_timeout_sec`, default 90 s), both per pool. There is no maximum connection lifetime and no
+  TCP keepalive toward the backend; a dead peer ends at the idle timeout.
 
 ## UDP
 
@@ -47,15 +47,17 @@ UDP has no connection — the proxy builds the "session" concept itself.
   - Replies arrive directly on the right socket without a table lookup.
   - The kernel filters foreign senders.
   - `sendmmsg()` toward the backend in batches.
-- **Session table**: `HashMap<4-tuple, SessionRef>` thread-local per worker (no
-  locks). Slab allocator for `Session`.
-- **Idle timeout**: timing wheel; any activity pushes the entry forward. Default
-  30–120 s, configurable per route (turn-based games need more).
-- **Caps**: max sessions global / per worker / per backend; new-session rate per
-  source IP.
+- **Session table**: a plain `HashMap<4-tuple, Session>` owned by each receive loop, so no
+  locks.
+- **Idle timeout**: a single-level timing wheel with 1 s slots; any activity pushes the entry
+  forward. It is the pool's `idle_timeout_sec` (default 90 s), so a pool for turn-based games
+  can set it higher and a query pool lower.
+- **Caps**: `max_udp_sessions` (global), `per_backend.max_sessions`, `per_source` (per client IP
+  or subnet) and `max_new_sessions_per_sec`; the per-source datagram rate is the listener's
+  `rate_limit`.
 - **ICMP**: treat "port unreachable" from the backend as a passive health signal.
 - **Fragmentation / MTU**: no reassembly; oversized replies use normal IP
-  fragmentation. `IP_MTU_DISCOVER` toward the backend as needed.
+  fragmentation. Path-MTU discovery is left at the kernel default.
 
 ### QUIC/DTLS
 Treated as opaque UDP. Migration (client port change) breaks the session without
