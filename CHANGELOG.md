@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/wayhouse-proxy/wayhouse/compare/v0.4.0...v0.4.1) (2026-11-26)
+
+
+### Features
+
+* describe the proxy admin API with OpenAPI generated from the handlers ([#845](https://github.com/wayhouse-proxy/wayhouse/issues/845)) ([6b59660](https://github.com/wayhouse-proxy/wayhouse/commit/6b59660b865ed0cbee7677ea94d84575356241b4))
+
 ## [0.4.0](https://github.com/wayhouse-proxy/wayhouse/compare/v0.3.0...v0.4.0) (2026-11-25)
 
 
