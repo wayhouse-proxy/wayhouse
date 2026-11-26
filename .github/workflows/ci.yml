@@ -824,6 +824,12 @@ jobs:
         run: make docs-fmt-check
       - name: Relative links and anchors resolve
         run: make docs-links
+      - name: HANDOVER.md stays under 16 KB
+        # It is a current-state layer, not a log: trim it instead of raising the cap.
+        run: |
+          size=$(wc -c < HANDOVER.md)
+          echo "HANDOVER.md is $size bytes (cap 16384)"
+          test "$size" -le 16384
 
   # The version policy (RELEASING.md): 0.x only, and Cargo.lock agrees with
   # Cargo.toml. Milliseconds, so no `changes` filter; it also guards release PRs.
