@@ -10,7 +10,7 @@ on:
     paths:
       - "docs/**"
       - "site/**"
-      # the reference pages and the coverage check read these
+      # the generated Reference pages read these
       - "crates/**/*.rs"
       - "crates/**/Cargo.toml"
       - "crates/wayhouse-config/schema/**"
@@ -19,7 +19,7 @@ on:
     paths:
       - "docs/**"
       - "site/**"
-      # the reference pages and the coverage check read these
+      # the generated Reference pages read these
       - "crates/**/*.rs"
       - "crates/**/Cargo.toml"
       - "crates/wayhouse-config/schema/**"
@@ -47,8 +47,6 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: site/package-lock.json
-      - name: Check that the docs cover every flag, key, metric and feature
-        run: python3 site/scripts/check_coverage.py
       - name: Build the site (fails on a broken internal link or anchor)
         working-directory: site
         run: |

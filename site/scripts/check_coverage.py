@@ -58,7 +58,20 @@ def items():
             yield "cargo-feature", f["name"], re.compile(r"`%s`" % re.escape(f["name"]))
 
 
+# A parser that finds (almost) nothing must fail the check, not pass it. Set well below today's
+# counts (config 163, flag ~170, metric 46, feature 14, cargo-feature 3).
+MINIMUM = {"config": 100, "flag": 100, "metric": 30, "feature": 10, "cargo-feature": 3}
+
+
 def main(argv):
+    found = {}
+    for kind, _, _ in items():
+        found[kind] = found.get(kind, 0) + 1
+    short = ["%s: found %d, expected at least %d (did the source layout change? fix reference.py)"
+             % (k, found.get(k, 0), n) for k, n in MINIMUM.items() if found.get(k, 0) < n]
+    if short:
+        print("\n".join(short))
+        return 1
     text = corpus()
     missing = sorted("%s %s" % (k, n) for k, n, rx in items() if not rx.search(text))
     total = sum(1 for _ in items())

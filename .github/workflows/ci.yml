@@ -824,6 +824,11 @@ jobs:
         run: make docs-fmt-check
       - name: Relative links and anchors resolve
         run: make docs-links
+      # Every config key, flag, metric and feature is in the hand-written docs (or in
+      # docs/coverage-allowlist.txt). Here, not in pages.yml: an undocumented item must not
+      # merge, and a gap must never block the site deploy.
+      - name: Documentation covers every flag, key, metric and feature
+        run: make docs-coverage
 
   # The version policy (RELEASING.md): 0.x only, and Cargo.lock agrees with
   # Cargo.toml. Milliseconds, so no `changes` filter; it also guards release PRs.
