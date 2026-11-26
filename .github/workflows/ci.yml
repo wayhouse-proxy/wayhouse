@@ -834,6 +834,16 @@ jobs:
       - name: Relative links and anchors resolve
         if: needs.changes.outputs.docs == 'true'
         run: make docs-links
+      - name: HANDOVER.md stays under 16 KB
+        # A current-state layer, not a log: trim it instead of raising the cap.
+        if: needs.changes.outputs.docs == 'true'
+        run: |
+          size=$(wc -c < HANDOVER.md)
+          echo "HANDOVER.md is $size bytes (cap 16384)"
+          if [ "$size" -gt 16384 ]; then
+            echo "::error file=HANDOVER.md::HANDOVER.md is $size bytes, over the 16384 cap. Trim it: it holds current state and traps only."
+            exit 1
+          fi
       # Every config key, flag, metric and feature is in the hand-written docs (or in
       # docs/coverage-allowlist.txt). Here, not in pages.yml: an undocumented item must not
       # merge, and a gap must never block the site deploy.
