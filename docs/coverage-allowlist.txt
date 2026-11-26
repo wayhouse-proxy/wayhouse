@@ -1,0 +1,29 @@
+# Documentation gaps that are known. Shrink this list by documenting the item and
+# deleting its line; check_coverage.py fails on a documented item that is still listed.
+# Format: <kind> <name>
+cargo-feature dns-srv
+cargo-feature grpc-resolver
+flag --address
+flag --aggregator-token-file
+flag --bin-path
+flag --credentials-dir
+flag --env-file
+flag --ha-join-proof-file
+flag --ha-snapshot-after
+flag --iface
+flag --instance-token-file
+flag --key
+flag --listen-port
+flag --no-start
+flag --peer-address
+flag --plugin-overlay-token-file
+flag --releases
+flag --timeout-sec
+flag --tunnel-address
+flag --tunnel-controller-token-file
+flag --tunnel-key-file
+flag --tunnel-listen-port
+flag --tunnel-name
+flag --tunnel-psk-file
+flag --tunnel-register-interval-sec
+flag --unit-dir

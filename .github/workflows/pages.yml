@@ -10,11 +10,19 @@ on:
     paths:
       - "docs/**"
       - "site/**"
+      # the reference pages and the coverage check read these
+      - "crates/**/*.rs"
+      - "crates/**/Cargo.toml"
+      - "crates/wayhouse-config/schema/**"
       - ".github/workflows/pages.yml"
   pull_request:
     paths:
       - "docs/**"
       - "site/**"
+      # the reference pages and the coverage check read these
+      - "crates/**/*.rs"
+      - "crates/**/Cargo.toml"
+      - "crates/wayhouse-config/schema/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -39,6 +47,8 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: site/package-lock.json
+      - name: Check that the docs cover every flag, key, metric and feature
+        run: python3 site/scripts/check_coverage.py
       - name: Build the site (fails on a broken internal link or anchor)
         working-directory: site
         run: |
