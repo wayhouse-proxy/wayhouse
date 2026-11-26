@@ -23,7 +23,7 @@ chapter disagree, the chapter wins and the code (or the chapter) gets fixed.
 | [05 Configuration](05-configuration.md)                           | The full config schema with examples                                                                  |
 | [06 Operations and observability](06-operations-observability.md) | Metrics, logs, health checks, draining, admin and fleet endpoints, HA operations                      |
 | [07 Security and DDoS](07-security-ddos.md)                       | Filters, rate limits, amplification guard, sniffer sandbox                                            |
-| [08 Roadmap](08-roadmap.md)                                       | Phases 0–14 with their status, and what is left                                                       |
+| [08 Roadmap](08-roadmap.md)                                       | What is built, and what is still ahead                                                                |
 | [09 Technology choices](09-technology-choices.md)                 | Libraries, alternatives and the ADR table of locked decisions                                         |
 | [10 Distributed control plane](10-distributed-control-plane.md)   | `wayhouse-controller`, `wayhouse-aggregator`, `wayhouse-ui`, Raft HA, canary rollout, regional health |
 | [11 Backend transport](11-backend-transport.md)                   | WireGuard transport and `wayhouse-agent` for origins on other networks                                |
@@ -32,12 +32,11 @@ chapter disagree, the chapter wins and the code (or the chapter) gets fixed.
 | [Global client steering](global-steering.md)                      | Sending players to the nearest healthy node: per-region names, DNS caveats, anycast                   |
 | [Stored UI data](ui-data.md)                                      | Dashboards, themes, saved filters, form layout override and defaults kept in the controller           |
 
-## Feature specs and plans
+## Older design specs and plans
 
-[`superpowers/`](superpowers/) holds the design spec and the step-by-step
-implementation plan written before each larger change since the roadmap phases were
-finished. They are kept as a record of why things were built the way they were; see
-[superpowers/README.md](superpowers/README.md).
+The dated specs and plans written before each larger change (formerly `docs/superpowers/`)
+were removed from the tree: the chapters here are the source of truth. Recover one from git
+history, for example `git show bb7822170:docs/superpowers/specs/<file>`.
 
 ## Elsewhere in the repository
 
@@ -48,10 +47,11 @@ finished. They are kept as a record of why things were built the way they were; 
   [`wayhouse-proxy/sniffers`](https://github.com/wayhouse-proxy/sniffers).
 - [`upgrading.md`](upgrading.md): upgrading a fleet one component at a time: compatibility
   window, version table, order of operations, rollback.
-- [`migrating-0.2-to-0.3.md`](migrating-0.2-to-0.3.md): the 0.2.0 to 0.3.0 migration (the
-  controller's `sled` to `redb` change has no migration; what is lost and how to restore it).
-- [`migrating-0.3-to-0.4.md`](migrating-0.3-to-0.4.md): the 0.3.0 to 0.4.0 migration checklist
-  (upgrade order, tokens as files, plugin rebuilds, secrets, deploy layout).
+- [`migrating.md`](migrating.md): one section per release with the operator's checklist
+  (0.2 to 0.3: the `sled` to `redb` change has no migration; 0.3 to 0.4: upgrade order, tokens
+  as files, plugin rebuilds, secrets, deploy layout).
+- [`latency-ledger.md`](latency-ledger.md): what every feature costs per connection and per
+  datagram.
 - [`plugins.md`](plugins.md): controller-hosted plugins, capabilities, secrets, the registry and
   the plugins file.
 - [`acme.md`](acme.md) and [`global-steering.md`](global-steering.md): see the table above.

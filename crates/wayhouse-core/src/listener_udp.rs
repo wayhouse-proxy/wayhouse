@@ -29,7 +29,7 @@
 //! Idle expiry is a single-level timing wheel ([`IdleWheel`], 1 s slots) —
 //! O(slot) work per tick instead of an O(sessions) scan.
 //!
-//! v0 simplifications still open (see `HANDOVER.md`, "Phase 2"):
+//! v0 simplifications still open (see `docs/latency-ledger.md`):
 //! - one spawned reply task per session (recorded in the latency ledger);
 //! - the stickiness table is bounded by a hard cap and cleared wholesale when
 //!   exceeded (no LRU).
