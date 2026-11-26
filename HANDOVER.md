@@ -158,9 +158,12 @@ dependency and needs no `wasm32` target (only the sniffers repo does).
   everything, so `deploy` and `fuzz` double as nightly canaries. Adding a job or changing
   which packages it builds means updating `ROOTS` in `changes.py` *and* its test.
 - Cargo caching is `.github/actions/cargo-cache` (rolling snapshot per `main` push, restored
-  by prefix; PRs read but do not write). A lockfile or toolchain bump starts cold by design;
-  if a code push without a lockfile change is back near cold timings, the cache key is the
-  first suspect. A warm full run is roughly 20 min wall clock.
+  by prefix; PRs read but do not write; `cache-warm.yml` saves them). The key carries the
+  ISO week, so every namespace also starts cold on Monday (`cache-warm.yml` runs Monday 00:05
+  UTC to refill them), because cargo never prunes `target/` and a rolling snapshot only grows.
+  A lockfile or toolchain bump starts cold by design; if a code push without a lockfile
+  change is back near cold timings mid-week, the cache key is the first suspect. The repo
+  cache limit is 10 GB; the ten namespaces must stay under it together. A warm full run is roughly 20 min wall clock.
 - Rust tests run under `cargo nextest --profile ci` (`.config/nextest.toml`); JUnit XML is
   rendered to the run summary by `test_summary.py`. A `build-release` job compiles the
   release binaries once and `deploy` builds the images from them (`BIN_SOURCE=prebuilt`);
