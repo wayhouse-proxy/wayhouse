@@ -15,119 +15,157 @@ use serde::{Deserialize, Serialize};
 
 use crate::util::unix_ms;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// What a proxy pushes about itself: a summary of its pools, backends and sessions, not its
+/// full state. The aggregator keeps the latest push per `instance` and overwrites it on the next.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[schema(example = json!({
+    "instance": "edge-fra-1",
+    "admin_url": "http://10.0.1.4:9900",
+    "pools": [{"name": "survival", "balancer": "round_robin",
+               "backends": [{"addr": "10.0.2.4:25565", "healthy": true, "state": "enabled", "active": 12}]}],
+    "sessions": {"tcp": 12, "udp": 0},
+    "group": "eu/frankfurt/cluster-a",
+    "version": "0.4.0",
+    "protocol": "1.3",
+    "protocol_mismatches": 0,
+    "region": "eu-central",
+    "tags": {"tier": "edge"},
+    "listeners": [{"name": "minecraft", "accepted": 1042, "blocked": 7, "bytes_c2s": 5242880, "bytes_s2c": 20971520, "packets": 0}],
+    "config_revision": 41,
+    "features": [{"name": "gossip_verdicts", "value": true, "source": "default", "available": true}]
+}))]
 pub struct IngestPayload {
-    /// Self-reported instance identity (hostname, or an operator-assigned
-    /// name) — the key this instance's state is stored and overwritten
-    /// under. Two instances sharing a name would clobber each other; naming
-    /// them uniquely is the operator's responsibility, the same way it is
-    /// for e.g. Prometheus scrape target labels.
+    /// The instance's own name (its hostname or an operator-assigned name). It is the key the
+    /// push is stored and overwritten under, so two instances with one name overwrite each
+    /// other. Must not be empty, at most 1024 bytes.
+    #[schema(example = "edge-fra-1")]
     pub instance: String,
-    /// This instance's own admin API base URL (e.g. `"http://10.0.1.4:9900"`)
-    /// — self-reported, from `settings.admin.listen`. The only "backend
-    /// registry" slice 9's intent-verb fan-out needs: no separate discovery
-    /// mechanism, the aggregator just proxies to whatever URL an instance
-    /// told it to use. A `0.0.0.0`/wildcard bind isn't a reachable address
-    /// from the aggregator's side — that's a pre-existing property of the
-    /// admin API, not something this field introduces; bind it to a
-    /// concretely reachable address if the aggregator runs elsewhere.
+    /// The base URL of this instance's own admin API, as the aggregator can reach it (for
+    /// example `http://10.0.1.4:9900`). Fan-out calls go to this URL with the instance token, so
+    /// the aggregator accepts only a host that `--instance-url-allow` lists or, with no list,
+    /// an IP address equal to the one the push came from (never a loopback address). The scheme
+    /// must be `http` or `https`, with no credentials, query or fragment. A wildcard bind
+    /// address (`0.0.0.0`) is not reachable from the aggregator.
+    #[schema(example = "http://10.0.1.4:9900")]
     pub admin_url: String,
+    /// The instance's pools and their backends. At most 1024 pools of at most 4096 backends.
     pub pools: Vec<PoolSummary>,
+    /// Live session counts.
     #[serde(default)]
     pub sessions: SessionCounts,
-    /// Self-reported fleet organization path (`settings.group`), e.g.
-    /// `"eu/frankfurt/cluster-a"` — an older instance that predates this
-    /// field simply reports `None`, showing up ungrouped. Purely a display
-    /// label for the admin GUI's fleet tree.
+    /// The instance's fleet group path (`settings.group`), such as `eu/frankfurt/cluster-a`. A
+    /// display label for the console's fleet tree; an instance without one shows ungrouped.
     #[serde(default)]
+    #[schema(example = "eu/frankfurt/cluster-a")]
     pub group: Option<String>,
-    /// Product version (`CARGO_PKG_VERSION`) this instance runs; empty from a
-    /// build that predates the field. Display and skew only.
+    /// The product version the instance runs. Empty from a build that predates the field.
     #[serde(default)]
+    #[schema(example = "0.4.0")]
     pub version: String,
-    /// Component wire protocol `major.minor` it speaks (`wayhouse-http`); empty
-    /// from a build that predates the field.
+    /// The component wire protocol (`major.minor`) the instance speaks. Empty from a build that
+    /// predates the field.
     #[serde(default)]
+    #[schema(example = "1.0")]
     pub protocol: String,
-    /// Requests it has refused for an incompatible protocol since it started;
-    /// the store notes when this rises (see [`InstanceState::mismatch_rose_at_ms`]).
+    /// How many requests the instance has refused for an incompatible protocol since it
+    /// started. The aggregator notes when this rises, which turns a node's version skew red for
+    /// five minutes.
     #[serde(default)]
     pub protocol_mismatches: u64,
-    /// Self-reported region, a label for the fleet roll-ups; `None` from a build
-    /// that predates the field (or an instance that sets none).
+    /// The instance's region (`--region`), a label for the fleet roll-ups.
     #[serde(default)]
+    #[schema(example = "eu-central")]
     pub region: Option<String>,
-    /// Self-reported `key=value` labels (`--tag`), for filtering the node list.
-    /// Empty from a build that predates the field.
+    /// The instance's `key=value` labels (`--tag`), used to filter the node list.
     #[serde(default)]
     pub tags: std::collections::BTreeMap<String, String>,
-    /// Cumulative per-listener counters since the instance started; the
-    /// aggregator derives rates from the difference between pushes
-    /// ([`crate::history`]). Empty from a build that predates the field.
+    /// Cumulative per-listener counters since the instance started. The aggregator derives the
+    /// rates in `GET /fleet/stats` from the difference between pushes. At most 1024 listeners.
     #[serde(default)]
     pub listeners: Vec<ListenerStats>,
-    /// The controller revision the instance has applied; `None` from a build that predates
-    /// the field or a proxy that reads a file (feeds the Config rollout widget).
+    /// The controller revision the instance has applied; absent from a proxy that reads its
+    /// config from a file.
     #[serde(default)]
     pub config_revision: Option<u64>,
-    /// The instance's effective feature flags (`GET /features` of the proxy, trimmed), so the
-    /// Features page can show how many nodes run each flag off. Empty from an older build.
+    /// The instance's effective feature flags, so the console can show how many nodes run each
+    /// flag off. At most 64, each name once.
     #[serde(default)]
     pub features: Vec<FeatureReport>,
 }
 
-/// One flag as an instance reports it.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// One feature flag as an instance reports it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct FeatureReport {
+    /// The flag's name.
+    #[schema(example = "gossip_verdicts")]
     pub name: String,
+    /// The flag's effective value on the instance.
     pub value: bool,
-    /// `default` | `config` | `override` | `build`.
+    /// Where the value comes from: `default`, `config`, `override` or `build`.
+    #[schema(example = "default")]
     pub source: String,
-    /// `false`: the instance's build lacks the code behind the flag.
+    /// `false` when the instance's build lacks the code behind the flag.
     pub available: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+/// One listener's cumulative counters since the instance started.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct ListenerStats {
+    /// The listener's name.
+    #[schema(example = "minecraft")]
     pub name: String,
-    /// TCP connections accepted (UDP listeners report none).
+    /// TCP connections accepted (a UDP listener reports none).
     #[serde(default)]
     pub accepted: u64,
-    /// Connections and new UDP sessions dropped by the pre-routing filters.
+    /// Connections and new UDP sessions dropped by the filters that run before routing.
     #[serde(default)]
     pub blocked: u64,
-    /// TCP bytes relayed per direction (UDP is counted in `packets` instead).
+    /// TCP bytes relayed from clients to backends.
     #[serde(default)]
     pub bytes_c2s: u64,
+    /// TCP bytes relayed from backends to clients.
     #[serde(default)]
     pub bytes_s2c: u64,
-    /// UDP datagrams forwarded, both directions.
+    /// UDP datagrams forwarded in both directions (UDP is counted in packets, not bytes).
     #[serde(default)]
     pub packets: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// One pool and its backends.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct PoolSummary {
+    /// The pool's name.
+    #[schema(example = "survival")]
     pub name: String,
+    /// The balancing strategy, such as `round_robin`.
+    #[schema(example = "round_robin")]
     pub balancer: String,
+    /// The pool's backends.
     pub backends: Vec<BackendSummary>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// One backend of a pool.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct BackendSummary {
+    /// The backend's address.
+    #[schema(example = "10.0.2.4:25565")]
     pub addr: String,
+    /// Whether the last health check passed.
     pub healthy: bool,
-    /// `enabled` | `draining` | `disabled` — `wayhouse_core::pool::AdminState`,
-    /// as a string so this crate never needs `wayhouse-core` as a dependency
-    /// (the aggregator stays decoupled from the data-plane crates).
+    /// The admin state: `enabled`, `draining` or `disabled`.
+    #[schema(example = "enabled")]
     pub state: String,
+    /// Sessions currently open to this backend.
     pub active: usize,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Live session counts of one instance.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, utoipa::ToSchema)]
 pub struct SessionCounts {
+    /// Open TCP sessions.
     #[serde(default)]
     pub tcp: usize,
+    /// Open UDP sessions.
     #[serde(default)]
     pub udp: usize,
 }

@@ -52,6 +52,57 @@ use serde::Serialize;
 use crate::api::AppState;
 use crate::target::Target;
 
+/// The OpenAPI paths of the fan-out routes.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(drain_instance, undrain_instance, list_instance_sniffers, add_backend, patch_backend, delete_backend,
+        route_hint, upload_sniffer, delete_sniffer, rollback_sniffer),
+    components(schemas(BroadcastAnswer, InstanceResult, BackendAdd, BackendPatch, RouteHint)),
+    tags((name = "Fleet actions", description = "Verbs that act on instances through their own admin API. The aggregator decides nothing and stores no intent: it relays. A verb for one instance is passed through to it; a verb for a pool or a module is applied to every known instance, and the answer reports each result.")),
+)]
+pub(crate) struct FanoutDoc;
+
+/// The answer of a verb that is applied to every instance.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the handler builds the object inline
+struct BroadcastAnswer {
+    /// One result per known instance, by instance name.
+    results: Vec<InstanceResult>,
+}
+
+/// The body of `POST /fleet/pools/{pool}/backends`: passed to each instance's `POST /pools/{pool}/backends`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the body is forwarded as it came
+struct BackendAdd {
+    /// The backend address as `ip:port`.
+    #[schema(example = "10.0.0.5:7777")]
+    addr: String,
+}
+
+/// The body of `PATCH /fleet/pools/{pool}/backends/{addr}`: passed to each instance.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the body is forwarded as it came
+struct BackendPatch {
+    /// The new operator state: `enabled`, `draining` or `disabled`. `draining` and `disabled` stop new sessions being sent to the backend while existing ones keep running.
+    #[schema(example = "draining")]
+    state: String,
+}
+
+/// The body of `POST /fleet/route-hint`: passed to each instance's `POST /route-hint`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the body is forwarded as it came
+struct RouteHint {
+    /// The client address the hint is for.
+    #[schema(example = "203.0.113.9")]
+    src_ip: String,
+    /// The pool to send that client's next connection to.
+    #[schema(example = "survival")]
+    pool: String,
+    /// How long the hint lives, 1 to 3600 seconds. Default 30.
+    #[schema(minimum = 1, maximum = 3600, example = 30)]
+    ttl_sec: Option<u64>,
+}
+
 /// Route definitions only — no `.with_state()` here. `api::router` merges
 /// this (still generic over `AppState`) into its own routes and calls
 /// `.with_state()` exactly once, at the end, for the combined router; axum
@@ -100,6 +151,20 @@ fn actor_header(headers: &HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
+#[utoipa::path(
+    post, path = "/fleet/instances/{instance}/drain", tag = "Fleet actions",
+    summary = "Take an instance out of rotation",
+    description = "Calls `POST /admin/drain` on one instance: its `/readyz` starts answering unready, so a load balancer in front of it stops sending new connections. Sessions already open keep running. `POST /fleet/instances/{instance}/undrain` reverses it.\n\nThe call goes to that one instance and its answer (status, headers and body) is passed back unchanged. `404` here means the aggregator does not know the instance; `502` that it could not reach it or could not read its answer (an answer over 8 MiB is refused).",
+    params(
+    ("instance" = String, Path, description = "The instance's name, as it reports it.", example = "edge-fra-1"),
+    ("X-Actor" = Option<String>, Header, description = "Who is acting. The console sets it to the signed-in user on a write; it is logged and passed on to each instance, and nothing else reads it.", example = "alice")
+    ),
+    responses(
+        (status = 200, description = "The instance's own answer, passed through.", body = serde_json::Value),
+        (status = 404, description = "No instance of that name has pushed.", body = crate::openapi::ErrorBody),
+        (status = 502, description = "The instance could not be reached or its answer could not be read.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn drain_instance(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -118,6 +183,20 @@ async fn drain_instance(
     .await
 }
 
+#[utoipa::path(
+    post, path = "/fleet/instances/{instance}/undrain", tag = "Fleet actions",
+    summary = "Put an instance back into rotation",
+    description = "Calls `POST /admin/undrain` on one instance.\n\nThe call goes to that one instance and its answer (status, headers and body) is passed back unchanged. `404` here means the aggregator does not know the instance; `502` that it could not reach it or could not read its answer (an answer over 8 MiB is refused).",
+    params(
+    ("instance" = String, Path, description = "The instance's name, as it reports it.", example = "edge-fra-1"),
+    ("X-Actor" = Option<String>, Header, description = "Who is acting. The console sets it to the signed-in user on a write; it is logged and passed on to each instance, and nothing else reads it.", example = "alice")
+    ),
+    responses(
+        (status = 200, description = "The instance's own answer, passed through.", body = serde_json::Value),
+        (status = 404, description = "No instance of that name has pushed.", body = crate::openapi::ErrorBody),
+        (status = 502, description = "The instance could not be reached or its answer could not be read.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn undrain_instance(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -141,6 +220,20 @@ async fn undrain_instance(
 /// (listing has no fleet-wide "merge" meaning across instances with
 /// different `settings.sniffers.dir` contents, so a caller picks the
 /// instance).
+#[utoipa::path(
+    get, path = "/fleet/instances/{instance}/sniffers", tag = "Fleet actions",
+    summary = "List one instance's sniffer modules",
+    description = "Calls `GET /admin/sniffers` on one instance. Listing has no fleet-wide meaning, because instances can load different modules, so the caller picks the instance.\n\nThe call goes to that one instance and its answer (status, headers and body) is passed back unchanged. `404` here means the aggregator does not know the instance; `502` that it could not reach it or could not read its answer (an answer over 8 MiB is refused).",
+    params(
+    ("instance" = String, Path, description = "The instance's name, as it reports it.", example = "edge-fra-1"),
+    ("X-Actor" = Option<String>, Header, description = "Who is acting. The console sets it to the signed-in user on a write; it is logged and passed on to each instance, and nothing else reads it.", example = "alice")
+    ),
+    responses(
+        (status = 200, description = "The instance's own answer, passed through.", body = serde_json::Value),
+        (status = 404, description = "No instance of that name has pushed.", body = crate::openapi::ErrorBody),
+        (status = 502, description = "The instance could not be reached or its answer could not be read.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn list_instance_sniffers(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -159,6 +252,20 @@ async fn list_instance_sniffers(
     .await
 }
 
+#[utoipa::path(
+    post, path = "/fleet/pools/{pool}/backends", tag = "Fleet actions",
+    summary = "Add a backend to a pool everywhere",
+    description = "Calls `POST /pools/{pool}/backends` on every known instance with the body you send. Every instance is called at once and the answer lists each outcome: one that cannot be reached, or that refuses, never fails the call for the rest.",
+    params(
+    ("pool" = String, Path, description = "The pool's name.", example = "survival"),
+    ("X-Actor" = Option<String>, Header, description = "Who is acting. The console sets it to the signed-in user on a write; it is logged and passed on to each instance, and nothing else reads it.", example = "alice")
+    ),
+    request_body(content = BackendAdd, content_type = "application/json", description = "The backend to add."),
+    responses(
+        (status = 200, description = "The per-instance results, whichever way they went.", body = BroadcastAnswer),
+        (status = 400, description = "The target path could not be built from the arguments.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn add_backend(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -177,6 +284,21 @@ async fn add_backend(
     .await
 }
 
+#[utoipa::path(
+    patch, path = "/fleet/pools/{pool}/backends/{addr}", tag = "Fleet actions",
+    summary = "Set a backend's operator state everywhere",
+    description = "Calls `PATCH /pools/{pool}/backends/{addr}` on every known instance with the body you send. Every instance is called at once and the answer lists each outcome: one that cannot be reached, or that refuses, never fails the call for the rest.",
+    params(
+    ("pool" = String, Path, description = "The pool's name.", example = "survival"),
+    ("addr" = String, Path, description = "The backend's address.", example = "10.0.2.4:25565"),
+    ("X-Actor" = Option<String>, Header, description = "Who is acting. The console sets it to the signed-in user on a write; it is logged and passed on to each instance, and nothing else reads it.", example = "alice")
+    ),
+    request_body(content = BackendPatch, content_type = "application/json", description = "The new state."),
+    responses(
+        (status = 200, description = "The per-instance results, whichever way they went.", body = BroadcastAnswer),
+        (status = 400, description = "The target path could not be built from the arguments.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn patch_backend(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -195,6 +317,20 @@ async fn patch_backend(
     .await
 }
 
+#[utoipa::path(
+    delete, path = "/fleet/pools/{pool}/backends/{addr}", tag = "Fleet actions",
+    summary = "Remove a backend from a pool everywhere",
+    description = "Calls `DELETE /pools/{pool}/backends/{addr}` on every known instance. Every instance is called at once and the answer lists each outcome: one that cannot be reached, or that refuses, never fails the call for the rest.",
+    params(
+    ("pool" = String, Path, description = "The pool's name.", example = "survival"),
+    ("addr" = String, Path, description = "The backend's address.", example = "10.0.2.4:25565"),
+    ("X-Actor" = Option<String>, Header, description = "Who is acting. The console sets it to the signed-in user on a write; it is logged and passed on to each instance, and nothing else reads it.", example = "alice")
+    ),
+    responses(
+        (status = 200, description = "The per-instance results, whichever way they went.", body = BroadcastAnswer),
+        (status = 400, description = "The target path could not be built from the arguments.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn delete_backend(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -212,6 +348,19 @@ async fn delete_backend(
     .await
 }
 
+#[utoipa::path(
+    post, path = "/fleet/route-hint", tag = "Fleet actions",
+    summary = "Push a route hint to every instance",
+    description = "Calls `POST /route-hint` on every known instance with the body you send. Only listeners with `route_hint: true` apply it. Every instance is called at once and the answer lists each outcome: one that cannot be reached, or that refuses, never fails the call for the rest.",
+    params(
+    ("X-Actor" = Option<String>, Header, description = "Who is acting. The console sets it to the signed-in user on a write; it is logged and passed on to each instance, and nothing else reads it.", example = "alice")
+    ),
+    request_body(content = RouteHint, content_type = "application/json", description = "The hint."),
+    responses(
+        (status = 200, description = "The per-instance results, whichever way they went.", body = BroadcastAnswer),
+        (status = 400, description = "The target path could not be built from the arguments.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn route_hint(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     let actor = actor_header(&headers);
     tracing::info!(?actor, verb = "route_hint", "fan-out verb");
@@ -239,6 +388,20 @@ struct SnifferUploadQuery {
 /// to every known instance's `POST /admin/sniffers`, raw bytes with
 /// `content-type: application/octet-stream` (not JSON — this is the one
 /// fan-out verb whose body isn't JSON, see `broadcast_with_content_type`).
+#[utoipa::path(
+    post, path = "/fleet/sniffers", tag = "Fleet actions",
+    summary = "Upload a sniffer module to every instance",
+    description = "Calls `POST /admin/sniffers?name=<name>` on every known instance with the raw module bytes (`application/octet-stream`; this is the one verb whose body is not JSON). The body may be up to the largest sniffer module the proxies accept. Every instance is called at once and the answer lists each outcome: one that cannot be reached, or that refuses, never fails the call for the rest.",
+    params(
+    ("name" = String, Query, description = "The module's name.", example = "minecraft"),
+    ("X-Actor" = Option<String>, Header, description = "Who is acting. The console sets it to the signed-in user on a write; it is logged and passed on to each instance, and nothing else reads it.", example = "alice")
+    ),
+    request_body(content = Vec<u8>, content_type = "application/octet-stream", description = "The `.wasm` module."),
+    responses(
+        (status = 200, description = "The per-instance results, whichever way they went.", body = BroadcastAnswer),
+        (status = 400, description = "The target path could not be built from the arguments.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn upload_sniffer(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -260,6 +423,19 @@ async fn upload_sniffer(
 
 /// `DELETE /fleet/sniffers/{name}` — broadcasts a module removal to every
 /// known instance's `DELETE /admin/sniffers/{name}`.
+#[utoipa::path(
+    delete, path = "/fleet/sniffers/{name}", tag = "Fleet actions",
+    summary = "Remove a sniffer module everywhere",
+    description = "Calls `DELETE /admin/sniffers/{name}` on every known instance. Every instance is called at once and the answer lists each outcome: one that cannot be reached, or that refuses, never fails the call for the rest.",
+    params(
+    ("name" = String, Path, description = "The module's name.", example = "minecraft"),
+    ("X-Actor" = Option<String>, Header, description = "Who is acting. The console sets it to the signed-in user on a write; it is logged and passed on to each instance, and nothing else reads it.", example = "alice")
+    ),
+    responses(
+        (status = 200, description = "The per-instance results, whichever way they went.", body = BroadcastAnswer),
+        (status = 400, description = "The target path could not be built from the arguments.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn delete_sniffer(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -281,6 +457,19 @@ async fn delete_sniffer(
 /// known instance's `POST /admin/sniffers/{name}/rollback`. An instance
 /// without a previous version answers `404`; that shows up per instance in
 /// the results rather than failing the whole call.
+#[utoipa::path(
+    post, path = "/fleet/sniffers/{name}/rollback", tag = "Fleet actions",
+    summary = "Roll a sniffer module back everywhere",
+    description = "Calls `POST /admin/sniffers/{name}/rollback` on every known instance. An instance with no previous version answers `404`, which shows up in its own result rather than failing the call. Every instance is called at once and the answer lists each outcome: one that cannot be reached, or that refuses, never fails the call for the rest.",
+    params(
+    ("name" = String, Path, description = "The module's name.", example = "minecraft"),
+    ("X-Actor" = Option<String>, Header, description = "Who is acting. The console sets it to the signed-in user on a write; it is logged and passed on to each instance, and nothing else reads it.", example = "alice")
+    ),
+    responses(
+        (status = 200, description = "The per-instance results, whichever way they went.", body = BroadcastAnswer),
+        (status = 400, description = "The target path could not be built from the arguments.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn rollback_sniffer(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -394,15 +583,17 @@ fn forwardable_headers(upstream: &axum::http::HeaderMap) -> axum::http::HeaderMa
     headers
 }
 
-#[derive(Serialize)]
+/// What one instance answered to a verb.
+#[derive(Serialize, utoipa::ToSchema)]
 struct InstanceResult {
+    /// The instance's name.
+    #[schema(example = "edge-fra-1")]
     instance: String,
-    /// The instance's own HTTP status, if it was reached at all.
+    /// The instance's own HTTP status; `null` when it could not be reached at all.
     status: Option<u16>,
-    /// Set instead of `status` when the instance couldn't be reached.
+    /// Set when the instance could not be reached (`instance unreachable`), or when it answered `426`: then it is the text of that answer, which names both protocol versions.
     error: Option<String>,
-    /// The start of the instance's reply text when it refused (non-2xx), so a
-    /// caller can tell apart refusals that share a status (e.g. two kinds of 409).
+    /// The first 200 bytes of the instance's answer when it refused (any non-2xx status), so a caller can tell apart refusals that share a status.
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
 }

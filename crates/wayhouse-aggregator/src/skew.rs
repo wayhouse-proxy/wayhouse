@@ -21,11 +21,17 @@ use serde::Serialize;
 /// How long a rise of the mismatch counter keeps a node red.
 pub const RECENT_MISMATCH_MS: u64 = 5 * 60 * 1000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// How an instance's version compares with the newest in the fleet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Skew {
+    /// The same version as the newest, or the instance reports none (an older build).
     None,
+    /// The same protocol major and a product minor at most one behind: the supported window.
+    /// The console shows yellow.
     WithinWindow,
+    /// Another protocol major, more than one minor behind, or it refused a request for an
+    /// incompatible protocol within the last five minutes. The console shows red.
     OutsideWindow,
 }
 

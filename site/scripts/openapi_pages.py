@@ -14,6 +14,16 @@ def _ref(spec, node):
     """Follow `$ref` (only local `#/components/schemas/X` ones occur)."""
     while isinstance(node, dict) and "$ref" in node:
         node = spec["components"]["schemas"][node["$ref"].rsplit("/", 1)[1]]
+    if isinstance(node, dict) and "allOf" in node:
+        # a flattened struct: one object holding the properties of every part
+        merged = {"type": "object", "properties": {}, "required": []}
+        if "description" in node:
+            merged["description"] = node["description"]
+        for part in node["allOf"]:
+            part = _ref(spec, part)
+            merged["properties"].update(part.get("properties", {}))
+            merged["required"] += part.get("required", [])
+        return merged
     return node
 
 
@@ -65,7 +75,10 @@ def _example(spec, node, depth=0):
 def _props(spec, node):
     node = _ref(spec, node)
     if node.get("type") == "array":
-        return None
+        items = node.get("items", {})
+        if "$ref" not in items:
+            return None
+        node = _ref(spec, items)
     props = node.get("properties")
     if not props:
         return None
@@ -98,6 +111,14 @@ def _json(v):
     return json.dumps(v, indent=2)
 
 
+def _scheme(spec, op):
+    """The name of the security scheme an operation asks for: `bearer` unless it names another."""
+    sec = op.get("security")
+    if sec and sec != [{}] and sec[0]:
+        return next(iter(sec[0]))
+    return "bearer"
+
+
 def _curl(spec, method, path, op, base):
     url = base + path
     for p in op.get("parameters", []):
@@ -116,7 +137,11 @@ def _curl(spec, method, path, op, base):
     if method != "get":
         parts.append("-X %s" % method.upper())
     if secured:
-        parts.append('-H "Authorization: Bearer $TOKEN"')
+        var = "TOKEN" if _scheme(spec, op) == "bearer" else _scheme(spec, op).upper() + "_TOKEN"
+        parts.append('-H "Authorization: Bearer $%s"' % var)
+    for p in op.get("parameters", []):
+        if p["in"] == "header" and p.get("required"):
+            parts.append('-H "%s: %s"' % (p["name"], p.get("example") or (p.get("schema") or {}).get("example") or "value"))
     body = ""
     rb = op.get("requestBody")
     if rb:
@@ -149,7 +174,8 @@ def _responses(spec, op):
             kind = _type(spec, schema)
             desc += (" Body: %s `%s`." % (kind, ctype)) if ctype != "text/plain" and kind != "any" else ""
             ex = c.get("example", None)
-            if ex is None and "$ref" in schema and code.startswith("2"):
+            if ex is None and code.startswith("2") and (
+                    "$ref" in schema or (schema.get("type") == "array" and "$ref" in schema.get("items", {}))):
                 ex = _example(spec, schema)
             if ex is not None and (code.startswith("2") or "example" in c):
                 examples.append((code, ctype, ex))
@@ -169,6 +195,9 @@ def _operation(spec, path, method, op, base):
         auth = "the admin token" + (
             ", and the %s token%s" % (" and ".join(extra) if len(extra) < 3 else ", ".join(extra[:-1]) + " and " + extra[-1],
                                       "s" if len(extra) > 1 else "") if extra else " only")
+    if secured and _scheme(spec, op) != "bearer":
+        scheme = spec.get("components", {}).get("securitySchemes", {}).get(_scheme(spec, op), {})
+        auth = _one_line(scheme.get("description", auth))
     out.append("\n**Auth:** %s" % auth)
     params = op.get("parameters", [])
     if params:
@@ -190,7 +219,7 @@ def _operation(spec, path, method, op, base):
         out.append("\nExample `%s` response:\n" % code)
         if isinstance(ex, (dict, list)):
             out.append("```json\n%s\n```" % _json(ex))
-            rs = _ref(spec, op["responses"][code]["content"][ctype]["schema"])
+            rs = op["responses"][code]["content"][ctype]["schema"]
             t2 = _props(spec, rs)
             if t2 and n == 0:
                 out.append("\nResponse fields:\n\n" + t2)

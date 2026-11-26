@@ -4943,6 +4943,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "utoipa",
  "wayhouse-enroll",
  "wayhouse-http",
  "wayhouse-settings",

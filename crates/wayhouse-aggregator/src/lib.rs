@@ -33,6 +33,7 @@ pub mod features;
 pub mod history;
 pub mod ingest;
 pub mod nodes;
+pub mod openapi;
 pub mod parent_push;
 pub mod serve;
 pub mod skew;

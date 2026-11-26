@@ -157,6 +157,32 @@ pub fn command() -> clap::Command {
     <Args as clap::CommandFactory>::command()
 }
 
+/// The OpenAPI paths of the routes outside the fleet API.
+#[derive(utoipa::OpenApi)]
+#[openapi(paths(healthz, metrics_doc))]
+pub(crate) struct ServiceDoc;
+
+#[utoipa::path(
+    get, path = "/healthz", tag = "Service",
+    summary = "Liveness",
+    description = "Answers `ok` while the process is up. It needs no token, so a probe can reach it. It is the aggregator's own liveness, not the fleet's: `GET /fleet/healthz` says when each instance was last heard from.",
+    security(()),
+    responses((status = 200, description = "The text `ok`.", body = String, content_type = "text/plain", example = "ok"))
+)]
+async fn healthz() -> &'static str {
+    "ok"
+}
+
+/// Documentation only: the handler is `wayhouse_http::metrics::router`, merged into the app.
+#[utoipa::path(
+    get, path = "/metrics", tag = "Service",
+    summary = "Prometheus metrics",
+    description = "The aggregator's metrics in the Prometheus text format. `--metrics-token-file` names a token that unlocks only this route, so a scraper need not hold the admin token; without it the admin token is required.",
+    responses((status = 200, description = "Prometheus text format.", body = String, content_type = "text/plain"))
+)]
+#[allow(dead_code)]
+async fn metrics_doc() {}
+
 pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
     let layered = wayhouse_settings::layer(
         "aggregator",
@@ -253,7 +279,7 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
     }
 
     let app = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(healthz))
         .merge(wayhouse_http::metrics::router(
             prometheus,
             wayhouse_http::server::BearerAuth::new(

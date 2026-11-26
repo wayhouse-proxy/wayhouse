@@ -153,6 +153,37 @@ impl AppState {
     }
 }
 
+#[utoipa::path(
+    get, path = "/openapi.json", tag = "Service",
+    summary = "This document",
+    description = "The OpenAPI description of this API, as JSON.",
+    responses((status = 200, description = "The OpenAPI document.", body = serde_json::Value, content_type = "application/json"))
+)]
+async fn openapi_spec() -> Json<serde_json::Value> {
+    Json(crate::openapi::openapi_json())
+}
+
+/// The OpenAPI paths of the routes in this module.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(ingest, fleet_pools, fleet_node_pools, fleet_sessions, fleet_healthz, fleet_features, fleet_stats,
+        fleet_nodes, fleet_nodes_with_tags, resolve_nodes, subscribe_fleet, openapi_spec),
+    components(schemas(
+        crate::ingest::FeatureReport, crate::ingest::ListenerStats, crate::ingest::BackendSummary,
+        crate::ingest::SessionCounts, crate::nodes::Node, crate::nodes::NodeState, crate::nodes::Rollup,
+        crate::nodes::Group, crate::skew::Skew, crate::history::Series<crate::history::FleetPoint>,
+        crate::history::Named<crate::history::ListenerPoint>, crate::history::Named<crate::history::PoolPoint>,
+        crate::history::Named<crate::history::RegionPoint>, crate::features::FlagRollup,
+    )),
+    tags(
+        (name = "Ingest", description = "Where a proxy reports its state."),
+        (name = "Fleet views", description = "What the fleet looks like, read from what the proxies pushed."),
+        (name = "Node list", description = "The filtered, sorted and paged node list."),
+        (name = "Service", description = "Liveness, metrics and this document."),
+    ),
+)]
+pub(crate) struct ApiDoc;
+
 pub fn router(state: AppState) -> Router {
     // Two bearer layers: `/ingest` accepts only `--ingest-token`, everything
     // under `/fleet` only `--auth-token`.
@@ -183,6 +214,7 @@ pub fn router(state: AppState) -> Router {
             post(resolve_nodes).layer(DefaultBodyLimit::max(NODE_TAGS_BODY_LIMIT)),
         )
         .route("/fleet/subscribe", get(subscribe_fleet))
+        .route("/openapi.json", get(openapi_spec))
         .merge(crate::fanout::router())
         .route_layer(axum::middleware::from_fn_with_state(
             wayhouse_http::server::BearerAuth::new(state.auth_token.as_deref()),
@@ -202,6 +234,27 @@ struct ErrorResponse {
 /// self-reports, not something the aggregator validates against reality —
 /// except `admin_url`, which later receives the instance token and so must pass
 /// the [`AdminUrlPolicy`].
+#[utoipa::path(
+    post, path = "/ingest", tag = "Ingest",
+    summary = "Push an instance's state",
+    description = "A proxy reports a summary of itself: its pools and backends, session counts, listener counters and feature flags. \
+The aggregator keeps the newest push per `instance` and overwrites it on the next one, in memory only. Proxies push every \
+`--aggregator-interval-sec` seconds (default 10), and the aggregator calls an instance `stale` after 30 seconds of silence.\n\n\
+This route takes the **ingest token** (`--ingest-token`), not the admin token, and is gated on the `x-wayhouse-protocol` header: \
+a caller on another protocol major, or with no header, gets `426`. The `admin_url` is checked against `--instance-url-allow`: \
+the aggregator later sends the instance token to that URL, so a push may not name an arbitrary host.",
+    security(("ingest" = [])),
+    params(("x-wayhouse-protocol" = String, Header, description = "The caller's wire protocol, `major.minor`.", example = "1.3")),
+    request_body(content = IngestPayload, content_type = "application/json", description = "The instance's state."),
+    responses(
+        (status = 200, description = "Stored."),
+        (status = 400, description = "The instance name is empty, `admin_url` is not allowed, a field or list is over its limit, or the body is not JSON. (A body that is not JSON at all is answered with plain text.)", body = crate::openapi::ErrorBody),
+        (status = 401, description = "No bearer token, or the wrong one. Body: `unauthorized`.", body = String, content_type = "text/plain"),
+        (status = 422, description = "The body is JSON but does not have the payload's shape.", body = String, content_type = "text/plain"),
+        (status = 426, description = "The caller's protocol major differs, or the header is missing or unparsable. The body names both versions.", body = String, content_type = "text/plain"),
+        (status = 503, description = "The store holds the most live instances it will take (10,000); this push is refused.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn ingest(
     State(state): State<AppState>,
     peer: Option<Extension<ConnectInfo<wayhouse_http::tls::PeerAddr>>>,
@@ -246,11 +299,17 @@ async fn ingest(
     StatusCode::OK.into_response()
 }
 
-#[derive(Serialize)]
+/// One instance's pools and backends.
+#[derive(Serialize, utoipa::ToSchema)]
 struct FleetPools {
+    /// The instance's name.
+    #[schema(example = "edge-fra-1")]
     instance: String,
+    /// Milliseconds since its last push, by the aggregator's own clock.
     last_seen_ms_ago: u64,
+    /// Its pools.
     pools: Vec<PoolSummary>,
+    /// Its fleet group path, when it reports one.
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<String>,
 }
@@ -258,6 +317,15 @@ struct FleetPools {
 /// `GET /fleet/pools` — every known instance's pool/backend summary, oldest-
 /// pushed-first is not the order here; [`IngestStore::snapshot`] already
 /// sorts by instance name for a stable table.
+#[utoipa::path(
+    get, path = "/fleet/pools", tag = "Fleet views",
+    summary = "Pools and backends of every instance",
+    description = "Every known instance's pools and backends, as of its last push, sorted by instance name. Nothing is fetched from the instances: \
+the data already arrived with their pushes. `last_seen_ms_ago` is on the aggregator's own clock.",
+    responses(
+        (status = 200, description = "One entry per instance.", body = Vec<FleetPools>),
+    )
+)]
 async fn fleet_pools(State(state): State<AppState>) -> Response {
     let now = unix_ms();
     let out: Vec<FleetPools> = state
@@ -277,6 +345,16 @@ async fn fleet_pools(State(state): State<AppState>) -> Response {
 /// `GET /fleet/nodes/{instance}/pools` — one instance's pools and backend state, so a UI that looks at
 /// one node does not have to read the whole fleet. `404` for an instance that never pushed. The name
 /// only keys a map lookup; it is never put into a URL.
+#[utoipa::path(
+    get, path = "/fleet/nodes/{instance}/pools", tag = "Fleet views",
+    summary = "Pools and backends of one instance",
+    description = "The same shape as one entry of `GET /fleet/pools`, for one instance, so a view of a single node need not read the whole fleet.",
+    params(("instance" = String, Path, description = "The instance's name, as it reports it.", example = "edge-fra-1")),
+    responses(
+        (status = 200, description = "The instance's pools.", body = FleetPools),
+        (status = 404, description = "No instance of that name has pushed.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn fleet_node_pools(State(state): State<AppState>, Path(instance): Path<String>) -> Response {
     match state.store.get(&instance) {
         Some(s) => (
@@ -299,17 +377,31 @@ async fn fleet_node_pools(State(state): State<AppState>, Path(instance): Path<St
     }
 }
 
-#[derive(Serialize)]
+/// One instance's session counts.
+#[derive(Serialize, utoipa::ToSchema)]
 struct FleetSessions {
+    /// The instance's name.
+    #[schema(example = "edge-fra-1")]
     instance: String,
+    /// Milliseconds since its last push.
     last_seen_ms_ago: u64,
+    /// Open TCP sessions.
     tcp: usize,
+    /// Open UDP sessions.
     udp: usize,
 }
 
 /// `GET /fleet/sessions` — every known instance's session *counts* (not the
 /// full live registry — see the module doc's note on `IngestPayload` being a
 /// summary; an instance's own `GET /sessions` still has the detail).
+#[utoipa::path(
+    get, path = "/fleet/sessions", tag = "Fleet views",
+    summary = "Session counts of every instance",
+    description = "Each instance's open TCP and UDP session counts, as of its last push. These are counts only; an instance's own `GET /sessions` has the detail.",
+    responses(
+        (status = 200, description = "One entry per instance.", body = Vec<FleetSessions>),
+    )
+)]
 async fn fleet_sessions(State(state): State<AppState>) -> Response {
     let now = unix_ms();
     let out: Vec<FleetSessions> = state
@@ -326,17 +418,18 @@ async fn fleet_sessions(State(state): State<AppState>) -> Response {
     (StatusCode::OK, Json(out)).into_response()
 }
 
-#[derive(Serialize)]
+/// How recently one instance was heard from.
+#[derive(Serialize, utoipa::ToSchema)]
 struct FleetHealth {
+    /// The instance's name.
+    #[schema(example = "edge-fra-1")]
     instance: String,
+    /// Milliseconds since its last push.
     last_seen_ms_ago: u64,
-    /// Past [`STALE_AFTER_MS`] since the last push — advisory, the same
-    /// spirit as a proxy's own backend health: an operator signal, not a
-    /// promise the instance is actually down (it could just be a slow
-    /// aggregator link).
+    /// More than 30 seconds since the last push. Advisory: an operator signal, not a promise
+    /// that the instance is down (it could be a slow link to the aggregator).
     stale: bool,
-    /// Product version the instance runs; empty from a build that predates
-    /// the field. The UI backend enforces a sniffer's `min_proxy` against it.
+    /// The product version the instance runs; empty from an older build.
     version: String,
 }
 
@@ -344,6 +437,14 @@ struct FleetHealth {
 /// distinct from the aggregator's own `GET /healthz` (its own liveness) and
 /// from any one instance's `GET /healthz` (that instance's own liveness) —
 /// it answers "when did *we* last hear from each instance."
+#[utoipa::path(
+    get, path = "/fleet/healthz", tag = "Fleet views",
+    summary = "When each instance was last heard from",
+    description = "How recent each instance's last push is, and whether that is `stale` (more than 30 seconds). This is not the aggregator's own `GET /healthz`, and not an instance's: it answers \"when did the aggregator last hear from each one\". `stale` is advisory: it can mean a slow link rather than a dead instance.",
+    responses(
+        (status = 200, description = "One entry per instance.", body = Vec<FleetHealth>),
+    )
+)]
 async fn fleet_healthz(State(state): State<AppState>) -> Response {
     let now = unix_ms();
     let out: Vec<FleetHealth> = state
@@ -363,12 +464,85 @@ async fn fleet_healthz(State(state): State<AppState>) -> Response {
     (StatusCode::OK, Json(out)).into_response()
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct StatsQuery {
+    /// How far back to look: `5m`, `15m` (the default) or `1h`.
+    #[param(example = "15m")]
     range: Option<String>,
 }
 
+/// The query of the node list.
+#[derive(utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)] // documentation type: the query is parsed from the raw string
+struct NodeQuery {
+    /// The page, from 1.
+    #[param(minimum = 1, example = 1)]
+    page: Option<usize>,
+    /// Rows per page, 1 to 200. Default 25.
+    #[param(minimum = 1, maximum = 200, example = 25)]
+    size: Option<usize>,
+    /// The sort key: `instance` (default), `state`, `region`, `sessions` or `version`. Versions sort by their dotted numbers (`0.9.0` before `0.10.0`).
+    sort: Option<String>,
+    /// `asc` (default) or `desc`.
+    dir: Option<String>,
+    /// A case-insensitive substring of the instance, region, group, version or a `key=value` tag. At most 128 bytes.
+    q: Option<String>,
+    /// Only nodes in this state: `ok`, `degraded` or `stale`.
+    state: Option<String>,
+    /// Only nodes of this region.
+    region: Option<String>,
+    /// Only nodes that carry this tag: `key`, or `key=value` for an exact value. Repeat the parameter to require several; all must match.
+    tag: Option<Vec<String>>,
+    /// `region` groups the selection by region: the list is ordered by region first and the answer carries a roll-up per region.
+    group_by: Option<String>,
+}
+
+/// The filter part of the node-list query.
+#[derive(utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)] // documentation type: the query is parsed from the raw string
+struct NodeFilter {
+    /// A case-insensitive substring of the instance, region, group, version or a `key=value` tag.
+    q: Option<String>,
+    /// Only nodes in this state: `ok`, `degraded` or `stale`.
+    state: Option<String>,
+    /// Only nodes of this region.
+    region: Option<String>,
+    /// Only nodes that carry this tag: `key` or `key=value`. Repeat to require several.
+    tag: Option<Vec<String>>,
+}
+
+/// The body of a node query that carries the operator's tags.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the body is parsed by `nodes::parse_operator`
+struct OperatorTagsBody {
+    /// The operator's `key=value` tags per instance name; they win over a tag the instance declared. Unknown top-level keys are refused, and tags for an instance that is not known are ignored.
+    #[schema(example = json!({"edge-fra-1": {"owner": "platform"}}))]
+    operator_tags: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+}
+
+/// The instances a filter selects.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the handler builds the object inline
+struct ResolveAnswer {
+    /// How many instances match.
+    count: usize,
+    /// Their names, ascending.
+    instances: Vec<String>,
+}
+
 /// `GET /fleet/features`: the per-flag roll-up of what the proxies report ([`crate::features`]).
+#[utoipa::path(
+    get, path = "/fleet/features",
+    tag = "Fleet views",
+    summary = "How each feature flag stands across the fleet",
+    description = "For each flag the proxies report: how many have it on, off, or lack the code behind it, with the names of the instances running it off or overridden (up to 50 each).",
+    responses(
+        (status = 200, description = "The roll-up.", body = crate::features::FeatureRollup),
+    )
+)]
 async fn fleet_features(State(state): State<AppState>) -> Response {
     Json(crate::features::rollup(&state.store.snapshot())).into_response()
 }
@@ -376,6 +550,18 @@ async fn fleet_features(State(state): State<AppState>) -> Response {
 /// `GET /fleet/stats?range=5m|15m|1h` (default `15m`) — fleet-wide rates and
 /// gauges per minute from the rolling history ([`crate::history`]); aggregates
 /// only, never a per-instance series.
+#[utoipa::path(
+    get, path = "/fleet/stats", tag = "Fleet views",
+    summary = "Rates and gauges over time",
+    description = "Fleet-wide rates and gauges per minute, from a rolling history of about an hour that every push feeds. Proxies push cumulative counters; the aggregator turns the differences into rates. \
+A counter that went down means the instance restarted. A gap between pushes spreads the increase over the minutes it spans, so a silent instance never shows as a spike. There is no per-node series: only the fleet total and the series per listener, pool and region. \
+The history is in memory: a restart of the aggregator starts the charts empty.",
+    params(StatsQuery),
+    responses(
+        (status = 200, description = "The series.", body = crate::history::Stats),
+        (status = 400, description = "`range` is not one of the three values.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn fleet_stats(State(state): State<AppState>, Query(q): Query<StatsQuery>) -> Response {
     let range_sec = match q.range.as_deref() {
         None | Some("15m") => 900,
@@ -404,6 +590,17 @@ fn bad_request(error: String) -> Response {
 
 /// `GET /fleet/nodes?page=&size=&sort=&dir=&q=&state=&region=&tag=&group_by=region` — the
 /// filtered, sorted and paged node list with rollups ([`crate::nodes`]).
+#[utoipa::path(
+    get, path = "/fleet/nodes", tag = "Node list",
+    summary = "The node list",
+    description = "Every node, filtered, sorted and paged on the server so a large fleet never travels to the browser whole. A node is `stale` after 30 seconds without a push, `degraded` when it pushes and at least one backend is unhealthy, and `ok` otherwise. \
+Region and tags are what an instance reports about itself (`--region`, `--tag key=value`); the aggregator stores nothing of its own. Query keys it does not know are ignored.",
+    params(NodeQuery),
+    responses(
+        (status = 200, description = "One page, with a roll-up over everything the filter selects.", body = crate::nodes::Page),
+        (status = 400, description = "A query value is invalid.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn fleet_nodes(State(state): State<AppState>, RawQuery(query): RawQuery) -> Response {
     node_page(&state, query.as_deref(), &[])
 }
@@ -414,6 +611,18 @@ const NODE_TAGS_BODY_LIMIT: usize = 4 << 20;
 /// `POST /fleet/nodes/query?<same query as the list>` with `{"operator_tags": {...}}`: the list
 /// with the operator's tags laid over what the instances declared (see [`nodes::parse_operator`]).
 /// A POST only because the tags do not fit a URL.
+#[utoipa::path(
+    post, path = "/fleet/nodes/query", tag = "Node list",
+    summary = "The node list with operator tags",
+    description = "The same list as `GET /fleet/nodes`, with the operator's tags laid over the tags the instances declared. Operator tags live in the controller; the console sends them with each query, and they win over a declared tag of the same key. It is a `POST` only because the tags do not fit a URL. Nothing is changed. The body may be empty, which means no operator tags; it is at most 4 MiB.",
+    params(NodeQuery),
+    request_body(content = OperatorTagsBody, content_type = "application/json", description = "Operator tags by instance. May be empty."),
+    responses(
+        (status = 200, description = "One page, as for `GET /fleet/nodes`.", body = crate::nodes::Page),
+        (status = 400, description = "A query value or the body is invalid (an unknown key, or a tag that breaks the label rules).", body = crate::openapi::ErrorBody),
+        (status = 413, description = "The body is over 4 MiB."),
+    )
+)]
 async fn fleet_nodes_with_tags(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
@@ -439,6 +648,18 @@ fn node_page(state: &AppState, query: Option<&str>, body: &[u8]) -> Response {
 /// action to show the count before the operator confirms. Takes the query a list view sent
 /// (paging keys are ignored) and, like [`fleet_nodes_with_tags`], the operator's tags; reads,
 /// changes nothing.
+#[utoipa::path(
+    post, path = "/fleet/nodes/resolve", tag = "Node list",
+    summary = "Which instances a filter selects",
+    description = "The instances a filter selects and how many, so a bulk action can show the count before the operator confirms. It takes the query a list view sent (paging keys are ignored) and, like `POST /fleet/nodes/query`, the operator's tags in the body. Nothing is changed.",
+    params(NodeFilter),
+    request_body(content = OperatorTagsBody, content_type = "application/json", description = "Operator tags by instance. May be empty."),
+    responses(
+        (status = 200, description = "The selection.", body = ResolveAnswer),
+        (status = 400, description = "A query value or the body is invalid.", body = crate::openapi::ErrorBody),
+        (status = 413, description = "The body is over 4 MiB."),
+    )
+)]
 async fn resolve_nodes(
     State(state): State<AppState>,
     RawQuery(query): RawQuery,
@@ -460,21 +681,31 @@ async fn resolve_nodes(
     Json(serde_json::json!({ "count": instances.len(), "instances": instances })).into_response()
 }
 
-#[derive(Serialize)]
+/// One instance in the live fleet view.
+#[derive(Serialize, utoipa::ToSchema)]
 struct FleetInstanceView {
+    /// The instance's name.
+    #[schema(example = "edge-fra-1")]
     instance: String,
+    /// Milliseconds since its last push.
     last_seen_ms_ago: u64,
+    /// More than 30 seconds since the last push.
     stale: bool,
+    /// Its pools.
     pools: Vec<PoolSummary>,
+    /// Its session counts.
     sessions: SessionCounts,
+    /// Its fleet group path, when it reports one.
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<String>,
+    /// The product version it runs; empty from an older build.
     version: String,
+    /// The wire protocol `major.minor` it speaks; empty from an older build.
     protocol: String,
     /// The controller revision the instance runs, if it reports one.
     #[serde(skip_serializing_if = "Option::is_none")]
     config_revision: Option<u64>,
-    /// Against the newest version in the fleet (see [`crate::skew`]).
+    /// How its version compares with the newest in the fleet.
     skew: Skew,
 }
 
@@ -521,6 +752,17 @@ fn fleet_view(store: &IngestStore) -> Vec<FleetInstanceView> {
 /// its output into SSE `Event`s, keeping the worker's logic (the part worth
 /// testing) free of any HTTP/SSE framing — same split `wayhouse-controller`'s
 /// `subscribe`/`subscribe_worker` uses.
+#[utoipa::path(
+    get, path = "/fleet/subscribe", tag = "Fleet views",
+    summary = "Live fleet view (server-sent events)",
+    description = "A server-sent-event stream of the merged fleet state: every instance with its pools, sessions, version, protocol, config revision and skew. \
+The first event is the current view; another follows every accepted push, debounced by 150 ms so a burst of pushes lands as one event. There is no replay: a subscriber that falls behind just gets the current view next. Each event's `data` is a JSON array of the objects below. \
+A reverse proxy in front of this route must not buffer the response and must allow a long read timeout.",
+    responses(
+        (status = 200, description = "The event stream; each event's data is a JSON array.", body = Vec<FleetInstanceView>, content_type = "text/event-stream",
+            example = json!([{"instance": "edge-fra-1", "last_seen_ms_ago": 3200, "stale": false, "pools": [], "sessions": {"tcp": 12, "udp": 0}, "version": "0.4.0", "protocol": "1.3", "config_revision": 41, "skew": "none"}])),
+    )
+)]
 async fn subscribe_fleet(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
