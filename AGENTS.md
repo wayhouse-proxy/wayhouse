@@ -2,7 +2,7 @@
 
 Guidance for any AI coding agent working in this repository, following the
 [agents.md](https://agents.md) convention.
-Humans: start with [`CONTRIBUTING.md`](CONTRIBUTING.md); this file is the agent working agreement
+Humans: start with [`CONTRIBUTING.md`](.github/CONTRIBUTING.md); this file is the agent working agreement
 and the full command table.
 
 Tool-specific entry points (e.g. `CLAUDE.md`) are thin pointers to this file — keep
@@ -26,7 +26,7 @@ the guidance here, not in them.
 > **Sniffers vs plugins.** *Sniffers* are the WASM protocol/hostname sniffer modules; the
 > official ones live in
 > [`wayhouse-proxy/sniffers`](https://github.com/wayhouse-proxy/sniffers) (this repository
-> keeps only the ABI crate, `crates/wayhouse-sniffer-abi/`, and pins their releases in `sniffers.lock`
+> keeps only the ABI crate, `crates/wayhouse-sniffer-abi/`, and pins their releases in `.github/pins/sniffers.lock`
 > for the e2e tests). *Plugins* are
 > integrations with other systems (e.g. the Pelican panel) and live in
 > [`wayhouse-proxy/plugins`](https://github.com/wayhouse-proxy/plugins); design:
@@ -48,10 +48,9 @@ changes. Current progress and the next step are in [`HANDOVER.md`](HANDOVER.md).
 ```
 Cargo.toml                  workspace (resolver 2, edition 2021)
 rust-toolchain.toml         pins stable
-config.example.yaml         reduced v0 config schema
 Makefile                    make check / test / run / fmt / lint
 docs/                       the plan (00–12) — source of truth for design
-deploy/                     reference Dockerfile (5 targets), compose demo, k8s manifests, smoke.sh (docs/12)
+deploy/                     reference Dockerfile (5 targets), compose demo, k8s manifests, smoke.sh (docs/12), config.example.yaml (annotated reference config)
 crates/
   wayhouse-config/               YAML config: raw types, validation, resolved `Config`
     src/                     lib.rs (entry points + re-exports), schema.rs (raw YAML types), validate.rs (`validate()`; tests in validate/tests.rs), parse.rs (value parsers), resolved.rs (validated `Config` & friends), cidr.rs (`Cidr`/`CidrSet`/`Acl`/`GeoAcl`), matcher.rs (`Matcher`, `extract_sni`), keys.rs (`base64_decode_32`)
@@ -192,16 +191,16 @@ client from `crates/wayhouse/proto/resolver.proto`.
 | Deploy scan | `make deploy-scan` (after `deploy-images`; needs Docker + `trivy`): Trivy over the seven images (OS packages, embedded Rust crates, secrets) and `Cargo.lock` / the UI's `package-lock.json`, HIGH/CRITICAL with a fix; exits 1 on findings, reports in `target/trivy/`. In CI it is the separate, **informational** `trivy` job after `deploy` (non-blocking; scans `deploy`'s images from a `docker save` artifact; run summary + warnings + `trivy-reports` artifact; the official `aquasec/trivy` image pinned by digest, not `trivy-action`). Rust coverage is GHSA only — `cargo audit` (the `audit` CI job, `make audit`) covers RustSec. Accepted findings: `.trivyignore` |
 | Deploy smoke | `make deploy-smoke` (needs Docker; compose demo + `deploy/smoke.sh`; also the `deploy` CI job) |
 | Tunnel e2e (nextest) | `make tunnel-e2e-ci` (needs `cargo install cargo-nextest --locked`; writes `target/nextest/ci/junit.xml`; what the CI `tunnel` job runs) |
-| Audit | `make audit` (needs `cargo install cargo-audit --locked`): `cargo audit` over the root, sniffers and fuzz lockfiles; exits 1 on a vulnerability, JSON in `target/cargo-audit/`. In CI the **informational** `audit` job (every push/PR, plus nightly; run summary + warnings + `cargo-audit` artifact). Accepted advisories go in `.cargo/audit.toml`, each with a reason and a way out |
+| Audit | `make audit` (needs `cargo install cargo-audit --locked`): `cargo audit` over the root, sniffers and fuzz lockfiles; exits 1 on a vulnerability, JSON in `target/cargo-audit/`. In CI the **informational** `cargo audit` step of the `checks` job (every PR/queue run, plus nightly; run summary + warnings + `cargo-audit` artifact). Accepted advisories go in `.cargo/audit.toml`, each with a reason and a way out |
 | Web proxy e2e | `CADDY_BIN=<caddy> cargo test -p wayhouse-fleet-tests --test web -- --ignored` (real Caddy; CI job `web-e2e` takes the Caddy out of the `wayhouse-caddy` image, in `ci-ok.needs`) |
 | Fuzz | `make fuzz` (needs `rustup toolchain install nightly` + `cargo install cargo-fuzz`; see `crates/wayhouse-config/fuzz/README.md`) |
 | Bench | `make bench` (latency / load harness vs. NFR N1/N2; see `crates/wayhouse-bench/README.md`) |
-| Official sniffers (e2e) | `make sniffers-fetch` (downloads the releases pinned in `sniffers.lock` to `target/sniffers`; needs network), then `cargo test -p wayhouse --release -- --ignored`; CI job `sniffers-e2e` (in `ci-ok.needs`, #296) |
+| Official sniffers (e2e) | `make sniffers-fetch` (downloads the releases pinned in `.github/pins/sniffers.lock` to `target/sniffers`; needs network), then `cargo test -p wayhouse --release -- --ignored`; CI job `sniffers-e2e` (in `ci-ok.needs`, #296) |
 | wayhouse-ui frontend | `make ui` (needs Node/npm; builds `crates/wayhouse-ui/web/` to `dist/`, served by `wayhouse-ui --static-dir`; see `crates/wayhouse-ui/web/README.md`) |
 | wayhouse-ui frontend tests | `make ui-test` (vitest) and `make ui-e2e` (Playwright, backend stubbed; both in the `ui` CI job) |
 | Markdown | `make docs-fmt` (Prettier, writes) / `make docs-fmt-check` and `make docs-links` (relative links and anchors); both checks are the `docs` CI job. AGENTS.md, HANDOVER.md and `docs/NN-*.md` are in `.prettierignore` for now |
-| Website | `site/` (landing page + `book.toml`) and `docs/SUMMARY.md` (the book's table of contents) are built by `.github/workflows/pages.yml` into <https://wayhouse-proxy.dev> (mdBook, pinned by digest; deploys on pushes to `main`). Build locally with `mdbook build site && python3 site/fix_links.py target/site/docs`; `fix_links.py` points links that leave `docs/` at GitHub and fails on any broken link |
-| Run | `cargo run -p wayhouse -- --config config.example.yaml` |
+| Website | `site/` (Starlight/Astro, pinned in `site/package-lock.json`) is built by `.github/workflows/pages.yml` into <https://wayhouse-proxy.dev> (deploys on pushes to `main`). The pages are generated from the Markdown in `docs/` by `site/scripts/sync_docs.py` (title from the first `# ` heading, GitHub alerts become asides, relative links are rewritten); sections: `docs/manual/` (everyday use), `docs/deep-dive/` (developer documentation), `docs/reference/`, and the old top-level chapters/guides, which the script places. Never edit `site/src/content/docs/`. Build with `make site`; Starlight fails the build on any broken internal link or anchor |
+| Run | `cargo run -p wayhouse -- --config deploy/config.example.yaml` |
 | Validate a config | `cargo run -p wayhouse -- --config <file> --check` |
 | Reload a running proxy | edit the config file, or `kill -HUP <pid>` |
 
@@ -250,7 +249,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
    guarded state here is plain data, so one panicked task must not cascade into
    every later caller.
 8. **Work on a branch, never directly on `main`.** `main` takes changes only through a
-   pull request and the merge queue (required check: `ci-ok`; see `CONTRIBUTING.md`).
+   pull request and the merge queue (required check: `ci-ok`; see `.github/CONTRIBUTING.md`).
    Commit a finished slice, a spec or plan, or a green docs sweep whenever it is useful,
    after `make check` (rule 1). End commit messages with a `Co-Authored-By:` trailer
    identifying the agent that made the change, plus a session/trace trailer (e.g.
@@ -304,17 +303,17 @@ client from `crates/wayhouse/proto/resolver.proto`.
 | UI page or component | a vitest next to it (`make ui-test`), a Playwright journey when it adds a flow (`make ui-e2e`), the rules in `docs/design-system/` (tokens, accessibility), `aria-disabled` not `disabled` on `Button`; `make ui` must build |
 | Compose or systemd bundle (`deploy/`) | `deploy/lint.sh` (pins the flags and mounts), `deploy/solo-smoke.sh` / `smoke.sh`, `deploy/README.md`, `docs/12-deployment.md`, and `wayhouse-controller/src/init.rs` when the bundle reads a new secret or file (the solo bundle is https from the `init` certificates and sets no `--allow-insecure-*` flag) |
 | A controller or aggregator client call that carries a token | `wayhouse_http::bearer::check_bearer_transport` at start (or `check_bearer_transport_global` where there is no `Args`), so plain `http://` beyond loopback is refused unless `--allow-insecure-controller`; `crates/wayhouse-fleet-tests/tests/plain_http_token.rs` lists the binaries |
-| New page under `docs/` | a line in `docs/SUMMARY.md`, or it is not on the website |
+| New page under `docs/` | nothing to register: `site/scripts/sync_docs.py` picks up every `docs/**/*.md` (new section pages go under `docs/manual/` or `docs/deep-dive/`); run `make site` to confirm it builds with valid links |
 | New routing matcher / balancer | `docs/03`, `config.example.yaml`, tests |
 | Registry index / manifest format or the sniffer ABI version rules | `wayhouse-registry` (`index.rs`, `plugin_index.rs`, `catalog.rs`, `compat.rs`), `wayhouse-ui` (`registry_client.rs`, `registry_api.rs`, `plugin_registry_api.rs`) and the web registry views, the golden `tests/golden/index.json`, `docs/sniffers.md`, the registry spec |
 | New / changed sniffer seam | `wayhouse_core::sniff`, `docs/03`, `docs/08` (Phase 9). NB: no game sniffers are compiled in — they load as sniffers (Phase 9), never as core code or a fork. |
-| Sniffer ABI (wire format or `wayhouse.abi` version) | `crates/wayhouse-sniffer-abi`, `HOST_ABI` in `sniffer_loader.rs`, the rev pinned in the sniffers repo's `Cargo.toml`, rebuilt sniffer releases, then `sniffers.lock` (`docs/sniffers.md`) |
+| Sniffer ABI (wire format or `wayhouse.abi` version) | `crates/wayhouse-sniffer-abi`, `HOST_ABI` in `sniffer_loader.rs`, the rev pinned in the sniffers repo's `Cargo.toml`, rebuilt sniffer releases, then `.github/pins/sniffers.lock` (`docs/sniffers.md`) |
 | Plugin ABI (imports, exports, capability format or `wayhouse.plugin-abi` version) | `crates/wayhouse-plugin-abi` constants, `HOST_ABI` in `wayhouse-plugin-host`, `docs/plugins.md` |
 | New optional `wayhouse` cargo feature | `crates/wayhouse/Cargo.toml` `[features]` (on by default), a `*_disabled.rs` stub that fails startup with a message naming the feature when the config needs it, a `--no-default-features` test, the AGENTS.md command table |
 | Finished a roadmap item | status legend in `docs/08-roadmap.md`, `README.md` status block |
 | New per-connection task or hop | `docs/latency-ledger.md` |
 | Architectural decision | ADR table in `docs/09-technology-choices.md` |
-| Release or version change | `RELEASING.md`, `CONTRIBUTING.md` (conventions), `deploy/README.md`, `.github/scripts/check_version_policy.py` (never reach 1.0 by tooling) |
+| Release or version change | `.github/RELEASING.md`, `.github/CONTRIBUTING.md` (conventions), `deploy/README.md`, `.github/scripts/check_version_policy.py` (never reach 1.0 by tooling) |
 
 ---
 

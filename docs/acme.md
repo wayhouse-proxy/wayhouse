@@ -81,6 +81,8 @@ The web UI's Certificates page reads these routes for every role and, for an adm
 | `DELETE /acme/sites/{name}` | Remove the site, its certificates and its retry state.                                                                                                      |
 | `GET /acme/account`         | The account URL, for pinning `CAA accounturi=` at your DNS provider. No key.                                                                                |
 
+The UI relays the reads as `GET /api/acme/sites` and `GET /api/acme/account` for every signed in role.
+
 Rules: names are lowercase hostnames, optionally `*.zone`, at most 100 per site (the CA limit);
 a name belongs to one site
 (`409` otherwise); **a wildcard needs at least one gateway** (`422`), because a wildcard key

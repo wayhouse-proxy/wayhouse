@@ -1,7 +1,7 @@
 # Convenience wrapper around the cargo commands CI runs.
 # Requires `cargo` on PATH (rustup: `source "$HOME/.cargo/env"`).
 
-.PHONY: check fmt lint test test-minimal audit build run fuzz bench bench-udp-batch sniffers-fetch ui ui-test ui-e2e tunnel-ns-check tunnel-e2e tunnel-e2e-ci deploy-images deploy-scan deploy-lint deploy-smoke deploy-solo-smoke deploy-solo-control-smoke docs-fmt docs-fmt-check docs-links help
+.PHONY: check fmt lint test test-minimal audit build run fuzz bench bench-udp-batch sniffers-fetch ui ui-test ui-e2e tunnel-ns-check tunnel-e2e tunnel-e2e-ci deploy-images deploy-scan deploy-lint deploy-smoke deploy-solo-smoke deploy-solo-control-smoke docs-fmt docs-fmt-check docs-links site docs-coverage docs-deep-dive help
 
 ## check: everything CI runs — format check, clippy (deny warnings), tests
 check: fmt-check lint test test-minimal
@@ -44,7 +44,7 @@ build:
 
 ## run: run the proxy against the example config
 run:
-	cargo run -p wayhouse -- --config config.example.yaml
+	cargo run -p wayhouse -- --config deploy/config.example.yaml
 
 ## bench: latency / load harness vs. the NFR N1/N2 targets (see crates/wayhouse-bench)
 BENCH_ARGS ?=
@@ -64,7 +64,7 @@ fuzz:
 		cargo +nightly fuzz run $$t fuzz/corpus/$$t fuzz/seeds/$$t -- -max_total_time=$(FUZZ_TIME) || exit 1; \
 	done
 
-## sniffers-fetch: download the official sniffers pinned in sniffers.lock to target/sniffers
+## sniffers-fetch: download the official sniffers pinned in .github/pins/sniffers.lock to target/sniffers
 ## (needs network); then `cargo test -p wayhouse --release -- --ignored` runs the e2e tests on them
 sniffers-fetch:
 	python3 .github/scripts/fetch_sniffers.py
@@ -134,6 +134,18 @@ docs-fmt-check:
 ## docs-links: check that relative Markdown links and anchors resolve
 docs-links:
 	python3 .github/scripts/check_md_links.py $$(git ls-files '*.md')
+
+## site: build the website from docs/ into site/dist (needs Node; fails on broken links)
+site:
+	cd site && npm ci && npm run build
+
+## docs-coverage: every flag, config key, metric and feature must be in the hand-written docs
+docs-coverage:
+	python3 site/scripts/check_coverage.py
+
+## docs-deep-dive: every source file belongs to a Deep dive topic (docs/deep-dive/topics.tsv)
+docs-deep-dive:
+	python3 site/scripts/check_deep_dive.py
 
 ## deploy-lint: static checks on deploy/ (needs the docker CLI + ruby, no daemon)
 deploy-lint:

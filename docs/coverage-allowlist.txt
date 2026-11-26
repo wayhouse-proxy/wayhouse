@@ -1,0 +1,17 @@
+# Documentation gaps that are known. Shrink this list by documenting the item and
+# deleting its line; check_coverage.py fails on a documented item that is still listed.
+# Format: <kind> <name>
+api /a
+api /admin/sniffers/demo
+api /demo.wasm
+api /fleet/sniffers/demo/rollback
+api /h
+api /i
+api /index.json
+api /loop
+api /pools/local/backends
+api /release-feed.json
+api /release-feed.json.minisig
+api /slow
+api /sniffers/demo.json
+api /x

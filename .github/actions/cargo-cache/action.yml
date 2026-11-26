@@ -4,7 +4,9 @@ description: >
   and its key is the Cargo.lock hash, so its snapshot froze at the last lockfile
   change and every later run recompiled everything newer (and a release-profile
   change made the whole release tree cold forever). This saves a fresh snapshot
-  on every main push and restores the newest one by prefix.
+  on every main push and restores the newest one by prefix. Everywhere else
+  (PRs, the merge queue) it only restores: a save there is never read by another
+  ref, and its post-step cost 76-198 s of the critical path.
 inputs:
   name:
     description: cache namespace (one per job kind)
@@ -20,17 +22,33 @@ runs:
       run: |
         echo "rustc=$(rustc -V | sha256sum | head -c 10)" >> "$GITHUB_OUTPUT"
         echo "lock=$(cat Cargo.lock 2>/dev/null | sha256sum | head -c 10)" >> "$GITHUB_OUTPUT"
+        echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+    # Same inputs for both steps; the save-capable one only runs on main (its post
+    # step uploads the snapshot), everything else just restores.
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      if: github.ref == 'refs/heads/main'
       with:
         path: |
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
           ${{ inputs.target-dirs }}
-        # main: unique key per commit => always saves a new snapshot.
-        # PRs: fixed key => read the main snapshot, don't churn the cache.
-        key: cargo-${{ inputs.name }}-${{ runner.os }}-${{ steps.k.outputs.rustc }}-${{ steps.k.outputs.lock }}-${{ github.ref == 'refs/heads/main' && github.sha || 'pr' }}
-        # No broader fallback on purpose: a lockfile or toolchain change starts
-        # cold, which bounds how much stale artifact data a snapshot accumulates.
+        # Unique key per commit => always saves a new snapshot.
+        key: cargo-${{ inputs.name }}-${{ runner.os }}-${{ steps.k.outputs.rustc }}-${{ steps.k.outputs.lock }}-${{ steps.k.outputs.week }}-${{ github.sha }}
+        # No broader fallback on purpose: a lockfile or toolchain change, and the
+        # start of every ISO week, starts cold. cargo never prunes target/, so a
+        # rolling snapshot otherwise keeps every stale artifact it ever saw (test
+        # reached 4.7 GB after three pushes, 13 GB across the ten namespaces).
         restore-keys: |
-          cargo-${{ inputs.name }}-${{ runner.os }}-${{ steps.k.outputs.rustc }}-${{ steps.k.outputs.lock }}-
+          cargo-${{ inputs.name }}-${{ runner.os }}-${{ steps.k.outputs.rustc }}-${{ steps.k.outputs.lock }}-${{ steps.k.outputs.week }}-
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      if: github.ref != 'refs/heads/main'
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ${{ inputs.target-dirs }}
+        key: cargo-${{ inputs.name }}-${{ runner.os }}-${{ steps.k.outputs.rustc }}-${{ steps.k.outputs.lock }}-${{ steps.k.outputs.week }}-none
+        restore-keys: |
+          cargo-${{ inputs.name }}-${{ runner.os }}-${{ steps.k.outputs.rustc }}-${{ steps.k.outputs.lock }}-${{ steps.k.outputs.week }}-

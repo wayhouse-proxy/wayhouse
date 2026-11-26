@@ -1,6 +1,6 @@
 name: Pages
 
-# The website (site/) and the book built from docs/ -> https://wayhouse-proxy.dev.
+# The website (site/, Starlight) built from the Markdown in docs/ -> https://wayhouse-proxy.dev.
 # Pull requests only build and check the site; a push to main that touches it deploys.
 # Not part of `ci-ok`: a broken site must not block code merges, and the PR build is
 # advisory. Repository setting needed once: Settings -> Pages -> Source = GitHub Actions.
@@ -10,11 +10,19 @@ on:
     paths:
       - "docs/**"
       - "site/**"
+      # the generated Reference pages read these
+      - "crates/**/*.rs"
+      - "crates/**/Cargo.toml"
+      - "crates/wayhouse-config/schema/**"
       - ".github/workflows/pages.yml"
   pull_request:
     paths:
       - "docs/**"
       - "site/**"
+      # the generated Reference pages read these
+      - "crates/**/*.rs"
+      - "crates/**/Cargo.toml"
+      - "crates/wayhouse-config/schema/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -26,11 +34,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  # mdBook release binary, checked against this digest before it runs.
-  MDBOOK_VERSION: "0.5.4"
-  MDBOOK_SHA256: "3f28de05dafca9d0f2eab99c662116b0e37b89b1d96a08f8f430b9eeae958cd7"
-
 jobs:
   build:
     runs-on: ubuntu-24.04   # pinned like ci.yml
@@ -39,25 +42,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Install mdBook
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - name: Build the site (fails on a broken internal link or anchor)
+        working-directory: site
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/mdbook.tgz" \
-            "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          echo "${MDBOOK_SHA256}  $RUNNER_TEMP/mdbook.tgz" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/bin"
-          tar -xzf "$RUNNER_TEMP/mdbook.tgz" -C "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Build the book and the landing page
-        run: |
-          mdbook build site
-          python3 site/fix_links.py target/site/docs
-          cp site/index.html target/site/index.html
+          npm ci
+          npm run build
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
         if: github.event_name != 'pull_request'
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         if: github.event_name != 'pull_request'
         with:
-          path: target/site
+          path: site/dist
 
   deploy:
     needs: build

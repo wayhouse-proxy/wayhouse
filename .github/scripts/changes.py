@@ -36,8 +36,8 @@ AREAS = ("ui", "sniffers", "tunnel", "deploy", "fuzz", "web", "release")
 # "/" for every package under it.
 ROOTS = {
     # `cargo nextest -p wayhouse --run-ignored only` over the pinned official sniffers
-    # (sniffers.lock); no sniffer is built from this repository any more. The same job
-    # builds the pinned official plugins (plugins.lock) and checks them with the plugin host.
+    # (.github/pins/sniffers.lock); no sniffer is built from this repository any more. The same job
+    # builds the pinned official plugins (.github/pins/plugins.lock) and checks them with the plugin host.
     "sniffers": ["wayhouse", "wayhouse-plugin-host", "wayhouse-plugin-abi"],
     # make tunnel-e2e-ci: debug-builds the five binaries, runs wayhouse-fleet-tests.
     "tunnel": ["wayhouse", "wayhouse-agent", "wayhouse-controller", "wayhouse-aggregator", "wayhouse-ui", "wayhouse-fleet-tests"],
@@ -52,17 +52,17 @@ ROOTS = {
 RUSTWIDE = re.compile(r"^(Cargo\.toml|rust-toolchain\.toml)$|^\.cargo/")
 
 # A change touching only these needs no code job (test, audit, ...); they only
-# exist as a PR gate. Mirrors the push trigger's paths-ignore in ci.yml.
+# exist as a PR gate. Mirrors cache-warm.yml's push paths-ignore.
 DOCS_ONLY = re.compile(r"\.md$|^docs/|^LICENSE-")
 
 # Non-Cargo paths per area, on top of the package graph.
 EXTRA = {
     # The UI forms are generated from the config JSON schema, so a schema change tests them.
     "ui": re.compile(r"^crates/wayhouse-ui/web/|^crates/wayhouse-config/schema/"),
-    # .config/nextest.toml holds the `ci` profile the job runs under; sniffers.lock and
-    # plugins.lock pin the modules it fetches and builds. (fetch_sniffers.py and
-    # check_plugins.py live under .github/, which already runs everything.)
-    "sniffers": re.compile(r"^\.config/|^(sniffers|plugins)\.lock$"),
+    # .config/nextest.toml holds the `ci` profile the job runs under; the .github/pins/
+    # locks pin the modules it fetches and builds. (fetch_sniffers.py and check_plugins.py
+    # live under .github/, which already runs everything.)
+    "sniffers": re.compile(r"^\.config/|^\.github/pins/"),
     "tunnel": re.compile(r"^Makefile$|^\.config/"),
     # The Caddy under test comes out of the wayhouse-caddy image (deploy/Dockerfile).
     "web": re.compile(r"^deploy/(Dockerfile|caddy/|check-caddy-image\.sh)"),
@@ -70,7 +70,7 @@ EXTRA = {
     # image's bundle, and the deploy job's Trivy scan checks them.
     "deploy": re.compile(
         r"^deploy/|^\.dockerignore$|^Makefile$|^Cargo\.(toml|lock)$"
-        r"|^crates/wayhouse-ui/web/package-lock\.json$|^\.trivyignore$"
+        r"|^crates/wayhouse-ui/web/package-lock\.json$"
     ),
 }
 
@@ -187,7 +187,9 @@ def _roots(area: str, g: Graph) -> Set[str]:
 
 def areas(files: List[str], g: Graph) -> Dict[str, bool]:
     files = [f for f in files if f]
-    if any(f.startswith(".github/") for f in files):
+    # Workflows, scripts and actions run everything; the community Markdown files and the
+    # pin files (a pin bump needs only the e2e job that reads them) do not.
+    if any(f.startswith(".github/") and not (DOCS_ONLY.search(f) or f.startswith(".github/pins/")) for f in files):
         return {a: True for a in AREAS}
     # Documentation builds and scans nothing, even under a scoped dir (deploy/README.md).
     files = [f for f in files if not DOCS_ONLY.search(f)]
@@ -205,7 +207,7 @@ def areas(files: List[str], g: Graph) -> Dict[str, bool]:
             rustwide = True  # unknown crate path: don't guess
         changed |= o or set()
     hit = dependents(changed, g) | locked
-    # The e2e job reads sniffers.lock and .config/, which build nothing: they must not
+    # The e2e job reads the .github/pins/ locks and .config/, which build nothing: they must not
     # start the release build, so `release` looks at the Rust packages alone.
     rust_sniffers = rustwide or bool(_roots("sniffers", g) & hit)
     for a in ROOTS:
@@ -216,10 +218,14 @@ def areas(files: List[str], g: Graph) -> Dict[str, bool]:
     return {a: out.get(a, False) for a in AREAS}
 
 
-# What the `docs` CI job (Prettier and the link check) depends on. The Makefile holds the
-# Prettier pin. `.prettierrc.json` and `.prettierignore` are not in DOCS_ONLY on purpose:
+# What the docs steps of the `checks` CI job (Prettier, the link check and the coverage check)
+# depends on. The coverage check reads the Rust sources and the config schema, so a new flag,
+# metric or feature starts it. The Makefile holds the Prettier pin. `.prettierrc.json` and `.prettierignore` are not in DOCS_ONLY on purpose:
 # they are config, so a PR touching only them also runs the code jobs.
-DOCS_JOB = re.compile(r"\.md$|^\.prettier(rc\.json|ignore)$|^Makefile$|^\.github/")
+DOCS_JOB = re.compile(
+    r"\.md$|^\.prettier(rc\.json|ignore)$|^Makefile$|^\.github/|^site/scripts/"
+    r"|^crates/.*\.rs$|^crates/[^/]+/Cargo\.toml$|^crates/wayhouse-config/schema/"
+)
 
 
 def is_docs(files: List[str]) -> bool:

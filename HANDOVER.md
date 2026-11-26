@@ -14,12 +14,12 @@ Last updated: 2026-11-26 (0.4.0 released).
 **Released: 0.4.0.** All roadmap phases (0–14) are built, individually verified live, and
 covered by `make check`. "Built" means built and tested, not battle-tested: there are no
 production users yet, so breaking changes are fine until 1.0. Releases are manual tags
-(`vX.Y.Z`, steps in [`RELEASING.md`](RELEASING.md)); release-please only opens the release
+(`vX.Y.Z`, steps in [`RELEASING.md`](.github/RELEASING.md)); release-please only opens the release
 PR and never tags. `release.yml` publishes eight images (amd64 + arm64) to GHCR, but only
 if the tag equals the workspace version, CI is green on main, and the whole set built and
 passed the compose smoke test.
 
-Every CI job blocks except `trivy` and `audit` (informational). The repository is public,
+Every CI job blocks except `trivy` and the audit step of `checks` (informational). The repository is public,
 so hosted Actions minutes are free; the cost is wall time and queue waits.
 
 ### Not done / not verified (all tracked in issues)
@@ -61,14 +61,14 @@ so hosted Actions minutes are free; the cost is wall time and queue waits.
 | Self-hosted CI runner | No: unsafe on a public repo (fork PRs would run on it). |
 | Reference images | Docker only, multi-arch, GHCR, on `vX.Y.Z` tags. Kubernetes packaging is #88. |
 | Release feed | Signed with a separate release minisign key; the secrets live in the `release` environment. |
-| Plugin and sniffer repos | `wayhouse-proxy/plugins` and `wayhouse-proxy/sniffers`; this repo keeps only the ABI crates and pins sniffer releases in `sniffers.lock`. |
+| Plugin and sniffer repos | `wayhouse-proxy/plugins` and `wayhouse-proxy/sniffers`; this repo keeps only the ABI crates and pins sniffer releases in `.github/pins/sniffers.lock`. |
 | Process | Nothing ships without a bug + security audit of every change since the last audit. Flaky tests count as bugs. |
 
 ## Workflow gotchas
 
 - **Run `cargo fmt --all` as its own step before `make check`.** `make check` only reports
   formatting diffs, and piping it through `tail` hides an early `fmt-check` failure: read
-  from the top or check the exit code ([`CONTRIBUTING.md`](CONTRIBUTING.md#build-and-test)).
+  from the top or check the exit code ([`CONTRIBUTING.md`](.github/CONTRIBUTING.md#build-and-test)).
 - **Disk fills up in long sessions.** `target/debug` can reach tens of GB and the linker
   then fails with a bare exit 1. `rm -rf target/debug/incremental` is the cheap fix.
 - **`protoc` is a build requirement** (gRPC resolver codegen); CI installs `protobuf-compiler`.
@@ -142,7 +142,7 @@ wall-clock time). Not part of `make check`:
   `connect_tcp_from` fallback tests; recipe in `docs/04`) and the UDP `prefix:` e2e (needs
   Linux with `IP_PKTINFO` and loopback `127.0.0.2/3`);
 - the `#[ignore]`d sniffer tests, run by the `sniffers-e2e` CI job after
-  `make sniffers-fetch` against the sniffers pinned in `sniffers.lock`.
+  `make sniffers-fetch` against the sniffers pinned in `.github/pins/sniffers.lock`.
 
 Loader tests assemble WASM from inline WAT via the `wat` crate; `wasmtime` is a normal
 dependency and needs no `wasm32` target (only the sniffers repo does).
@@ -158,9 +158,12 @@ dependency and needs no `wasm32` target (only the sniffers repo does).
   everything, so `deploy` and `fuzz` double as nightly canaries. Adding a job or changing
   which packages it builds means updating `ROOTS` in `changes.py` *and* its test.
 - Cargo caching is `.github/actions/cargo-cache` (rolling snapshot per `main` push, restored
-  by prefix; PRs read but do not write). A lockfile or toolchain bump starts cold by design;
-  if a code push without a lockfile change is back near cold timings, the cache key is the
-  first suspect. A warm full run is roughly 20 min wall clock.
+  by prefix; PRs read but do not write; `cache-warm.yml` saves them). The key carries the
+  ISO week, so every namespace also starts cold on Monday (`cache-warm.yml` runs Monday 00:05
+  UTC to refill them), because cargo never prunes `target/` and a rolling snapshot only grows.
+  A lockfile or toolchain bump starts cold by design; if a code push without a lockfile
+  change is back near cold timings mid-week, the cache key is the first suspect. The repo
+  cache limit is 10 GB; the ten namespaces must stay under it together. A warm full run is roughly 20 min wall clock.
 - Rust tests run under `cargo nextest --profile ci` (`.config/nextest.toml`); JUnit XML is
   rendered to the run summary by `test_summary.py`. A `build-release` job compiles the
   release binaries once and `deploy` builds the images from them (`BIN_SOURCE=prebuilt`);

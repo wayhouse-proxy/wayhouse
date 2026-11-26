@@ -206,11 +206,11 @@ git clone https://github.com/wayhouse-proxy/wayhouse.git
 cd wayhouse
 
 # validate the example config, then run the proxy with it
-cargo run --release -p wayhouse -- --config config.example.yaml --check
-cargo run --release -p wayhouse -- --config config.example.yaml
+cargo run --release -p wayhouse -- --config deploy/config.example.yaml --check
+cargo run --release -p wayhouse -- --config deploy/config.example.yaml
 ```
 
-[`config.example.yaml`](config.example.yaml) is the annotated reference config. Copy it
+[`deploy/config.example.yaml`](deploy/config.example.yaml) is the annotated reference config. Copy it
 and point the listeners at your own backends; the full schema is in
 [docs/05-configuration.md](docs/05-configuration.md). Edit the file or send `SIGHUP`
 (`kill -HUP <pid>`) to reload it without dropping connections.
@@ -276,11 +276,11 @@ ahead is in [docs/08-roadmap.md](docs/08-roadmap.md).
 ## Contributing
 
 Issues and ideas are welcome. To build, test and open a pull request, read
-[`CONTRIBUTING.md`](CONTRIBUTING.md). How releases are cut is in
-[`RELEASING.md`](RELEASING.md). Participation is covered by the
-[Code of Conduct](CODE_OF_CONDUCT.md).
+[`CONTRIBUTING.md`](.github/CONTRIBUTING.md). How releases are cut is in
+[`RELEASING.md`](.github/RELEASING.md). Participation is covered by the
+[Code of Conduct](.github/CODE_OF_CONDUCT.md).
 
-For security problems, do not open a public issue; follow [`SECURITY.md`](SECURITY.md).
+For security problems, do not open a public issue; follow [`SECURITY.md`](.github/SECURITY.md).
 
 ## License
 

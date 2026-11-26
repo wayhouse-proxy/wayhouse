@@ -141,6 +141,7 @@ Command line of `wayhouse-web-sync` (`--help` has the rest):
 | `--allow-insecure-secrets`                                                               | off                     | Let the admin token go over plain http to a non-loopback `--wayhouse-admin` (refused by default)                                                                     |
 | `--caddy-admin`                                                                          | `/run/caddy/admin.sock` | Caddy admin: unix socket or loopback `ip:port`                                                                                                                       |
 | `--interval-sec`                                                                         | 5                       | How often it reads Wayhouse (pool changes, renewed certificates)                                                                                                     |
+| `--timeout-sec`                                                                          | 10                      | Per request timeout towards `wayhouse` and Caddy                                                                                                                     |
 | `--acme-challenge-upstream`                                                              | none                    | Controller URLs that answer ACME HTTP-01 (see below)                                                                                                                 |
 | `--acme-challenge-ca-file`                                                               | none                    | CA (path on the Caddy side) for an https `--acme-challenge-upstream`                                                                                                 |
 | `--metrics-listen`                                                                       | `127.0.0.1:9904`        | `GET /metrics`; a non-loopback address needs a metrics token (`--metrics-token-file`, credential `web-sync-metrics-token`, or env `WAYHOUSE_WEB_SYNC_METRICS_TOKEN`) |
@@ -215,7 +216,7 @@ The sync reads the proxy's admin API at `127.0.0.1:9900`; if that API has a toke
 - The console's Configure > Web sites page shows the sync's last success, loads, refused documents and failed
   cycles when `wayhouse-ui` runs with `--web-sync-url` (the sync's `--metrics-listen` address, as
   `http://127.0.0.1:9904`) and, if the sync asks for a metrics token, `--web-sync-token-file` (credential
-  `web-sync-token`, or env `WAYHOUSE_WEB_SYNC_TOKEN`). It reads `GET /metrics`; without the flag the page says
+  `web-sync-token`, or env `WAYHOUSE_WEB_SYNC_TOKEN`). It reads `GET /metrics` and shows it to every role as `GET /api/web/sync`; without the flag the page says
   so. `compose.web.yml` wires this up (the token is `WAYHOUSE_WEB_SYNC_TOKEN` in `.env`; the sync's metrics then listen on `0.0.0.0:9904` of the host, behind that token). On systemd, `wayhouse-web-sync.service` runs the sync with loopback metrics (no token needed); add `--web-sync-url=http://127.0.0.1:9904` to the UI unit's `ExecStart` (see [Without containers](#without-containers)).
 - `GET /web` on the Wayhouse admin API (404 without a `web:` section) is what the sync reads; use it to
   see what Wayhouse resolved.

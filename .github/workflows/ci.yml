@@ -1,14 +1,9 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-    # Docs-only pushes cost ~30 runner-minutes for nothing: no code, image or
-    # manifest is affected.
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "LICENSE-*"
+  # No push trigger: everything reaches main through the merge queue, which
+  # already tested this exact tree. The push to main only warms the cargo caches
+  # (cache-warm.yml); the nightly run below is the full backstop.
   # No paths-ignore here: the ruleset requires `ci-ok`, so a docs-only PR must
   # still start the workflow. The `code` output of `changes` skips the heavy jobs.
   pull_request:
@@ -26,6 +21,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"   # incremental state just bloats the cache
+  CARGO_PROFILE_DEV_DEBUG: "0"   # no debuginfo in dev/test builds: about 45% smaller target dirs, so the caches fit the 10 GB repo limit
   RUSTFLAGS: "-D warnings"
 
 # Every job is pinned to ubuntu-24.04 rather than ubuntu-latest (which becomes
@@ -82,24 +78,20 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
-          BEFORE: ${{ github.event.before }}
         run: |
           flag=""
           files=""
           case "$EVENT" in
             pull_request)
               files=$(git diff --name-only "origin/$BASE_REF...HEAD") || flag=--all ;;
-            push)
-              if git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
-                files=$(git diff --name-only "$BEFORE" "$GITHUB_SHA") || flag=--all
-              else
-                flag=--all   # new branch / force-push: no usable base
-              fi ;;
             *) flag=--all ;;
           esac
           printf '%s\n' "$files" | python3 .github/scripts/changes.py $flag | tee -a "$GITHUB_OUTPUT"
 
-  test:
+  # `lint`, `test` and `test-minimal` used to be one 18-25 min job; they run in
+  # parallel now (same commands, same flags, nothing dropped). Each has its own
+  # cargo cache namespace, which cache-warm.yml keeps warm (keep its commands in sync).
+  lint:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04   # pinned: see the comment above `jobs:`
@@ -112,7 +104,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: ./.github/actions/cargo-cache
-        with: { name: test }
+        with: { name: lint }
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
@@ -122,21 +114,26 @@ jobs:
       # proves the client-only build still compiles.
       - name: Check wayhouse-agent (wayhouse-http without `server`)
         run: cargo check -p wayhouse-agent --locked
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04   # pinned: see the comment above `jobs:`
+    timeout-minutes: 45   # a stuck step must not hold the gate for the 6 h default (#243)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install protoc
+        uses: ./.github/actions/apt-install
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          components: rustfmt, clippy   # as rust-toolchain.toml: no extra install mid-job
+      - uses: ./.github/actions/cargo-cache
+        with: { name: test }
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: nextest
       - name: Test
         run: cargo nextest run --profile ci --workspace
-      # The minimal edge build (issue #62): every optional `wayhouse` cargo feature off.
-      - name: Minimal build (clippy + tests)
-        run: |
-          cargo clippy -p wayhouse --no-default-features --all-targets
-          cargo nextest run --profile ci -p wayhouse --no-default-features
-          cargo clippy -p wayhouse-core --no-default-features --all-targets
-          cargo nextest run --profile ci -p wayhouse-core --no-default-features
-          cargo check -p wayhouse-controller --no-default-features --lib --bins
-          cargo clippy -p wayhouse-controller --no-default-features --all-targets
-          cargo nextest run --profile ci -p wayhouse-controller --no-default-features
       - name: Test report
         if: always()
         run: python3 .github/scripts/test_summary.py --title "test" target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"
@@ -147,6 +144,34 @@ jobs:
           path: target/nextest/ci/junit.xml
           retention-days: 7
           if-no-files-found: ignore
+
+  # The minimal edge build (issue #62): every optional `wayhouse` cargo feature off.
+  test-minimal:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04   # pinned: see the comment above `jobs:`
+    timeout-minutes: 45   # a stuck step must not hold the gate for the 6 h default (#243)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install protoc
+        uses: ./.github/actions/apt-install
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          components: rustfmt, clippy   # as rust-toolchain.toml: no extra install mid-job
+      - uses: ./.github/actions/cargo-cache
+        with: { name: test-minimal }
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: nextest
+      - name: Minimal build (clippy + tests)
+        run: |
+          cargo clippy -p wayhouse --no-default-features --all-targets
+          cargo nextest run --profile ci -p wayhouse --no-default-features
+          cargo clippy -p wayhouse-core --no-default-features --all-targets
+          cargo nextest run --profile ci -p wayhouse-core --no-default-features
+          cargo check -p wayhouse-controller --no-default-features --lib --bins
+          cargo clippy -p wayhouse-controller --no-default-features --all-targets
+          cargo nextest run --profile ci -p wayhouse-controller --no-default-features
 
   # Static musl build (issue #55): the five binaries must keep compiling for
   # x86_64-unknown-linux-musl, and the transparent-socket options must still be
@@ -264,16 +289,16 @@ jobs:
           retention-days: 1
 
   # The loader against the official sniffers, built and released by wayhouse-proxy/sniffers
-  # and pinned by tag + sha256 in sniffers.lock: the #[ignore]d wayhouse tests (the ABI
+  # and pinned by tag + sha256 in .github/pins/sniffers.lock: the #[ignore]d wayhouse tests (the ABI
   # contract, every sniffer through the real loader, the N1 latency gate) run on exactly
-  # those bytes. In `ci-ok.needs` (#296): a PR that changes the loader or `sniffers.lock`
+  # those bytes. In `ci-ok.needs` (#296): a PR that changes the loader or `.github/pins/sniffers.lock`
   # must not merge with it red. It is path-scoped and a skipped job counts as passed, so
   # ordinary PRs are unaffected; the price is that an outage of the sniffers repo or a
   # release asset blocks the PRs that do run it (re-run once, like any flake). It runs
-  # when wayhouse or sniffers.lock changes, on the merge queue and in the nightly run
+  # when wayhouse or .github/pins/sniffers.lock changes, on the merge queue and in the nightly run
   # (like every other job). wasmtime generates native code per architecture, hence
   # both runners. A hash mismatch or a missing asset fails the fetch step loudly. The same
-  # job also builds the official plugins pinned in plugins.lock and runs the plugin host's
+  # job also builds the official plugins pinned in .github/pins/plugins.lock and runs the plugin host's
   # conformance check on them (amd64 only), so a host change cannot silently break them.
   sniffers-e2e:
     name: sniffers e2e (${{ matrix.arch }})
@@ -310,7 +335,7 @@ jobs:
         # (release matters for real numbers, see docs/07).
         run: cargo nextest run -p wayhouse --release --profile ci --run-ignored only --no-capture
       - name: Build the pinned official plugins and run the host's conformance check on them
-        # plugins.lock pins a commit of the plugins repository. A plugin built for another
+        # .github/pins/plugins.lock pins a commit of the plugins repository. A plugin built for another
         # ABI minor than this checkout's is a warning (an ABI bump, until the lock moves);
         # any other failure fails the job. One architecture is enough: the check is the same.
         if: matrix.arch == 'amd64'
@@ -547,42 +572,6 @@ jobs:
       - name: Compose smoke test
         run: make deploy-smoke
 
-  # RustSec advisories for every Cargo.lock in the repo (cargo audit): the check
-  # Trivy can't do for crates (it sees GHSA only). No build, just the lockfiles
-  # and the advisory DB, so it runs on every push / PR and nightly, path-scoped
-  # or not. Informational (owner's call): it never fails the run; findings show
-  # as a table on the run's summary page and as warning annotations, and the
-  # JSON is in the cargo-audit artifact. Accepted advisories:
-  # .cargo/audit.toml ([advisories] ignore = [...], each with a reason).
-  audit:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04   # pinned: see the comment above `jobs:`
-    timeout-minutes: 15   # a stuck step must not hold the gate for the 6 h default (#254)
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
-        with:
-          tool: cargo-audit@0.22.2,cargo-deny@0.20.2
-      - name: cargo audit (informational)
-        continue-on-error: true
-        run: sh .github/scripts/cargo_audit.sh target/cargo-audit
-      # Licenses, registries and git sources (deny.toml). Advisories stay with cargo audit above.
-      - name: cargo deny (licenses, sources, bans)
-        run: cargo deny check licenses sources bans
-      - name: cargo audit report
-        if: always()
-        run: |
-          python3 .github/scripts/audit_summary.py target/cargo-audit >> "$GITHUB_STEP_SUMMARY"
-          python3 .github/scripts/audit_summary.py --annotations target/cargo-audit
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
-        with:
-          name: cargo-audit
-          path: target/cargo-audit/
-          retention-days: 14
-          if-no-files-found: ignore
-
   # Trivy over the deploy job's images and the lockfiles they're built from.
   # Informational (owner's call): the job reports, it never fails — findings show
   # as a table on the run's summary page, as warning annotations, and as JSON +
@@ -687,7 +676,8 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
-  # The trivy job over the arm64 images. Trivy reads the image tarballs without
+  # The trivy job over the arm64 images, nightly only: the packages are the same as the
+  # amd64 image's, only the architecture differs. Trivy reads the image tarballs without
   # running them, so it stays on the amd64 runner (its pinned image is the one
   # whose signature is verified below). Reports carry an -arm64 suffix
   # (TRIVY_ARCH, deploy/scan-images.sh); the lockfiles are not scanned twice.
@@ -695,7 +685,7 @@ jobs:
     name: trivy (arm64)
     needs: [changes, deploy-arm64]
     # Also when deploy failed later on (e.g. the smoke test): the images exist.
-    if: ${{ !cancelled() && needs.changes.outputs.deploy == 'true' }}
+    if: ${{ !cancelled() && github.event_name == 'schedule' && needs.changes.outputs.deploy == 'true' }}
     runs-on: ubuntu-24.04   # pinned: see the comment above `jobs:`
     timeout-minutes: 30   # a stuck step must not hold the gate for the 6 h default (#254)
     permissions:
@@ -812,30 +802,22 @@ jobs:
           path: crates/wayhouse-config/fuzz/artifacts/**
           if-no-files-found: ignore
 
-  # Markdown formatting (Prettier, version pinned in the Makefile) and relative links.
-  docs:
+  # The small no-build checks in one runner (they were `audit`, `docs` and
+  # `release-policy`): each step keeps its own gate.
+  # - release-policy (always; milliseconds, also guards release PRs): the version
+  #   policy (RELEASING.md): 0.x only, and Cargo.lock agrees with Cargo.toml.
+  # - docs: Markdown formatting (Prettier, version pinned in the Makefile) and relative links.
+  # - audit: RustSec advisories for every Cargo.lock in the repo (cargo audit): the check
+  #   Trivy can't do for crates (it sees GHSA only). No build, just the lockfiles
+  #   and the advisory DB. Informational (owner's call): it never fails the run; findings show
+  #   as a table on the run's summary page and as warning annotations, and the
+  #   JSON is in the cargo-audit artifact. Accepted advisories:
+  #   .cargo/audit.toml ([advisories] ignore = [...], each with a reason). Licenses,
+  #   registries and git sources (.cargo/deny.toml) do fail the run.
+  checks:
     needs: changes
-    if: needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-24.04   # pinned: see the comment above `jobs:`
-    timeout-minutes: 10   # a stuck step must not hold the gate for the 6 h default (#254)
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Prettier check
-        run: make docs-fmt-check
-      - name: Relative links and anchors resolve
-        run: make docs-links
-      - name: HANDOVER.md stays under 16 KB
-        # It is a current-state layer, not a log: trim it instead of raising the cap.
-        run: |
-          size=$(wc -c < HANDOVER.md)
-          echo "HANDOVER.md is $size bytes (cap 16384)"
-          test "$size" -le 16384
-
-  # The version policy (RELEASING.md): 0.x only, and Cargo.lock agrees with
-  # Cargo.toml. Milliseconds, so no `changes` filter; it also guards release PRs.
-  release-policy:
-    runs-on: ubuntu-24.04   # pinned: see the comment above `jobs:`
-    timeout-minutes: 5
+    timeout-minutes: 15   # a stuck step must not hold the gate for the 6 h default (#254)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Version policy script and its tests
@@ -846,13 +828,58 @@ jobs:
         run: |
           python3 .github/scripts/check_upgrading_doc_test.py
           python3 .github/scripts/check_upgrading_doc.py
+      - name: Prettier check
+        if: needs.changes.outputs.docs == 'true'
+        run: make docs-fmt-check
+      - name: Relative links and anchors resolve
+        if: needs.changes.outputs.docs == 'true'
+        run: make docs-links
+      - name: HANDOVER.md stays under 16 KB
+        # A current-state layer, not a log: trim it instead of raising the cap.
+        if: needs.changes.outputs.docs == 'true'
+        run: |
+          size=$(wc -c < HANDOVER.md)
+          echo "HANDOVER.md is $size bytes (cap 16384)"
+          if [ "$size" -gt 16384 ]; then
+            echo "::error file=HANDOVER.md::HANDOVER.md is $size bytes, over the 16384 cap. Trim it: it holds current state and traps only."
+            exit 1
+          fi
+      # Every config key, flag, metric and feature is in the hand-written docs (or in
+      # docs/coverage-allowlist.txt). Here, not in pages.yml: an undocumented item must not
+      # merge, and a gap must never block the site deploy.
+      - name: Documentation covers every flag, key, metric and feature
+        if: needs.changes.outputs.docs == 'true'
+        run: make docs-coverage
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        if: needs.changes.outputs.code == 'true'
+        with:
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2
+      - name: cargo audit (informational)
+        if: needs.changes.outputs.code == 'true'
+        continue-on-error: true
+        run: sh .github/scripts/cargo_audit.sh target/cargo-audit
+      - name: cargo deny (licenses, sources, bans)
+        if: needs.changes.outputs.code == 'true'
+        run: cargo deny --config .cargo/deny.toml check licenses sources bans
+      - name: cargo audit report
+        if: always() && needs.changes.outputs.code == 'true'
+        run: |
+          python3 .github/scripts/audit_summary.py target/cargo-audit >> "$GITHUB_STEP_SUMMARY"
+          python3 .github/scripts/audit_summary.py --annotations target/cargo-audit
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always() && needs.changes.outputs.code == 'true'
+        with:
+          name: cargo-audit
+          path: target/cargo-audit/
+          retention-days: 14
+          if-no-files-found: ignore
 
   # The one check the `protect-main` ruleset requires. Always runs (also on
   # docs-only PRs, where every other job is skipped); skipped jobs count as
   # passed, a failed or cancelled one fails the gate.
   ci-ok:
     if: always()
-    needs: [changes, test, musl, build-release, build-release-arm64, ui, tunnel, deploy, deploy-arm64, audit, trivy, trivy-arm64, fuzz, docs, release-policy, sniffers-e2e, web-e2e]
+    needs: [changes, lint, test, test-minimal, musl, build-release, build-release-arm64, ui, tunnel, deploy, deploy-arm64, checks, trivy, trivy-arm64, fuzz, sniffers-e2e, web-e2e]
     runs-on: ubuntu-24.04   # pinned: see the comment above `jobs:`
     timeout-minutes: 5   # a stuck step must not hold the gate for the 6 h default (#254)
     steps:

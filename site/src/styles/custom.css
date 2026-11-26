@@ -1,0 +1,4 @@
+/* Flag, key and metric names are the first column of the generated reference tables: keep them on one line. */
+.sl-markdown-content td:first-child code {
+  white-space: nowrap;
+}

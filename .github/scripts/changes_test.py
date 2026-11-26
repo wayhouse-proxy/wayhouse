@@ -8,6 +8,7 @@ Run: python3 .github/scripts/changes_test.py   (needs cargo on PATH)
 """
 import io
 import os
+import re
 import sys
 import unittest
 
@@ -88,8 +89,8 @@ class RealRepo(unittest.TestCase):
 
     def test_the_sniffer_pins_only_run_the_e2e_job(self):
         # No build is involved, so the shared release build does not start.
-        self.assertEqual(self.areas("sniffers.lock"), {"sniffers"})
-        self.assertEqual(self.areas("plugins.lock"), {"sniffers"})
+        self.assertEqual(self.areas(".github/pins/sniffers.lock"), {"sniffers"})
+        self.assertEqual(self.areas(".github/pins/plugins.lock"), {"sniffers"})
 
     def test_the_plugin_host_and_abi_run_the_e2e_job_that_checks_the_official_plugins(self):
         for f in ("crates/wayhouse-plugin-host/src/runtime.rs", "crates/wayhouse-plugin-abi/src/lib.rs"):
@@ -143,13 +144,17 @@ class RealRepo(unittest.TestCase):
     def test_makefile_runs_tunnel_and_deploy(self):
         self.assertEqual(self.areas("Makefile"), {"tunnel", "deploy", "release"})
 
-    def test_deploy_dir_dockerignore_and_trivyignore(self):
-        for f in ("deploy/compose/wayhouse.yaml", ".dockerignore", ".trivyignore"):
+    def test_deploy_dir_and_dockerignore(self):
+        for f in ("deploy/compose/wayhouse.yaml", "deploy/.trivyignore", ".dockerignore"):
             with self.subTest(f=f):
                 self.assertEqual(self.areas(f), {"deploy", "release"})
 
     def test_workflow_edit_runs_everything(self):
         self.assertEqual(self.areas(".github/workflows/ci.yml"), ALL)
+
+    def test_community_markdown_under_github_runs_nothing(self):
+        self.assertEqual(self.areas(".github/CONTRIBUTING.md"), set())
+        self.assertEqual(self.areas(".github/release-please/config.json"), ALL)
 
     def test_mixed_ui_web_and_deploy(self):
         self.assertEqual(
@@ -258,16 +263,18 @@ class Main(unittest.TestCase):
 
     def test_docs_is_true_for_markdown_and_its_tooling(self):
         for f in ["README.md", "deploy/README.md", ".prettierrc.json", ".prettierignore", "Makefile",
-                  ".github/scripts/check_md_links.py", ".github/workflows/ci.yml"]:
+                  ".github/scripts/check_md_links.py", ".github/workflows/ci.yml",
+                  "site/scripts/check_coverage.py", "crates/wayhouse/src/main.rs",
+                  "crates/wayhouse-core/Cargo.toml", "crates/wayhouse-config/schema/config.schema.json"]:
             self.assertTrue(changes.is_docs([f]), f)
-        self.assertFalse(changes.is_docs(["crates/wayhouse/src/main.rs", "Cargo.lock"]))
+        self.assertFalse(changes.is_docs(["Cargo.lock", "crates/wayhouse-ui/web/package.json"]))
         self.assertFalse(changes.is_docs([]))
 
     def test_docs_follows_the_all_flag_and_the_output(self):
         self.assertEqual(self.run_main(["--all"], "", None)["docs"], "true")
         got = self.run_main([], "README.md\n", lambda _: changes.load_graph(REPO))
         self.assertEqual(got["docs"], "true")
-        got = self.run_main([], "crates/wayhouse/src/main.rs\n", lambda _: changes.load_graph(REPO))
+        got = self.run_main([], "Cargo.lock\n", lambda _: changes.load_graph(REPO))
         self.assertEqual(got["docs"], "false")
 
     def test_code_is_true_with_all_flag_and_on_metadata_failure(self):
@@ -277,6 +284,36 @@ class Main(unittest.TestCase):
             raise changes.MetadataError("x")
 
         self.assertEqual(self.run_main([], "README.md\n", broken)["code"], "true")
+
+class WorkflowGate(unittest.TestCase):
+    """ci.yml and cache-warm.yml stay consistent with each other."""
+
+    @staticmethod
+    def read(name):
+        with open(os.path.join(REPO, ".github", "workflows", name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_every_job_is_in_the_ci_ok_gate(self):
+        ci = self.read("ci.yml")
+        jobs = set(re.findall(r"^  ([a-z0-9-]+):\s*$", ci.split("\njobs:\n", 1)[1], re.M))
+        needs = re.search(r"^  ci-ok:.*?needs: \[([^\]]*)\]", ci, re.M | re.S).group(1)
+        self.assertEqual(jobs - {"ci-ok"}, {n.strip() for n in needs.split(",")})
+
+    def test_warm_up_builds_with_the_same_profile_env_as_ci(self):
+        def env(name):
+            top = self.read(name).split("\njobs:\n", 1)[0]
+            return re.findall(r'^  ((?:CARGO_|RUSTFLAGS)\w*): "?([^"#\n]+?)"?\s*(?:#.*)?$', top, re.M)
+        self.assertIn(("CARGO_PROFILE_DEV_DEBUG", "0"), env("ci.yml"))
+        self.assertEqual(env("ci.yml"), env("cache-warm.yml"))
+
+    def test_every_cargo_cache_is_warmed_on_main(self):
+        ci = self.read("ci.yml")
+        names = set()
+        for n in (a or b for a, b in re.findall(r'cargo-cache\n\s+with: \{ name: "([^"]+)" \}|cargo-cache\n\s+with: \{ name: (\S+) \}', ci)):
+            names |= {n.replace("${{ matrix.arch }}", a) for a in ("amd64", "arm64")} if "${{" in n else {n}
+        warm = set(re.findall(r"^          - name: (\S+)", self.read("cache-warm.yml"), re.M))
+        self.assertTrue(names)
+        self.assertEqual(names - warm, set())
 
 
 if __name__ == "__main__":
