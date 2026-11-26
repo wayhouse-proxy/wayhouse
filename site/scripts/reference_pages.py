@@ -125,8 +125,8 @@ def proxy_admin_api():
         "It reads the live state, changes backends at runtime, drains the instance, and reads or replaces the config "
         "file. How tokens, errors and versions work is on [HTTP API basics](/manual/operate/http-apis/).\n\n"
         "These pages are generated from the OpenAPI document in `docs/reference/openapi/proxy-admin.json`, which is "
-        "itself generated from the handlers' own annotations and checked by a test, so a route cannot be added or "
-        "changed without this page changing. A running proxy serves the same document at `GET /openapi.json`; "
+        "itself generated from the handlers' own annotations and checked by a test that fails when the "
+        "checked-in document no longer matches the annotations of the routes that carry one. A running proxy serves the same document at `GET /openapi.json`; "
         "use it to generate a client. The examples assume `TOKEN` holds `settings.admin.auth_token`; leave the "
         "header out when the API has no token.",
         "http://127.0.0.1:9900")
@@ -147,8 +147,8 @@ def controller_api():
         "off: the plugin and ACME routes with `501` and a reason (a few with `404`), the HA routes (`/admin/ha/*`) with `404` on a controller "
         "that does not run HA.\n\n"
         "These pages are generated from the OpenAPI document in `docs/reference/openapi/controller.json`, which is "
-        "itself generated from the handlers' own annotations and checked by a test, so a route cannot be added or "
-        "changed without this page changing. The examples assume `TOKEN` holds the admin token.",
+        "itself generated from the handlers' own annotations and checked by a test that fails when the "
+        "checked-in document no longer matches the annotations of the routes that carry one. The examples assume `TOKEN` holds the admin token.",
         "http://127.0.0.1:9901")
 
 
