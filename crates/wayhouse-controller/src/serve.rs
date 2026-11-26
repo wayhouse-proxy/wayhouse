@@ -372,6 +372,37 @@ pub fn command() -> clap::Command {
     <Args as clap::CommandFactory>::command()
 }
 
+/// The OpenAPI paths of the routes every controller serves besides the config API.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(healthz, metrics_doc),
+    tags((name = "Service", description = "Liveness, metrics and this document.")),
+)]
+pub(crate) struct ServiceDoc;
+
+#[utoipa::path(
+    get, path = "/healthz", tag = "Service",
+    summary = "Liveness",
+    description = "Answers `ok` while the process is up. It needs no token, so a probe can reach it. It says nothing about \
+whether the store or the HA cluster is healthy.",
+    security(()),
+    responses((status = 200, description = "The text `ok`.", body = String, content_type = "text/plain", example = "ok"))
+)]
+async fn healthz() -> &'static str {
+    "ok"
+}
+
+/// Documentation only: the handler is `wayhouse_http::metrics::router`, merged into the app.
+#[utoipa::path(
+    get, path = "/metrics", tag = "Service",
+    summary = "Prometheus metrics",
+    description = "The controller's metrics in the Prometheus text format. `--metrics-token-file` names a token that unlocks \
+only this route, so a scraper need not hold the admin token; without it the admin token is required.",
+    responses((status = 200, description = "Prometheus text format.", body = String, content_type = "text/plain"))
+)]
+#[allow(dead_code)]
+async fn metrics_doc() {}
+
 pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
     let layered = wayhouse_settings::layer(
         "controller",
@@ -895,7 +926,7 @@ pub async fn run(argv: Vec<std::ffi::OsString>) -> anyhow::Result<()> {
         keyring: plugin_keys.clone(),
     };
     let mut app = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(healthz))
         .merge(wayhouse_http::metrics::router(
             prometheus,
             wayhouse_http::server::BearerAuth::new(

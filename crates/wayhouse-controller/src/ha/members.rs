@@ -53,24 +53,42 @@ struct MembersState {
     add_client: reqwest::Client,
 }
 
-#[derive(Serialize)]
+/// One member of the Raft group.
+#[derive(Serialize, utoipa::ToSchema)]
 struct Member {
+    /// The Raft node id.
+    #[schema(example = 2)]
     id: NodeId,
+    /// The address the other replicas reach it on.
+    #[schema(example = "https://ctl-2.example.com:9901")]
     addr: String,
 }
 
-#[derive(Serialize)]
+/// The cluster membership as one node sees it.
+#[derive(Serialize, utoipa::ToSchema)]
 struct MembersOut {
     /// This node's own id.
+    #[schema(example = 1)]
     node_id: NodeId,
+    /// The leader this node knows, if there is one.
     leader: Option<NodeId>,
+    /// The voting members.
     voters: Vec<Member>,
+    /// Members that replicate the log but do not vote (a node being added).
     learners: Vec<Member>,
-    /// This node's own Raft log, for operators and the fleet tests: a node
-    /// that caught up by snapshot has `purged_index` set.
+    /// The last index of this node's own Raft log.
     last_log_index: Option<u64>,
+    /// Set once the log was purged up to this index, as on a node that caught up by snapshot.
     purged_index: Option<u64>,
 }
+
+/// The OpenAPI paths of the HA membership routes.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(list, add, remove, readdress),
+    tags((name = "HA cluster", description = "The controller's Raft group: list, add, remove and re-address replicas.")),
+)]
+pub(crate) struct MembersDoc;
 
 pub fn router(ha: Arc<HaHandle>, auth_token: Option<Arc<str>>) -> Router {
     let state = MembersState {
@@ -257,6 +275,13 @@ fn members(ha: &HaHandle) -> (Members, openraft::RaftMetrics<NodeId, BasicNode>)
     (out, metrics)
 }
 
+#[utoipa::path(
+    get, path = "/admin/ha/members", tag = "HA cluster",
+    summary = "List the cluster members",
+    description = "The Raft membership as this node sees it: its own id, the leader it knows, the voters and the learners \
+with the addresses the replicas reach them on, and the node's own log position. Answered by any member.",
+    responses((status = 200, description = "The membership.", body = MembersOut))
+)]
 async fn list(State(state): State<MembersState>) -> Response {
     let (members, metrics) = members(&state.ha);
     let side = |m: BTreeMap<NodeId, String>| {
@@ -393,14 +418,22 @@ fn raft_error(e: RaftError<NodeId, ClientWriteError<NodeId, BasicNode>>) -> Resp
     }
 }
 
-#[derive(Deserialize)]
+/// The body of `POST /admin/ha/members`.
+#[derive(Deserialize, utoipa::ToSchema)]
 struct AddBody {
+    /// The new node's Raft id.
+    #[schema(example = 4)]
     id: NodeId,
+    /// How the other replicas reach it, as `--ha-peers` takes it (`host:port`, or a base URL).
+    #[schema(example = "https://ctl-4.example.com:9901")]
     addr: String,
 }
 
-#[derive(Deserialize)]
+/// The body of `PUT /admin/ha/members/{id}`.
+#[derive(Deserialize, utoipa::ToSchema)]
 struct AddrBody {
+    /// The member's new address.
+    #[schema(example = "https://ctl-4.example.com:9901")]
     addr: String,
 }
 
@@ -421,6 +454,22 @@ fn check_addr(addr: &str) -> Result<(), Response> {
     Ok(())
 }
 
+#[utoipa::path(
+    post, path = "/admin/ha/members", tag = "HA cluster",
+    summary = "Add a replica",
+    description = "Adds node `id` at `addr` as a learner, waits for it to catch up and promotes it to a voter. The node must \
+answer `/raft/whoami` as `id` with an empty log. A follower relays the request to the leader (this can take up to \
+five minutes while the node catches up). The answer is the new membership, as `GET /admin/ha/members` gives it. A new \
+replica normally joins by enrollment instead (a `controller` code and `POST /enroll/ha-join`), which needs no admin token \
+on the new host.",
+    request_body = AddBody,
+    responses(
+        (status = 200, description = "The membership after the add.", body = MembersOut),
+        (status = 409, description = "The node is already a voter, or another membership change is in progress.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "A bad body or `addr`; the address did not answer as that node id; the node's log is not empty; or the cluster refused the change.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "No leader is elected yet, the leader changed while forwarding, or the address does not answer.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn add(State(state): State<MembersState>, headers: HeaderMap, body: String) -> Response {
     let path = "/admin/ha/members".to_string();
     if let Err(r) = on_leader(&state, Method::POST, path, &headers, body.clone()).await {
@@ -532,6 +581,20 @@ impl Joiner {
     }
 }
 
+#[utoipa::path(
+    delete, path = "/admin/ha/members/{id}", tag = "HA cluster",
+    summary = "Remove a replica",
+    description = "Takes the node out of the membership entirely. Removing the leader is allowed: it steps down once the \
+change commits. The last voter cannot be removed.",
+    params(("id" = u64, Path, description = "The Raft node id.", example = 3)),
+    responses(
+        (status = 200, description = "The membership after the removal.", body = MembersOut),
+        (status = 404, description = "That node is not a member.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "Another membership change is in progress.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "It is the last voter, or the cluster refused the change.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "No leader is elected yet or the leader changed while forwarding.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn remove(
     State(state): State<MembersState>,
     Path(id): Path<NodeId>,
@@ -565,6 +628,21 @@ async fn remove(
     }
 }
 
+#[utoipa::path(
+    put, path = "/admin/ha/members/{id}", tag = "HA cluster",
+    summary = "Change a replica's address",
+    description = "Points an existing member at a new address, for a replica that moved. The node must answer `/raft/whoami` \
+as `id` at the new address.",
+    params(("id" = u64, Path, description = "The Raft node id.", example = 3)),
+    request_body = AddrBody,
+    responses(
+        (status = 200, description = "The membership after the change.", body = MembersOut),
+        (status = 404, description = "That node is not a member.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "Another membership change is in progress.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "A bad body or `addr`, or the address did not answer as that node id.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "No leader is elected yet, the leader changed while forwarding, or the address does not answer.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn readdress(
     State(state): State<MembersState>,
     Path(id): Path<NodeId>,

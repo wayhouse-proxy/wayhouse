@@ -226,6 +226,22 @@ fn allows(allowed: Allowed, method: &Method, path: &str) -> bool {
     })
 }
 
+/// The scoped tokens (besides the admin token, which works everywhere) that may call `method` on
+/// `path`, as `(name, what it is)`. Where a route's OpenAPI description gets its "Tokens" line, so
+/// the docs cannot disagree with the tables above.
+pub fn accepted_by(method: &Method, path: &str) -> Vec<&'static str> {
+    [
+        ("proxy", PROXY),
+        ("agent", AGENT),
+        ("ui", UI),
+        ("origin", ORIGIN),
+    ]
+    .into_iter()
+    .filter(|(_, allowed)| allows(allowed, method, path))
+    .map(|(name, _)| name)
+    .collect()
+}
+
 pub async fn promote(State(t): State<ScopedTokens>, mut req: Request, next: Next) -> Response {
     let presented = req
         .headers()

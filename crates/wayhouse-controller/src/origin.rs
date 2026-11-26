@@ -258,6 +258,37 @@ pub(crate) async fn revoke(ui: &UiState, origin: &str) -> Result<(), Response> {
     forget_tokens(ui, origin).await
 }
 
+/// The answer to `GET /peers/{name}/psk`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `read_current`
+struct PskAnswer {
+    /// The key's generation.
+    #[schema(example = 0)]
+    gen: u64,
+    /// The key, base64.
+    key: String,
+}
+
+/// The answer to `POST /peers/{name}/psk/rotate`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `rotate`
+struct RotateAnswer {
+    /// The origin's name.
+    #[schema(example = "game-host-1")]
+    name: String,
+    /// The generation in use.
+    #[schema(example = 0)]
+    active: u64,
+    /// The generation waiting for the agent to pick it up.
+    #[schema(example = 1)]
+    pending: u64,
+}
+
+/// The OpenAPI paths of the tunnel key routes.
+#[derive(utoipa::OpenApi)]
+#[openapi(paths(read_current, rotate))]
+pub(crate) struct PskDoc;
+
 #[derive(Clone)]
 struct PskState {
     ui: UiState,
@@ -307,6 +338,21 @@ fn exists(st: &PskState, name: &str, gen: u64) -> Result<bool, Response> {
 
 /// What an origin should hold now: the generation waiting for its acknowledgement, else the
 /// active one.
+#[utoipa::path(
+    get, path = "/peers/{name}/psk", tag = "Tunnel",
+    summary = "Read an origin's tunnel key",
+    description = "The tunnel preshared key an origin should hold now: the generation waiting for its acknowledgement when a \
+rotation is under way, else the active one. The origin's own token may read only its own key; the admin token reads any. \
+Keys are served only when the controller has an `--auth-token`. The answer carries `Cache-Control: no-store`.",
+    params(("name" = String, Path, description = "The origin's name.", example = "game-host-1")),
+    responses(
+        (status = 200, description = "The key and its generation.", body = PskAnswer,
+            headers(("Cache-Control" = String, description = "`no-store`."))),
+        (status = 403, description = "The controller has no `--auth-token`, the token belongs to another origin, or it is not a token that may read keys.", body = crate::openapi::ErrorBody),
+        (status = 404, description = "No tunnel key exists for that name.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The controller cannot open the key (it lacks the cluster key).", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn read_current(
     State(st): State<PskState>,
     caller: Option<Extension<Caller>>,
@@ -365,6 +411,19 @@ async fn read_current(
 
 /// Starts a rotation: seals generation n+1 next to the active n and answers `202`. The
 /// proxies keep using n until the agent has fetched and acknowledged n+1.
+#[utoipa::path(
+    post, path = "/peers/{name}/psk/rotate", tag = "Tunnel",
+    summary = "Start rotating an origin's tunnel key",
+    description = "Seals generation n+1 next to the active generation n. The proxies keep using n until the agent has fetched \
+and acknowledged n+1. Only one rotation can be pending at a time.",
+    params(("name" = String, Path, description = "The origin's name.", example = "game-host-1")),
+    responses(
+        (status = 202, description = "Started.", body = RotateAnswer),
+        (status = 404, description = "That origin is not registered.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "The origin registered without a tunnel key (enroll it again), the active key is missing, or a rotation is already waiting for the agent.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "The name is not valid.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn rotate(
     State(st): State<PskState>,
     headers: HeaderMap,

@@ -64,22 +64,27 @@ pub fn lockout_risks(old: Option<&Config>, new: &Config) -> Vec<&'static str> {
 }
 
 /// What a submission records beside its revision.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Trial {
     /// The revision whose bytes come back if nobody confirms.
+    #[schema(example = 6)]
     pub revert_to: u64,
-    /// Unix milliseconds. The proposer's clock, carried through the Raft log, so every replica
-    /// reads the same deadline. A skewed proposer shortens or lengthens the window the operator
-    /// sees by the skew, which is why the shortest window is 10 s and controllers must keep
-    /// their clocks within a second or two (NTP); `docs/10` says so.
+    /// When the trial ends, in Unix milliseconds. It is the clock of the controller that took the
+    /// write, carried through the Raft log, so every replica reads the same deadline; keep the
+    /// controllers' clocks within a second or two (NTP).
+    #[schema(example = 1_764_144_000_000_u64)]
     pub deadline_ms: u64,
-    /// Why the window exists: [`RISKS`] ids, or empty when the caller asked for it.
+    /// Why the window exists: ids from the `risks` list of `GET /config/pending`, or empty when
+    /// the caller asked for the window.
+    #[schema(example = json!(["admin_listen"]))]
     pub reasons: Vec<String>,
 }
 
 /// A revision on trial.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Pending {
+    /// The revision on trial.
+    #[schema(example = 7)]
     pub revision: u64,
     #[serde(flatten)]
     pub trial: Trial,

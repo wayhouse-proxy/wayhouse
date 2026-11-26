@@ -163,7 +163,13 @@ def _operation(spec, path, method, op, base):
     if op.get("description"):
         out.append("\n" + op["description"].strip())
     secured = op.get("security") != [{}]
-    out.append("\n**Auth:** %s" % ("bearer token (when one is configured)" if secured else "none"))
+    auth = "bearer token (when one is configured)" if secured else "none"
+    if secured and "x-wayhouse-tokens" in op:
+        extra = op["x-wayhouse-tokens"]
+        auth = "the admin token" + (
+            ", and the %s token%s" % (" and ".join(extra) if len(extra) < 3 else ", ".join(extra[:-1]) + " and " + extra[-1],
+                                      "s" if len(extra) > 1 else "") if extra else " only")
+    out.append("\n**Auth:** %s" % auth)
     params = op.get("parameters", [])
     if params:
         out.append("\n**Parameters**\n\n" + _params_table(params))

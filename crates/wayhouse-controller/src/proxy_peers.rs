@@ -39,36 +39,37 @@ use crate::addresses::Role;
 use crate::registry::{ConfigSchemaReport, Registration};
 
 /// One proxy instance's current registration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct ProxyRegistration {
-    /// This proxy's stable identity — arbitrary, chosen by whoever runs it
-    /// (`wayhouse --tunnel-name`), just needs to be unique fleet-wide.
+    /// This proxy's stable identity (`wayhouse --tunnel-name`), unique fleet-wide.
+    #[schema(example = "edge-1")]
     pub name: String,
     /// This proxy's WireGuard public key, base64-encoded (32 bytes).
+    #[schema(example = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")]
     pub pubkey: String,
-    /// This proxy's public dial-out address — required (see module doc).
+    /// This proxy's public dial-out address (`ip:port`). Required.
+    #[schema(example = "198.51.100.4:51820")]
     pub endpoint: String,
-    /// This proxy's tunnel-internal IP address (IPv4 or IPv6). Optional on request (omit to
-    /// be allocated one, or give one to claim it); always set once stored.
+    /// This proxy's tunnel-internal IP address (IPv4 or IPv6). Optional on request (omit to be
+    /// allocated one, or give one to claim it); always set once stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "fd49:89c1:4b5e:60::1")]
     pub tunnel_address: Option<String>,
-    /// A fresh random id per proxy process start. Stored and re-broadcast
-    /// as-is: a changed value tells every `wayhouse-agent` the proxy restarted,
-    /// so it re-sets the peer and drops a WireGuard session the restarted
-    /// proxy no longer has (see `wayhouse-agent`'s `proxy_subscribe`). Optional so
-    /// proxies and log entries from before it existed still work.
+    /// A fresh random id per proxy process start (1 to 64 letters, digits or `-`). A changed value
+    /// tells every agent the proxy restarted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "7f3c9a10-5b2e")]
     pub boot_id: Option<String>,
-    /// The newest config `schema_version` this proxy's build understands
-    /// (`wayhouse_config::version::CONFIG_SCHEMA_VERSION`). The controller refuses
-    /// a config whose schema is above the lowest value any live proxy reports
-    /// (`RegistryState::min_live_config_schema`). `None` from a proxy that
+    /// The newest config `schema_version` this proxy's build understands, at least 1. The controller
+    /// refuses a config newer than the lowest value any live proxy reports. Absent from a proxy that
     /// predates it, which then constrains nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 4)]
     pub max_config_schema: Option<u32>,
-    /// How often this proxy re-registers, in seconds: a registration is *live*
-    /// until three of these pass without one. `None` means the 30 s default.
+    /// How often this proxy re-registers, in seconds. A registration is live until three of these
+    /// pass without one. Absent: 30.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = 30)]
     pub refresh_sec: Option<u64>,
 }
 

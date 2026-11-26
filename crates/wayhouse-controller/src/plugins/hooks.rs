@@ -239,6 +239,55 @@ fn idempotency_key(headers: &HeaderMap, id: &str, body: &[u8]) -> String {
         .collect()
 }
 
+/// The OpenAPI paths of the plugin webhook listener.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(hook, hook_suffix),
+    modifiers(&WebhookAuth),
+    tags((name = "Plugin webhooks", description = "The inbound webhook of a plugin, on its own listener and with its own token.")),
+)]
+pub(crate) struct HooksDoc;
+
+/// Adds the per-install webhook token scheme, and drops the admin bearer requirement from these routes.
+struct WebhookAuth;
+
+impl utoipa::Modify for WebhookAuth {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+        openapi
+            .components
+            .get_or_insert_with(Default::default)
+            .add_security_scheme(
+                "webhook",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .description(Some(
+                            "The install's own webhook token, from `POST /plugins/{id}/webhook`.",
+                        ))
+                        .build(),
+                ),
+            );
+    }
+}
+
+#[utoipa::path(
+    post, path = "/plugins/{id}/hook", tag = "Plugin webhooks",
+    summary = "Call an install's webhook",
+    description = "The inbound webhook of an install, served on the separate `--plugin-webhook-listen` listener (its own address and TLS, off by default), never on the admin port. The caller presents the install's webhook token as `Authorization: Bearer <token>`; an unknown install, a disabled one and a wrong token all answer `401` alike, before the body is read. A request is counted against a per-source limit (5 a second, burst 20) before the token is compared, then against a per-install limit (10 a second, burst 20); the body is at most 256 KiB. It runs on the Raft leader (a follower forwards it, only to an `https://` peer, else `503`). The answer is the plugin's own, but only after its effects were committed. Every call carries an idempotency key (the caller's `Idempotency-Key`, 1 to 128 printable characters, else a hash of the install and body) for the plugin to forward, because effects of a retried request can repeat. While the `plugin_webhooks` feature flag is off every call answers `503`.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58")),
+    security(("webhook" = [])),
+    request_body(content = Vec<u8>, content_type = "application/octet-stream", description = "Any body, up to 256 KiB; the plugin decides what it means."),
+    responses(
+        (status = 200, description = "The plugin's own answer (its status, headers and body are passed through, so the status can differ)."),
+        (status = 401, description = "Unknown install, disabled install, or a wrong token.", body = crate::openapi::ErrorBody),
+        (status = 413, description = "The body is over 256 KiB.", body = crate::openapi::ErrorBody),
+        (status = 404, description = "No such webhook.", body = crate::openapi::ErrorBody),
+        (status = 429, description = "Too many requests from this address or for this install, or the plugin's queue is full.", body = crate::openapi::ErrorBody),
+        (status = 502, description = "The plugin failed.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "Webhooks are switched off (`plugin_webhooks`), the commit failed (with `Retry-After`), or there is no https path to the leader.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn hook(
     state: State<HookState>,
     peer: ConnectInfo<wayhouse_http::tls::PeerAddr>,
@@ -259,6 +308,23 @@ async fn hook(
     .await
 }
 
+#[utoipa::path(
+    post, path = "/plugins/{id}/hook/{suffix}", tag = "Plugin webhooks",
+    summary = "Call an install's webhook with a sub-path",
+    description = "The same as `POST /plugins/{id}/hook`, with a path after it that the plugin sees as the request's suffix. Authentication, limits and answers are the same: see that route.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58"), ("suffix" = String, Path, description = "The rest of the path, which may contain slashes.", example = "github/push")),
+    security(("webhook" = [])),
+    request_body(content = Vec<u8>, content_type = "application/octet-stream", description = "Any body, up to 256 KiB; the plugin decides what it means."),
+    responses(
+        (status = 200, description = "The plugin's own answer (its status, headers and body are passed through, so the status can differ)."),
+        (status = 401, description = "Unknown install, disabled install, or a wrong token.", body = crate::openapi::ErrorBody),
+        (status = 413, description = "The body is over 256 KiB.", body = crate::openapi::ErrorBody),
+        (status = 404, description = "No such webhook.", body = crate::openapi::ErrorBody),
+        (status = 429, description = "Too many requests from this address or for this install, or the plugin's queue is full.", body = crate::openapi::ErrorBody),
+        (status = 502, description = "The plugin failed.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "Webhooks are switched off (`plugin_webhooks`), the commit failed (with `Retry-After`), or there is no https path to the leader.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn hook_suffix(
     state: State<HookState>,
     peer: ConnectInfo<wayhouse_http::tls::PeerAddr>,

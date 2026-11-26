@@ -38,27 +38,44 @@ pub mod relay;
 
 use serde::{Deserialize, Serialize};
 
-/// One operator-intent operation. Tagged by `op` in JSON
-/// (`{"op":"backend_add","pool":"...","addr":"..."}`) — the exact shape
-/// `wayhouse`'s `intent_client` parses back out.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// One operator-intent operation, tagged by `op` (`{"op": "backend_add", "pool": "...", "addr": "..."}`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum IntentOp {
-    /// Mirrors `POST /pools/{pool}/backends` on the phase-5 admin API.
-    BackendAdd { pool: String, addr: String },
-    /// Mirrors `DELETE /pools/{pool}/backends/{addr}`.
-    BackendRemove { pool: String, addr: String },
-    /// Mirrors `PATCH /pools/{pool}/backends/{addr}`. `state` is
-    /// `enabled` | `draining` | `disabled`.
-    BackendPatch {
+    /// Adds a backend to a pool, as `POST /pools/{pool}/backends` does on a proxy.
+    #[schema(example = json!({"op": "backend_add", "pool": "mc", "addr": "10.0.0.7:25565"}))]
+    BackendAdd {
+        /// The pool's name.
         pool: String,
+        /// The backend, `ip:port`.
         addr: String,
+    },
+    /// Removes a backend, as `DELETE /pools/{pool}/backends/{addr}` does.
+    #[schema(example = json!({"op": "backend_remove", "pool": "mc", "addr": "10.0.0.7:25565"}))]
+    BackendRemove {
+        /// The pool's name.
+        pool: String,
+        /// The backend, `ip:port`.
+        addr: String,
+    },
+    /// Changes a backend's admin state, as `PATCH /pools/{pool}/backends/{addr}` does.
+    #[schema(example = json!({"op": "backend_patch", "pool": "mc", "addr": "10.0.0.7:25565", "state": "draining"}))]
+    BackendPatch {
+        /// The pool's name.
+        pool: String,
+        /// The backend, `ip:port`.
+        addr: String,
+        /// `enabled`, `draining` or `disabled`.
         state: String,
     },
-    /// Mirrors `POST /route-hint`.
+    /// Pins a source address to a pool for a while, as `POST /route-hint` does.
+    #[schema(example = json!({"op": "route_hint", "src_ip": "203.0.113.9", "pool": "mc", "ttl_sec": 30}))]
     RouteHint {
+        /// The client address.
         src_ip: String,
+        /// The pool's name.
         pool: String,
+        /// How long the hint lasts, 1 to 3600 seconds. Default 30.
         #[serde(default = "default_ttl_sec")]
         ttl_sec: u64,
     },

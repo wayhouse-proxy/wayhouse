@@ -58,6 +58,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 
 use crate::confirm::{self, Pending, Trial, Window, PENDING_KEY};
+use crate::openapi::ErrorBody;
 use crate::role::{Role, RoleHandle};
 use crate::store::{Applied, RelayCursor, RevisionBytes, SiblingWrite, Store, StoreError};
 
@@ -763,6 +764,33 @@ impl AppState {
     }
 }
 
+#[utoipa::path(
+    get, path = "/openapi.json", tag = "Service",
+    summary = "This API's OpenAPI document",
+    description = "The OpenAPI 3.1 description of the controller API this build serves, for generating a client. It is built \
+from the handlers' own annotations. It describes the routes with their parameters, bodies and statuses.",
+    responses((status = 200, description = "The document.", body = serde_json::Value, content_type = "application/json"))
+)]
+async fn openapi_spec() -> Json<serde_json::Value> {
+    Json(crate::openapi::openapi_json())
+}
+
+/// The OpenAPI paths of the config routes.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(
+        submit_config, get_current_config, validate_config, config_schema, list_revisions,
+        get_revision, diff_revision, rollback, promote, subscribe, get_pending, confirm_revision,
+        revert_now, openapi_spec
+    ),
+    components(schemas(SubmitResponse, StaleBaseResponse)),
+    tags(
+        (name = "Config revisions", description = "Submit, read, diff, roll back and stage the config revisions every proxy follows."),
+        (name = "Config trial", description = "A risky revision is held on trial and reverts unless it is confirmed."),
+    ),
+)]
+pub(crate) struct ConfigDoc;
+
 pub fn router(state: AppState) -> Router {
     // Only the proxies' subscribe stream is component-facing; the rest is for
     // operators and tools and is never gated on the protocol header.
@@ -783,6 +811,7 @@ pub fn router(state: AppState) -> Router {
         .route("/config/pending", get(get_pending))
         .route("/config/confirm/{revision}", post(confirm_revision))
         .route("/config/revert", post(revert_now))
+        .route("/openapi.json", get(openapi_spec))
         .route_layer(middleware::from_fn_with_state(
             wayhouse_http::server::BearerAuth::new(state.auth_token.as_deref()),
             wayhouse_http::server::require_bearer,
@@ -790,8 +819,11 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-#[derive(Serialize)]
+/// The revision a write produced or acted on.
+#[derive(Serialize, utoipa::ToSchema)]
 struct SubmitResponse {
+    /// The revision number.
+    #[schema(example = 7)]
     revision: u64,
 }
 
@@ -800,22 +832,45 @@ struct ErrorResponse {
     error: String,
 }
 
-#[derive(Deserialize)]
+/// The `409` of a write whose `base` is not the latest revision.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `store_error_response`
+struct StaleBaseResponse {
+    /// What went wrong, in one sentence.
+    error: String,
+    /// The revision that is current now.
+    #[schema(example = 8)]
+    current: u64,
+}
+
+/// What `POST /config/validate` answers for a valid document.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `validate_config`
+struct ValidateOk {
+    /// Always `true`: a failure is a `422` instead.
+    ok: bool,
+    /// The `schema_version` of the document that was checked.
+    #[schema(example = 4)]
+    schema_version: u32,
+}
+
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct SubmitParams {
-    /// `"canary"` to stage rather than promote immediately; anything else
-    /// (including absent) means "promote now," today's only behavior before
-    /// this slice.
+    /// `canary` stages the revision for one group instead of promoting it. Absent promotes it now;
+    /// any other value is a `400`.
+    #[param(example = "canary")]
     stage: Option<String>,
-    /// Required when `stage=canary`. One group per submission in this
-    /// release — see [`Stage`]'s doc.
+    /// The canary group, 1 to 128 bytes. Required with `stage=canary`; one group per submission.
+    #[param(example = "eu-west")]
     group: Option<String>,
-    /// The revision the caller's edit started from (`0` = none yet). `409` if the latest
-    /// revision is another one, so a save cannot silently overwrite a newer edit.
+    /// The revision your edit started from (`0` = none yet). `409` if the latest revision is
+    /// another one, so a save cannot silently overwrite a newer edit.
     base: Option<u64>,
-    /// Seconds to hold the new revision on trial: unless it is confirmed
+    /// Seconds to hold the new revision on trial, 10 to 600: unless it is confirmed
     /// (`POST /config/confirm/{revision}`) by then, the controller re-submits the previous
-    /// revision. Absent: a window of [`confirm::AUTO_CONFIRM_SECS`] when the diff could lock the
-    /// operator out ([`confirm::RISKS`]), none otherwise. `0`: none, whatever the diff.
+    /// revision. Absent: a 60 second window when the change could lock the operator out (see
+    /// `risks` on `GET /config/pending`), none otherwise. `0`: none, whatever the change.
     confirm_within: Option<u64>,
 }
 
@@ -832,6 +887,30 @@ const MAX_GROUP_LEN: usize = 128;
 /// `POST /config[?stage=canary&group=<name>]` — body is a raw YAML config
 /// document, the same shape a proxy's `--config` file has. Validates, then
 /// persists on success.
+#[utoipa::path(
+    post, path = "/config", tag = "Config revisions",
+    summary = "Submit a new config revision",
+    description = "The body is a raw YAML config document, the same shape a proxy's config file has. It is parsed and \
+validated exactly as a proxy would on a reload; a document that fails never touches the store, so the previous \
+revision stays current. On success the document becomes a new revision and every subscriber receives it.\n\n\
+`stage=canary&group=<name>` stages the revision for one canary group instead: only instances that report that \
+group see it until you promote it. `base` guards against overwriting an edit you have not seen. A change that \
+could lock the operator out (the admin listener, its token or TLS, gossip) starts a trial automatically: unless \
+the revision is confirmed in time, the controller re-submits the previous one. `confirm_within` sets or \
+disables the window.\n\n\
+A standby controller (slave tier) refuses writes with `403`. In an HA cluster a follower forwards the write to \
+the leader and relays its answer.",
+    params(SubmitParams),
+    request_body(content = String, content_type = "text/yaml", description = "The config document."),
+    responses(
+        (status = 200, description = "Accepted. `revision` is the number the document now has.", body = SubmitResponse),
+        (status = 400, description = "An unknown `stage`; `stage=canary` without a `group` of 1 to 128 bytes; `confirm_within` outside 10 to 600 seconds, on a canary revision, or with no previous revision to fall back to.", body = ErrorBody),
+        (status = 403, description = "This controller is a slave tier and does not accept writes.", body = ErrorBody),
+        (status = 409, description = "`base` is not the latest revision (the body carries `current`), or a confirm window needs every HA member to run a build that supports it.", body = StaleBaseResponse),
+        (status = 422, description = "The document does not parse or validate, or its `schema_version` is newer than the oldest live proxy supports.", body = ErrorBody),
+        (status = 503, description = "The proxy registry cannot be read to check the schema version.", body = ErrorBody),
+    )
+)]
 async fn submit_config(
     State(state): State<AppState>,
     Query(params): Query<SubmitParams>,
@@ -1025,7 +1104,8 @@ fn plan_against_live(
     confirm::plan(window, parsed, fallback, confirm::now_ms()).map_err(bad_request)
 }
 
-#[derive(Serialize)]
+/// The revision on trial, if any.
+#[derive(Serialize, utoipa::ToSchema)]
 struct PendingResponse {
     /// The revision on trial, or `null`.
     pending: Option<PendingView>,
@@ -1033,19 +1113,31 @@ struct PendingResponse {
     now_ms: u64,
     /// The window applied when the diff is risky and the caller named none.
     auto_confirm_secs: u64,
-    /// What counts as risky: `reasons` carry these ids.
+    /// What counts as risky: `reasons` carry these ids. Each entry is `{"id": ..., "text": ...}`.
+    #[schema(example = json!([{"id": "admin_listen", "text": "settings.admin.listen changed"}]))]
     risks: Vec<serde_json::Value>,
 }
 
-#[derive(Serialize)]
+/// A revision on trial with the time left.
+#[derive(Serialize, utoipa::ToSchema)]
 struct PendingView {
     #[serde(flatten)]
     pending: Pending,
+    /// Milliseconds until the deadline (`0` once it has passed and the revert is due).
     remaining_ms: u64,
 }
 
 /// `GET /config/pending` — the revision on trial, with the time left, so every operator's page
 /// shows the same countdown.
+#[utoipa::path(
+    get, path = "/config/pending", tag = "Config trial",
+    summary = "The revision on trial",
+    description = "While a revision is on trial (a risky change, or one submitted with `confirm_within`) this reports it with \
+the time left, so every operator's page shows the same countdown. `risks` lists what makes a change risky.",
+    responses(
+        (status = 200, description = "`pending` is `null` when nothing is on trial.", body = PendingResponse),
+    )
+)]
 async fn get_pending(State(state): State<AppState>) -> Response {
     let now_ms = confirm::now_ms();
     match state.pending() {
@@ -1079,6 +1171,16 @@ fn not_on_trial(revision: Option<u64>) -> Response {
 
 /// `POST /config/confirm/{revision}` — keeps the revision on trial. `409` when it is not (it was
 /// confirmed, reverted or replaced).
+#[utoipa::path(
+    post, path = "/config/confirm/{revision}", tag = "Config trial",
+    summary = "Keep the revision on trial",
+    description = "Ends the trial in favour of the new revision, which stays as it is.",
+    params(("revision" = u64, Path, description = "The revision on trial.", example = 5)),
+    responses(
+        (status = 200, description = "Confirmed.", body = SubmitResponse),
+        (status = 409, description = "That revision is not on trial: it was confirmed, reverted or replaced; or an HA member runs a build that cannot decode trials.", body = ErrorBody),
+    )
+)]
 async fn confirm_revision(
     State(state): State<AppState>,
     Path(revision): Path<u64>,
@@ -1121,7 +1223,8 @@ async fn confirm_revision(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct RevertParams {
     /// Revert only this revision's trial. A request forwarded to the leader carries it, so a
     /// trial that started meanwhile is not reverted by a decision about an older one.
@@ -1130,6 +1233,18 @@ struct RevertParams {
 
 /// `POST /config/revert[?revision=N]` — ends the trial now by bringing the previous revision
 /// back as a new one. `409` when nothing (or not `N`) is on trial.
+#[utoipa::path(
+    post, path = "/config/revert", tag = "Config trial",
+    summary = "End the trial now by reverting",
+    description = "Brings back the revision the one on trial replaced, as a new revision. With `revision` it reverts only that \
+revision's trial, so a decision about an older trial cannot undo a newer one.",
+    params(RevertParams),
+    responses(
+        (status = 200, description = "Reverted. `revision` is the new revision, a copy of the earlier one.", body = SubmitResponse),
+        (status = 403, description = "This controller is a slave tier and does not accept writes.", body = ErrorBody),
+        (status = 409, description = "Nothing (or not that revision) is on trial.", body = ErrorBody),
+    )
+)]
 async fn revert_now(
     State(state): State<AppState>,
     Query(params): Query<RevertParams>,
@@ -1299,6 +1414,16 @@ async fn check_document(
 }
 
 /// `GET /config/schema` — the JSON Schema of a config document (static, built into the binary).
+#[utoipa::path(
+    get, path = "/config/schema", tag = "Config revisions",
+    summary = "The JSON Schema of a config document",
+    description = "Static, built into the binary. The highest `schema_version` this build accepts is in the \
+`X-Config-Schema-Version` header.",
+    responses(
+        (status = 200, description = "The JSON Schema.", body = serde_json::Value, content_type = "application/json",
+            headers(("X-Config-Schema-Version" = String, description = "The highest config schema version this build accepts."))),
+    )
+)]
 async fn config_schema() -> Response {
     (
         [
@@ -1316,6 +1441,18 @@ async fn config_schema() -> Response {
 /// `POST /config/validate` — body is a raw YAML config document. Runs the same checks as a
 /// submission and stores nothing, so it is read-only: no role gate, no Raft, fine on a slave or a
 /// follower.
+#[utoipa::path(
+    post, path = "/config/validate", tag = "Config revisions",
+    summary = "Validate a config without storing it",
+    description = "Runs every check a submission runs, including the schema-version check against the live proxies, and \
+stores nothing. It is read-only, so it works on a slave or an HA follower.",
+    request_body(content = String, content_type = "text/yaml", description = "The config document."),
+    responses(
+        (status = 200, description = "The document is valid.", body = ValidateOk),
+        (status = 422, description = "The document does not parse or validate, or needs a newer schema than the oldest live proxy supports.", body = ErrorBody),
+        (status = 503, description = "The proxy registry cannot be read to check the schema version.", body = ErrorBody),
+    )
+)]
 async fn validate_config(State(state): State<AppState>, body: String) -> Response {
     match check_document(&state, &body, false).await {
         Ok(cfg) => Json(serde_json::json!({"ok": true, "schema_version": cfg.schema_version}))
@@ -1365,9 +1502,11 @@ fn schema_floor_rejection(state: &AppState, cfg: &wayhouse_config::Config) -> Op
     )
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct PromoteParams {
-    /// As [`SubmitParams::confirm_within`], for the document being promoted.
+    /// Seconds to hold the promoted revision on trial, 10 to 600, as on `POST /config`. Absent: a
+    /// 60 second window when promoting could lock the operator out, none otherwise. `0`: none.
     confirm_within: Option<u64>,
 }
 
@@ -1400,6 +1539,22 @@ fn plan_promote_trial(
 /// `Stage::promoted` to `true` (see the module doc). `404` if the revision
 /// never existed; promoting an already-promoted revision is a harmless
 /// no-op, not a conflict.
+#[utoipa::path(
+    post, path = "/config/promote/{revision}", tag = "Config revisions",
+    summary = "Promote a staged revision",
+    description = "Makes a revision staged with `stage=canary` visible to everyone. It is the one change that does not create \
+a revision: it flips the visibility of an existing one. Promoting an already promoted revision is a no-op. It can \
+start a confirm trial like a submission does.",
+    params(("revision" = u64, Path, description = "The staged revision.", example = 4), PromoteParams),
+    responses(
+        (status = 200, description = "Promoted (or already promoted).", body = SubmitResponse),
+        (status = 400, description = "`confirm_within` is out of range or has no previous revision to fall back to.", body = ErrorBody),
+        (status = 403, description = "This controller is a slave tier and does not accept writes.", body = ErrorBody),
+        (status = 404, description = "No such revision.", body = ErrorBody),
+        (status = 409, description = "A confirm window needs every HA member to run a build that supports it.", body = ErrorBody),
+        (status = 422, description = "The revision needs a newer config schema than the oldest live proxy supports, or its stored document no longer parses.", body = ErrorBody),
+    )
+)]
 async fn promote(
     State(state): State<AppState>,
     Path(revision): Path<u64>,
@@ -1495,16 +1650,15 @@ fn slave_rejects_write() -> Response {
         .into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct GetConfigParams {
-    /// Reports this instance's canary group, if any — see the module doc.
-    /// Absent means "no group": only ever see `promoted` revisions, exactly
-    /// today's behavior.
+    /// The caller's canary group. Absent means no group: only promoted revisions are visible.
     group: Option<String>,
-    /// The newest config schema the caller parses: the answer is the newest
-    /// visible revision that needs no more. Absent means no limit (operators).
+    /// The newest config `schema_version` the caller parses: the answer is the newest visible
+    /// revision that needs no more. Absent means no limit.
     max_schema: Option<u32>,
-    /// Scrub the inline secrets from the text (the console asks for it below the Admin role).
+    /// Scrub the inline secrets from the text (`settings.admin.auth_token`, `settings.gossip.psk`).
     #[serde(default)]
     redact: bool,
 }
@@ -1512,6 +1666,19 @@ struct GetConfigParams {
 /// `GET /config[?group=<name>][&max_schema=<n>]` — the current revision *visible to `group`*
 /// (see [`AppState::current_for_group`]), or `404` before anything visible
 /// to it has ever landed.
+#[utoipa::path(
+    get, path = "/config", tag = "Config revisions",
+    summary = "Read the current config",
+    description = "The newest revision visible to `group` (a revision staged for a canary group is visible only to that \
+group), as raw YAML. The revision number is in the `X-Config-Revision` header. A revision whose secrets were \
+scrubbed after it was replaced is never returned as current.",
+    params(GetConfigParams),
+    responses(
+        (status = 200, description = "The YAML document.", body = String, content_type = "text/plain",
+            headers(("X-Config-Revision" = String, description = "The revision number."))),
+        (status = 404, description = "Nothing visible to this group has been submitted yet.", body = ErrorBody),
+    )
+)]
 async fn get_current_config(
     State(state): State<AppState>,
     Query(params): Query<GetConfigParams>,
@@ -1537,15 +1704,22 @@ async fn get_current_config(
     }
 }
 
-#[derive(Serialize)]
+/// One entry of the revision list.
+#[derive(Serialize, utoipa::ToSchema)]
 struct RevisionSummary {
+    /// The revision number.
+    #[schema(example = 7)]
     revision: u64,
+    /// Size of the YAML document in bytes.
+    #[schema(example = 2048)]
     size_bytes: usize,
+    /// Whether this is the newest revision, promoted or not.
     current: bool,
-    /// Slice 7: this revision's rollout visibility — see [`Stage`].
+    /// Whether every subscriber sees it (`false` while it is staged for canary groups only).
     promoted: bool,
+    /// The canary groups the revision was staged for (empty once promoted, or for a plain submission).
     canary_groups: Vec<String>,
-    /// Slice 8: who submitted it, if `X-Actor` named someone.
+    /// Who submitted it, if the `X-Actor` header named someone (the console sets it to the user).
     actor: Option<String>,
 }
 
@@ -1555,6 +1729,15 @@ struct RevisionSummary {
 /// adding a store method that keeps only lengths — revisions are YAML config
 /// text (KB-sized), and this is a control-plane, human-paced call, not
 /// something worth a dedicated storage path.
+#[utoipa::path(
+    get, path = "/config/revisions", tag = "Config revisions",
+    summary = "List every revision",
+    description = "Oldest first, with each revision's size, whether it is the newest one, its rollout stage and who \
+submitted it. Revisions are never deleted, so the list only grows.",
+    responses(
+        (status = 200, description = "The revisions.", body = Vec<RevisionSummary>),
+    )
+)]
 async fn list_revisions(State(state): State<AppState>) -> Response {
     let current = match state.store.current_revision() {
         Ok(c) => c,
@@ -1585,6 +1768,16 @@ async fn list_revisions(State(state): State<AppState>) -> Response {
 /// `GET /config/revisions/{revision}` — one past revision's raw text (the
 /// same shape `GET /config` returns for the current one), `404` if it never
 /// existed.
+#[utoipa::path(
+    get, path = "/config/revisions/{revision}", tag = "Config revisions",
+    summary = "Read one revision",
+    description = "The raw YAML of a past or current revision.",
+    params(("revision" = u64, Path, description = "The revision number.", example = 3), RedactParam),
+    responses(
+        (status = 200, description = "The YAML document.", body = String, content_type = "text/plain"),
+        (status = 404, description = "No such revision.", body = ErrorBody),
+    )
+)]
 async fn get_revision(
     State(state): State<AppState>,
     Path(revision): Path<u64>,
@@ -1597,20 +1790,21 @@ async fn get_revision(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct RedactParam {
+    /// Scrub the inline secrets from the text (`settings.admin.auth_token`, `settings.gossip.psk`).
     #[serde(default)]
     redact: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct DiffParams {
-    /// Defaults to the current revision — "what changed between this old
-    /// revision and now" is the common question; diffing two arbitrary past
-    /// revisions is still possible by passing this explicitly.
+    /// The revision to compare with. Default: the newest revision.
     against: Option<u64>,
-    /// Diff the text with its inline secrets scrubbed (`wayhouse_config::redact_secrets`); the
-    /// console asks for it on behalf of a role below Admin.
+    /// Diff the text with its inline secrets scrubbed (`settings.admin.auth_token`,
+    /// `settings.gossip.psk`).
     #[serde(default)]
     redact: bool,
 }
@@ -1636,6 +1830,18 @@ fn scrubbed(bytes: &[u8], redact: bool) -> String {
 /// `GET /config/revisions/{revision}/diff[?against=<revision>]` — a
 /// line-level diff (`similar::TextDiff`) between `revision` and `against`
 /// (default: current), rendered as plain text with `+`/`-`/` ` line prefixes.
+#[utoipa::path(
+    get, path = "/config/revisions/{revision}/diff", tag = "Config revisions",
+    summary = "Diff two revisions",
+    description = "A line diff, as plain text with `+`, `-` and space prefixes, from `revision` to `against` (default: the \
+newest revision). The first two lines name the revisions.",
+    params(("revision" = u64, Path, description = "The older revision.", example = 3), DiffParams),
+    responses(
+        (status = 200, description = "The diff.", body = String, content_type = "text/plain",
+            example = "--- revision 3\n+++ revision 5\n listeners:\n-  - name: game\n+  - name: game-eu\n"),
+        (status = 404, description = "A named revision does not exist, or there is no current config to diff against.", body = ErrorBody),
+    )
+)]
 async fn diff_revision(
     State(state): State<AppState>,
     Path(revision): Path<u64>,
@@ -1686,6 +1892,21 @@ async fn diff_revision(
 /// `POST /config/rollback/{revision}` — re-submits an old revision's exact
 /// bytes as a brand-new one (see the module doc: this never rewrites
 /// history). Same response shape as `POST /config`.
+#[utoipa::path(
+    post, path = "/config/rollback/{revision}", tag = "Config revisions",
+    summary = "Roll back to a revision",
+    description = "Re-submits an old revision's exact bytes as a new revision. History is never rewritten: subscribers see \
+an ordinary new revision. It passes through the same checks and trial rules as `POST /config`. A revision whose \
+secrets were scrubbed once it was replaced cannot be rolled back to.",
+    params(("revision" = u64, Path, description = "The revision to bring back.", example = 3)),
+    responses(
+        (status = 200, description = "Accepted. `revision` is the new revision number.", body = SubmitResponse),
+        (status = 403, description = "This controller is a slave tier and does not accept writes.", body = ErrorBody),
+        (status = 404, description = "No such revision.", body = ErrorBody),
+        (status = 409, description = "The revision's secrets were redacted; submit the config again with the secret instead.", body = ErrorBody),
+        (status = 422, description = "The stored document no longer validates, or needs a newer schema than the oldest live proxy supports.", body = ErrorBody),
+    )
+)]
 async fn rollback(
     State(state): State<AppState>,
     Path(revision): Path<u64>,
@@ -1739,15 +1960,15 @@ fn revision_not_found(revision: u64) -> Response {
         .into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct SubscribeParams {
+    /// Send only revisions after this one (default `0`: everything visible).
     since: Option<u64>,
-    /// This subscriber's canary group, if any — see the module doc. Absent
-    /// means only ever see `promoted` revisions.
+    /// This subscriber's canary group. Absent means only promoted revisions are sent.
     group: Option<String>,
-    /// The newest config schema this subscriber understands; absent means `1`
-    /// (a proxy that predates the parameter). Revisions that need more are not
-    /// sent (#202).
+    /// The newest config `schema_version` this subscriber understands; absent means `1`.
+    /// Revisions that need more are not sent.
     max_schema: Option<u32>,
 }
 
@@ -1755,6 +1976,23 @@ struct SubscribeParams {
 /// doc. Spawns [`subscribe_worker`] to do the actual catch-up + tail work
 /// and turns its output into SSE `Event`s; the split keeps the worker's
 /// logic (the part worth testing) free of any HTTP/SSE framing.
+#[utoipa::path(
+    get, path = "/config/subscribe", tag = "Config revisions",
+    summary = "Stream revisions (server-sent events)",
+    description = "A long-lived stream of server-sent events that proxies use to follow the config. It first sends every visible \
+revision after `since`, then each new one as it is accepted. Each event's data is a JSON object \
+`{\"revision\": 7, \"config\": \"<the YAML>\"}`. A slow reader is replayed from the store, so nothing is lost. A \
+revision is skipped when it needs a newer schema than `max_schema` or has had its secrets scrubbed. At most 1024 \
+streams are served at once; one more gets `503` with `Retry-After: 5`. A reverse proxy in front of it must not buffer. \
+This route is gated on the `x-wayhouse-protocol` header: an other-major caller gets `426`.",
+    params(SubscribeParams),
+    responses(
+        (status = 200, description = "The event stream.", body = String, content_type = "text/event-stream",
+            example = "data: {\"revision\":7,\"config\":\"schema_version: 4\\n...\"}\n\n"),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = ErrorBody),
+        (status = 503, description = "Too many subscribers.", body = ErrorBody),
+    )
+)]
 async fn subscribe(
     State(state): State<AppState>,
     Query(params): Query<SubscribeParams>,

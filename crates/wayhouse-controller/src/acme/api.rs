@@ -65,6 +65,17 @@ fn internal(e: impl std::fmt::Display) -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, "acme store failure")
 }
 
+/// The OpenAPI paths of the ACME routes.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(
+        list, get_site, put_site, delete_site, account, rewrap, list_gateways, create_gateway,
+        delete_gateway
+    ),
+    tags((name = "ACME", description = "Certificates the controller orders and renews, the gateways that fetch them, and the CA account.")),
+)]
+pub(crate) struct AcmeDoc;
+
 pub fn router(state: AcmeState) -> Router {
     Router::new()
         .route("/acme/sites", get(list))
@@ -95,21 +106,129 @@ pub fn disabled_router(reason: &'static str) -> Router {
         .route("/admin/acme/rewrap", axum::routing::any(refuse))
 }
 
-#[derive(Deserialize)]
+/// The body of `PUT /acme/sites/{name}`.
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct SiteBody {
+    /// The names the certificate covers (a wildcard needs `dns-01`).
+    #[schema(example = json!(["panel.example.com"]))]
     names: Vec<String>,
+    /// The gateways that may fetch this site's certificate bundle.
     #[serde(default)]
+    #[schema(example = json!(["caddy-1"]))]
     gateways: Vec<String>,
     /// `dns-01` (the default) or `http-01`.
     #[serde(default)]
+    #[schema(value_type = String, example = "dns-01")]
     challenge: super::ChallengeKind,
+    /// `dns-01`: the id of the DNS plugin install that creates the challenge records.
     #[serde(default)]
+    #[schema(example = "3f9c1d0a7b2e4c58")]
     dns_plugin: String,
+    /// `dns-01`: the zone the challenge records go in, when it is not derived from the name.
     #[serde(default)]
+    #[schema(example = "example.com")]
     challenge_zone: Option<String>,
+    /// How long to wait for the DNS record to propagate, in seconds. Default 120.
     propagation_timeout_secs: Option<u64>,
+    /// Whether the controller renews the site. Default `true`.
     enabled: Option<bool>,
+}
+
+/// The sites.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `list`
+struct SiteList {
+    /// One entry per site.
+    sites: Vec<SiteStatus>,
+}
+
+/// One site and the state of its certificate.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `status_of`
+struct SiteStatus {
+    /// The site's name.
+    #[schema(example = "panel")]
+    name: String,
+    /// The names the certificate covers.
+    names: Vec<String>,
+    /// The gateways that may fetch it.
+    gateways: Vec<String>,
+    /// `dns-01` or `http-01`.
+    #[schema(example = "dns-01")]
+    challenge: String,
+    /// The DNS plugin install id (`dns-01`).
+    dns_plugin: String,
+    /// Whether renewal is on.
+    enabled: bool,
+    /// The challenge zone, if set.
+    challenge_zone: Option<String>,
+    /// The DNS propagation wait in seconds.
+    propagation_timeout_secs: u64,
+    /// The current certificate, `null` before the first issue. Has `version`, `not_after` and `issued_at` (Unix seconds), `serial`, `names`, `key_id`, `held` (whether this node can open the key) and `untrusted` (issued by a staging or untrusted CA).
+    #[schema(value_type = Option<Object>)]
+    certificate: Option<serde_json::Value>,
+    /// The last renewal attempt, `null` if none failed. Has `failures`, `next_attempt_at` and `last_error`.
+    #[schema(value_type = Option<Object>)]
+    attempt: Option<serde_json::Value>,
+}
+
+/// The answer to storing a site.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `put_site`
+struct SiteStored {
+    /// The site's name.
+    name: String,
+    /// Always `true`.
+    stored: bool,
+}
+
+/// The ACME account.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `account`
+struct AccountAnswer {
+    /// The CA's directory URL.
+    #[schema(example = "https://acme-v02.api.letsencrypt.org/directory")]
+    directory_url: String,
+    /// The account URL at the CA; `null` before the controller registered.
+    account_url: Option<String>,
+    /// The id of the key that seals the account key; absent before registration.
+    key_id: Option<String>,
+}
+
+/// The answer to an ACME key re-wrap.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `rewrap`
+struct ClusterRewrapAcme {
+    /// How many keys were sealed again.
+    rewrapped: u64,
+    /// Keys that changed while the re-wrap ran and were left alone.
+    skipped: Vec<String>,
+    /// Keys this node could not open.
+    unreadable: Vec<String>,
+    /// The key id everything is sealed under now.
+    active_key_id: String,
+}
+
+/// The gateways.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `list_gateways`
+struct GatewayList {
+    /// One entry per gateway: `name`, `created_at` and `sites` (the sites it can fetch).
+    #[schema(value_type = Vec<Object>, example = json!([{"name": "caddy-1", "created_at": 1764144000, "sites": ["panel"]}]))]
+    gateways: Vec<serde_json::Value>,
+}
+
+/// The answer to registering a gateway.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `create_gateway`
+struct GatewayCreated {
+    /// The gateway's name.
+    #[schema(example = "caddy-1")]
+    name: String,
+    /// The bearer token. Shown only here.
+    #[schema(example = "gwt_...")]
+    token: String,
 }
 
 fn status_of(
@@ -144,6 +263,16 @@ fn status_of(
     }))
 }
 
+#[utoipa::path(
+    get, path = "/acme/sites", tag = "ACME",
+    summary = "List ACME sites",
+    description = "Every site the controller keeps a certificate for, with the current certificate's version and expiry and the state of the last renewal attempt. A site is a set of names that share one certificate. \
+A controller that does not run ACME answers `501` on every `/acme` route.",
+    responses(
+        (status = 200, description = "The sites.", body = SiteList),
+        (status = 501, description = "This controller does not run ACME.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn list(State(st): State<AcmeState>) -> Response {
     let sites = match st.store.sites() {
         Ok(s) => s,
@@ -159,6 +288,16 @@ async fn list(State(st): State<AcmeState>) -> Response {
     Json(serde_json::json!({ "sites": out })).into_response()
 }
 
+#[utoipa::path(
+    get, path = "/acme/sites/{name}", tag = "ACME",
+    summary = "Read one ACME site",
+    params(("name" = String, Path, description = "The site's name.", example = "panel")),
+    responses(
+        (status = 200, description = "The site.", body = SiteStatus),
+        (status = 404, description = "No such site.", body = crate::openapi::ErrorBody),
+        (status = 501, description = "This controller does not run ACME.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn get_site(State(st): State<AcmeState>, Path(name): Path<String>) -> Response {
     match st.store.site(&name) {
         Ok(Some(s)) => match status_of(&st, &s) {
@@ -170,6 +309,15 @@ async fn get_site(State(st): State<AcmeState>, Path(name): Path<String>) -> Resp
     }
 }
 
+#[utoipa::path(
+    get, path = "/acme/account", tag = "ACME",
+    summary = "The ACME account",
+    description = "The CA directory in use and, once the controller has registered, the account URL and the id of the key that seals the account key. Before the first order `account_url` is `null`.",
+    responses(
+        (status = 200, description = "The account.", body = AccountAnswer),
+        (status = 501, description = "This controller does not run ACME.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn account(State(st): State<AcmeState>) -> Response {
     match st.store.account() {
         Ok(Some(a)) => Json(serde_json::json!({
@@ -207,13 +355,25 @@ fn answer(applied: &Applied, ok: impl FnOnce() -> Response) -> Response {
     }
 }
 
-#[derive(Deserialize)]
+/// The body of `POST /acme/gateways`.
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct GatewayBody {
+    /// The gateway's name, 1 to 63 of `a-z`, `0-9` and `-`.
+    #[schema(example = "caddy-1")]
     name: String,
 }
 
 /// The gateways (never their tokens or hashes) and the sites each may fetch.
+#[utoipa::path(
+    get, path = "/acme/gateways", tag = "ACME",
+    summary = "List gateways",
+    description = "The gateways that may fetch certificate bundles, and the sites each can reach. Never their tokens or hashes.",
+    responses(
+        (status = 200, description = "The gateways.", body = GatewayList),
+        (status = 501, description = "This controller does not run ACME.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn list_gateways(State(st): State<AcmeState>) -> Response {
     let (gateways, sites) = match (st.store.gateways(), st.store.sites()) {
         (Ok(g), Ok(s)) => (g, s),
@@ -234,6 +394,18 @@ async fn list_gateways(State(st): State<AcmeState>) -> Response {
 }
 
 /// Registers a gateway. The token is in this response only; the store keeps its hash.
+#[utoipa::path(
+    post, path = "/acme/gateways", tag = "ACME",
+    summary = "Register a gateway",
+    description = "Makes a gateway (a machine that terminates TLS for sites, such as Caddy) and its bearer token. The token is in this answer only; the store keeps its hash. It authenticates `GET /acme/bundles` and `GET /acme/bundles/{site}`.",
+    request_body = GatewayBody,
+    responses(
+        (status = 201, description = "Registered.", body = GatewayCreated),
+        (status = 400, description = "The body is not `{\"name\": \"...\"}` or the name is not 1 to 63 of `a-z`, `0-9` and `-`.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "A gateway with that name exists: delete it first to issue a new token.", body = crate::openapi::ErrorBody),
+        (status = 501, description = "This controller does not run ACME.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn create_gateway(State(st): State<AcmeState>, headers: HeaderMap, body: Bytes) -> Response {
     let Ok(parsed) = wayhouse_http::json::from_body::<GatewayBody>(&body) else {
         return err(
@@ -277,6 +449,17 @@ async fn create_gateway(State(st): State<AcmeState>, headers: HeaderMap, body: B
 
 /// Revokes a gateway: its token stops working at once on every replica. Each renewal creates
 /// a new key, so a key the gateway held is replaced at the next renewal.
+#[utoipa::path(
+    delete, path = "/acme/gateways/{name}", tag = "ACME",
+    summary = "Revoke a gateway",
+    description = "Its token stops working at once on every replica. Each renewal creates a new key, so a key the gateway held is replaced at the next renewal.",
+    params(("name" = String, Path, description = "The gateway's name.", example = "caddy-1")),
+    responses(
+        (status = 204, description = "Revoked."),
+        (status = 404, description = "No such gateway.", body = crate::openapi::ErrorBody),
+        (status = 501, description = "This controller does not run ACME.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn delete_gateway(
     State(st): State<AcmeState>,
     headers: HeaderMap,
@@ -295,6 +478,22 @@ async fn delete_gateway(
     .await
 }
 
+#[utoipa::path(
+    put, path = "/acme/sites/{name}", tag = "ACME",
+    summary = "Create or replace an ACME site",
+    description = "Declares the names the site's certificate covers and how the controller proves control of them. With the default `dns-01` challenge a DNS plugin install (`dns_plugin`) must exist, be enabled and have approved the `on_acme_dns` trigger; wildcard names need `dns-01`. \
+With `http-01` the CA is answered at `/.well-known/acme-challenge/{token}` by any controller node (see that route). `gateways` names the gateways that may fetch the site's certificate bundle.",
+    params(("name" = String, Path, description = "The site's name, 1 to 63 of `a-z`, `0-9` and `-`.", example = "panel")),
+    request_body = SiteBody,
+    responses(
+        (status = 200, description = "Stored.", body = SiteStored),
+        (status = 400, description = "A malformed body, an invalid site (names, challenge, zone, timeout), or a DNS plugin that is missing, disabled or did not approve `on_acme_dns`.", body = crate::openapi::ErrorBody),
+        (status = 404, description = "A named gateway does not exist.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "A name already belongs to another site, or the write was refused.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "A wildcard name without the `dns-01` challenge.", body = crate::openapi::ErrorBody),
+        (status = 501, description = "This controller does not run ACME.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn put_site(
     State(st): State<AcmeState>,
     headers: HeaderMap,
@@ -346,6 +545,17 @@ async fn put_site(
     .await
 }
 
+#[utoipa::path(
+    delete, path = "/acme/sites/{name}", tag = "ACME",
+    summary = "Delete an ACME site",
+    description = "Stops renewing the site and removes it. The stored certificate goes with it.",
+    params(("name" = String, Path, description = "The site's name.", example = "panel")),
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 404, description = "No such site.", body = crate::openapi::ErrorBody),
+        (status = 501, description = "This controller does not run ACME.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn delete_site(
     State(st): State<AcmeState>,
     headers: HeaderMap,
@@ -367,6 +577,17 @@ async fn delete_site(
 /// Re-encrypts the account key and every certificate key under the active secret key (step 2
 /// of a rotation, next to `/admin/plugins/secrets/rewrap`). Runs on the leader; refuses
 /// while a member lacks the active key.
+#[utoipa::path(
+    post, path = "/admin/acme/rewrap", tag = "ACME",
+    summary = "Re-encrypt the ACME keys under the active key",
+    description = "Step 2 of a key rotation, next to `POST /admin/plugins/secrets/rewrap`: the account key and every certificate key are sealed again under the active secret key. It runs on the leader (a follower forwards it) and is refused while a member lacks the active key.",
+    responses(
+        (status = 200, description = "What was done.", body = ClusterRewrapAcme),
+        (status = 409, description = "The controller has no secret key, or a member lacks the active key or runs an older build, or the write was refused.", body = crate::openapi::ErrorBody),
+        (status = 501, description = "This controller does not run ACME.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "There is no leader to forward to.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn rewrap(State(st): State<AcmeState>, headers: HeaderMap) -> Response {
     const PATH: &str = "/admin/acme/rewrap";
     let forward = ForwardHeaders::from_headers(&headers);

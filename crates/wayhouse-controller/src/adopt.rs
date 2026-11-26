@@ -53,6 +53,11 @@ pub struct AdoptState {
     pub auth_token: Option<Arc<str>>,
 }
 
+/// The OpenAPI path of the adoption route.
+#[derive(utoipa::OpenApi)]
+#[openapi(paths(adopt))]
+pub(crate) struct AdoptDoc;
+
 pub fn router(state: AdoptState) -> Router {
     Router::new()
         .route("/admin/adopt", post(adopt))
@@ -63,14 +68,19 @@ pub fn router(state: AdoptState) -> Router {
         .with_state(state)
 }
 
-#[derive(Deserialize)]
+/// The body of `POST /admin/adopt`.
+#[derive(Deserialize, utoipa::ToSchema)]
 struct AdoptRequest {
+    /// The parent controller's base URL.
+    #[schema(example = "https://root-ctl.example.com:9901")]
     parent_url: String,
+    /// The bearer token this tier presents to the parent.
     #[serde(default)]
     parent_token: Option<String>,
 }
 
-#[derive(Serialize)]
+/// What `POST /admin/adopt` answers.
+#[derive(Serialize, utoipa::ToSchema)]
 struct AdoptResponse {
     /// The parent's config revision this tier seeded from, if the parent
     /// already had one (mirrors `main.rs`'s own startup seed — `None` just
@@ -84,6 +94,20 @@ struct ErrorResponse {
     error: String,
 }
 
+#[utoipa::path(
+    post, path = "/admin/adopt", tag = "HA cluster",
+    summary = "Make this controller a slave of a parent",
+    description = "Turns an empty standalone controller into a `slave` tier that relays a parent controller's config and \
+intent streams. It seeds from the parent's current config, then keeps following it; from then on it refuses direct \
+config writes (`403`). It only works on a controller with no revision history, and not on an HA controller (start \
+that tier with `--role slave` instead). There is no API call that undoes it.",
+    request_body = AdoptRequest,
+    responses(
+        (status = 200, description = "Adopted. `seeded_config_revision` is the parent's revision this tier started from, `null` if the parent had none.", body = AdoptResponse),
+        (status = 409, description = "This controller runs HA, is already a slave, or has revision history.", body = crate::openapi::ErrorBody),
+        (status = 500, description = "The local store failed.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn adopt(State(state): State<AdoptState>, Json(req): Json<AdoptRequest>) -> Response {
     if state.config.ha.is_some() {
         // The role is a per-process cell; flipping it on one replica would

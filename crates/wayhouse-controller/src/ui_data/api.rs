@@ -227,14 +227,19 @@ fn flags(st: &UiState) -> Response {
     }
 }
 
-#[derive(serde::Deserialize)]
+/// The body of `PUT /features/overrides/{name}`.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct OverrideBody {
+    /// The value to force.
     value: bool,
+    /// Why, for the audit trail.
+    #[schema(example = "incident 4711: stop new backend writes")]
     reason: String,
+    /// When the override ends, Unix seconds.
     expires_at: Option<u64>,
-    /// Seconds from now; the controller stamps `expires_at` itself (the browser clock is not
-    /// trusted). Exclusive with `expires_at`.
+    /// Seconds from now; the controller stamps `expires_at` itself. Exclusive with `expires_at`.
+    #[schema(example = 3600)]
     ttl_secs: Option<u64>,
 }
 
@@ -771,6 +776,584 @@ async fn write(
     )
     .await
 }
+
+// ---- OpenAPI description ----
+// The routes above are registered in loops and closures over a record kind, so the OpenAPI
+// description is written as functions that are never called.
+
+#[utoipa::path(
+    get, path = "/ui/dashboards", tag = "Console records",
+    summary = "List dashboards",
+    description = "Every dashboard the console has saved, as `{\"items\": [...]}`; each item carries its `name`.",
+    responses((status = 200, description = "The records.", body = RecordList))
+)]
+#[allow(dead_code)]
+async fn dashboards_list() {}
+
+#[utoipa::path(
+    get, path = "/ui/dashboards/{name}", tag = "Console records",
+    summary = "Read one dashboard",
+    description = "The record named `name`, with the `name` added to the body.",
+    params(("name" = String, Path, description = "The record's name, 1 to 64 characters without `/` or control characters.", example = "main")),
+    responses(
+        (status = 200, description = "The record.", body = serde_json::Value),
+        (status = 404, description = "No such record.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn dashboards_get() {}
+
+#[utoipa::path(
+    put, path = "/ui/dashboards/{name}", tag = "Console records",
+    summary = "Create or replace a dashboard",
+    description = "Stores the record under `name` (at most 100 records of this kind, 64 KiB each). A dashboard has `widgets` (a list of `id`, `width` from 1 to 12 and optional `settings`, at most 100), and optional `version` and `revision`. Saving with the `revision` you read fails with `409` and the code `stale` when someone saved since; the answer carries the next `revision`. Under HA a follower forwards the write to the leader.",
+    params(("name" = String, Path, description = "The record's name, 1 to 64 characters without `/` or control characters.", example = "main")),
+    request_body(content = serde_json::Value, content_type = "application/json", description = "The record."),
+    responses(
+        (status = 200, description = "Stored; the body is the record as the console reads it.", body = serde_json::Value),
+        (status = 409, description = "The record changed since it was read (`code: stale`), the kind is full, or a cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "The body is not valid JSON, or fails the checks for this kind.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn dashboards_put() {}
+
+#[utoipa::path(
+    delete, path = "/ui/dashboards/{name}", tag = "Console records",
+    summary = "Delete a dashboard",
+    description = "Removes the record.",
+    params(("name" = String, Path, description = "The record's name.", example = "main")),
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 404, description = "No such record.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "A cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn dashboards_delete() {}
+
+#[utoipa::path(
+    get, path = "/ui/themes", tag = "Console records",
+    summary = "List themes",
+    description = "Every theme the console has saved, as `{\"items\": [...]}`; each item carries its `name`.",
+    responses((status = 200, description = "The records.", body = RecordList))
+)]
+#[allow(dead_code)]
+async fn themes_list() {}
+
+#[utoipa::path(
+    get, path = "/ui/themes/{name}", tag = "Console records",
+    summary = "Read one theme",
+    description = "The record named `name`, with the `name` added to the body.",
+    params(("name" = String, Path, description = "The record's name, 1 to 64 characters without `/` or control characters.", example = "night")),
+    responses(
+        (status = 200, description = "The record.", body = serde_json::Value),
+        (status = 404, description = "No such record.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn themes_get() {}
+
+#[utoipa::path(
+    put, path = "/ui/themes/{name}", tag = "Console records",
+    summary = "Create or replace a theme",
+    description = "Stores the record under `name` (at most 50 records of this kind, 8 KiB each). A theme has a `base` (`light` or `dark`) and `tokens`, a map from a themable token to a colour written `#` and six hex digits. Only the console's themable tokens are accepted, a built-in theme name cannot be used, and a theme whose colours fail the contrast check is refused with `422` and a `failures` list. Under HA a follower forwards the write to the leader.",
+    params(("name" = String, Path, description = "The record's name, 1 to 64 characters without `/` or control characters.", example = "night")),
+    request_body(content = serde_json::Value, content_type = "application/json", description = "The record."),
+    responses(
+        (status = 200, description = "Stored; the body is the record as the console reads it.", body = serde_json::Value),
+        (status = 409, description = "The record changed since it was read (`code: stale`), the kind is full, or a cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "The body is not valid JSON, or fails the checks for this kind.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn themes_put() {}
+
+#[utoipa::path(
+    delete, path = "/ui/themes/{name}", tag = "Console records",
+    summary = "Delete a theme",
+    description = "Removes the record.",
+    params(("name" = String, Path, description = "The record's name.", example = "night")),
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 404, description = "No such record.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "A cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn themes_delete() {}
+
+#[utoipa::path(
+    get, path = "/ui/filters", tag = "Console records",
+    summary = "List saved filters",
+    description = "Every saved filter the console has saved, as `{\"items\": [...]}`; each item carries its `name`.",
+    responses((status = 200, description = "The records.", body = RecordList))
+)]
+#[allow(dead_code)]
+async fn filters_list() {}
+
+#[utoipa::path(
+    get, path = "/ui/filters/{name}", tag = "Console records",
+    summary = "Read one saved filter",
+    description = "The record named `name`, with the `name` added to the body.",
+    params(("name" = String, Path, description = "The record's name, 1 to 64 characters without `/` or control characters.", example = "slow-backends")),
+    responses(
+        (status = 200, description = "The record.", body = serde_json::Value),
+        (status = 404, description = "No such record.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn filters_get() {}
+
+#[utoipa::path(
+    put, path = "/ui/filters/{name}", tag = "Console records",
+    summary = "Create or replace a saved filter",
+    description = "Stores the record under `name` (at most 200 records of this kind, 4 KiB each). A saved filter is a JSON object the console understands; the controller checks its size and shape. Under HA a follower forwards the write to the leader.",
+    params(("name" = String, Path, description = "The record's name, 1 to 64 characters without `/` or control characters.", example = "slow-backends")),
+    request_body(content = serde_json::Value, content_type = "application/json", description = "The record."),
+    responses(
+        (status = 200, description = "Stored; the body is the record as the console reads it.", body = serde_json::Value),
+        (status = 409, description = "The record changed since it was read (`code: stale`), the kind is full, or a cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "The body is not valid JSON, or fails the checks for this kind.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn filters_put() {}
+
+#[utoipa::path(
+    delete, path = "/ui/filters/{name}", tag = "Console records",
+    summary = "Delete a saved filter",
+    description = "Removes the record.",
+    params(("name" = String, Path, description = "The record's name.", example = "slow-backends")),
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 404, description = "No such record.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "A cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn filters_delete() {}
+
+#[utoipa::path(
+    get, path = "/ui/node-tags", tag = "Console records",
+    summary = "List node tags",
+    description = "Every node tags record the console has saved, as `{\"items\": [...]}`; each item carries its `name`.",
+    responses((status = 200, description = "The records.", body = RecordList))
+)]
+#[allow(dead_code)]
+async fn node_tags_list() {}
+
+#[utoipa::path(
+    get, path = "/ui/node-tags/{name}", tag = "Console records",
+    summary = "Read one node tags record",
+    description = "The record named `name`, with the `name` added to the body.",
+    params(("name" = String, Path, description = "The record's name, 1 to 64 characters without `/` or control characters.", example = "edge-1")),
+    responses(
+        (status = 200, description = "The record.", body = serde_json::Value),
+        (status = 404, description = "No such record.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn node_tags_get() {}
+
+#[utoipa::path(
+    put, path = "/ui/node-tags/{name}", tag = "Console records",
+    summary = "Create or replace a node tags record",
+    description = "Stores the record under `name` (at most 1000 records of this kind, 4 KiB each). A node tags record is a JSON object of tags for one node. Under HA a follower forwards the write to the leader.",
+    params(("name" = String, Path, description = "The record's name, 1 to 64 characters without `/` or control characters.", example = "edge-1")),
+    request_body(content = serde_json::Value, content_type = "application/json", description = "The record."),
+    responses(
+        (status = 200, description = "Stored; the body is the record as the console reads it.", body = serde_json::Value),
+        (status = 409, description = "The record changed since it was read (`code: stale`), the kind is full, or a cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "The body is not valid JSON, or fails the checks for this kind.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn node_tags_put() {}
+
+#[utoipa::path(
+    delete, path = "/ui/node-tags/{name}", tag = "Console records",
+    summary = "Delete a node tags record",
+    description = "Removes the record.",
+    params(("name" = String, Path, description = "The record's name.", example = "edge-1")),
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 404, description = "No such record.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "A cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn node_tags_delete() {}
+
+#[utoipa::path(
+    get, path = "/ui/layout", tag = "Console records",
+    summary = "Read the form layout",
+    description = "A single record, not a named one. The console's form layout: `version` (always 1) and `fields`, a map from a config path to `group`, `order`, `widget`, `advanced`, `page` and `help`; at most 64 KiB.",
+    responses(
+        (status = 200, description = "The record.", body = serde_json::Value),
+        (status = 404, description = "None is stored.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn layout_get() {}
+
+#[utoipa::path(
+    put, path = "/ui/layout", tag = "Console records",
+    summary = "Replace the form layout",
+    description = "The console's form layout: `version` (always 1) and `fields`, a map from a config path to `group`, `order`, `widget`, `advanced`, `page` and `help`; at most 64 KiB.",
+    request_body(content = serde_json::Value, content_type = "application/json", description = "The record."),
+    responses(
+        (status = 200, description = "Stored.", body = serde_json::Value),
+        (status = 409, description = "A cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "The body is not valid JSON or fails the checks.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn layout_put() {}
+
+#[utoipa::path(
+    delete, path = "/ui/layout", tag = "Console records",
+    summary = "Delete the form layout",
+    description = "Removes it.",
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 404, description = "None is stored.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "A cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn layout_delete() {}
+
+#[utoipa::path(
+    get, path = "/ui/defaults", tag = "Console records",
+    summary = "Read the defaults record",
+    description = "A single record, not a named one. The console's defaults for new records, a JSON object of at most 1 KiB. With none stored the answer is `{}`.",
+    responses(
+        (status = 200, description = "The record.", body = serde_json::Value),
+
+    )
+)]
+#[allow(dead_code)]
+async fn defaults_get() {}
+
+#[utoipa::path(
+    put, path = "/ui/defaults", tag = "Console records",
+    summary = "Replace the defaults record",
+    description = "The console's defaults for new records, a JSON object of at most 1 KiB.",
+    request_body(content = serde_json::Value, content_type = "application/json", description = "The record."),
+    responses(
+        (status = 200, description = "Stored.", body = serde_json::Value),
+        (status = 409, description = "A cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "The body is not valid JSON or fails the checks.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn defaults_put() {}
+
+#[utoipa::path(
+    delete, path = "/ui/defaults", tag = "Console records",
+    summary = "Delete the defaults record",
+    description = "Removes it.",
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 404, description = "None is stored.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "A cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn defaults_delete() {}
+
+#[utoipa::path(
+    post, path = "/ui/dashboards/{name}/rename", tag = "Console records",
+    summary = "Rename a dashboard",
+    description = "Renames the dashboard. With `revision` the rename fails with `409` (`code: stale`) when the dashboard was saved since you read it.",
+    params(("name" = String, Path, description = "The dashboard's current name.", example = "main")),
+    request_body = RenameBody,
+    responses(
+        (status = 200, description = "Renamed.", body = RenameAnswer),
+        (status = 404, description = "No such dashboard.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "Stale, the new name is taken, or a cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "A malformed body or an invalid name.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn dashboards_rename() {}
+
+/// The body of `POST /ui/dashboards/{name}/rename`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real type is local to `rename_dashboard`
+struct RenameBody {
+    /// The new name.
+    #[schema(example = "ops")]
+    to: String,
+    /// The revision the caller read; the rename fails if the dashboard changed since.
+    revision: Option<u64>,
+}
+
+/// The answer to a rename.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline
+struct RenameAnswer {
+    /// The new name.
+    #[schema(example = "ops")]
+    name: String,
+}
+
+/// A list of console records.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `list`
+struct RecordList {
+    /// The records, each with its `name`.
+    #[schema(value_type = Vec<Object>)]
+    items: Vec<serde_json::Value>,
+}
+
+#[utoipa::path(
+    get, path = "/secrets", tag = "Cluster secrets",
+    summary = "List cluster secrets",
+    description = "What is stored, by name, with when it was set and under which key. Never a value and never the ciphertext. Secrets are the values a config refers to as `{ secret: name }`.",
+    responses((status = 200, description = "The secrets.", body = SecretList))
+)]
+#[allow(dead_code)]
+async fn secrets_list() {}
+
+#[utoipa::path(
+    put, path = "/secrets/{name}", tag = "Cluster secrets",
+    summary = "Set a cluster secret",
+    description = "Seals the value on this controller and replicates only the ciphertext; under HA the entry reaches the leader as ciphertext, so the request that carried the value is never forwarded. \
+Needs `--secret-key-file`. A `rev` orders replacements so a stale write cannot win. At most 2048 secrets (tunnel keys are counted apart). The value is never logged.",
+    params(("name" = String, Path, description = "1 to 63 characters of `a-z`, `0-9` and `-`, not starting or ending with `-`.", example = "db-password")),
+    request_body = SecretValueBody,
+    responses(
+        (status = 200, description = "Stored.", body = SecretStored),
+        (status = 400, description = "The body is not `{\"value\": \"...\"}`, the value's size is out of range, or the name is not valid.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "The controller has no secret key, the store is full, or a cluster member lacks the active key or runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn secrets_put() {}
+
+#[utoipa::path(
+    delete, path = "/secrets/{name}", tag = "Cluster secrets",
+    summary = "Delete a cluster secret",
+    description = "Removes the secret. Under HA the log is purged so the superseded ciphertext does not linger.",
+    params(("name" = String, Path, description = "The secret's name.", example = "db-password")),
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 404, description = "No such secret.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "A cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn secrets_delete() {}
+
+#[utoipa::path(
+    get, path = "/secrets/{name}/sealed", tag = "Cluster secrets",
+    summary = "Read a secret's ciphertext",
+    description = "The sealed form a proxy opens with its own copy of the key. The proxy token may call it; the console's token may not.",
+    params(("name" = String, Path, description = "The secret's name.", example = "db-password")),
+    responses(
+        (status = 200, description = "The sealed value.", body = SealedAnswer),
+        (status = 404, description = "No such secret.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn secrets_sealed() {}
+
+#[utoipa::path(
+    post, path = "/secrets/rewrap", tag = "Cluster secrets",
+    summary = "Re-encrypt every cluster secret under the active key",
+    description = "Step 2 of a key rotation, next to `POST /admin/plugins/secrets/rewrap`. Refused while a cluster member lacks the active key. A secret replaced meanwhile is skipped and reported.",
+    responses(
+        (status = 200, description = "What was done.", body = ClusterRewrapAnswer),
+        (status = 409, description = "The controller has no secret key, or a member lacks the active key or runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn secrets_rewrap() {}
+
+/// The cluster secrets.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `list_secrets`
+struct SecretList {
+    /// One entry per secret: `name`, `key_id`, `set_at` and, when set, `rev` and `actor`.
+    #[schema(value_type = Vec<Object>, example = json!([{"name": "db-password", "key_id": "k1", "set_at": 1764144000}]))]
+    items: Vec<serde_json::Value>,
+}
+
+/// The body of `PUT /secrets/{name}`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real type is `SecretBody`
+struct SecretValueBody {
+    /// The secret's value.
+    value: String,
+}
+
+/// The answer to setting a secret.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `put_secret`
+struct SecretStored {
+    /// The secret's name.
+    #[schema(example = "db-password")]
+    name: String,
+    /// Always `true`.
+    set: bool,
+    /// The key it is sealed under.
+    key_id: String,
+    /// When it was set, Unix seconds.
+    set_at: u64,
+}
+
+/// A sealed secret.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `read_sealed`
+struct SealedAnswer {
+    /// The key it is sealed under.
+    key_id: String,
+    /// The nonce, base64.
+    nonce: String,
+    /// The ciphertext, base64.
+    ciphertext: String,
+    /// The replacement counter, when set.
+    rev: Option<u64>,
+}
+
+/// The answer to a cluster secret re-wrap.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `rewrap_secrets`
+struct ClusterRewrapAnswer {
+    /// How many secrets were sealed again.
+    rewrapped: u64,
+    /// Names that changed while the re-wrap ran and were left alone.
+    skipped: Vec<String>,
+    /// Names this node could not open.
+    unreadable: Vec<String>,
+    /// The key id everything is sealed under now.
+    active_key_id: String,
+}
+
+#[utoipa::path(
+    get, path = "/features", tag = "Feature flags",
+    summary = "The controller's feature flags",
+    description = "`flags` are the controller's own flags with the overrides in force. `proxy_flags` are the proxy flags as the fleet sees them (default and override); the value from a proxy's config is the console's to overlay, and each node's build decides `available`.",
+    responses((status = 200, description = "The flags.", body = FlagsAnswer))
+)]
+#[allow(dead_code)]
+async fn features_get() {}
+
+#[utoipa::path(
+    get, path = "/features/overrides", tag = "Feature flags",
+    summary = "List feature overrides",
+    description = "The overrides an operator set, each with its value, reason, when it was set and when it expires. The proxy token may call it: proxies read it to apply overrides.",
+    responses((status = 200, description = "The overrides.", body = RecordList))
+)]
+#[allow(dead_code)]
+async fn overrides_list() {}
+
+#[utoipa::path(
+    put, path = "/features/overrides/{name}", tag = "Feature flags",
+    summary = "Override a feature flag",
+    description = "Sets a fleet-wide override of a flag. A flag whose override may only turn it off (`off_only`) cannot be switched on, and a flag that removes a protection needs an expiry (`expires_at` or `ttl_secs`, not both). \
+At most 64 overrides. The controller stamps the time itself; the actor is the `X-Actor` header.",
+    params(("name" = String, Path, description = "The flag's name, `a-z`, `0-9` and `_`.", example = "admin_write_backends")),
+    request_body = OverrideBody,
+    responses(
+        (status = 200, description = "Stored.", body = serde_json::Value),
+        (status = 409, description = "Too many overrides, or a cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "A malformed body, both `expires_at` and `ttl_secs`, an expiry in the past, or a flag that may not be overridden this way.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn overrides_put() {}
+
+#[utoipa::path(
+    delete, path = "/features/overrides/{name}", tag = "Feature flags",
+    summary = "Remove a feature override",
+    description = "The flag goes back to its configured or default value.",
+    params(("name" = String, Path, description = "The flag's name.", example = "admin_write_backends")),
+    responses(
+        (status = 204, description = "Removed."),
+        (status = 404, description = "No such override.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "A cluster member runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn overrides_delete() {}
+
+/// The answer to `GET /features`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `flags`
+struct FlagsAnswer {
+    /// The controller's flags, each with its name, value, source, scope, whether it applies live, and what turning it off costs.
+    #[schema(value_type = Vec<Object>)]
+    flags: Vec<serde_json::Value>,
+    /// The proxy flags as the fleet sees them.
+    #[schema(value_type = Vec<Object>)]
+    proxy_flags: Vec<serde_json::Value>,
+}
+
+/// The OpenAPI paths of the console records, cluster secrets and feature overrides.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(
+        dashboards_list,
+        dashboards_get,
+        dashboards_put,
+        dashboards_delete,
+        themes_list,
+        themes_get,
+        themes_put,
+        themes_delete,
+        filters_list,
+        filters_get,
+        filters_put,
+        filters_delete,
+        node_tags_list,
+        node_tags_get,
+        node_tags_put,
+        node_tags_delete,
+        layout_get,
+        layout_put,
+        layout_delete,
+        defaults_get,
+        defaults_put,
+        defaults_delete,
+        dashboards_rename,
+        secrets_list,
+        secrets_put,
+        secrets_delete,
+        secrets_sealed,
+        secrets_rewrap,
+        features_get,
+        overrides_list,
+        overrides_put,
+        overrides_delete
+    ),
+    tags(
+        (name = "Console records", description = "What the console saves in the cluster: dashboards, themes, saved filters, node tags, the form layout and defaults."),
+        (name = "Cluster secrets", description = "Values a config refers to as `{ secret: name }`, sealed by the controller. The API never returns a value."),
+        (name = "Feature flags", description = "The controller's flags and the fleet-wide overrides."),
+    ),
+)]
+pub(crate) struct UiDataDoc;
 
 #[cfg(test)]
 mod tests {

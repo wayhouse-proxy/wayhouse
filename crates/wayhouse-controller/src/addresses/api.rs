@@ -50,6 +50,14 @@ impl AddressesState {
     }
 }
 
+/// The OpenAPI path of the tunnel address route.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(list),
+    tags((name = "Tunnel", description = "WireGuard tunnel addresses and keys.")),
+)]
+pub(crate) struct AddressesDoc;
+
 pub fn router(state: AddressesState) -> Router {
     let routes = Router::new()
         .route("/tunnel/addresses", get(list))
@@ -95,24 +103,54 @@ pub fn claim_error_response(e: &ClaimError) -> Response {
         .into_response()
 }
 
-#[derive(Serialize)]
+/// One allocated tunnel address.
+#[derive(Serialize, utoipa::ToSchema)]
 struct EntryOut {
+    /// Who holds it: `origin` (a game host's agent) or `proxy`.
+    #[schema(value_type = String, example = "origin")]
     role: super::Role,
+    /// The owner's name.
+    #[schema(example = "game-host-1")]
     name: String,
+    /// The tunnel address.
+    #[schema(example = "fd49:89c1:4b5e:60::2")]
     address: String,
+    /// When the owner first registered, Unix seconds.
     first_seen: u64,
+    /// When it last registered, Unix seconds.
     last_seen: u64,
+    /// Not re-registered for longer than `--tunnel-stale-after`.
     stale: bool,
 }
 
-#[derive(Serialize)]
+/// The tunnel address book.
+#[derive(Serialize, utoipa::ToSchema)]
 struct ListOut {
+    /// The network addresses are allocated from, or `null` in pin-only mode.
+    #[schema(example = "fd49:89c1:4b5e:60::/64")]
     network: Option<String>,
+    /// How many addresses are allocated.
     allocated: usize,
+    /// How many the network holds, or `null` without one.
     capacity: Option<u64>,
+    /// The allocations.
     entries: Vec<EntryOut>,
 }
 
+#[utoipa::path(
+    get, path = "/tunnel/addresses", tag = "Tunnel",
+    summary = "List the allocated tunnel addresses",
+    description = "Every tunnel address the controller handed to an origin or a proxy, with when it was first and last seen. \
+`stale` is true when an owner has not re-registered for longer than `--tunnel-stale-after` (default 14 days; `0` \
+disables it). Without `--tunnel-network` the controller only checks that pinned addresses are unique, so `network` is \
+`null`. This route is gated on the `x-wayhouse-protocol` header: an other-major caller gets `426`. See the Manual \
+page \"Reach origins over WireGuard\".",
+    responses(
+        (status = 200, description = "The address book.", body = ListOut),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+        (status = 500, description = "The address store failed.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn list(State(state): State<AddressesState>) -> Response {
     let entries = match state.book.entries() {
         Ok(e) => e,

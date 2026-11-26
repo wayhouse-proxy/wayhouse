@@ -21,12 +21,30 @@ pub struct ChallengeState {
     pub clock: std::sync::Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 
+/// The OpenAPI path of the HTTP-01 answer.
+#[derive(utoipa::OpenApi)]
+#[openapi(paths(answer))]
+pub(crate) struct ChallengeDoc;
+
 pub fn router(state: ChallengeState) -> Router {
     Router::new()
         .route("/.well-known/acme-challenge/{token}", get(answer))
         .with_state(state)
 }
 
+#[utoipa::path(
+    get, path = "/.well-known/acme-challenge/{token}", tag = "ACME gateways",
+    summary = "Answer an HTTP-01 challenge",
+    description = "The CA asks a site's own name on port 80, which a gateway terminates; the gateway forwards that path to any controller node, and this route answers from the replicated store while the order that published it is running. \
+There is no authentication on purpose: the key authorization is what the CA is meant to read, and the token is 128 bits of the CA's choosing that nobody can guess before the order starts. An unknown or expired token is a plain `404`.",
+    security(()),
+    params(("token" = String, Path, description = "The challenge token the CA chose.", example = "evaGxfADs6pSRb2LAv9IZf17Dt3juxGJ-PCt92wr-oA")),
+    responses(
+        (status = 200, description = "The key authorization, plain text.", body = String, content_type = "text/plain"),
+        (status = 404, description = "No such token, or it is not valid now."),
+        (status = 500, description = "The store could not be read."),
+    )
+)]
 async fn answer(State(st): State<ChallengeState>, Path(token): Path<String>) -> Response {
     // Nothing that cannot be a stored token reaches the database.
     if !HttpChallenge::valid_token(&token) {

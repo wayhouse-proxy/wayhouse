@@ -39,33 +39,35 @@ use wayhouse_config::base64_decode_32;
 use crate::addresses::Role;
 use crate::registry::Registration;
 
-/// One origin's current registration — the whole of what `wayhouse-agent` submits
-/// and what a `tunnel` `BackendSource` (phase 14 slice 5) will read back.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// One origin's current registration: what `wayhouse-agent` submits and what a `tunnel` backend
+/// source reads back.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 pub struct PeerRegistration {
-    /// The origin's stable identity — what `backend_sources[].pubkey` pins
-    /// against and what a pool's `tunnel` source is ultimately keyed by.
+    /// The origin's stable identity: what `backend_sources[].pubkey` pins against and what a
+    /// pool's `tunnel` source is keyed by.
+    #[schema(example = "game-host-1")]
     pub name: String,
     /// The origin's WireGuard public key, base64-encoded (32 bytes).
+    #[schema(example = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=")]
     pub pubkey: String,
-    /// The origin's last-known dial-out endpoint, if any — WireGuard's own
-    /// roaming/keepalive mean this is informational, never required to
-    /// register (an origin behind a home NAT may not have a stable one).
+    /// The origin's last-known dial-out endpoint (`ip:port`), if any. It is informational and never
+    /// required: an origin behind a home NAT may have no stable one.
     #[serde(default)]
+    #[schema(example = "203.0.113.10:51820")]
     pub endpoint: Option<String>,
-    /// Backend addresses this origin fronts, reachable once its WireGuard peer
-    /// is up. Entries are `host:port`, or the shorthand `:port` ("my tunnel
-    /// address plus this port"), which the controller expands when it stores
-    /// the registration (spec: Backends).
+    /// Backend addresses this origin fronts, reachable once its WireGuard peer is up, at most 64.
+    /// Entries are `host:port`, or the shorthand `:port` ("my tunnel address plus this port"),
+    /// which the controller expands when it stores the registration.
     #[serde(default)]
+    #[schema(example = json!([":25565"]))]
     pub backends: Vec<String>,
-    /// This origin's tunnel-internal IP address (IPv4 or IPv6). Optional on request (omit to
-    /// be allocated one, or give one to claim it); always set once stored.
+    /// This origin's tunnel-internal IP address (IPv4 or IPv6). Optional on request (omit to be
+    /// allocated one, or give one to claim it); always set once stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "fd49:89c1:4b5e:60::2")]
     pub tunnel_address: Option<String>,
-    /// The sealed cluster secret holding this origin's tunnel preshared key: one of the names
-    /// [`wayhouse_enroll::psk_secret_name_gen`] derives from `name`, the generation in use. Proxies fetch and open it;
-    /// the key itself is never in a registration.
+    /// The name of the sealed cluster secret holding this origin's tunnel preshared key, for the
+    /// generation in use. Proxies fetch and open it; the key itself is never in a registration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub psk_secret: Option<String>,
 }

@@ -59,6 +59,7 @@ use zeroize::Zeroizing;
 
 use crate::ha::members::Joiner;
 use crate::ha::{WriteRequest, WriteResponse};
+use crate::openapi::ErrorBody;
 use crate::scoped_auth::Caller;
 use crate::ui_data::api::{actor, err, internal, now, UiState};
 use crate::ui_data::{self, Applied, Kind, PoolChild, UiOp};
@@ -156,6 +157,14 @@ struct EnrollState {
     joiner: Option<Joiner>,
 }
 
+/// The OpenAPI paths of the enrollment routes.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(mint, step_up_salt, list, revoke, redeem, ha_join),
+    tags((name = "Enrollment", description = "One-time codes that hand a node its tokens and keys, and the join of a new controller replica.")),
+)]
+pub(crate) struct EnrollDoc;
+
 pub fn router(ui: UiState, grants: Grants) -> Router {
     let auth = middleware::from_fn_with_state(
         wayhouse_http::server::BearerAuth::new(ui.auth_token.as_deref()),
@@ -208,24 +217,164 @@ pub(crate) fn no_store(mut r: Response) -> Response {
     r
 }
 
-#[derive(serde::Deserialize)]
+/// The body of `POST /enrollments`.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct MintBody {
+    /// What the node is: `agent` (default), `proxy`, `aggregator`, `ui` or `controller`.
     #[serde(default = "default_role")]
+    #[schema(value_type = String, example = "agent")]
     role: Role,
-    /// The node's name (an origin's tunnel name, a proxy's instance name).
+    /// The node's name: an origin's tunnel name, a proxy's instance name. `origin` is accepted as an alias.
     #[serde(alias = "origin")]
+    #[schema(example = "game-host-1")]
     name: String,
+    /// How long the code lives, in seconds. Default 900, at most 604800 (86400 for `proxy`, `ui` and `controller`).
     ttl_secs: Option<u64>,
+    /// How many times it can be redeemed. Default 1. A `ui` code is single use; a `controller` code is single use or a pool of 2 to 16.
     uses: Option<u64>,
-    /// Aggregator only: the parent this tier pushes to.
+    /// `aggregator` only: the parent this tier pushes to, an http(s) URL with no credentials, at most 512 bytes.
     parent_url: Option<String>,
-    /// Agent and proxy only: the code then redeems under any name that starts with this prefix
-    /// (and ends the redeem's `name`), one identity per pod. It must end in `-`.
+    /// `agent`, `proxy` or a `controller` pool: the code then redeems under any `name` that starts with this prefix, one identity per pod. Must end in `-`.
+    #[schema(example = "edge-")]
     name_prefix: Option<String>,
-    /// Roles that need it (and every mint made with the UI token): the signed assertion.
-    /// Never logged, never stored.
+    /// The signed step-up assertion `{sig, nonce, exp}`, required for `proxy`, `ui` and `controller` and for any mint made with the UI token. Never logged or stored.
+    #[schema(value_type = Option<Object>, example = json!({"sig": "base64 Ed25519 signature", "nonce": "0123456789abcdef", "exp": 1764144060_u64}))]
     step_up: Option<wayhouse_enroll::step_up::Assertion>,
+}
+
+/// The answer to `POST /enrollments`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `mint`
+struct MintedCode {
+    /// The code's id, for `DELETE /enrollments/{id}`.
+    #[schema(example = "k7Qd2mXa")]
+    id: String,
+    /// The one-time code. Shown only here.
+    #[schema(example = "k7Qd2mXa.0c1f9a...")]
+    code: String,
+    /// The role.
+    #[schema(example = "agent")]
+    role: String,
+    /// The node's name.
+    #[schema(example = "game-host-1")]
+    name: String,
+    /// When the code expires, Unix seconds.
+    #[schema(example = 1_764_144_900_u64)]
+    expires_at: u64,
+    /// How many times it can be redeemed.
+    #[schema(example = 1)]
+    uses: u64,
+    /// `controller` codes only: the Raft node id the new replica will have.
+    node_id: Option<u64>,
+}
+
+/// The answer to `GET /enrollments/step-up`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `step_up_salt`
+struct StepUpSalt {
+    /// Base64 salt.
+    #[schema(example = "q1w2e3r4t5y6u7i8o9p0aA==")]
+    salt: String,
+}
+
+/// The answer to `GET /enrollments`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `list`
+struct EnrollmentList {
+    /// One entry per code.
+    items: Vec<EnrollmentItem>,
+}
+
+/// One enrollment code, without its secret.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real entries are the stored records
+struct EnrollmentItem {
+    /// The code's id.
+    #[schema(example = "k7Qd2mXa")]
+    id: String,
+    /// `pending`, `used`, `expired`, `revoked`, or for a `controller` code `joining` (redeemed, not yet added to the Raft group) and `joined`.
+    #[schema(example = "pending")]
+    status: String,
+    /// The role.
+    #[schema(example = "agent")]
+    role: String,
+    /// The node's name.
+    #[schema(example = "game-host-1")]
+    origin: String,
+    /// When the code was minted, Unix seconds.
+    created_at: u64,
+    /// When it expires, Unix seconds.
+    expires_at: u64,
+    /// How many times it could be redeemed when minted.
+    uses: u64,
+    /// How many redeems are left.
+    uses_left: u64,
+    /// Who minted it, when the console named a user.
+    created_by: Option<String>,
+    /// `aggregator` codes: the parent URL.
+    parent_url: Option<String>,
+    /// Codes with a prefix: the prefix.
+    name_prefix: Option<String>,
+    /// `controller` codes: the Raft node id.
+    node_id: Option<u64>,
+}
+
+/// The body of `POST /enroll`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real type is `wayhouse_enroll::RedeemRequest`
+struct RedeemBody {
+    /// The one-time code.
+    #[schema(example = "k7Qd2mXa.0c1f9a...")]
+    code: String,
+    /// The role the code was minted for.
+    #[schema(example = "agent")]
+    role: String,
+    /// The node's own name, for a code minted with a `name_prefix`.
+    #[schema(example = "edge-3")]
+    name: Option<String>,
+}
+
+/// The answer to `POST /enroll`. Every value in `files` is a secret.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real type is `wayhouse_enroll::RedeemResponse`
+struct RedeemAnswer {
+    /// The node's name.
+    #[schema(example = "game-host-1")]
+    name: String,
+    /// The role.
+    #[schema(example = "agent")]
+    role: String,
+    /// File name to file contents: exactly what the role needs (an agent gets the agent token and a tunnel key, a proxy the proxy token, the ingest token if set and the keyring, and so on).
+    #[schema(example = json!({"agent-token": "...", "tunnel-psk": "..."}))]
+    files: std::collections::BTreeMap<String, String>,
+    /// `aggregator` codes: the parent, as set at mint time.
+    parent_url: Option<String>,
+    /// `controller` codes: the Raft node id.
+    node_id: Option<u64>,
+    /// `controller` codes: the cluster's `--tunnel-network`, which the replica must match.
+    tunnel_network: Option<String>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+struct JoinBody {
+    /// The join proof that came with the controller grant (`<id>.<secret>`).
+    proof: String,
+    /// How the other replicas reach the joining node, as `--ha-peers` takes it.
+    #[schema(example = "https://ctl-4.example.com:9901")]
+    addr: String,
+}
+
+/// The answer to `POST /enroll/ha-join`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `ha_join`
+struct JoinedAnswer {
+    /// The node id the replica now has.
+    #[schema(example = 4)]
+    node_id: u64,
+    /// Always `true`.
+    joined: bool,
 }
 
 fn default_role() -> Role {
@@ -278,6 +427,26 @@ fn parent_url_ok(u: &str) -> bool {
 
 /// `POST /enrollments`: `{role?, name, ttl_secs?, uses?, parent_url?, name_prefix?, step_up?}`. The code is
 /// in this answer and nowhere else, ever: the store keeps a hash.
+#[utoipa::path(
+    post, path = "/enrollments", tag = "Enrollment",
+    summary = "Mint an enrollment code",
+    description = "Makes a one-time code that a node redeems with `POST /enroll` to receive exactly the files of its role. The \
+code is in this answer and nowhere else: the store keeps only a hash. The answer carries `Cache-Control: no-store`.\n\n\
+Minting a code for `proxy`, `ui` or `controller` (the roles whose files include the cluster keyring or the admin \
+token), or any code with the UI token, also needs a signed `step_up` assertion, and the controller needs \
+`--enroll-step-up-pubkey-file`; `GET /enrollments/step-up` gives the salt a signer needs. Codes for those roles live at \
+most 24 hours. A `controller` code has the Raft node id the new replica will have; with several uses and a \
+`name_prefix` it is a pool for a StatefulSet. See the Manual page \"Enroll a node\".",
+    request_body = MintBody,
+    responses(
+        (status = 200, description = "The new code. `node_id` is present for a `controller` code.", body = MintedCode,
+            headers(("Cache-Control" = String, description = "`no-store`."))),
+        (status = 400, description = "Malformed body, `ttl_secs` outside 1 to 604800 (86400 for a step-up role), a bad `name`, `name_prefix` or `parent_url`, `uses` that does not fit the role (a `ui` code is single use; a `controller` code is single use or a pool of 2 to 16 uses with a `name_prefix`).", body = ErrorBody),
+        (status = 403, description = "The step-up assertion is missing, wrong, expired or its nonce was used before.", body = ErrorBody),
+        (status = 409, description = "The controller cannot hand out that role (no secret key, no `--proxy-token`, no `--ingest-token`, no `--auth-token`, no HA, no step-up key), or 200 codes exist already: revoke one.", body = ErrorBody),
+        (status = 422, description = "The store refused the record, for example an invalid name or a controller node id that is already taken.", body = ErrorBody),
+    )
+)]
 async fn mint(
     State(st): State<EnrollState>,
     caller: Option<Extension<Caller>>,
@@ -505,6 +674,16 @@ fn step_up_ok(st: &EnrollState, b: &MintBody) -> Result<(), &'static str> {
 /// `GET /enrollments/step-up`: the salt a signer needs to derive the key from the passphrase.
 /// Not a secret (it sits beside the public key); the route is behind the admin or UI token like
 /// the rest of `/enrollments`.
+#[utoipa::path(
+    get, path = "/enrollments/step-up", tag = "Enrollment",
+    summary = "The salt for signing a step-up assertion",
+    description = "The salt a signer needs to derive the step-up key from the operator's passphrase. It is not a secret: it sits \
+next to the public key in `--enroll-step-up-pubkey-file`.",
+    responses(
+        (status = 200, description = "The salt.", body = StepUpSalt),
+        (status = 409, description = "The controller has no `--enroll-step-up-pubkey-file`.", body = ErrorBody),
+    )
+)]
 async fn step_up_salt(State(st): State<EnrollState>) -> Response {
     match &st.grants.step_up {
         Some(k) => Json(json!({ "salt": k.salt_b64() })).into_response(),
@@ -516,6 +695,12 @@ async fn step_up_salt(State(st): State<EnrollState>) -> Response {
 }
 
 /// `GET /enrollments`: every code with its state; never the code or its hash.
+#[utoipa::path(
+    get, path = "/enrollments", tag = "Enrollment",
+    summary = "List enrollment codes",
+    description = "Every code with its state. Never the code itself or its hash.",
+    responses((status = 200, description = "The codes.", body = EnrollmentList))
+)]
 async fn list(State(st): State<EnrollState>) -> Response {
     let items = match st.ui.store.list(Kind::Enrollment) {
         Ok(i) => i,
@@ -643,6 +828,19 @@ fn origin_stores_full(st: &EnrollState, name: &str) -> Option<&'static str> {
 /// `DELETE /enrollments/{id}`: revokes a code, spent or not. A spent single-name agent code
 /// also revokes what it issued (the origin's token and tunnel keys), so revoking it cuts the
 /// host off. A name-prefix code does not record which names it issued; delete those origins.
+#[utoipa::path(
+    delete, path = "/enrollments/{id}", tag = "Enrollment",
+    summary = "Revoke an enrollment code",
+    description = "Revokes a code, spent or not. Revoking a spent single-name agent code also revokes what it issued (the \
+origin's token and tunnel keys), so it cuts that host off. A code with a `name_prefix` does not record which names it \
+issued: delete those origins. A single-use `controller` code stays as a spent record, so its node id is not handed \
+out again; so does a code whose step-up assertion is still valid (its nonce stays used until the assertion expires).",
+    params(("id" = String, Path, description = "The code's `id` (not the code itself).", example = "k7Qd2mXa")),
+    responses(
+        (status = 204, description = "Revoked, or there was nothing left to revoke."),
+        (status = 404, description = "No such code.", body = ErrorBody),
+    )
+)]
 async fn revoke(
     State(st): State<EnrollState>,
     Path(id): Path<String>,
@@ -772,6 +970,27 @@ fn too_many() -> Response {
 /// `POST /enroll`: `{code, role, name?}`. Unauthenticated by design, so it is the most guarded route:
 /// 1 KiB body, a per-address and a per-code-id attempt limit, one answer for every kind of
 /// refusal, nothing secret in a log line.
+#[utoipa::path(
+    post, path = "/enroll", tag = "Enrollment",
+    summary = "Redeem an enrollment code",
+    description = "A node presents its one-time code and receives the files of its role: the code is the only credential, so \
+this is the one write route that needs no bearer token. It is the most guarded route: a 1 KiB body limit, at most \
+10 tries a minute per client address (a /64 for IPv6) and 5 per code id, and one answer (`401`) for every wrong, \
+spent, expired or other-role code. A success is not counted against the limits. Every value in the answer is a \
+secret; the answer carries `Cache-Control: no-store`. Serve it over TLS.",
+    security(()),
+    request_body = RedeemBody,
+    responses(
+        (status = 200, description = "The node's name, role and secret files by file name.", body = RedeemAnswer,
+            headers(("Cache-Control" = String, description = "`no-store`."))),
+        (status = 400, description = "Malformed body, or a `name` that does not fit the code's `name_prefix`.", body = ErrorBody),
+        (status = 401, description = "The code is wrong, spent, expired, revoked or for another role.", body = ErrorBody),
+        (status = 409, description = "The name already holds credentials (free it by deleting the origin), or the name's tunnel key changed while redeeming; ask again.", body = ErrorBody),
+        (status = 429, description = "Too many tries. `Retry-After: 60`.", body = ErrorBody),
+        (status = 503, description = "The controller cannot hand out that role right now (a setting is missing). The code is not spent: fix it and retry.", body = ErrorBody),
+        (status = 507, description = "The secret store is full.", body = ErrorBody),
+    )
+)]
 async fn redeem(
     State(st): State<EnrollState>,
     ConnectInfo(peer): ConnectInfo<wayhouse_http::tls::PeerAddr>,
@@ -1005,15 +1224,6 @@ async fn redeem(
     )
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct JoinBody {
-    /// The join proof that came with the controller grant (`<id>.<secret>`).
-    proof: String,
-    /// How the other replicas reach the joining node, as `--ha-peers` takes it.
-    addr: String,
-}
-
 /// `POST /enroll/ha-join`: `{proof, addr}`. A node that redeemed a controller code asks the
 /// cluster to add it. Unauthenticated like `/enroll`, and guarded the same way: 1 KiB body, a
 /// per-address and a per-code limit, one answer (401) for every wrong, spent or late proof.
@@ -1026,6 +1236,23 @@ struct JoinBody {
 /// before the mark (the first answer was lost) answers 200 again. Accepted risk: a proof holder can
 /// make the leader send `/raft/whoami` with the Raft bearer to any https host (or loopback over
 /// http) and read the reason back, a port probe by someone who already holds the cluster's secrets.
+#[utoipa::path(
+    post, path = "/enroll/ha-join", tag = "Enrollment",
+    summary = "Ask the cluster to add a new controller replica",
+    description = "A node that redeemed a `controller` code starts with `--ha-join` and calls this with the join proof that came \
+with its files, and the address the other replicas reach it on. The cluster runs the member add itself, so no admin \
+token is needed on the new host. Unauthenticated like `POST /enroll` and guarded the same way (1 KiB body, 30 tries a \
+minute per address, 20 per code, one `401` for every wrong, spent or late proof). A follower relays the request to the \
+leader. The proof stays good for an hour after the redeem; a repeat before the code is marked joined answers `200` again.",
+    security(()),
+    request_body = JoinBody,
+    responses(
+        (status = 200, description = "The node was added.", body = JoinedAnswer),
+        (status = 400, description = "Malformed body.", body = ErrorBody),
+        (status = 401, description = "The proof is wrong, spent, late, or this controller does not run HA.", body = ErrorBody),
+        (status = 429, description = "Too many tries. `Retry-After: 60`.", body = ErrorBody),
+    )
+)]
 async fn ha_join(
     State(st): State<EnrollState>,
     ConnectInfo(peer): ConnectInfo<wayhouse_http::tls::PeerAddr>,
