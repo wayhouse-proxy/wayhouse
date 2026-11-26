@@ -21,6 +21,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"   # incremental state just bloats the cache
+  CARGO_PROFILE_DEV_DEBUG: "0"   # no debuginfo in dev/test builds: about 45% smaller target dirs, so the caches fit the 10 GB repo limit
   RUSTFLAGS: "-D warnings"
 
 # Every job is pinned to ubuntu-24.04 rather than ubuntu-latest (which becomes

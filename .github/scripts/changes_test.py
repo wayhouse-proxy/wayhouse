@@ -299,6 +299,13 @@ class WorkflowGate(unittest.TestCase):
         needs = re.search(r"^  ci-ok:.*?needs: \[([^\]]*)\]", ci, re.M | re.S).group(1)
         self.assertEqual(jobs - {"ci-ok"}, {n.strip() for n in needs.split(",")})
 
+    def test_warm_up_builds_with_the_same_profile_env_as_ci(self):
+        def env(name):
+            top = self.read(name).split("\njobs:\n", 1)[0]
+            return re.findall(r'^  ((?:CARGO_|RUSTFLAGS)\w*): "?([^"#\n]+?)"?\s*(?:#.*)?$', top, re.M)
+        self.assertIn(("CARGO_PROFILE_DEV_DEBUG", "0"), env("ci.yml"))
+        self.assertEqual(env("ci.yml"), env("cache-warm.yml"))
+
     def test_every_cargo_cache_is_warmed_on_main(self):
         ci = self.read("ci.yml")
         names = set()
