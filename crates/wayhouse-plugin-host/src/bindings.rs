@@ -2,7 +2,7 @@
 //! from the install's option values into the effective [`Capabilities`] the operator
 //! approves. Resolution only substitutes at fixed positions and then runs the ordinary
 //! [`Capabilities::parse`], so a resolved set is always one a literal declaration could
-//! have been. See `docs/superpowers/specs/2026-10-28-plugin-manifest-and-bindings.md`.
+//! have been. See `docs/deep-dive/topics/plugin-host.md`.
 
 use serde_json::{Map, Value};
 

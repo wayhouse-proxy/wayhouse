@@ -1,5 +1,5 @@
 //! The registries' write path under HA ("Write path",
-//! `docs/superpowers/specs/2026-10-03-ha-replicated-address-allocation-design.md`).
+//! `docs/deep-dive/topics/controller-ha.md`).
 //!
 //! The state machine is the only writer of the registries and the address
 //! book under HA, so nothing here writes either: `POST` answers an

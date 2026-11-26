@@ -6,7 +6,7 @@
 //! Exists so every origin's `wayhouse-agent` can learn about every edge proxy by
 //! subscribing to that registry. The controller is also the tunnel address
 //! authority (spec
-//! `docs/superpowers/specs/2026-10-02-tunnel-address-authority-design.md`): the
+//! `docs/deep-dive/topics/tunnel-registry.md`): the
 //! answer carries this proxy's `tunnel_address`, which startup needs *before*
 //! the WireGuard interface can be brought up.
 

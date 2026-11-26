@@ -1,4 +1,4 @@
-//! Secrets at rest (design: `docs/superpowers/specs/2026-10-08-plugin-secret-storage-design.md`,
+//! Secrets at rest (design: `docs/deep-dive/topics/secrets.md`,
 //! extended by `k1-design-2026-11-05.md`).
 //!
 //! One cluster keyring, provisioned identically to every node out of band

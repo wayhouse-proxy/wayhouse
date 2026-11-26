@@ -1,5 +1,5 @@
 //! The config document's schema version (#185, spec
-//! `docs/superpowers/specs/2026-10-05-component-versioning-design.md`).
+//! `docs/deep-dive/topics/config-schema.md`).
 //!
 //! `schema_version` is the **minimum schema the document needs**: absent means
 //! `1`. This build supports up to [`CONFIG_SCHEMA_VERSION`]; a document asking for

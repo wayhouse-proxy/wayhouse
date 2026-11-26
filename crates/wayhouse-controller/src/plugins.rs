@@ -1,5 +1,5 @@
 //! Plugin installs and module blobs (Wave 5; design:
-//! `docs/superpowers/specs/2026-10-07-plugin-system-design.md`).
+//! `docs/deep-dive/topics/plugin-runtime-in-controller.md`).
 //!
 //! A standalone controller keeps two sibling `kv` trees next to `revisions`:
 //! `plugin_installs` (install id to [`InstallRecord`], JSON) and `plugin_blobs` (module

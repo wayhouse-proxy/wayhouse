@@ -247,7 +247,7 @@ struct Args {
 
     /// Start even though stored tunnel addresses fall outside
     /// `--tunnel-network`, and move each such peer into the network at its
-    /// next registration (docs/superpowers/specs/2026-10-03-ipv6-tunnel-design.md).
+    /// next registration (docs/deep-dive/topics/tunnel-registry.md).
     /// Re-addressing interrupts the peer's traffic until it restarts.
     #[arg(long)]
     tunnel_readdress: bool,
@@ -285,7 +285,7 @@ struct Args {
 
     /// Issue and renew ACME certificates for the sites in `/acme/sites` (DNS-01 through a
     /// DNS plugin). Off by default. Needs the secret key above and `--acme-ca`. Design:
-    /// `docs/superpowers/specs/2026-10-15-controller-acme-design.md`.
+    /// `docs/deep-dive/topics/acme.md`.
     #[arg(long, requires = "acme_ca")]
     acme: bool,
 

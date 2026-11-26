@@ -1,5 +1,5 @@
 //! The `web:` section: sites published through a Caddy that sits behind the `web`
-//! pool (spec `docs/superpowers/specs/2026-10-15-web-routing-design.md`).
+//! pool (spec `docs/deep-dive/topics/web-gateway.md`).
 //!
 //! This module validates and resolves the section and appends one loopback
 //! listener `web-up-<pool>` per pool used with `via: wayhouse`; the data path

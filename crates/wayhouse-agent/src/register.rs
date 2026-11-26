@@ -4,7 +4,7 @@
 //! `aggregator_client`'s duplicated `IngestPayload` already established.
 //!
 //! The controller is the tunnel address authority (spec
-//! `docs/superpowers/specs/2026-10-02-tunnel-address-authority-design.md`):
+//! `docs/deep-dive/topics/tunnel-registry.md`):
 //! the answer carries this origin's `tunnel_address`, which startup needs
 //! *before* the WireGuard interface can be brought up.
 

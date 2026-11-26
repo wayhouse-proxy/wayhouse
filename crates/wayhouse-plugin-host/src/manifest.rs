@@ -1,7 +1,7 @@
 //! The optional `wayhouse.plugin-manifest` section (ABI 0.2): a display name, the options
 //! schema the install `config` is checked against, and the capability bindings that say
 //! which option feeds which `"${opt:NAME}"` placeholder of the caps JSON. See
-//! `docs/superpowers/specs/2026-10-28-plugin-manifest-and-bindings.md`.
+//! `docs/deep-dive/topics/plugin-host.md`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};

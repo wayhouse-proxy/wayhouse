@@ -1,7 +1,7 @@
 #!/bin/sh
 # Static checks on deploy/ that need Docker's CLI but no daemon (compose config
 # only renders). Each check pins a failure that only shows up on a real
-# `docker compose up` / cluster — see docs/superpowers/plans/2026-10-01-deploy.md.
+# `docker compose up` / cluster — see docs/deep-dive/topics/deployment-artifacts.md.
 set -eu
 cd "$(dirname "$0")/.."
 sh deploy/check-caddy-modules.sh

@@ -1,5 +1,5 @@
 //! Phase 14 tunnel end-to-end tests — see
-//! `docs/superpowers/specs/2026-10-01-tunnel-e2e-design.md`.
+//! `docs/deep-dive/topics/testing-and-benchmarks.md`.
 //!
 //! The namespace tests are `#[ignore]`: they need `CAP_NET_ADMIN` in a
 //! network namespace and only run via `make tunnel-e2e` (which wraps the

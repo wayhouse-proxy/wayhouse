@@ -9,7 +9,7 @@ publish = false
 # Sniffer registry formats and checks (index, manifest, compatibility, verification,
 # index generation): pure functions over bytes and strings, no I/O, no network. The
 # network client lives in wayhouse-ui; the sniffers repo CI consumes the generator.
-# Spec: docs/superpowers/specs/2026-10-05-plugin-registry-design.md
+# Spec: docs/deep-dive/topics/registries-and-release-feed.md
 
 [lints]
 workspace = true

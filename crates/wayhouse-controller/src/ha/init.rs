@@ -1,6 +1,6 @@
 //! Leader-side initialization of the replicated registries ("The cluster's
 //! tunnel network" and "Choosing the source",
-//! `docs/superpowers/specs/2026-10-03-ha-replicated-address-allocation-design.md`).
+//! `docs/deep-dive/topics/controller-ha.md`).
 //!
 //! Until the cluster records its tunnel network every registry entry is
 //! rejected `NotInitialized`. [`initialize_registries`] runs on every node.

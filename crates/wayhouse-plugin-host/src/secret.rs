@@ -1,5 +1,5 @@
 //! Secret values as the host handles them (design:
-//! `docs/superpowers/specs/2026-10-08-plugin-secret-storage-design.md`).
+//! `docs/deep-dive/topics/secrets.md`).
 //!
 //! A [`SecretValue`] lives only for the host call that expands it: it is zeroed on drop, never
 //! `Debug`-printed, never passed to the guest. The [`Scrubber`] removes every form a

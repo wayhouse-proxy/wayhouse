@@ -1,5 +1,5 @@
 //! Controller-managed ACME certificates (design:
-//! `docs/superpowers/specs/2026-10-15-controller-acme-design.md`).
+//! `docs/deep-dive/topics/acme.md`).
 
 pub mod api;
 pub mod bundles;

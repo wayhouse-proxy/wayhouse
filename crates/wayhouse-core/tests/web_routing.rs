@@ -1,6 +1,6 @@
 //! Web front door, data path: the entry route to the `web` pool (PROXY v2) and
 //! the generated `via: wayhouse` loopback listener (spec
-//! `docs/superpowers/specs/2026-10-15-web-routing-design.md`).
+//! `docs/deep-dive/topics/web-gateway.md`).
 
 mod common;
 use common::free_tcp_addr as free_addr;

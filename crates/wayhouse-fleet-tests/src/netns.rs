@@ -1,5 +1,5 @@
 //! A rootless network-namespace lab for the phase-14 tunnel e2e test
-//! (`docs/superpowers/specs/2026-10-01-tunnel-e2e-design.md`).
+//! (`docs/deep-dive/topics/testing-and-benchmarks.md`).
 //!
 //! The test process itself runs inside an outer user+net+mount namespace
 //! (`make tunnel-e2e` → `unshare -Urnm`) — that is the "lab". Each [`Ns`]

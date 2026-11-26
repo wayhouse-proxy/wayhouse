@@ -1,5 +1,5 @@
 //! Version skew across the fleet (#185,
-//! `docs/superpowers/specs/2026-10-05-component-versioning-design.md`, "Visibility").
+//! `docs/deep-dive/topics/aggregator.md`).
 //!
 //! Every instance reports its product `version` and wire `protocol`. An instance
 //! is compared with the newest version in the fleet:

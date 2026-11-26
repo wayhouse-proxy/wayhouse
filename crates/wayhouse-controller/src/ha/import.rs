@@ -1,5 +1,5 @@
 //! Importing pre-HA data when a controller upgrades to `--ha-peers` ("Import",
-//! `docs/superpowers/specs/2026-10-03-ha-replicated-address-allocation-design.md`).
+//! `docs/deep-dive/topics/controller-ha.md`).
 //!
 //! A node starting with `--ha-peers` whose `peers/`, `proxy-peers/` or
 //! `tunnel-addresses/` hold data but no `applied_index` marker has pre-HA
