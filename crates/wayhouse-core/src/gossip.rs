@@ -423,6 +423,25 @@ type FocaInstance = Foca<SocketAddr, PostcardCodec, rand10::rngs::StdRng, Broadc
 pub async fn run(
     cfg: GossipConfig,
     handle: GossipHandle,
+    inbox: GossipInbox,
+    shutdown: watch::Receiver<bool>,
+) {
+    let socket = match UdpSocket::bind(cfg.bind).await {
+        Ok(s) => s,
+        Err(error) => {
+            tracing::error!(bind = %cfg.bind, %error, "gossip: failed to bind, mesh disabled");
+            return;
+        }
+    };
+    run_on(socket, cfg, handle, inbox, shutdown).await;
+}
+
+/// [`run`] on a socket the caller already bound to `cfg.bind`. Tests use it to pick two ports
+/// without a gap between choosing a port and binding it.
+pub async fn run_on(
+    socket: UdpSocket,
+    cfg: GossipConfig,
+    handle: GossipHandle,
     mut inbox: GossipInbox,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -432,13 +451,6 @@ pub async fn run(
         Ok(psk) => handle.set_psk(&psk),
         Err(error) => {
             tracing::error!(%error, "gossip: the pre-shared key was not resolved, mesh disabled");
-            return;
-        }
-    };
-    let socket = match UdpSocket::bind(cfg.bind).await {
-        Ok(s) => s,
-        Err(error) => {
-            tracing::error!(bind = %cfg.bind, %error, "gossip: failed to bind, mesh disabled");
             return;
         }
     };
@@ -1038,12 +1050,11 @@ mod tests {
         window: std::time::Duration,
         expect_join: bool,
     ) -> (usize, usize) {
-        // Both sockets stay open until both ports are picked, so the kernel cannot hand the
-        // same port out twice; they close just before the mesh nodes bind.
-        let held_a = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let held_b = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let (addr_a, addr_b) = (held_a.local_addr().unwrap(), held_b.local_addr().unwrap());
-        drop((held_a, held_b));
+        // The nodes run on the sockets bound here, so no other test can take a port between
+        // choosing it and binding it.
+        let sock_a = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sock_b = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (addr_a, addr_b) = (sock_a.local_addr().unwrap(), sock_b.local_addr().unwrap());
         let cfg = |bind, seeds| GossipConfig {
             bind,
             seeds,
@@ -1056,13 +1067,15 @@ mod tests {
         // Rotated before the mesh starts, so not one datagram goes out under the old key alone.
         handle_a.set_psk("old-psk-0123456789");
         assert!(handle_a.rotate_psk("new-psk-0123456789", window));
-        let ta = tokio::spawn(run(
+        let ta = tokio::spawn(run_on(
+            sock_a,
             cfg(addr_a, vec![addr_b]),
             handle_a.clone(),
             inbox_a,
             shutdown_rx.clone(),
         ));
-        let tb = tokio::spawn(run(
+        let tb = tokio::spawn(run_on(
+            sock_b,
             cfg(addr_b, vec![]),
             handle_b.clone(),
             inbox_b,
