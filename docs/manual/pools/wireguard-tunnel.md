@@ -75,6 +75,10 @@ wayhouse-agent \
 
 In the pool, add a `tunnel` backend source that names the origin. See [Backend sources](backend-sources.md) for the exact fields.
 
+## Rotate an origin's preshared key
+
+An origin's preshared key has **generations**. `POST /api/tunnel/origins/{name}/psk/rotate` (admin, and the Rotate button on `/tunnel`) seals generation n+1 next to the active one. The agent fetches it, applies it and registers again naming n+1. That registration is the acknowledgement and the switch, and proxies then read the new key. Until the agent has done so, the old key stays active and nothing changes for the proxies, so a rotation with an unreachable agent is harmless. The next rotation removes the generations older than the active one.
+
 ## Related
 
 - [Backend transport](../../11-backend-transport.md) explains how the tunnel works.

@@ -320,3 +320,7 @@ the sniffers repo pins, release the rebuilt sniffers there (its **Release** work
 `python3 .github/scripts/update_sniffers_lock.py` here to pin the new tags and hashes from the
 published `index.json`, and the e2e job is green again. The same command is how a newer official
 sniffer release gets picked up.
+
+## Environment for the tests
+
+`WAYHOUSE_SNIFFERS_DIR` points the ignored loader tests at the directory where `make sniffers-fetch` put the official sniffers pinned in `.github/pins/sniffers.lock`. It defaults to `target/sniffers` in the workspace and has no effect on a running proxy.
