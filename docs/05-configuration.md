@@ -382,7 +382,7 @@
 > with `hash_on: src_ip | src_ip_port`. There is no per-listener `affinity` key
 > and no sticky table (removed in #56: it was per worker, so `SO_REUSEPORT` kept
 > only ~34% of clients on 4 workers). A `round_robin` pool gives a returning
-> client a new backend. See `config.example.yaml`.
+> client a new backend. See `deploy/config.example.yaml`.
 >
 > **Handshake-only sniffers (UDP, #131):** the `quic`, `wireguard`, `openvpn`,
 > `raknet` and `teamspeak3` sniffers recognise only a flow's handshake datagram.
@@ -400,8 +400,7 @@
 > reaches the same backend. The check goes by the sniffer's module name.
 >
 > **Admin API auth:** `settings.admin.auth_token`
-> (a flat string, not the target schema's `auth: { mode, token }` object
-> below) gates every admin API request except `GET /healthz` with a bearer
+> (a flat string) gates every admin API request except `GET /healthz` with a bearer
 > check. `None` (the default) leaves the API open — network-boundary-only
 > auth, same as always. A single shared secret, not RBAC — appropriate
 > for gating a control-plane API that's meant to stay behind its own network
@@ -423,7 +422,7 @@
 > host while each host's file must hold a certificate for **its own** `listen`
 > address. See docs/12 "TLS for the fleet services".
 >
-> The full schema below is the target.
+A complete example. It is parsed and validated by the same code as a real config, so every key in it exists.
 
 ```yaml
 # Optional: the minimum config schema this document needs (whole number, 1 or
@@ -436,26 +435,11 @@ settings:
   shutdown_grace_sec: 30     # wait this long for in-flight conns on SIGTERM
   admin:
     listen: "127.0.0.1:9900"
-    auth: { mode: "bearer", token: "change-me" }   # plain string, no ${VAR} expansion; or mode: mtls
-  metrics: { path: "/metrics" }
-  log:
-    format: "json"
-    connection_log: { enabled: true, sample: 1.0 }
+    auth_token: "replace-with-a-long-random-token"   # or { secret: name } with schema_version 4
   limits:
     max_connections: 500000
     max_udp_sessions: 1000000
     max_new_sessions_per_sec: 50000   # new conns + UDP sessions/s (burst = rate)
-
-# reusable filters
-filters:
-  - name: block-bogons
-    type: deny_cidr
-    cidrs: ["10.0.0.0/8", "192.168.0.0/16", "100.64.0.0/10"]
-  - name: conn-rate
-    type: rate_limit
-    scope: src_ip            # src_ip | src_/24 | global
-    new_per_sec: 50
-    burst: 100
 
 # backend sources — a pool takes its backends from `targets:` OR a
 # named `source:`, never both. Level-triggered: the adapter returns the current
@@ -497,10 +481,10 @@ backend_sources:
 pools:
   - name: match-eu
     source: static-eu
-    balancer: { strategy: consistent_hash, hash_on: src_ip }
-    affinity: { table_ttl_sec: 120 }
+    balancer: consistent_hash
+    hash_on: src_ip
     health_check:
-      type: udp_probe          # tcp_connect | udp_probe | none | http
+      type: udp_probe          # tcp_connect | udp_probe | none
       send_hex: "01"
       expect_hex_prefix: "02"
       interval_sec: 2
@@ -509,19 +493,19 @@ pools:
       fall: 3
     per_backend:
       max_sessions: 200
-      max_new_per_sec: 20
     proxy_protocol: "none"     # none | v1 | v2 | v2-udp
     connect_timeout_ms: 300
     idle_timeout_sec: 90
 
   - name: match-us
     source: srv-us
-    balancer: { strategy: least_conn }
+    balancer: least_conn
     health_check: { type: tcp_connect, interval_sec: 2, timeout_ms: 400, rise: 2, fall: 3 }
 
   - name: source-query
     source: static-eu
-    balancer: { strategy: round_robin }
+    balancer: round_robin
+    health_check: { type: none }   # only a UDP listener uses it, and there is nothing to probe
     idle_timeout_sec: 10
 
 # resolvers (external routing logic)
@@ -538,27 +522,28 @@ resolvers:
       positive_ttl_sec: 30
       negative_ttl_sec: 2
       max_entries: 200000
-    on_error: "reject"         # reject | fallback | stale_ok
+    on_error: "reject"         # reject | fallback_route | stale_ok
 
 # listeners + routes
 listeners:
   - name: public-udp
     bind: "0.0.0.0:7777"
     protocol: udp
-    filters: ["block-bogons", "conn-rate"]
+    deny: ["10.0.0.0/8", "192.168.0.0/16", "100.64.0.0/10"]
+    rate_limit: { per_ip: { rate: 50, burst: 100 } }
     routes:
       - match: { type: always }
         action: { resolver: matchmaker }
-      - match: { type: always }        # fallback if resolver on_error=fallback
+      - match: { type: always }        # fallback if resolver on_error=fallback_route
         action: { pool: match-eu }
 
   - name: public-tls
     bind: "0.0.0.0:443"
     protocol: tcp
     routes:
-      - match: { type: sni, suffix: ".eu.example.com" }
+      - match: { type: sni, host: ["*.eu.example.com"] }
         action: { pool: match-eu }
-      - match: { type: sni, suffix: ".us.example.com" }
+      - match: { type: sni, host: ["*.us.example.com"] }
         action: { pool: match-us }
       - match: { type: always }
         action: { pool: match-eu }
@@ -567,7 +552,7 @@ listeners:
     bind: "0.0.0.0:25565"
     protocol: tcp
     routes:
-      - match: { type: sniffer, name: minecraft, host: "survival.example.net" }
+      - match: { type: sniffer, sniffer: minecraft, host: ["survival.example.net"] }
         action: { pool: match-eu }
       - match: { type: always }
         action: { pool: match-us }
@@ -713,7 +698,7 @@ rolling update of many pods costs one fetch, not one per event.
 
 `schema_version` (top level, optional) is the **minimum config schema the document
 needs**; absent means `1`. A build supports up to the schema in
-`wayhouse_config::version::CONFIG_SCHEMA_VERSION` (currently `3`). A document that
+`wayhouse_config::version::CONFIG_SCHEMA_VERSION` (currently `4`). A document that
 asks for more is refused with `config schema_version N is newer than this build
 supports (max M)`, on startup, on a file reload (the running config stays active)
 and on a controller-delivered revision. A string, `0` or a fractional value is

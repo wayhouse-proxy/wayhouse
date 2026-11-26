@@ -10,7 +10,7 @@ sidebar:
 | Endpoint        | Tells you                                                                                                                                                                               |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /healthz`  | The process is alive. Needs no token.                                                                                                                                                   |
-| `GET /readyz`   | Config loaded and valid, at least one listener bound, not draining. Returns 503 `draining` after `POST /admin/drain`.                                                                   |
+| `GET /readyz`   | At least one listener is configured and the instance is not draining. Returns 503 `draining` after `POST /admin/drain`.                                                                 |
 | `GET /pools`    | Every pool with its backends, their health, `state=` and active count.                                                                                                                  |
 | `GET /config`   | A plain-text view of the active snapshot: listeners, pools, `draining` and `active_conns`.                                                                                              |
 | `GET /sessions` | Every live connection or UDP session: id, transport, listener, `peer=`, `local=`, `pool=`, `backend=` and `age=`. Filter with `?listener=`, `?pool=`, `?proto=tcp\|udp` or `?src=<ip>`. |

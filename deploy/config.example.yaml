@@ -373,7 +373,7 @@ listeners:
 # Live: pool targets, balancer, health-check params, caps, proxy_protocol.
 # Discovered backend sets are refreshed by their own tasks and folded into the
 #   same snapshot rebuild (discovery set ∪ overlay-added − overlay-removed, then
-#   health / admin state). `backend_sources` themselves are startup-only.
+#   health / admin state). `backend_sources` entries are reconciled on reload too.
 # Reconciled by name on reload (stop + respawn if changed): listener bind /
 #   protocol / routes / prefix / freebind / transparent / route_hint
 #   / allow / deny / rate_limit / per_source / first_packet_gate / geo.

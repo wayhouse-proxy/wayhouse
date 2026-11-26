@@ -84,7 +84,7 @@ cap. See [Protect a listener](../security/protect-a-listener.md) for what each d
 
 ## Process-wide settings that affect listeners
 
-These are under `settings:` and are read once at startup (a restart applies a change):
+These are under `settings:`. All are read once at startup except `shutdown_grace_sec`, which a reload applies:
 
 | Key                                                                                    | Meaning                                                         |
 | -------------------------------------------------------------------------------------- | --------------------------------------------------------------- |

@@ -18,12 +18,12 @@ A listener has an ordered list of routes. Each route has a **matcher** and an **
 
 The matchers are all in `matcher.rs`, and all of them are pure functions of a small `MatchContext`: the client address, the local address the client connected to, the first bytes, and the result of a sniffer if one ran.
 
-| Matcher       | Looks at                                                 | Needs bytes?   |
+| `match.type`  | Looks at                                                 | Needs bytes?   |
 | ------------- | -------------------------------------------------------- | -------------- |
 | `always`      | nothing                                                  | no             |
 | `client_cidr` | the source IP, against a list of prefixes                | no             |
-| `dst_cidr`    | the address the client connected to                      | no             |
-| `dst_port`    | the destination port, against a list of ranges           | no             |
+| `dst`         | the address the client connected to, against prefixes    | no             |
+| `port`        | the destination port, against a list of ranges           | no             |
 | `first_bytes` | a prefix and or a length window of the first bytes       | yes            |
 | `sni`         | the TLS server name, exact or `*.suffix`                 | yes (TCP only) |
 | `sniffer`     | the verdict of a named WASM sniffer, optionally its host | yes            |

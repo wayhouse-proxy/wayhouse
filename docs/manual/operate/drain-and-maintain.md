@@ -12,7 +12,8 @@ token on every request except `GET /healthz`.
 
 ## Replace a backend
 
-1. Add the new backend to the pool. It becomes healthy after `rise` successful checks:
+1. Add the new backend to the pool. It starts out healthy and its first check follows within one
+   check interval:
 
     ```sh
     curl -X POST localhost:9900/pools/lobby/backends -H 'content-type: application/json' -d '{"addr":"10.0.1.13:27015"}'
@@ -57,5 +58,4 @@ With several proxies, the controller and aggregator fan these actions out for yo
 ## Related
 
 - [Monitor a proxy](monitor.md) for the metrics and endpoints used above.
-- [Operations design](../../06-operations-observability.md) for the full drain semantics and close
-  reasons.
+- [Operations design](../../06-operations-observability.md) for the full drain semantics.

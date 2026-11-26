@@ -598,7 +598,7 @@ the state machine drops it and the status says so. A commit is refused before it
 when over the host's state limits (1 MiB, 1024 keys, 256 writes per call). Status is in memory on the leader and starts
 empty after a failover.
 
-**Module bytes (slice 7).** The Raft log carries install records only; the module (up to 8 MiB)
+**Module bytes.** The Raft log carries install records only; the module (up to 8 MiB)
 is a content-addressed blob each replica keeps in its own store and moves over the peer channel
 (`--ha-token`, the protocol gate):
 

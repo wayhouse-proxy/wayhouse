@@ -294,8 +294,8 @@ carried in the PROXY v2 TLV if the backend should correlate it.
 
 Flow for swapping a backend without dropping players:
 
-1. Register the new backend (`POST /pools/{p}/backends`) → `healthy` after `rise`
-   checks.
+1. Register the new backend (`POST /pools/{p}/backends`). It starts `healthy`, and the first
+   check follows within one check interval.
 2. Set the old backend `PATCH state=draining` → the LB assigns no new sessions there;
    a client whose resolver answer pointed at it is re-resolved once the cached
    answer expires.

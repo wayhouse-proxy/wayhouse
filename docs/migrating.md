@@ -427,7 +427,7 @@ this release:
 - **Nothing existing is removed or renamed** in the config schema between the two tags, so a
   0.2.0 config should load unchanged on 0.3.0. Run `wayhouse --check` on it before the
   upgrade to be sure.
-- `config.example.yaml` has a commented `web:` block as a starting point.
+- `deploy/config.example.yaml` has a commented `web:` block as a starting point.
 
 ### Web sites through Caddy (new, opt-in)
 

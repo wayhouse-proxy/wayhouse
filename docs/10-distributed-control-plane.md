@@ -255,7 +255,7 @@ keep it out of instances you do not trust.
 
 **Config schema** (built exactly as designed — `settings.gossip.psk` is a
 plain string; `wayhouse-config` has no env-substitution mechanism, see
-`config.example.yaml` for the commented-out syntax):
+`deploy/config.example.yaml` for the commented-out syntax):
 
 ```yaml
 settings:
