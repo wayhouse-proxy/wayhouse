@@ -12,7 +12,7 @@
 | Backend IP leak | direct attack bypassing the proxy | backends in the private network only, firewall: only proxy IPs may reach backends |
 | PROXY-header spoofing | forged client IP at the backend | the backend accepts PROXY headers only from the proxy IP (allowlist) |
 | Resolver abuse | flood the matchmaker with lookups | resolver cache, negative TTL, per-IP rate limit before the resolver call |
-| Admin API access | reconfiguration | mTLS/token, internal interface only, no default bind on 0.0.0.0 |
+| Admin API access | reconfiguration | Bearer token and optional TLS, internal interface only, no default bind on 0.0.0.0 |
 
 ## Filter chain (before routing, cheapest first)
 
@@ -75,7 +75,7 @@ All steps run **before** buffer/session allocation.
   source IPs to the game server ports. Backend egress minimal.
 - The proxy runs without root: only `CAP_NET_BIND_SERVICE` (ports < 1024) and — if
   transparent mode — `CAP_NET_ADMIN`. Read-only rootfs, seccomp profile.
-- Secrets (admin token, mTLS keys) via env/file with `0600`, not in the YAML.
+- Secrets (admin token, TLS keys) via env/file with `0600`, not in the YAML.
 - Bind the admin API and metrics to a separate internal interface; never on the public
   listener IPs.
 - The HTTP servers of the fleet binaries (controller, aggregator, UI backend) close a connection
@@ -111,7 +111,7 @@ Guarded by `crates/wayhouse-core/tests/amplification.rs`:
       no session and are never forwarded
       (`rate_limit_is_enforced_before_any_state_change`).
 
-## Sniffer sandbox guarantees (phase 9)
+## Sniffer sandbox guarantees
 
 A loaded sniffer (`settings.sniffers`, `crates/wayhouse/src/sniffer_loader.rs`)
 runs under `wasmtime` as a **core WASM module with no WASI and no host

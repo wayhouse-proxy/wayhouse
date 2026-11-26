@@ -15,7 +15,7 @@
 ### F2 – Routing
 - F2.1 Static listener → pool mapping.
 - F2.2 Routing by SNI (on a TLS handshake) without terminating TLS.
-- F2.3 Routing by first-packet match (byte prefix, regex over the first N bytes).
+- F2.3 Routing by first-packet match (byte prefix and length; a regex over the first bytes is a sniffer's job).
 - F2.4 Routing via an external resolver (gRPC/HTTP callback) with cache & timeout
   fallback.
 - F2.5 Routing by client IP / geo (CIDR lists).
@@ -30,10 +30,10 @@
 
 ### F3 – Upstream / pool
 - F3.1 Selection strategies: round-robin, least-connections, consistent hashing
-  (on client IP or routing key), weighted, "first available".
-- F3.2 Session affinity: same 4-tuple / same routing key → same backend, as long as
-  that backend is healthy.
-- F3.3 Health checks: active (TCP connect, UDP probe, HTTP GET on a sidecar port) and
+  (on client IP or routing key), weighted. ("First available" was dropped.)
+- F3.2 Session affinity: the same client → the same backend, as long as that backend is
+  healthy. Built as a `consistent_hash` pool, with no sticky table.
+- F3.3 Health checks: active (TCP connect and UDP probe; an HTTP check was not built) and
   passive (error rate/timeouts observed in the data path).
 - F3.4 Backend states: `healthy`, `unhealthy`, `draining`, `disabled`.
 - F3.5 Max sessions / max new sessions per second per backend.
@@ -41,7 +41,8 @@
 ### F4 – Session management
 - F4.1 UDP session table keyed by 4-tuple with a configurable idle timeout.
 - F4.2 TCP: normal connection lifetime, half-close propagation.
-- F4.3 Graceful draining: redirect new sessions, end old ones after a grace period.
+- F4.3 Graceful draining: a draining backend gets no new sessions and keeps its old ones. A
+  proxy that shuts down ends what is left after `shutdown_grace_sec`.
 - F4.4 Caps: global and per-listener connection limits.
 
 ### F5 – Client-IP preservation (details in [04](04-transport-and-client-ip.md))
@@ -53,7 +54,7 @@
 ### F6 – Configuration & control plane
 - F6.1 Declarative file (YAML) as the source of truth.
 - F6.2 Hot reload without dropping connections (SIGHUP / file watch / API).
-- F6.3 Admin API (HTTP/gRPC) for: register/deregister backend, set state, read config
+- F6.3 Admin API (HTTP) for: register/deregister backend, set state, read config
   snapshot, trigger draining.
 - F6.4 Optional dynamic backend discovery adapter (DNS SRV, Consul, Kubernetes
   EndpointSlices) behind a stable internal interface.
@@ -61,8 +62,8 @@
 
 ### F7 – Observability (details in [06](06-operations-observability.md))
 - F7.1 Prometheus metrics.
-- F7.2 Structured connection logs (JSON), sampleable.
-- F7.3 Optional OpenTelemetry tracing for the connection-setup phase.
+- F7.2 Structured connection logs (JSON), sampleable. *Not built: today there is one `tracing` line per closed TCP connection.*
+- F7.3 Optional OpenTelemetry tracing for the connection-setup phase. *Not built.*
 - F7.4 Health/readiness endpoints for the proxy itself.
 
 ### F8 – Security (details in [07](07-security-ddos.md))
@@ -93,7 +94,7 @@ setup (capabilities instead of root).
 ## Assumptions
 
 - Backends are reachable over a trusted internal network. **Superseded by
-  phase 14** (backend transport, built): see
+  the backend transport**: see
   [11-backend-transport.md](11-backend-transport.md) for how a proxy reaches a
   backend that isn't on its local network (a WireGuard tunnel per origin). A
   same-network deployment needs none of that and this assumption still holds

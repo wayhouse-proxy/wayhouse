@@ -44,7 +44,7 @@ def dest_of(rel: str):
         return rel[: -len(".md")], None
     m = CHAPTER.match(rel)
     if m:
-        return "deep-dive/design/" + m.group(2), int(m.group(1))
+        return "deep-dive/design/" + m.group(2), int(m.group(1)) + 1  # the overview page is 0
     name = rel[: -len(".md")].replace(".", "")  # Starlight slugs drop dots: migrating-0.2 -> migrating-02
     section = "reference/" if name in REFERENCE else "deep-dive/" if name in DEEP_DIVE else \
         "manual/" + (MANUAL_SECTION.get(name, "") + "/" if name in MANUAL_SECTION else "")

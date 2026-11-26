@@ -351,7 +351,7 @@ isolation is a hard requirement, or when running many `wayhouse` instances per
 node and the orchestrator should own port allocation/collision-avoidance
 across them.
 
-## `--tunnel-*` (phase 14): `CAP_NET_ADMIN` and `/dev/net/tun`
+## `--tunnel-*`: `CAP_NET_ADMIN` and `/dev/net/tun`
 
 `wayhouse --tunnel-*` and `wayhouse-agent` create a real WireGuard interface
 (`docs/11`) — kernel-netlink by default, falling back to `boringtun`
@@ -388,7 +388,7 @@ listener binds or backend source is built — it does not silently run
 without tunnel support.
 
 The CI-runnable `make tunnel-e2e` (rootless network namespaces,
-`docs/superpowers/specs/2026-10-01-tunnel-e2e-design.md`) verifies the tunnel
+[testing and benchmarks](deep-dive/topics/testing-and-benchmarks.md)) verifies the tunnel
 *logic* with the same binaries and flags, but it does not exercise container
 capabilities — `NET_ADMIN` and `/dev/net/tun` as documented above stay the
 deployment requirement.

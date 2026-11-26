@@ -30,16 +30,16 @@ git clone https://github.com/wayhouse-proxy/wayhouse.git
 cd wayhouse
 
 # validate the example config without starting anything
-cargo run --release -p wayhouse -- --config config.example.yaml --check
+cargo run --release -p wayhouse -- --config deploy/config.example.yaml --check
 
 # run the proxy with it
-cargo run --release -p wayhouse -- --config config.example.yaml
+cargo run --release -p wayhouse -- --config deploy/config.example.yaml
 ```
 
 `--check` parses and validates the file and exits. It is the first thing to run after every
 edit, and it is safe to run next to a live proxy.
 
-`config.example.yaml` is the annotated reference config. Copy it, point the listeners at your
+`deploy/config.example.yaml` is the annotated reference config. Copy it, point the listeners at your
 own backends, and keep the file in version control.
 
 ## Check that it is up
@@ -48,7 +48,7 @@ The admin API listens on `127.0.0.1:9900` by default:
 
 ```sh
 curl -s localhost:9900/healthz    # the process is alive
-curl -s localhost:9900/readyz     # config loaded, at least one listener bound, not draining
+curl -s localhost:9900/readyz     # at least one listener is configured and the instance is not draining
 curl -s localhost:9900/pools      # every pool, its backends, their health and state
 curl -s localhost:9900/sessions   # every live connection or UDP session
 ```
@@ -63,9 +63,10 @@ reconciled by name: stopped and respawned only if their definition differs, adde
 if they appeared or vanished. A config that fails validation is rejected and the running
 config stays in place; the reason is in the log.
 
-Some settings are read once at startup and need a restart: `settings.admin.listen`,
-`settings.limits`, `settings.geo_db` and the `backend_sources` list. The comments at the end of
-`config.example.yaml` list what is live and what is not.
+Some settings are read once at startup and need a restart: `settings.workers`, `settings.admin.listen`
+and `settings.admin.tls`, `settings.limits`, `settings.geo_db` and the `settings.sniffers` block. Pools,
+listeners, routes, resolvers and `backend_sources` reload live. The comments at the end of
+`deploy/config.example.yaml` list what is live and what is not.
 
 ## Logging
 

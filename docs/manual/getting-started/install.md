@@ -27,7 +27,7 @@ central configuration for a fleet.
 
 The images are public on GHCR and need no login: `ghcr.io/wayhouse-proxy/<image>`, one image per
 program, as a multi-architecture manifest for `linux/amd64` and `linux/arm64`. A tag is a
-version such as `0.4.0`; `latest` follows the newest release that is not a pre-release.
+version number without a leading `v`; `latest` follows the newest release that is not a pre-release.
 
 The images are built on a distroless base and run as user 65532 with no shell. The proxy
 needs the host network for the ports it listens on; see the Compose files for how the demo does

@@ -37,7 +37,7 @@ in optional sniffers or in external routing logic.
    errors) and connection logs across all games.
 8. **Access control** – IP allow/deny lists, geo filters, rate limiting, per-backend
    connection caps.
-9. **Fleet management** *(v2)* – one control plane + web UI to view and configure
+9. **Fleet management** – one control plane + web UI to view and configure
    many proxy instances across regions from a single authoritative place, with
    revision history and persisted operator intent (see
    [10-distributed-control-plane.md](10-distributed-control-plane.md)).
@@ -53,7 +53,7 @@ in optional sniffers or in external routing logic.
 - **Not a replacement for an L3 scrubbing provider** against volumetric attacks — the
   proxy complements it, it does not replace it.
 - **No cross-instance session state.** Instances are independent on the data path;
-  HA is an anycast / L4-LB concern. The v2 control plane
+  HA is an anycast / L4-LB concern. The control plane
   ([10](10-distributed-control-plane.md)) shares *config* and *health*, never
   sessions — a client rehashed to another instance reconnects.
 
@@ -78,7 +78,7 @@ in optional sniffers or in external routing logic.
 | **Pool / upstream** | A set of equivalent backends with a selection strategy. |
 | **Session** | For UDP: a logical connection, identified by the 4-tuple. |
 | **Sniffer (L7 module)** | Optional parser that extracts a routing hint from the first bytes (e.g. SNI, Minecraft handshake hostname). |
-| **Plugin** | An integration with another system (e.g. the Pelican panel, #213). Not the same as a sniffer; plugins will live in [`wayhouse-proxy/plugins`](https://github.com/wayhouse-proxy/plugins). Design pending. |
+| **Plugin** | An integration with another system (e.g. the Pelican panel, #213). Not the same as a sniffer; plugins are published from [`wayhouse-proxy/plugins`](https://github.com/wayhouse-proxy/plugins). See [plugins](plugins.md). |
 | **Draining** | Backend accepts no new sessions; existing ones drain. |
 | **PROXY protocol** | Header (v1/v2) prepended to the connection carrying the real client address to the backend. |
 | **TPROXY** | Linux kernel feature for transparent proxying that preserves the source IP. |

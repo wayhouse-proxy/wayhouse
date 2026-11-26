@@ -92,8 +92,8 @@ Caddy's own ACME is **off** (`automatic_https.disable`). Certificates come from 
 certificates are a separate work stream (#361 to #366). Running Caddy's built-in ACME next to the sync
 is not supported: every load replaces the whole configuration. The recipe items that ACME in Caddy
 would need (`http_port: 8080`, `alternate_port`, `disable_redirects`) are deliberately deferred until
-that work; the ACME design lives in
-`docs/superpowers/specs/2026-10-15-controller-acme-design.md` (with the ACME work, #372).
+that work; how the ACME work is designed is in
+[certificates](deep-dive/topics/acme.md).
 
 ## Safety rules
 

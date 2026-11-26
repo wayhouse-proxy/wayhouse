@@ -48,7 +48,7 @@ curl --cacert tls/ca.pem --data-binary @wayhouse.yaml \
   -H "Authorization: Bearer $TOKEN" https://127.0.0.1:9901/config
 ```
 
-Start from `config.example.yaml` and read [Your first listener and
+Start from `deploy/config.example.yaml` and read [Your first listener and
 pool](first-listener-and-pool.md). The controller validates a config before it accepts it, and
 proxies pick the new version up on their own.
 

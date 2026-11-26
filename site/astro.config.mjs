@@ -68,14 +68,104 @@ export default defineConfig({
                     collapsed: false,
                     items: [
                         { slug: "deep-dive" },
+                        // Every topic page is listed once, in a themed group. `make docs-deep-dive` fails on a topic that is missing here.
                         {
-                            label: "Topics",
-                            items: [{ autogenerate: { directory: "deep-dive/topics" } }],
+                            label: "Design",
+                            collapsed: false,
+                            items: [
+                                { autogenerate: { directory: "deep-dive/design" } },
+                            ],
                         },
-                        // One entry per subfolder of docs/deep-dive/ (the folder name is not a nice label).
                         {
-                            label: "Design chapters",
-                            items: [{ autogenerate: { directory: "deep-dive/design" } }],
+                            label: "The data plane",
+                            collapsed: true,
+                            items: [
+                                { slug: "deep-dive/topics/data-plane-listeners" },
+                                { slug: "deep-dive/topics/udp-sessions" },
+                                { slug: "deep-dive/topics/filters-and-limits" },
+                                { slug: "deep-dive/topics/routing-and-matchers" },
+                                { slug: "deep-dive/topics/pools-and-load-balancing" },
+                                { slug: "deep-dive/topics/health-checking" },
+                                { slug: "deep-dive/topics/backend-discovery" },
+                                { slug: "deep-dive/topics/gossip-health" },
+                                { slug: "deep-dive/topics/connection-pump" },
+                                { slug: "deep-dive/topics/proxy-protocol" },
+                                { slug: "deep-dive/latency-ledger" },
+                            ],
+                        },
+                        {
+                            label: "Configuring and operating a proxy",
+                            collapsed: true,
+                            items: [
+                                { slug: "deep-dive/topics/config-schema" },
+                                { slug: "deep-dive/topics/snapshot-and-hot-reload" },
+                                { slug: "deep-dive/topics/admin-api" },
+                                { slug: "deep-dive/topics/runtime-feature-flags" },
+                                { slug: "deep-dive/topics/process-settings" },
+                                { slug: "deep-dive/topics/metrics-and-logs" },
+                                { slug: "deep-dive/topics/secrets" },
+                            ],
+                        },
+                        {
+                            label: "Extending the proxy",
+                            collapsed: true,
+                            items: [
+                                { slug: "deep-dive/topics/sniffers" },
+                                { slug: "deep-dive/topics/external-resolvers" },
+                                { slug: "deep-dive/topics/plugin-host" },
+                                { slug: "deep-dive/topics/plugin-runtime-in-controller" },
+                                { slug: "deep-dive/topics/registries-and-release-feed" },
+                            ],
+                        },
+                        {
+                            label: "The control plane",
+                            collapsed: true,
+                            items: [
+                                { slug: "deep-dive/topics/controller-core" },
+                                { slug: "deep-dive/topics/controller-ha" },
+                                { slug: "deep-dive/topics/config-rollout" },
+                                { slug: "deep-dive/topics/enrollment" },
+                                { slug: "deep-dive/topics/aggregator" },
+                                { slug: "deep-dive/topics/all-in-one-control" },
+                            ],
+                        },
+                        {
+                            label: "The tunnel",
+                            collapsed: true,
+                            items: [
+                                { slug: "deep-dive/topics/tunnel-client" },
+                                { slug: "deep-dive/topics/tunnel-agent" },
+                                { slug: "deep-dive/topics/tunnel-registry" },
+                            ],
+                        },
+                        {
+                            label: "Web sites and certificates",
+                            collapsed: true,
+                            items: [
+                                { slug: "deep-dive/topics/web-gateway" },
+                                { slug: "deep-dive/topics/acme" },
+                            ],
+                        },
+                        {
+                            label: "The console",
+                            collapsed: true,
+                            items: [
+                                { slug: "deep-dive/topics/ui-backend" },
+                                { slug: "deep-dive/topics/ui-frontend" },
+                                { slug: "deep-dive/topics/ui-data" },
+                                { slug: "deep-dive/topics/http-toolkit" },
+                            ],
+                        },
+                        {
+                            label: "Building and shipping",
+                            collapsed: true,
+                            items: [
+                                { slug: "deep-dive/topics/ci-pipeline" },
+                                { slug: "deep-dive/topics/release-pipeline" },
+                                { slug: "deep-dive/topics/deployment-artifacts" },
+                                { slug: "deep-dive/topics/testing-and-benchmarks" },
+                                { slug: "deep-dive/topics/docs-site" },
+                            ],
                         },
                     ],
                 },

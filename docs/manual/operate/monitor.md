@@ -10,7 +10,7 @@ sidebar:
 | Endpoint        | Tells you                                                                                                                                                                               |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /healthz`  | The process is alive. Needs no token.                                                                                                                                                   |
-| `GET /readyz`   | Config loaded and valid, at least one listener bound, not draining. Returns 503 `draining` after `POST /admin/drain`.                                                                   |
+| `GET /readyz`   | At least one listener is configured and the instance is not draining. Returns 503 `draining` after `POST /admin/drain`.                                                                 |
 | `GET /pools`    | Every pool with its backends, their health, `state=` and active count.                                                                                                                  |
 | `GET /config`   | A plain-text view of the active snapshot: listeners, pools, `draining` and `active_conns`.                                                                                              |
 | `GET /sessions` | Every live connection or UDP session: id, transport, listener, `peer=`, `local=`, `pool=`, `backend=` and `age=`. Filter with `?listener=`, `?pool=`, `?proto=tcp\|udp` or `?src=<ip>`. |
@@ -40,23 +40,14 @@ from the source.
 
 ## Connection logs
 
-Each session writes one structured JSON event when it closes, for example:
+The proxy logs to standard error and `WAYHOUSE_LOG` sets the level (default `info`). A closed TCP
+connection is one `info` line, `connection closed`, with the listener, the peer, the backend, the
+bytes in each direction and the duration in milliseconds. A TCP connection that fails before data
+flows is a `warn` line, `connection failed`, with the reason.
 
-```json
-{
-    "event": "session_close",
-    "listener": "public-udp",
-    "pool": "match-eu",
-    "backend": "10.1.0.12:7777",
-    "bytes_c2s": 184320,
-    "bytes_s2c": 942080,
-    "duration_ms": 812345,
-    "close_reason": "idle_timeout"
-}
-```
-
-`close_reason` is one of `client_close`, `backend_close`, `idle_timeout`, `drain`, `limit`,
-`backend_down` or `error`. Control the log level with `WAYHOUSE_LOG`.
+UDP sessions are not logged one by one. Use the metrics for them, such as
+`wayhouse_active_udp_sessions` and `wayhouse_bytes_total`. A structured JSON event per session
+close, with a close reason, is a requirement that is not built yet.
 
 ## Dashboards and alerts
 

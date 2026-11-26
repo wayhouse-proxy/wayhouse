@@ -11,9 +11,9 @@ supplies them. Define sources under `backend_sources:` and refer to one from a p
 
 ## Where to set it
 
-Config file: `backend_sources:`. Admin UI: Config, then Sources (`/config/sources`). Backend
-sources are read at startup, so changing the list needs a restart; the backends a source
-returns refresh by themselves.
+Config file: `backend_sources:`. Admin UI: Config, then Sources (`/config/sources`). A reload
+reconciles the sources by name: one that was added or changed is started, one that was
+removed is stopped. The backends a source returns refresh by themselves.
 
 ## How a refresh behaves
 

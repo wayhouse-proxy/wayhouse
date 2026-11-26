@@ -28,7 +28,7 @@ Reads need the **viewer** role. Writes need the **admin** role.
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `base=<revision>`          | The revision your edit is based on. If someone else saved in the meantime, the controller answers `409` instead of overwriting their change. |
 | `stage=canary`             | Do not roll out to everyone. Use together with `group`.                                                                                      |
-| `group=<name>`             | A canary group that gets this revision. Repeat it for more groups.                                                                           |
+| `group=<name>`             | The canary group that gets this revision. One group per submission.                                                                          |
 | `confirm_within=<seconds>` | Apply the revision **on trial** for 10 to 600 seconds. See below.                                                                            |
 
 `POST /api/config/validate` checks a body without saving it. It is the editor's save-time check, and it needs the admin role.
@@ -37,7 +37,10 @@ When the config comes from a file instead of a controller, the same call only fo
 
 ## Canary, then promote
 
-A plain submission is promoted at once, so the whole fleet sees it. With `stage=canary&group=eu`, only instances that report the canary group `eu` get the revision. Everyone else keeps the last promoted one, so a canary is invisible to the rest of the fleet.
+A plain submission is promoted at once, so the whole fleet sees it. With `stage=canary&group=eu`, only a subscriber that reports the canary group `eu` gets the revision. Everyone else keeps the last promoted one, so a canary is invisible to the rest of the fleet.
+
+> [!WARNING]
+> The controller side is built, but a proxy has no setting to report a canary group yet, so it never asks for one. Today a canary revision is therefore seen by no proxy until you promote it. The staged view can be read by hand with `GET /config?group=eu`.
 
 `POST /api/config/promote/{revision}` makes a canary revision current for everyone. This is the one change that does not create a new revision: it changes who can see an existing one. A canary that is never promoted stays visible only to its groups, so promote it or roll it back.
 

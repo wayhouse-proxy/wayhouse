@@ -62,8 +62,7 @@ and leaves the host running.
 
 An official, prebuilt plugin cannot know the panel host or the node network of every operator.
 ABI 0.2 lets a module declare **options** the operator fills in at install, and bind some
-capability values to them (design:
-`docs/superpowers/specs/2026-10-28-plugin-manifest-and-bindings.md`).
+capability values to them (see [the plugin host](deep-dive/topics/plugin-host.md)).
 
 An optional custom section, `wayhouse.plugin-manifest` (JSON, up to 16 KiB), holds a `name`, an
 `options` schema and the `bindings`:
@@ -251,8 +250,7 @@ Rules:
 ## Port routes
 
 Games on UDP have no hostname to route by. The `port_routes` capability lets a plugin route by
-**entry port** instead (design: `docs/superpowers/specs/2026-10-22-port-based-plugin-routing-design.md`,
-#403). The operator opens one port range once; the plugin never picks a port.
+**entry port** instead (see [plugins in the controller](deep-dive/topics/plugin-runtime-in-controller.md), #403). The operator opens one port range once; the plugin never picks a port.
 
 ```json
 "port_routes": { "ports": ["30000-30999"], "proto": ["udp", "tcp"], "backends": ["10.0.0.0/16"], "max_entries": 256 }
@@ -600,7 +598,7 @@ the state machine drops it and the status says so. A commit is refused before it
 when over the host's state limits (1 MiB, 1024 keys, 256 writes per call). Status is in memory on the leader and starts
 empty after a failover.
 
-**Module bytes (slice 7).** The Raft log carries install records only; the module (up to 8 MiB)
+**Module bytes.** The Raft log carries install records only; the module (up to 8 MiB)
 is a content-addressed blob each replica keeps in its own store and moves over the peer channel
 (`--ha-token`, the protocol gate):
 

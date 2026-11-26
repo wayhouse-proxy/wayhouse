@@ -15,8 +15,6 @@
 - `wayhouse_active_udp_sessions{listener}` (gauge)
 - `wayhouse_connection_duration_seconds{listener}` (histogram) — no `pool` label
   (a connection's pool can change across a reload; the listener is stable).
-- `wayhouse_session_setup_seconds{listener,phase}` — **planned, not implemented**;
-  see "Planned / not yet built" below.
 
 ### Throughput
 - `wayhouse_bytes_total{listener,dir}` – `dir` = `c2s|s2c`. No `pool` label.
@@ -44,7 +42,7 @@
   resolver `target` connection (the header form comes from the resolver's
   `proxy_protocol:`)
 
-### Backend discovery (phase 8)
+### Backend discovery
 - `wayhouse_discovery_refresh_total{pool,kind,result}` – `kind` =
   `dns_srv|consul|kubernetes|tunnel`; `result` = `ok|empty|error|withdrawn`. One
   per refresh attempt. `empty` / `error` keep the last-known-good backend set (the
@@ -72,7 +70,7 @@
   connection / session cap was reached, `max_conn` / `max_udp` / `max_new_rate` =
   a process-wide `settings.limits` cap was hit
 
-### Sniffers (phase 9)
+### Sniffers
 - `wayhouse_sniffer_calls_total{name,result}` – `result` = `ok` | `unrecognised` |
   `timeout` | `trap` | `bad_output`; one increment per `sniff()` call through
   the WASM loader. `timeout` = the epoch-interruption deadline
@@ -118,11 +116,11 @@
 - `wayhouse_tls_handshakes_evicted_total` (counter, no labels) — pending handshakes
   dropped to make room at the global cap (same notes).
 - `wayhouse_gossip_members` (gauge, no labels) — current SWIM member count in this
-  instance's Tier-2 gossip mesh (phase 13, `docs/10` "Tier 2", `wayhouse-core::
+  instance's Tier-2 gossip mesh (`docs/10` "Tier 2", `wayhouse-core::
   gossip`). Present only when `settings.gossip` is set.
 - `wayhouse_gossip_messages_total{direction="sent"|"received"}` (counter, phase
   13) — gossip datagrams that passed HMAC verification.
-- `wayhouse_gossip_auth_rejected_total` (counter, no labels, phase 13) — gossip
+- `wayhouse_gossip_auth_rejected_total` (counter, no labels) — gossip
   datagrams dropped for a missing/invalid HMAC tag; never trusted, never
   forwarded to the SWIM state machine.
 - `wayhouse_gossip_stale_rejected_total` (counter, no labels) — authentic gossip
@@ -142,7 +140,7 @@
   `X-Wayhouse-Protocol` major differs, is not `<major>.<minor>`, or (on component
   routes) is missing. Emitted by the controller, aggregator and proxy; see
   [10](10-distributed-control-plane.md) "Versioning".
-- `wayhouse_backend_domain_down{pool,backend}` (gauge, 0/1, phase 13) — whether
+- `wayhouse_backend_domain_down{pool,backend}` (gauge, 0/1) — whether
   the Tier-2 domain quorum is currently overriding this backend to down.
   Independent of, and unable to clear, the backend's own local `healthy`
   flag (`wayhouse_pool_backends`'s `healthy`/`unhealthy` counts already reflect
@@ -187,35 +185,26 @@ Documented here as real future work, not implemented — none of these exist in
   described a buffer-pool architecture that was never built (per-worker fixed
   buffers replaced it early on — see `docs/09` "Key libraries").
 
-## Connection logs (structured, JSON)
+## Connection logs
 
-One event on session **close** (plus optionally on start), sampleable:
+Log lines use `tracing` and go to standard error. `WAYHOUSE_LOG` sets the filter (default `info`).
 
-```json
-{
-  "ts": "2026-09-03T10:48:12Z",
-  "event": "session_close",
-  "listener": "public-udp",
-  "protocol": "udp",
-  "src": "203.0.113.7:51343",
-  "route": "route#1",
-  "resolver": "matchmaker",
-  "pool": "match-eu",
-  "backend": "10.1.0.12:7777",
-  "bytes_c2s": 184320,
-  "bytes_s2c": 942080,
-  "pkts_c2s": 1440,
-  "pkts_s2c": 1460,
-  "duration_ms": 812345,
-  "setup_ms": 6,
-  "close_reason": "idle_timeout",
-  "proxy_protocol": "none"
-}
-```
+- A closed **TCP** connection is one `info` event, `connection closed`, with `listener`, `peer`,
+  `backend`, `bytes_c2s`, `bytes_s2c` and `duration_ms`.
+- A TCP connection that fails before the byte pump starts is one `warn` event, `connection failed`,
+  with the typed error.
+- UDP sessions have **no per session log line**. Their numbers are in the metrics
+  (`wayhouse_active_udp_sessions`, `wayhouse_bytes_total` and the dropped-datagram counters).
 
-`close_reason`: `client_close|backend_close|idle_timeout|drain|limit|backend_down|error`.
+**Not built yet:** a structured JSON event on every session close with the route, resolver, pool,
+packet counts, setup time and a `close_reason` (`client_close`, `backend_close`, `idle_timeout`,
+`drain`, `limit`, `backend_down` or `error`), sampleable. The requirement is F7.2 in
+[01](01-requirements.md). Until it exists, build per connection views from the TCP line above and
+the metrics.
 
 ## Tracing (optional, OpenTelemetry)
+
+**Not built yet.** The proxy does not export traces. This is the design:
 
 Trace only the **setup phase** (not the byte stream): span `session.setup` with child
 spans `peek`, `route.match`, `resolver.call`, `backend.connect`. The trace ID can be
@@ -228,7 +217,7 @@ carried in the PROXY v2 TLV if the backend should correlate it.
   drained. Returns `draining` (503) after `POST /admin/drain`.
 - `GET /metrics` – Prometheus.
 - `GET /config` – plaintext view of the active snapshot (listeners + pools +
-  `draining` / `active_conns`). Implemented (phase 5). `GET /pools` – per-pool
+  `draining` / `active_conns`). Implemented. `GET /pools` – per-pool
   backend list with health / `state=` / active count.
 - `GET /features` – every feature flag of this proxy as `{"flags": [...]}`: `name`, `value`,
   `source` (`default` | `config` | `override` | `build`), `default`, `scope`, `apply`, `override`
@@ -275,11 +264,11 @@ carried in the PROXY v2 TLV if the backend should correlate it.
   transport, or source IP. Implemented.
 - `POST /admin/drain` / `POST /admin/undrain` – take this instance out of / back
   into LB rotation by flipping `readyz`, without stopping the data path.
-  Implemented (phase 5).
+  Implemented.
 - `POST /route-hint` `{src_ip, pool, ttl_sec}` – push-resolver hint (scheme C);
   applied by listeners with `route_hint: true`. Implemented.
 - `PATCH /pools/{pool}/backends/{addr}` `{state: enabled|draining|disabled}` –
-  set an operator backend state. Implemented (phase 5). `draining` / `disabled`
+  set an operator backend state. Implemented. `draining` / `disabled`
   remove the backend from new-session selection (including UDP affinity)
   immediately; existing sessions keep running. Carried across a config reload by
   address. `GET /pools` shows the current `state=` per backend.
@@ -292,23 +281,28 @@ carried in the PROXY v2 TLV if the backend should correlate it.
   An `http` kind (ping a sidecar health port) is **planned, not implemented** —
   `HealthCheckKind` only has `TcpConnect`/`UdpProbe` today; deferred until a
   real backend that exposes an HTTP health endpoint needs it.
-- **Passive**: the data path reports `connect refused/timeout`, early RST, ICMP
-  unreachable. After `n` errors within `t` seconds → backend `unhealthy` (faster than
-  the active check).
-- **Recovery**: back to `healthy` only after `rise` successful active checks.
+- **Passive**: the data path reports every connect it makes for a client. A refused or timed out
+  connect, a failed PROXY header write and, for UDP, an ICMP port unreachable on the upstream socket
+  are failures. A successful connect, and the first reply of a UDP session, are successes. They feed
+  the same counters as the active checks, so passive failures take a backend down faster than the
+  next probe would.
+- **Transitions**: a healthy backend turns `unhealthy` after `fall` failures in a row, and an
+  unhealthy one turns `healthy` after `rise` successes in a row. A result of the opposite kind resets
+  the other run. See [health checking](deep-dive/topics/health-checking.md).
 
 ## Graceful draining & deployments
 
 Flow for swapping a backend without dropping players:
 
-1. Register the new backend (`POST /pools/{p}/backends`) → `healthy` after `rise`
-   checks.
+1. Register the new backend (`POST /pools/{p}/backends`). It starts `healthy`, and the first
+   check follows within one check interval.
 2. Set the old backend `PATCH state=draining` → the LB assigns no new sessions there;
    a client whose resolver answer pointed at it is re-resolved once the cached
    answer expires.
-3. Wait until `wayhouse_backend_active_sessions` = 0 **or** `drain_deadline` is reached.
-4. After the deadline: end remaining sessions with `close_reason=drain`.
-5. Remove the old backend.
+3. Wait until `wayhouse_backend_active_sessions` for that backend is 0. A draining backend never
+   closes a session itself, so a player who stays connected keeps it open until you decide to cut
+   them off.
+4. Remove the old backend.
 
 For a **proxy instance** restart:
 1. Set `readyz` to "false" (`POST /admin/drain`; `POST /admin/undrain` reverts) →
@@ -317,7 +311,7 @@ For a **proxy instance** restart:
 2. Grace period: no new `accept`s, existing sessions keep running.
 3. After `settings.shutdown_grace_sec` (default 30) close remaining sessions, exit
    the process.
-4. `SIGINT` / `SIGTERM` triggers exactly this flow (implemented, phase 5): the TCP
+4. `SIGINT` / `SIGTERM` triggers exactly this flow: the TCP
    accept loops and the UDP recv loops stop taking new work immediately; in-flight
    TCP connections and established UDP sessions keep running and are waited on (UDP
    sessions until they idle out); once all have finished — or the grace period
@@ -351,9 +345,9 @@ rest; affected sessions reconnect.
   set at last-known-good rather than draining a pool fleet-wide.
 - **Operator intent** (drain / add / remove a backend, route hints) is still
   applied per instance, either directly against that instance's admin API or
-  fanned out through `wayhouse-aggregator` (see below), and is **not persisted or
-  replayed after a restart** — moving intent into the controller's revision
-  log is phase 12, not this release.
+  fanned out through `wayhouse-aggregator` (see below). Without a controller it is
+  **not persisted or replayed after a restart**. With one, the operator intent log
+  keeps it (see "Operator intent log" below).
 - **`transparent: true` needs the backend's return path through the same instance**
   that owns the connection (per-flow-consistent ECMP / anycast). PROXY protocol
   has no such constraint — prefer it when the fronting layer can rehash.
@@ -361,13 +355,11 @@ rest; affected sessions reconnect.
   for a single fleet-wide read/operate surface, see `wayhouse-aggregator` and
   `wayhouse-ui` below — there is still no fleet-wide metrics aggregation.
 
-## Fleet control plane (phase 10+11)
+## Fleet control plane
 
-Three additional, independent binaries. Originally a single-tier PoC
-(phase 10+11); the `docs/10` `standalone`/`slave` hierarchy, intra-tier HA,
-adoption, staged/canary rollout, RBAC, and moving operator intent into the
-controller's revision log are phase 12 — **all built**, documented per-flag in
-the subsections below. All three serve unauthenticated
+Three additional, independent binaries. They provide the `docs/10`
+`standalone`/`slave` hierarchy, intra-tier HA, adoption, staged and canary rollout, RBAC, and a
+controller log for operator intent, all documented per flag in the subsections below. All three serve unauthenticated
 `GET /healthz` for liveness regardless of their auth settings below.
 
 **`GET /metrics` on the fleet binaries.** Each serves a Prometheus endpoint
@@ -459,7 +451,7 @@ mutually exclusive. On a controller outage `wayhouse` keeps running its
 last-applied config and retries the subscribe connection with capped
 exponential backoff (500ms → 30s); nothing about the data path pauses.
 
-**Role (phase 12 slice 1)**: `--role standalone` (default) is everything
+**Role**: `--role standalone` (default) is everything
 above unchanged. `--role slave --parent-url <url> [--parent-token-file <path>]`
 makes this controller a relay: it never accepts a write of its own (`POST
 /config` and `POST /config/rollback/*` both `403`, `"this controller is a
@@ -473,7 +465,7 @@ transparent below this tier. Losing the parent freezes this tier on
 last-known-good with the same reconnect-with-backoff behavior `wayhouse`'s own
 `--controller` client has; it never promotes itself to `standalone`.
 
-**Operator intent log (phase 12 slice 3)**: alongside `/config*`, every
+**Operator intent log**: alongside `/config*`, every
 `wayhouse-controller` also serves `POST /intent` and `GET /intent/subscribe`, a
 second `redb`-backed revision log (its own `<data_dir>/intent` database)
 covering the **pool-scoped** phase-5 admin verbs — backend add
@@ -491,12 +483,12 @@ new *source* for an existing mutation, never a new code path. **Not part of
 this log**: whole-instance drain/undrain (targets one instance, not "every
 instance with pool X" — use the aggregator's targeted fan-out or the
 instance's own `/admin/drain`) and resolver pins (still open, `docs/01`).
-The `slave`-role write gate applies to `/intent` too, and (phase 12 slice 4)
+The `slave`-role write gate applies to `/intent` too, and
 a `slave` tier also relays the intent log from its parent, the same way it
 relays config — a `slave` controller now holds a full copy of both of its
 parent's logs while still never originating either one itself.
 
-**Intra-tier HA (phase 12 slice 6)**: `--ha-node-id <id>` + `--ha-peers
+**Intra-tier HA**: `--ha-node-id <id>` + `--ha-peers
 id=host:port,...` (identical on every replica; an entry may instead be
 `id=https://host[:port]`, see docs/12 "HA replicas over TLS") turn a `standalone` tier into
 an `N`-node Raft group (embedded `openraft`) replicating both the config and
@@ -509,7 +501,7 @@ whichever replica gets the request, straight from its own local copy — not
 a linearizable read, a deliberate relaxation justified in `docs/10`
 "Intra-tier HA (design)". `--ha-token` gates the new peer-only `/raft/*`
 routes (`append`, `vote`, `snapshot`) — a separate secret from
-`--auth-token`. **HA combines with `--role slave`** (2026-10-05): only the
+`--auth-token`. **HA combines with `--role slave`**: only the
 Raft leader subscribes to the parent and proposes each relayed revision into
 the group; the relay cursor (the highest parent revision absorbed, one per
 log) is replicated with the log, so a newly elected leader resumes where the
@@ -517,7 +509,7 @@ group left off and a duplicate proposal is skipped. Start every replica with
 the same `--role slave --parent-url ...`. `POST /admin/adopt` is refused on an
 HA controller (the role is a per-node setting).
 
-**Staged / canary rollout (phase 12 slice 7)**: `POST /config?stage=canary
+**Staged / canary rollout**: `POST /config?stage=canary
 &group=<name>` submits a revision visible only to a subscriber reporting
 that group; a plain `POST /config` (no `stage`) is unaffected — immediately
 visible to everyone, exactly as before this feature existed. `GET
@@ -527,10 +519,12 @@ either promoted or staged to it. `POST /config/promote/{revision}` makes an
 existing revision visible to everyone (`404` if it doesn't exist) — this is
 the one operation that changes an existing revision rather than creating a
 new one. `GET /config/revisions` gained `promoted`/`canary_groups` fields
-per entry. One group per submission in this release. Not available for
-`/intent` (config only).
+per entry. One group per submission. Not available for
+`/intent` (config only). **A proxy cannot yet report a group**: `wayhouse --controller` does not send
+`&group=` when it subscribes, so today a canary revision reaches no proxy until it is promoted. See
+"Staged / canary rollout (design)" in [10](10-distributed-control-plane.md).
 
-**Adoption (phase 12 slice 5)**: `POST /admin/adopt
+**Adoption**: `POST /admin/adopt
 {"parent_url":"...","parent_token":"..."}` flips a running `standalone`
 tier to `slave` without a restart. Refused with `409` unless this tier's
 config *and* intent stores are both still empty (a tier with existing
@@ -548,7 +542,7 @@ plus a `--instance-token` this aggregator presents going back out to each
 instance's admin API (a separate secret from `--auth-token` — one gates calls
 in, the other authenticates calls out):
 
-**Hierarchy (phase 12 slice 2)**: `--parent-url` (+ `--tier-name`, required;
+**Hierarchy**: `--parent-url` (+ `--tier-name`, required;
 `--parent-token`; `--parent-push-interval-sec`, default 10) makes this tier
 also push its own merged view — every instance it currently knows,
 individually, with its name rewritten `"{tier_name}/{instance}"` — up to a
@@ -676,10 +670,10 @@ the one process, one port an operator's browser ever talks to. Either proxy
 target is optional; fleet reads/config actions 503 cleanly if the
 corresponding `--*-url` was never given.
 
-**RBAC and audit (phase 12 slice 8, `docs/10` "RBAC and audit (design)")**:
+**RBAC and audit**:
 two login modes, mutually exclusive.
 
-- **`--ui-password-file <path>`** (legacy, unchanged from phase 10+11) — one
+- **`--ui-password-file <path>`** (legacy) — one
   shared secret, `POST /ui/login {"password":"..."}`, every session
   implicitly `admin`.
 - **`--users-file <path>`** — multi-operator accounts, a YAML list of

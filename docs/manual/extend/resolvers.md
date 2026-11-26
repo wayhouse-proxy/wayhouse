@@ -40,17 +40,17 @@ refers to a resolver by name.
 
 ## Options
 
-| Key                         | Default | Meaning                                                                                                                                                             |
-| --------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                      |         | Required, unique.                                                                                                                                                   |
-| `type`                      | `http`  | `http`, or `grpc` (with an endpoint like `http://host:port`).                                                                                                       |
-| `endpoint`                  |         | The URL of the service.                                                                                                                                             |
-| `timeout_ms`                | `40`    | Give up on a call after this long.                                                                                                                                  |
-| `on_error`                  |         | What to do on failure or timeout: `reject` (drop), `fallback_route` (continue with the next rule) or `stale_ok` (serve a cached answer if there is one, else drop). |
-| `enabled`                   | `true`  | `false` parks it (needs `schema_version: 4`).                                                                                                                       |
-| `proxy_protocol`            | `none`  | Header for a `target` answer, which has no pool to take the setting from. A resolver-chosen pool uses its own `proxy_protocol`.                                     |
-| `target_connect_timeout_ms` | `300`   | Connect timeout for a `target` answer.                                                                                                                              |
-| `target_idle_timeout_sec`   | `90`    | Idle timeout for a `target` answer.                                                                                                                                 |
+| Key                         | Default  | Meaning                                                                                                                                                             |
+| --------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                      |          | Required, unique.                                                                                                                                                   |
+| `type`                      | `http`   | `http`, or `grpc` (with an endpoint like `http://host:port`).                                                                                                       |
+| `endpoint`                  |          | The URL of the service.                                                                                                                                             |
+| `timeout_ms`                | `40`     | Give up on a call after this long.                                                                                                                                  |
+| `on_error`                  | `reject` | What to do on failure or timeout: `reject` (drop), `fallback_route` (continue with the next rule) or `stale_ok` (serve a cached answer if there is one, else drop). |
+| `enabled`                   | `true`   | `false` parks it (needs `schema_version: 4`).                                                                                                                       |
+| `proxy_protocol`            | `none`   | Header for a `target` answer, which has no pool to take the setting from. A resolver-chosen pool uses its own `proxy_protocol`.                                     |
+| `target_connect_timeout_ms` | `300`    | Connect timeout for a `target` answer.                                                                                                                              |
+| `target_idle_timeout_sec`   | `90`     | Idle timeout for a `target` answer.                                                                                                                                 |
 
 ### Cache
 

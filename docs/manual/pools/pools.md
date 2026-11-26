@@ -58,8 +58,8 @@ this page lists every option.
 | `health_check.expect_hex_prefix` | any reply     | `udp_probe`: the reply must start with these bytes.                                                                          |
 
 Besides these active checks, the data path reports connect failures, so a backend that refuses
-connections is skipped before the next check. A backend returns to healthy only through
-`rise` successful active checks. Active checks run in the control plane and publish the result
+connections is skipped before the next check. A backend returns to healthy only after `rise`
+successes in a row, counting a successful probe or a successful real connect. Active checks run in the control plane and publish the result
 as a new snapshot; they never sit on the data path.
 
 ## Backend states
