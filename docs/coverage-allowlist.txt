@@ -79,13 +79,10 @@ cargo-feature grpc-resolver
 env HOSTNAME
 env WAYHOUSE_AGGREGATOR_TOKEN
 env WAYHOUSE_CONTROLLER_TOKEN
-env WAYHOUSE_ENROLL_CODE
-env WAYHOUSE_ENROLL_CODE_FILE
 env WAYHOUSE_INGEST_TOKEN
 env WAYHOUSE_SNIFFERS_DIR
 flag --address
 flag --aggregator-token-file
-flag --bin-path
 flag --credentials-dir
 flag --env-file
 flag --ha-join-proof-file
@@ -94,7 +91,6 @@ flag --iface
 flag --instance-token-file
 flag --key
 flag --listen-port
-flag --no-start
 flag --peer-address
 flag --plugin-overlay-token-file
 flag --releases
@@ -106,7 +102,6 @@ flag --tunnel-listen-port
 flag --tunnel-name
 flag --tunnel-psk-file
 flag --tunnel-register-interval-sec
-flag --unit-dir
 screen /certificates
 screen /config-history
 screen /config/web
