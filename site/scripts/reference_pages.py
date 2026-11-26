@@ -144,7 +144,7 @@ def controller_api():
         "versions work is on [HTTP API basics](/manual/operate/http-apis/). With no `--auth-token` set the API is open, "
         "which is only meant for local trials. The `/raft/*` routes are the controllers' peer-to-peer channel inside an HA "
         "cluster; they are not an operator API and are not listed here. Routes of an optional part answer when that part is "
-        "off: the plugin and ACME routes with `501` and a reason, the HA routes (`/admin/ha/*`) with `404` on a controller "
+        "off: the plugin and ACME routes with `501` and a reason (a few with `404`), the HA routes (`/admin/ha/*`) with `404` on a controller "
         "that does not run HA.\n\n"
         "These pages are generated from the OpenAPI document in `docs/reference/openapi/controller.json`, which is "
         "itself generated from the handlers' own annotations and checked by a test, so a route cannot be added or "
