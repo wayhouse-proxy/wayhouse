@@ -8,6 +8,7 @@ Run: python3 .github/scripts/changes_test.py   (needs cargo on PATH)
 """
 import io
 import os
+import re
 import sys
 import unittest
 
@@ -277,6 +278,29 @@ class Main(unittest.TestCase):
             raise changes.MetadataError("x")
 
         self.assertEqual(self.run_main([], "README.md\n", broken)["code"], "true")
+
+class WorkflowGate(unittest.TestCase):
+    """ci.yml and cache-warm.yml stay consistent with each other."""
+
+    @staticmethod
+    def read(name):
+        with open(os.path.join(REPO, ".github", "workflows", name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_every_job_is_in_the_ci_ok_gate(self):
+        ci = self.read("ci.yml")
+        jobs = set(re.findall(r"^  ([a-z0-9-]+):\s*$", ci.split("\njobs:\n", 1)[1], re.M))
+        needs = re.search(r"^  ci-ok:.*?needs: \[([^\]]*)\]", ci, re.M | re.S).group(1)
+        self.assertEqual(jobs - {"ci-ok"}, {n.strip() for n in needs.split(",")})
+
+    def test_every_cargo_cache_is_warmed_on_main(self):
+        ci = self.read("ci.yml")
+        names = set()
+        for n in (a or b for a, b in re.findall(r'cargo-cache\n\s+with: \{ name: "([^"]+)" \}|cargo-cache\n\s+with: \{ name: (\S+) \}', ci)):
+            names |= {n.replace("${{ matrix.arch }}", a) for a in ("amd64", "arm64")} if "${{" in n else {n}
+        warm = set(re.findall(r"^          - name: (\S+)", self.read("cache-warm.yml"), re.M))
+        self.assertTrue(names)
+        self.assertEqual(names - warm, set())
 
 
 if __name__ == "__main__":

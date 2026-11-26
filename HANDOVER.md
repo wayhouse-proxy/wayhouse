@@ -19,7 +19,7 @@ PR and never tags. `release.yml` publishes eight images (amd64 + arm64) to GHCR,
 if the tag equals the workspace version, CI is green on main, and the whole set built and
 passed the compose smoke test.
 
-Every CI job blocks except `trivy` and `audit` (informational). The repository is public,
+Every CI job blocks except `trivy` and the audit step of `checks` (informational). The repository is public,
 so hosted Actions minutes are free; the cost is wall time and queue waits.
 
 ### Not done / not verified (all tracked in issues)
