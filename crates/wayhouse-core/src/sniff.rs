@@ -704,7 +704,7 @@ listeners:
     async fn udp_pair(
         sniffers: Sniffers,
     ) -> (crate::Runtime, std::net::SocketAddr, std::net::SocketAddr) {
-        use tokio::net::{TcpListener, UdpSocket};
+        use tokio::net::UdpSocket;
         let backend = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let backend_addr = backend.local_addr().unwrap();
         tokio::spawn(async move {
@@ -713,13 +713,21 @@ listeners:
                 let _ = backend.send_to(&b[..n], from).await;
             }
         });
-        let free = || async {
-            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            l.local_addr().unwrap()
+        // The runtime has to be told its UDP addresses, and it does not report back a port
+        // picked by the OS. Pick UDP ports (a free TCP port number can be taken as a UDP
+        // port, e.g. by another test's client socket), and try again if one is taken between
+        // picking it and the runtime binding it.
+        let free = || {
+            let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+            s.local_addr().unwrap()
         };
-        let (slow, plain) = (free().await, free().await);
-        let yaml = format!(
-            r#"
+        let sniffers = Arc::new(sniffers);
+        let mut attempt = 0;
+        let (runtime, slow, plain) = loop {
+            attempt += 1;
+            let (slow, plain) = (free(), free());
+            let yaml = format!(
+                r#"
 pools:
   - name: p
     targets: ["{backend_addr}"]
@@ -740,15 +748,23 @@ listeners:
       - match: {{ type: always }}
         action: {{ pool: p }}
 "#
-        );
-        let cfg = wayhouse_config::parse_str(&yaml).unwrap();
-        let runtime = crate::Runtime::start_with_sniffers(
-            crate::Snapshot::from_config(&cfg),
-            Arc::default(),
-            None,
-            Arc::new(sniffers),
-            1,
-        );
+            );
+            let cfg = wayhouse_config::parse_str(&yaml).unwrap();
+            match crate::Runtime::start_with_discovery(
+                crate::Snapshot::from_config(&cfg),
+                Arc::default(),
+                None,
+                sniffers.clone(),
+                Arc::new(crate::discovery::Discovery::new()),
+                None,
+                None,
+                1,
+            ) {
+                Ok(runtime) => break (runtime, slow, plain),
+                Err(e) if attempt < 5 => eprintln!("udp_pair: {e}, picking other ports"),
+                Err(e) => panic!("udp_pair: {e}"),
+            }
+        };
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         (runtime, slow, plain)
     }
