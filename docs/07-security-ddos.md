@@ -16,8 +16,8 @@
 
 ## Filter chain (before routing, cheapest first)
 
-1. **CIDR allow/deny** – static lists + an optional dynamic block list (feed/file, hot
-   reload). O(1) via an LPM trie. An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) is
+1. **CIDR allow/deny** – per-listener `allow` / `deny` lists, replaced by a config reload (there is
+   no separate dynamic block-list feed). O(1) via an LPM trie. An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) is
    matched as the IPv4 address it carries, so it cannot slip past an IPv4 deny list.
 2. **Geo filter** (optional) – MaxMind Country DB (`settings.geo_db`), per-listener
    `geo: { allow, deny }` by ISO country code; `deny` wins, a non-empty `allow`
@@ -178,7 +178,8 @@ cost — no sample in any run has been anywhere near N1.
 
 ## Security logging
 
-- Events: ACL block, rate-limit trip (aggregated, not per packet), session cap
-  reached, health flap, config reload (who/what via the admin API), resolver error
-  bursts.
+- Counted, not logged per packet: filter blocks (`wayhouse_filter_blocked_total`) and dropped
+  datagrams (`wayhouse_datagrams_dropped_total`). Logged: backend health transitions, config
+  reloads and admin-API changes (backend state, drain). An ACL block of a TCP connection is a
+  `debug` line.
 - No plaintext of game payload in logs (privacy); metadata only.

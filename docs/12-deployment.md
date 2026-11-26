@@ -1,6 +1,6 @@
 # 12 – Container images & deployment
 
-How to package the five binaries for Docker/Kubernetes, and — the part that
+How to package the binaries for Docker/Kubernetes, and — the part that
 isn't obvious going in — how a proxy that needs to listen on many, changing
 ports actually works once it's namespaced by a container runtime.
 
@@ -21,7 +21,7 @@ cargo feature.
 
 The published `ghcr.io` images are public and need no login to pull.
 
-None of these five binaries shell out to an
+None of these binaries shell out to an
 external command at runtime (WireGuard interface management in `wayhouse`/`wayhouse-agent`
 goes through kernel netlink directly via `defguard/wireguard-rs`, not the
 `ip`/`wg` CLIs) — so the runtime image needs nothing but the binary and its

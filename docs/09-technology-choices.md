@@ -30,8 +30,9 @@
 | `monoio` / `glommio` (io_uring, thread-per-core) | best latency/throughput, `SO_REUSEPORT` + shared-nothing matches the design exactly; younger, smaller ecosystem |
 | io_uring directly | maximum control, high effort |
 
-Plan: v1 on `tokio` with a thread-per-core layout (`SO_REUSEPORT`, a LocalSet per
-worker). An io_uring backend as a later optimization behind an IO abstraction.
+As built: `tokio` on its default multi-thread runtime. Each listener gets one `SO_REUSEPORT`
+socket per worker (`workers`, default one per CPU core), served by its own task. There is no
+per-worker `LocalSet`, and no io_uring backend; that stays a possible later optimization.
 
 ## Key libraries (Rust)
 
@@ -151,13 +152,13 @@ dependency not worth it. Still-open v2 choices are marked as such.
 |------|------------|
 | io_uring portability/bugs | an abstraction, `tokio`/epoll as the default backend |
 | the `splice` fast path does not cover all cases (TLS peek leftover bytes) | a clean fallback buffered path, property tests |
-| the session table as a memory DoS | hard caps + LRU eviction + first-packet gate |
+| the session table as a memory DoS | hard caps (global, per source, per backend), refusing new sessions when full, the idle sweep, and the first-packet gate. No LRU eviction. |
 | sniffer parsers as an attack surface | *(phase 9)* run as `wasmtime` core modules, no WASI; epoch-deadline + memory cap + input ≤ `peek_len`; `#![forbid(unsafe)]` + fuzzing in the sniffer crates; `sha256` pinning |
 | *(phase 9)* WASM call latency blows the NFR N1 budget | measure the boundary before wiring it on the per-connection path; `InstancePre` / warm per-worker instance; out-of-process resolver as the fallback |
 | *(phase 9)* `wasmtime` dependency size / build time | binary-only dep; engine cache in CI; `wasm32-unknown-unknown` target added once |
-| TPROXY network setup is error-prone | thorough docs + a `preflight check` command |
+| TPROXY network setup is error-prone | documentation ([04](04-transport-and-client-ip.md)); no preflight command exists |
 | resolver latency in connection setup | cache, tight timeout, `stale_ok`, fallback route |
-| *(v2)* a bad Tier-1 revision blackholes the whole fleet | `validate()` on controller **and** instance; signed revisions; instance-side sanity bound (pool `> 0 → 0` targets ⇒ warn + keep); canary rollout; one-key rollback |
+| *(v2)* a bad Tier-1 revision blackholes the whole fleet | `validate()` on controller **and** instance; staged rollout (a canary group, though no proxy can join one yet); one-key rollback. Signed revisions and an instance-side sanity bound were planned and are not built. |
 | *(v2)* Tier-1 store / controller outage | instances serve their last local replica indefinitely; only *changes* stop |
 | *(v2)* rogue host injects "all backends down" into the health fabric | Tier-2 is advisory + locally checked (never revives on remote "up"); every gossip datagram is HMAC-tagged with a per-domain PSK, bad/missing tags dropped silently (ADR 24) |
 | *(phase 12)* a lost Raft quorum in an HA controller tier | degrades to the same "changes frozen for this subtree" behavior a single-node outage already has (ADR 21) — never a new failure mode, just a bigger blast radius to lose quorum on |

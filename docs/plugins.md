@@ -486,9 +486,9 @@ behind the same admin bearer token as `/config`; `X-Actor` is recorded as `creat
 
 Two more controller routes: `DELETE /plugins/modules/{sha256}` drops an uploaded module that no install uses, which is the way out of a full orphan cap (`507` on upload), and `GET /plugins/file/plan` is the dry run of the plugins file (see below). A webhook call may carry a path after the hook, `POST /plugins/{id}/hook/{*suffix}`, which the plugin sees as the request path.
 
-An install has a random id (route ownership will be `plugin:<id>`), a name (`a-z`, `0-9`, `-`, up
+An install has a random id (its routes are owned as `plugin:<id>`), a name (`a-z`, `0-9`, `-`, up
 to 64 characters), the approved capability set bound to the module sha256, and a non-secret
-`config` (up to 64 KiB) that will be handed to `init`. Installs and blobs live in the
+`config` (up to 64 KiB) that is handed to `init`. Installs and blobs live in the
 controller's `redb` database; a standalone controller keeps them there, an HA tier keeps them in
 the Raft state machine's database, replicated (the blobs travel out of band, see "High availability").
 
