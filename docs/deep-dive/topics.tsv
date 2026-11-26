@@ -39,7 +39,7 @@ web-gateway	The web gateway: Caddy, wayhouse-web-sync and site rendering	todo	cr
 http-toolkit	The shared HTTP toolkit: bearer auth, TLS, SSE and policy	todo	crates/wayhouse-http/src/bearer.rs,crates/wayhouse-http/src/conn.rs,crates/wayhouse-http/src/json.rs,crates/wayhouse-http/src/policy.rs,crates/wayhouse-http/src/protocol.rs,crates/wayhouse-http/src/public_ip.rs,crates/wayhouse-http/src/rotating.rs,crates/wayhouse-http/src/server.rs,crates/wayhouse-http/src/sse.rs,crates/wayhouse-http/src/tls.rs,crates/wayhouse-http/src/lib.rs
 registries-and-release-feed	Registries, signing and the release feed	todo	crates/wayhouse-registry/**
 all-in-one-control	The all-in-one control process	todo	crates/wayhouse-control/**
-ci-pipeline	The CI pipeline	todo	.github/workflows/ci.yml,.github/workflows/pr-title.yml,.github/scripts/**,.github/actions/**,.github/dependabot.yml
+ci-pipeline	The CI pipeline	todo	.github/workflows/ci.yml,.github/workflows/cache-warm.yml,.github/workflows/pr-title.yml,.github/scripts/**,.github/actions/**,.github/dependabot.yml
 release-pipeline	Releases: release-please, images and signing	todo	.github/workflows/release.yml,.github/workflows/release-please.yml,release-please-config.json,RELEASING.md,crates/wayhouse-http/build.rs,crates/wayhouse-http/build_sha.rs,crates/wayhouse/build.rs
 deployment-artifacts	Container images, Compose, Kubernetes and systemd	todo	deploy/**
 docs-site	The documentation site	written	site/**,.github/workflows/pages.yml
