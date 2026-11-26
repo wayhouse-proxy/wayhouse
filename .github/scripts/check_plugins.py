@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Build the official plugins pinned in plugins.lock and run the host's conformance check on them.
+"""Build the official plugins pinned in .github/pins/plugins.lock and run the host's conformance check on them.
 
-    python3 .github/scripts/check_plugins.py [--lock plugins.lock] [--work target/plugins-src]
+    python3 .github/scripts/check_plugins.py [--lock .github/pins/plugins.lock] [--work target/plugins-src]
 
 Clones `repo` at `rev` (the commit must be exactly the pinned one), builds every plugin for
 wasm32-unknown-unknown, and runs `wayhouse-plugin-check` (built from this checkout) on each
 module, with the plugin's `check-config.json` when it has one. A plugin built against another
 ABI minor than this checkout's cannot load while the major is 0, so that case is a warning,
-not a failure: it is what an ABI bump looks like until plugins.lock moves to the re-pinned
+not a failure: it is what an ABI bump looks like until .github/pins/plugins.lock moves to the re-pinned
 plugins commit. Any other failure fails the job.
 """
 import argparse
@@ -87,7 +87,7 @@ def run(cmd, **kw):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--lock", default="plugins.lock")
+    ap.add_argument("--lock", default=".github/pins/plugins.lock")
     ap.add_argument("--work", default="target/plugins-src")
     args = ap.parse_args()
     try:
@@ -105,7 +105,7 @@ def main():
     run(["git", "-C", str(work), "clean", "-q", "-fdx", "-e", "target"])
     got = subprocess.run(["git", "-C", str(work), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
     if got != rev:
-        print(f"checked out {got}, plugins.lock pins {rev}", file=sys.stderr)
+        print(f"checked out {got}, .github/pins/plugins.lock pins {rev}", file=sys.stderr)
         return 1
     run(["cargo", "build", "--locked", "--release", "--target", "wasm32-unknown-unknown", "--workspace"], cwd=work)
     run(["cargo", "build", "-p", "wayhouse-plugin-host", "--bin", "wayhouse-plugin-check"])
@@ -123,7 +123,7 @@ def main():
         name = w.stem.replace("_", "-")
         minor = wasm_abi_minor(w.read_bytes())
         if minor != want:
-            print(f"::warning::{name} is built for ABI 0.{minor}, this checkout is 0.{want}: move plugins.lock to a plugins commit pinned to this ABI")
+            print(f"::warning::{name} is built for ABI 0.{minor}, this checkout is 0.{want}: move .github/pins/plugins.lock to a plugins commit pinned to this ABI")
             continue
         cfg = work / "plugins" / name / "check-config.json"
         cmd = [str(checker), str(w)] + ([str(cfg)] if cfg.is_file() else [])
@@ -133,7 +133,7 @@ def main():
             failed.append(name)
     print(f"checked {checked} of {len(wasms)} modules")
     if checked == 0 and os.environ.get("GITHUB_EVENT_NAME") in ("schedule", "merge_group"):
-        print("no module was checked: plugins.lock is behind this checkout's ABI", file=sys.stderr)
+        print("no module was checked: .github/pins/plugins.lock is behind this checkout's ABI", file=sys.stderr)
         return 1
     if failed:
         print("conformance failed: " + ", ".join(failed), file=sys.stderr)

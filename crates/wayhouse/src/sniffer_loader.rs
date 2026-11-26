@@ -1094,7 +1094,7 @@ mod tests {
         p
     }
 
-    /// Where the official sniffers pinned in `sniffers.lock` were fetched to
+    /// Where the official sniffers pinned in `.github/pins/sniffers.lock` were fetched to
     /// (`make sniffers-fetch`, `.github/scripts/fetch_sniffers.py`):
     /// `WAYHOUSE_SNIFFERS_DIR`, default `target/sniffers` in the workspace root.
     /// The `#[ignore]`d tests below fail with this path when it is missing.
@@ -1116,7 +1116,7 @@ mod tests {
     /// version in its `wayhouse.abi` section: this is the cross-repo contract (the
     /// sniffers repo builds against a pinned ABI crate, the host here reads
     /// [`HOST_ABI`]), so a host ABI bump fails here until the sniffers are rebuilt
-    /// and `sniffers.lock` is updated. Run with
+    /// and `.github/pins/sniffers.lock` is updated. Run with
     /// `cargo test -p wayhouse built_sniffers_declare -- --ignored` after
     /// `make sniffers-fetch`.
     #[test]
@@ -1144,7 +1144,7 @@ mod tests {
     }
 
     /// Loads the real official sniffers (released from `wayhouse-proxy/sniffers`,
-    /// pinned in `sniffers.lock`, fetched by `make sniffers-fetch`) and drives each
+    /// pinned in `.github/pins/sniffers.lock`, fetched by `make sniffers-fetch`) and drives each
     /// one through this crate's own loader —
     /// not just the sniffer's own native `recognise()` unit tests, but the
     /// actual `alloc`/`memory.write`/`sniff`/decode round trip through

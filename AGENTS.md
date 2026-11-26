@@ -26,7 +26,7 @@ the guidance here, not in them.
 > **Sniffers vs plugins.** *Sniffers* are the WASM protocol/hostname sniffer modules; the
 > official ones live in
 > [`wayhouse-proxy/sniffers`](https://github.com/wayhouse-proxy/sniffers) (this repository
-> keeps only the ABI crate, `crates/wayhouse-sniffer-abi/`, and pins their releases in `sniffers.lock`
+> keeps only the ABI crate, `crates/wayhouse-sniffer-abi/`, and pins their releases in `.github/pins/sniffers.lock`
 > for the e2e tests). *Plugins* are
 > integrations with other systems (e.g. the Pelican panel) and live in
 > [`wayhouse-proxy/plugins`](https://github.com/wayhouse-proxy/plugins); design:
@@ -195,7 +195,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
 | Web proxy e2e | `CADDY_BIN=<caddy> cargo test -p wayhouse-fleet-tests --test web -- --ignored` (real Caddy; CI job `web-e2e` takes the Caddy out of the `wayhouse-caddy` image, in `ci-ok.needs`) |
 | Fuzz | `make fuzz` (needs `rustup toolchain install nightly` + `cargo install cargo-fuzz`; see `crates/wayhouse-config/fuzz/README.md`) |
 | Bench | `make bench` (latency / load harness vs. NFR N1/N2; see `crates/wayhouse-bench/README.md`) |
-| Official sniffers (e2e) | `make sniffers-fetch` (downloads the releases pinned in `sniffers.lock` to `target/sniffers`; needs network), then `cargo test -p wayhouse --release -- --ignored`; CI job `sniffers-e2e` (in `ci-ok.needs`, #296) |
+| Official sniffers (e2e) | `make sniffers-fetch` (downloads the releases pinned in `.github/pins/sniffers.lock` to `target/sniffers`; needs network), then `cargo test -p wayhouse --release -- --ignored`; CI job `sniffers-e2e` (in `ci-ok.needs`, #296) |
 | wayhouse-ui frontend | `make ui` (needs Node/npm; builds `crates/wayhouse-ui/web/` to `dist/`, served by `wayhouse-ui --static-dir`; see `crates/wayhouse-ui/web/README.md`) |
 | wayhouse-ui frontend tests | `make ui-test` (vitest) and `make ui-e2e` (Playwright, backend stubbed; both in the `ui` CI job) |
 | Markdown | `make docs-fmt` (Prettier, writes) / `make docs-fmt-check` and `make docs-links` (relative links and anchors); both checks are the `docs` CI job. AGENTS.md, HANDOVER.md and `docs/NN-*.md` are in `.prettierignore` for now |
@@ -307,7 +307,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
 | New routing matcher / balancer | `docs/03`, `config.example.yaml`, tests |
 | Registry index / manifest format or the sniffer ABI version rules | `wayhouse-registry` (`index.rs`, `plugin_index.rs`, `catalog.rs`, `compat.rs`), `wayhouse-ui` (`registry_client.rs`, `registry_api.rs`, `plugin_registry_api.rs`) and the web registry views, the golden `tests/golden/index.json`, `docs/sniffers.md`, the registry spec |
 | New / changed sniffer seam | `wayhouse_core::sniff`, `docs/03`, `docs/08` (Phase 9). NB: no game sniffers are compiled in — they load as sniffers (Phase 9), never as core code or a fork. |
-| Sniffer ABI (wire format or `wayhouse.abi` version) | `crates/wayhouse-sniffer-abi`, `HOST_ABI` in `sniffer_loader.rs`, the rev pinned in the sniffers repo's `Cargo.toml`, rebuilt sniffer releases, then `sniffers.lock` (`docs/sniffers.md`) |
+| Sniffer ABI (wire format or `wayhouse.abi` version) | `crates/wayhouse-sniffer-abi`, `HOST_ABI` in `sniffer_loader.rs`, the rev pinned in the sniffers repo's `Cargo.toml`, rebuilt sniffer releases, then `.github/pins/sniffers.lock` (`docs/sniffers.md`) |
 | Plugin ABI (imports, exports, capability format or `wayhouse.plugin-abi` version) | `crates/wayhouse-plugin-abi` constants, `HOST_ABI` in `wayhouse-plugin-host`, `docs/plugins.md` |
 | New optional `wayhouse` cargo feature | `crates/wayhouse/Cargo.toml` `[features]` (on by default), a `*_disabled.rs` stub that fails startup with a message naming the feature when the config needs it, a `--no-default-features` test, the AGENTS.md command table |
 | Finished a roadmap item | status legend in `docs/08-roadmap.md`, `README.md` status block |

@@ -288,16 +288,16 @@ jobs:
           retention-days: 1
 
   # The loader against the official sniffers, built and released by wayhouse-proxy/sniffers
-  # and pinned by tag + sha256 in sniffers.lock: the #[ignore]d wayhouse tests (the ABI
+  # and pinned by tag + sha256 in .github/pins/sniffers.lock: the #[ignore]d wayhouse tests (the ABI
   # contract, every sniffer through the real loader, the N1 latency gate) run on exactly
-  # those bytes. In `ci-ok.needs` (#296): a PR that changes the loader or `sniffers.lock`
+  # those bytes. In `ci-ok.needs` (#296): a PR that changes the loader or `.github/pins/sniffers.lock`
   # must not merge with it red. It is path-scoped and a skipped job counts as passed, so
   # ordinary PRs are unaffected; the price is that an outage of the sniffers repo or a
   # release asset blocks the PRs that do run it (re-run once, like any flake). It runs
-  # when wayhouse or sniffers.lock changes, on the merge queue and in the nightly run
+  # when wayhouse or .github/pins/sniffers.lock changes, on the merge queue and in the nightly run
   # (like every other job). wasmtime generates native code per architecture, hence
   # both runners. A hash mismatch or a missing asset fails the fetch step loudly. The same
-  # job also builds the official plugins pinned in plugins.lock and runs the plugin host's
+  # job also builds the official plugins pinned in .github/pins/plugins.lock and runs the plugin host's
   # conformance check on them (amd64 only), so a host change cannot silently break them.
   sniffers-e2e:
     name: sniffers e2e (${{ matrix.arch }})
@@ -334,7 +334,7 @@ jobs:
         # (release matters for real numbers, see docs/07).
         run: cargo nextest run -p wayhouse --release --profile ci --run-ignored only --no-capture
       - name: Build the pinned official plugins and run the host's conformance check on them
-        # plugins.lock pins a commit of the plugins repository. A plugin built for another
+        # .github/pins/plugins.lock pins a commit of the plugins repository. A plugin built for another
         # ABI minor than this checkout's is a warning (an ABI bump, until the lock moves);
         # any other failure fails the job. One architecture is enough: the check is the same.
         if: matrix.arch == 'amd64'

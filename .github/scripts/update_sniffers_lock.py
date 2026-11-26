@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Write sniffers.lock from the sniffers registry index.
+"""Write .github/pins/sniffers.lock from the sniffers registry index.
 
-    python3 .github/scripts/update_sniffers_lock.py [--index URL|PATH] [--out sniffers.lock] [--only NAME ...]
+    python3 .github/scripts/update_sniffers_lock.py [--index URL|PATH] [--out .github/pins/sniffers.lock] [--only NAME ...]
 
 Pins the newest version of every sniffer (or only the named ones) at the tag and sha256 the
 index publishes. The default index is the official one on the sniffers repo's `main`. Review
@@ -67,7 +67,7 @@ def build_lock(index, only):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--index", default=OFFICIAL)
-    ap.add_argument("--out", default="sniffers.lock")
+    ap.add_argument("--out", default=".github/pins/sniffers.lock")
     ap.add_argument("--only", nargs="*")
     a = ap.parse_args()
     try:
