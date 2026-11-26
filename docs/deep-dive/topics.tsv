@@ -8,7 +8,7 @@ udp-sessions	UDP: session tables, recvmmsg batching and the amplification guard	
 connection-pump	The TCP byte pump: splice, draining and connection tracking	todo	crates/wayhouse-core/src/proxy.rs,crates/wayhouse-core/src/drain.rs
 snapshot-and-hot-reload	Immutable snapshots and hot reload	written	crates/wayhouse-core/src/snapshot.rs,crates/wayhouse/src/reload.rs,crates/wayhouse/src/config_file.rs,crates/wayhouse/src/main.rs
 pools-and-load-balancing	Pools, balancers and runtime backend edits	todo	crates/wayhouse-core/src/pool.rs,crates/wayhouse-core/src/overlay.rs
-health-checking	Active and passive health checks	todo	crates/wayhouse-core/src/health.rs,crates/wayhouse/src/health_report.rs
+health-checking	Active and passive health checks	written	crates/wayhouse-core/src/health.rs,crates/wayhouse/src/health_report.rs
 proxy-protocol	PROXY protocol and transparent mode	todo	crates/wayhouse-core/src/proxy_protocol.rs
 filters-and-limits	The filter chain: ACLs, GeoIP, rate limits and caps	todo	crates/wayhouse-core/src/ratelimit.rs,crates/wayhouse-core/src/src_conns.rs,crates/wayhouse-core/src/limits.rs,crates/wayhouse-core/src/geo.rs
 runtime-feature-flags	Runtime feature flags and kill switches	todo	crates/wayhouse-core/src/flags.rs,crates/wayhouse-config/src/features.rs,crates/wayhouse/src/features.rs,crates/wayhouse-controller/src/features.rs,crates/wayhouse-aggregator/src/features.rs
