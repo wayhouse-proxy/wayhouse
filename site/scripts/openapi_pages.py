@@ -137,8 +137,11 @@ def _curl(spec, method, path, op, base):
     if method != "get":
         parts.append("-X %s" % method.upper())
     if secured:
-        var = "TOKEN" if _scheme(spec, op) == "bearer" else _scheme(spec, op).upper() + "_TOKEN"
-        parts.append('-H "Authorization: Bearer $%s"' % var)
+        if _scheme(spec, op) == "session":
+            parts.append('-b "wayhouse_ui_session=$COOKIE"')
+        else:
+            var = "TOKEN" if _scheme(spec, op) == "bearer" else _scheme(spec, op).upper() + "_TOKEN"
+            parts.append('-H "Authorization: Bearer $%s"' % var)
     for p in op.get("parameters", []):
         if p["in"] == "header" and p.get("required"):
             parts.append('-H "%s: %s"' % (p["name"], p.get("example") or (p.get("schema") or {}).get("example") or "value"))
@@ -195,7 +198,9 @@ def _operation(spec, path, method, op, base):
         auth = "the admin token" + (
             ", and the %s token%s" % (" and ".join(extra) if len(extra) < 3 else ", ".join(extra[:-1]) + " and " + extra[-1],
                                       "s" if len(extra) > 1 else "") if extra else " only")
-    if secured and _scheme(spec, op) != "bearer":
+    if secured and _scheme(spec, op) == "session":
+        auth = "a session whose role is **%s** or higher" % op.get("x-wayhouse-role", "viewer")
+    elif secured and _scheme(spec, op) != "bearer":
         scheme = spec.get("components", {}).get("securitySchemes", {}).get(_scheme(spec, op), {})
         auth = _one_line(scheme.get("description", auth))
     out.append("\n**Auth:** %s" % auth)

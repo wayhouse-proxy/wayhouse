@@ -37,6 +37,7 @@ serde_norway.workspace = true
 argon2 = "0.6.0"
 zeroize = "1"
 wayhouse-registry = { path = "../wayhouse-registry" }
+utoipa = "6"
 sha2.workspace = true
 minisign-verify.workspace = true
 wayhouse-plugin-abi = { path = "../wayhouse-plugin-abi" }

@@ -34,6 +34,8 @@ pub mod auth;
 pub mod controller_proxy;
 pub mod fleet_feed;
 pub mod login_limit;
+pub mod openapi;
+mod openapi_paths;
 pub mod origin_guard;
 pub mod plugin_registry_api;
 pub mod process_api;
