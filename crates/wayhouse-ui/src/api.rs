@@ -284,6 +284,7 @@ pub fn router(state: AppState) -> Router {
     let viewer = Router::new()
         .route("/ui/session", get(session_status))
         .route("/api/release", get(release_status))
+        .route("/openapi.json", get(openapi_json))
         .merge(crate::aggregator_proxy::viewer_router())
         .merge(crate::controller_proxy::viewer_router())
         .merge(crate::ui_data_proxy::viewer_router())
@@ -514,6 +515,11 @@ async fn release_status(State(state): State<AppState>) -> Response {
         None => crate::release_watch::ReleaseWatch::new(env!("CARGO_PKG_VERSION"), None).status(),
     };
     (StatusCode::OK, Json(status)).into_response()
+}
+
+/// `GET /openapi.json`: the OpenAPI description of this API.
+async fn openapi_json() -> Response {
+    (StatusCode::OK, Json(crate::openapi::openapi_json())).into_response()
 }
 
 /// Extracts the session id from the `Cookie` header(s), if present. Shared by

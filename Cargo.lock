@@ -5255,6 +5255,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "utoipa",
  "wat",
  "wayhouse-config",
  "wayhouse-enroll",

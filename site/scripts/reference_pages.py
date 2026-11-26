@@ -171,10 +171,32 @@ def aggregator_api():
         "http://127.0.0.1:9902")
 
 
+def console_api():
+    import os
+    import openapi_pages
+    return openapi_pages.render(
+        os.path.join(openapi_pages.DOCS, "reference", "openapi", "console.json"),
+        "Console API",
+        "Every route of the HTTP API wayhouse-ui serves: sign-in, the relays to the controller and the aggregator, registries, process settings and the console's own records.",
+        "The API `wayhouse-ui` serves (default `http://127.0.0.1:9903`), the backend of the web console. A person signs in with "
+        "`POST /ui/login`, the browser holds the session cookie `wayhouse_ui_session`, and the session's role (viewer, operator or admin) "
+        "decides which routes answer. Most routes relay to the controller or the aggregator with the console's own tokens and "
+        "return their answer unchanged, so they point to the [Controller API](/reference/controller-api/) or the "
+        "[Aggregator API](/reference/aggregator-api/) for the request and the answer. The console is meant for browsers; "
+        "scripts should call the controller and the aggregator directly. How errors and versions work is on "
+        "[HTTP API basics](/manual/operate/http-apis/).\n\n"
+        "These pages are generated from the OpenAPI document in `docs/reference/openapi/console.json`, which is "
+        "itself generated from the route descriptions in `crates/wayhouse-ui/src/openapi_paths.rs` and checked by tests that fail "
+        "when the checked-in document is stale, or when a route exists that the document does not describe, or the other way round, "
+        "or when a route's role differs from the one stated. The examples assume `COOKIE` holds the session cookie.",
+        "http://127.0.0.1:9903")
+
+
 PAGES = {
     "reference/proxy-admin-api": proxy_admin_api,
     "reference/controller-api": controller_api,
     "reference/aggregator-api": aggregator_api,
+    "reference/console-api": console_api,
     "reference/api-endpoints": api_endpoints,
     "reference/ui-screens": ui_screens,
     "reference/env-vars": env_vars,

@@ -5,7 +5,7 @@ sidebar:
     order: 6
 ---
 
-Every wayhouse program that you can reach over the network speaks plain HTTP (or HTTPS) with a bearer token. This page is what they have in common. The per-route detail, with request and response shapes and a `curl` example for each route, is in the [Reference](../../reference/index.md): the proxy admin API, the Controller API and the Aggregator API are written that way; the console routes are described in [Config revisions](config-revisions.md) and [Operate the whole fleet](fleet-api.md).
+Every wayhouse program that you can reach over the network speaks plain HTTP (or HTTPS) with a bearer token. This page is what they have in common. The per-route detail, with request and response shapes and a `curl` example for each route, is in the [Reference](../../reference/index.md): the proxy admin API, the Controller API, the Aggregator API and the Console API are written that way. The manual pages [Config revisions](config-revisions.md) and [Operate the whole fleet](fleet-api.md) show the console routes at work.
 
 ## Who serves what
 
@@ -14,7 +14,7 @@ Every wayhouse program that you can reach over the network speaks plain HTTP (or
 | `wayhouse` (proxy)    | `127.0.0.1:9900` | The proxy's own state: pools, sessions, drain, its config file. `settings.admin.listen` changes it. |
 | `wayhouse-controller` | `:9901`          | Config revisions, secrets, plugins, certificates, enrollment, the HA cluster.                       |
 | `wayhouse-aggregator` | `:9902`          | The fleet view: what every proxy reports, and commands fanned out to all of them.                   |
-| `wayhouse-ui`         | `:9903`          | The console's backend, `/api/...`, behind a login.                                                  |
+| `wayhouse-ui`         | `:9903`          | The console's backend, `/api/...`, behind a login. Most routes relay to the other three.            |
 
 The addresses are the defaults of the solo bundle; every program takes `--listen`, and the proxy takes `settings.admin.listen`.
 
