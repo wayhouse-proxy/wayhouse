@@ -4,7 +4,7 @@
 # Columns (tab-separated): slug, title, status (todo|written), comma-separated path globs.
 # A page lives at docs/deep-dive/topics/<slug>.md. A file may belong to several topics.
 data-plane-listeners	Listeners: accept loops, SO_REUSEPORT and port ranges	todo	crates/wayhouse-core/src/listener.rs,crates/wayhouse-core/src/listeners.rs,crates/wayhouse-core/src/net.rs,crates/wayhouse-core/src/runtime.rs,crates/wayhouse-core/src/util.rs,crates/wayhouse-core/src/lib.rs
-udp-sessions	UDP: session tables, recvmmsg batching and the amplification guard	todo	crates/wayhouse-core/src/listener_udp.rs
+udp-sessions	UDP: session tables, recvmmsg batching and the amplification guard	written	crates/wayhouse-core/src/listener_udp.rs
 connection-pump	The TCP byte pump: splice, draining and connection tracking	written	crates/wayhouse-core/src/proxy.rs,crates/wayhouse-core/src/drain.rs
 snapshot-and-hot-reload	Immutable snapshots and hot reload	written	crates/wayhouse-core/src/snapshot.rs,crates/wayhouse/src/reload.rs,crates/wayhouse/src/config_file.rs,crates/wayhouse/src/main.rs
 pools-and-load-balancing	Pools, balancers and runtime backend edits	todo	crates/wayhouse-core/src/pool.rs,crates/wayhouse-core/src/overlay.rs
