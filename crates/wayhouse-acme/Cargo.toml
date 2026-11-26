@@ -10,7 +10,7 @@ publish = false
 # trait, the certificate model and renewal arithmetic. No Raft, no HTTP server, no plugin
 # dependency. The fake CA behind the `test-support` feature is what the controller's tests
 # issue against: no real CA or DNS in CI.
-# Spec: docs/superpowers/specs/2026-10-15-controller-acme-design.md
+# Spec: docs/deep-dive/topics/acme.md
 
 [features]
 default = ["client"]

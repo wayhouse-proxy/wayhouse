@@ -1,5 +1,5 @@
 //! The cluster's replicated tunnel network ("The cluster's tunnel network",
-//! `docs/superpowers/specs/2026-10-03-ha-replicated-address-allocation-design.md`).
+//! `docs/deep-dive/topics/controller-ha.md`).
 //!
 //! Registry entries are applied against **one** network every replica
 //! agrees on, never against a node's own `--tunnel-network`. The first

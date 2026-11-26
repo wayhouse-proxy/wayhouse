@@ -1,5 +1,5 @@
 //! Guest-side ABI helper for wayhouse plugins (Wave 5; design:
-//! `docs/superpowers/specs/2026-10-07-plugin-automation-hooks-design.md`).
+//! `docs/deep-dive/topics/plugin-host.md`).
 //!
 //! A plugin is a WASM module the controller runs on a timer. It exports `memory`,
 //! `alloc` (re-exported from this crate), `init(config_ptr, config_len)` and, when its

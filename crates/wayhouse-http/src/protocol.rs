@@ -1,5 +1,5 @@
 //! The wire-protocol version every component-to-component HTTP route carries
-//! (#185, `docs/superpowers/specs/2026-10-05-component-versioning-design.md`).
+//! (#185, `docs/deep-dive/topics/http-toolkit.md`).
 //!
 //! Protocol numbers are independent of the product version. A *major* bump is an
 //! incompatible wire change and makes peers refuse each other; a *minor* bump is

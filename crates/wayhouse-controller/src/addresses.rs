@@ -1,4 +1,4 @@
-//! Phase 14 tunnel address authority (`docs/superpowers/specs/2026-10-02-tunnel-address-authority-design.md`):
+//! Phase 14 tunnel address authority (`docs/deep-dive/topics/tunnel-registry.md`):
 //! `wayhouse-controller` allocates the tunnel-internal addresses that origins and
 //! proxies used to pick (and self-report) by hand, and enforces that no two
 //! peers ever hold the same one.

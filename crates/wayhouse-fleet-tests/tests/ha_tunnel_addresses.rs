@@ -1,7 +1,7 @@
 //! `--tunnel-network` together with `--ha-peers`: the registries and the
 //! address book replicate through Raft, so a registration made on one node
 //! is seen — with the same tunnel address — on the others
-//! (`docs/superpowers/specs/2026-10-03-ha-replicated-address-allocation-design.md`).
+//! (`docs/deep-dive/topics/controller-ha.md`).
 //! Plain `cargo test`: no namespaces needed.
 
 use std::time::Duration;

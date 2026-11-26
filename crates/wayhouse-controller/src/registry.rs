@@ -10,7 +10,7 @@
 //! ([`RegistryState::register_applied`] / [`RegistryState::remove_applied`]),
 //! and with a Raft index the store's `applied_index` joins it too, so a
 //! replayed apply step is a no-op ("Crash-idempotent apply",
-//! `docs/superpowers/specs/2026-10-03-ha-replicated-address-allocation-design.md`).
+//! `docs/deep-dive/topics/controller-ha.md`).
 //!
 //! Under HA ([`RegistryState::with_ha`]) the write handlers never write
 //! either store: they propose through Raft and the state machine applies

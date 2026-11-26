@@ -1,6 +1,6 @@
 //! `/admin/ha/members` — live membership of the tier's Raft group ("Live
 //! membership",
-//! `docs/superpowers/specs/2026-10-03-ha-replicated-address-allocation-design.md`).
+//! `docs/deep-dive/topics/controller-ha.md`).
 //!
 //! Gated by `--auth-token` like `/admin/adopt`. `GET` is served from this
 //! node's own Raft metrics; the writes (`POST` add, `DELETE` remove, `PUT`

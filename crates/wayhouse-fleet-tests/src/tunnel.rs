@@ -1,5 +1,5 @@
 //! Bring-up and helpers for the phase-14 tunnel e2e scenarios — see
-//! `docs/superpowers/specs/2026-10-01-tunnel-e2e-design.md` ("Bring-up order").
+//! `docs/deep-dive/topics/testing-and-benchmarks.md`.
 //! The origin must register before `wayhouse` starts because `wayhouse`'s tunnel
 //! `backend_sources[].pubkey` pins the origin's key; we read it back from the
 //! controller's backend-peers registry.

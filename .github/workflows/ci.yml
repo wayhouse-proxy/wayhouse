@@ -442,7 +442,7 @@ jobs:
 
   tunnel:
     # Phase-14 WireGuard tunnel e2e in rootless network namespaces
-    # (docs/superpowers/specs/2026-10-01-tunnel-e2e-design.md). Blocking since
+    # (docs/deep-dive/topics/testing-and-benchmarks.md). Blocking since
     # 2026-10-02, after green runs on both backends on the pinned runners.
     needs: changes
     if: needs.changes.outputs.tunnel == 'true'
@@ -484,7 +484,7 @@ jobs:
   deploy:
     name: deploy (amd64)
     # deploy/ reference images + compose demo + k8s manifests
-    # (docs/superpowers/specs/2026-10-01-deploy-design.md). Blocking since
+    # (docs/deep-dive/topics/deployment-artifacts.md). Blocking since
     # 2026-10-02, after green runs on the pinned runners.
     needs: [changes, build-release]
     if: needs.changes.outputs.deploy == 'true'

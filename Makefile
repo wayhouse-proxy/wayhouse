@@ -102,7 +102,7 @@ tunnel-ns-check:
 
 ## tunnel-e2e: phase-14 WireGuard tunnel end-to-end test in rootless network
 ## namespaces (TUNNEL_BACKEND=kernel|userspace, default kernel); see
-## docs/superpowers/specs/2026-10-01-tunnel-e2e-design.md
+## docs/deep-dive/topics/testing-and-benchmarks.md
 tunnel-e2e: tunnel-ns-check
 	cargo build -p wayhouse -p wayhouse-agent -p wayhouse-controller --features wayhouse-http/test-protocol-override
 	cargo test -p wayhouse-fleet-tests --test tunnel --no-run

@@ -1,6 +1,6 @@
 //! What protocol minor each peer speaks, so a sender can gate new optional
 //! fields on the receiver (#185, the "gating rule" in
-//! `docs/superpowers/specs/2026-10-05-component-versioning-design.md`).
+//! `docs/deep-dive/topics/http-toolkit.md`).
 //!
 //! Server side: [`gate`](crate::protocol::gate) records the caller's version as a
 //! [`PeerProtocol`] request extension; a handler or SSE stream asks
