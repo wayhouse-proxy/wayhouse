@@ -27,6 +27,8 @@ SKIP_FILES = {"README.md", "SUMMARY.md"}  # the old mdBook intro and table of co
 CHAPTER = re.compile(r"^(\d\d)-(.+)\.md$")
 # Top-level pages that are reference material rather than manual pages.
 REFERENCE = {"third-party-notices"}
+# Top-level pages that explain how something is built.
+DEEP_DIVE = {"latency-ledger"}
 
 
 def dest_of(rel: str):
@@ -38,7 +40,11 @@ def dest_of(rel: str):
     if m:
         return "deep-dive/design/" + m.group(2), int(m.group(1))
     name = rel[: -len(".md")].replace(".", "")  # Starlight slugs drop dots: migrating-0.2 -> migrating-02
-    return ("reference/" if name in REFERENCE else "manual/") + name, None
+    section = "reference/" if name in REFERENCE else "deep-dive/" if name in DEEP_DIVE else "manual/"
+    return section + name, None
+
+
+MISSING = []
 
 
 def collect():
@@ -76,6 +82,9 @@ def make_rewriter(src_rel: str, pages: dict):
         if target.startswith("img/"):
             return "/" + target
         repo_path = os.path.normpath(os.path.join("docs", target)).replace(os.sep, "/")
+        top = target.split("/")[0]
+        if not target.startswith("..") and top not in SKIP_DIRS and target.endswith(".md"):
+            MISSING.append("%s: link to a docs page that does not exist: %s" % (src_rel, href))
         return GITHUB + "/blob/main/" + repo_path + frag
 
     return rewrite
@@ -186,6 +195,13 @@ def main() -> int:
     if os.path.isdir(img):
         shutil.copytree(img, os.path.join(PUBLIC, "img"))
     shutil.copy(os.path.join(SITE, "landing.mdx"), os.path.join(OUT, "index.mdx"))
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import reference_pages
+    for dest, render in reference_pages.PAGES.items():
+        with open(os.path.join(OUT, dest + ".md"), "w", encoding="utf-8") as f:
+            f.write(render())
+    if MISSING:
+        sys.exit("\n".join(sorted(set(MISSING))))
     print("synced %d pages" % len(pages))
     return 0
 

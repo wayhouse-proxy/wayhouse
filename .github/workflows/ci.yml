@@ -833,6 +833,12 @@ jobs:
       - name: Relative links and anchors resolve
         if: needs.changes.outputs.docs == 'true'
         run: make docs-links
+      # Every config key, flag, metric and feature is in the hand-written docs (or in
+      # docs/coverage-allowlist.txt). Here, not in pages.yml: an undocumented item must not
+      # merge, and a gap must never block the site deploy.
+      - name: Documentation covers every flag, key, metric and feature
+        if: needs.changes.outputs.docs == 'true'
+        run: make docs-coverage
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         if: needs.changes.outputs.code == 'true'
         with:

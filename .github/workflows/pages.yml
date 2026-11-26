@@ -10,11 +10,19 @@ on:
     paths:
       - "docs/**"
       - "site/**"
+      # the generated Reference pages read these
+      - "crates/**/*.rs"
+      - "crates/**/Cargo.toml"
+      - "crates/wayhouse-config/schema/**"
       - ".github/workflows/pages.yml"
   pull_request:
     paths:
       - "docs/**"
       - "site/**"
+      # the generated Reference pages read these
+      - "crates/**/*.rs"
+      - "crates/**/Cargo.toml"
+      - "crates/wayhouse-config/schema/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 

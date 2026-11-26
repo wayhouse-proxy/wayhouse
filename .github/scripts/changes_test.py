@@ -263,16 +263,18 @@ class Main(unittest.TestCase):
 
     def test_docs_is_true_for_markdown_and_its_tooling(self):
         for f in ["README.md", "deploy/README.md", ".prettierrc.json", ".prettierignore", "Makefile",
-                  ".github/scripts/check_md_links.py", ".github/workflows/ci.yml"]:
+                  ".github/scripts/check_md_links.py", ".github/workflows/ci.yml",
+                  "site/scripts/check_coverage.py", "crates/wayhouse/src/main.rs",
+                  "crates/wayhouse-core/Cargo.toml", "crates/wayhouse-config/schema/config.schema.json"]:
             self.assertTrue(changes.is_docs([f]), f)
-        self.assertFalse(changes.is_docs(["crates/wayhouse/src/main.rs", "Cargo.lock"]))
+        self.assertFalse(changes.is_docs(["Cargo.lock", "crates/wayhouse-ui/web/package.json"]))
         self.assertFalse(changes.is_docs([]))
 
     def test_docs_follows_the_all_flag_and_the_output(self):
         self.assertEqual(self.run_main(["--all"], "", None)["docs"], "true")
         got = self.run_main([], "README.md\n", lambda _: changes.load_graph(REPO))
         self.assertEqual(got["docs"], "true")
-        got = self.run_main([], "crates/wayhouse/src/main.rs\n", lambda _: changes.load_graph(REPO))
+        got = self.run_main([], "Cargo.lock\n", lambda _: changes.load_graph(REPO))
         self.assertEqual(got["docs"], "false")
 
     def test_code_is_true_with_all_flag_and_on_metadata_failure(self):

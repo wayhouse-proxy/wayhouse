@@ -217,10 +217,14 @@ def areas(files: List[str], g: Graph) -> Dict[str, bool]:
     return {a: out.get(a, False) for a in AREAS}
 
 
-# What the `docs` CI job (Prettier and the link check) depends on. The Makefile holds the
-# Prettier pin. `.prettierrc.json` and `.prettierignore` are not in DOCS_ONLY on purpose:
+# What the docs steps of the `checks` CI job (Prettier, the link check and the coverage check)
+# depends on. The coverage check reads the Rust sources and the config schema, so a new flag,
+# metric or feature starts it. The Makefile holds the Prettier pin. `.prettierrc.json` and `.prettierignore` are not in DOCS_ONLY on purpose:
 # they are config, so a PR touching only them also runs the code jobs.
-DOCS_JOB = re.compile(r"\.md$|^\.prettier(rc\.json|ignore)$|^Makefile$|^\.github/")
+DOCS_JOB = re.compile(
+    r"\.md$|^\.prettier(rc\.json|ignore)$|^Makefile$|^\.github/|^site/scripts/"
+    r"|^crates/.*\.rs$|^crates/[^/]+/Cargo\.toml$|^crates/wayhouse-config/schema/"
+)
 
 
 def is_docs(files: List[str]) -> bool:

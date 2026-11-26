@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # The documentation site's npm dependencies (Astro, Starlight), pinned in site/package-lock.json.
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: weekly
+    groups:
+      site:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"

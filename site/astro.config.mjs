@@ -43,7 +43,8 @@ export default defineConfig({
                 },
             ],
             // Fails the build on a broken internal link or anchor.
-            plugins: [starlightLinksValidator({ errorOnLocalLinks: false })],
+            customCss: ["./src/styles/custom.css"],
+      plugins: [starlightLinksValidator({ errorOnLocalLinks: false })],
         }),
     ],
 });
