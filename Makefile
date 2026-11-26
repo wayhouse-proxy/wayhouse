@@ -1,7 +1,7 @@
 # Convenience wrapper around the cargo commands CI runs.
 # Requires `cargo` on PATH (rustup: `source "$HOME/.cargo/env"`).
 
-.PHONY: check fmt lint test test-minimal audit build run fuzz bench bench-udp-batch sniffers-fetch ui ui-test ui-e2e tunnel-ns-check tunnel-e2e tunnel-e2e-ci deploy-images deploy-scan deploy-lint deploy-smoke deploy-solo-smoke deploy-solo-control-smoke docs-fmt docs-fmt-check docs-links help
+.PHONY: check fmt lint test test-minimal audit build run fuzz bench bench-udp-batch sniffers-fetch ui ui-test ui-e2e tunnel-ns-check tunnel-e2e tunnel-e2e-ci deploy-images deploy-scan deploy-lint deploy-smoke deploy-solo-smoke deploy-solo-control-smoke docs-fmt docs-fmt-check docs-links site help
 
 ## check: everything CI runs — format check, clippy (deny warnings), tests
 check: fmt-check lint test test-minimal
@@ -134,6 +134,10 @@ docs-fmt-check:
 ## docs-links: check that relative Markdown links and anchors resolve
 docs-links:
 	python3 .github/scripts/check_md_links.py $$(git ls-files '*.md')
+
+## site: build the website from docs/ into site/dist (needs Node; fails on broken links)
+site:
+	cd site && npm ci && npm run build
 
 ## deploy-lint: static checks on deploy/ (needs the docker CLI + ruby, no daemon)
 deploy-lint:
