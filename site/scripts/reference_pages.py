@@ -152,9 +152,29 @@ def controller_api():
         "http://127.0.0.1:9901")
 
 
+def aggregator_api():
+    import os
+    import openapi_pages
+    return openapi_pages.render(
+        os.path.join(openapi_pages.DOCS, "reference", "openapi", "aggregator.json"),
+        "Aggregator API",
+        "Every route of the HTTP API wayhouse-aggregator serves: the push endpoint, the fleet read views and the verbs that act on every instance.",
+        "The API `wayhouse-aggregator` serves (default `http://127.0.0.1:9902`). Proxies push their state to `POST /ingest`; "
+        "everything under `/fleet` reads that state or fans a verb out to the instances' own admin APIs. The admin token "
+        "(`--auth-token`) unlocks `/fleet`; `/ingest` takes the separate ingest token. With no `--auth-token` the API is open, "
+        "which is only accepted on a loopback listener. How tokens, errors and versions work is on "
+        "[HTTP API basics](/manual/operate/http-apis/). The console reaches these routes through its own `/api/fleet` routes.\n\n"
+        "These pages are generated from the OpenAPI document in `docs/reference/openapi/aggregator.json`, which is "
+        "itself generated from the handlers' own annotations and checked by a test that fails when the "
+        "checked-in document no longer matches the annotations of the routes that carry one. The examples assume `TOKEN` "
+        "holds the admin token.",
+        "http://127.0.0.1:9902")
+
+
 PAGES = {
     "reference/proxy-admin-api": proxy_admin_api,
     "reference/controller-api": controller_api,
+    "reference/aggregator-api": aggregator_api,
     "reference/api-endpoints": api_endpoints,
     "reference/ui-screens": ui_screens,
     "reference/env-vars": env_vars,

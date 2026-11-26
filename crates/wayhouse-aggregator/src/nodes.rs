@@ -24,7 +24,7 @@ const DEFAULT_PAGE_SIZE: usize = 25;
 const MAX_QUERY: usize = 128;
 
 /// A node's health at a glance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeState {
     /// Pushing and every backend healthy.
@@ -208,13 +208,20 @@ impl Query {
 }
 
 /// One row of the node list.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct Node {
+    /// The instance's name.
+    #[schema(example = "edge-fra-1")]
     pub instance: String,
+    /// The node's health.
     pub state: NodeState,
+    /// Milliseconds since the aggregator last heard from the instance (by the aggregator's own
+    /// clock).
     pub last_seen_ms_ago: u64,
+    /// The instance's region, when it reports one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// The instance's fleet group path, when it reports one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
     /// Declared tags with the operator's laid over them.
@@ -222,20 +229,30 @@ pub struct Node {
     /// The part of `tags` an operator set (the tag editor shows these as editable).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub operator_tags: BTreeMap<String, String>,
+    /// The product version the instance runs (empty from an older build).
     pub version: String,
+    /// The wire protocol `major.minor` it speaks (empty from an older build).
     pub protocol: String,
+    /// How its version compares with the newest in the fleet.
     pub skew: Skew,
+    /// Its live session counts.
     pub sessions: SessionCounts,
+    /// How many backends it has across all pools.
     pub backends: usize,
+    /// How many of them fail their health check.
     pub unhealthy_backends: usize,
 }
 
 /// Counts over a set of nodes.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct Rollup {
+    /// How many nodes.
     pub nodes: usize,
+    /// How many of them are degraded.
     pub degraded: usize,
+    /// How many of them are stale.
     pub stale: usize,
+    /// Their open sessions, TCP and UDP together.
     pub sessions: u64,
 }
 
@@ -248,7 +265,8 @@ impl Rollup {
     }
 }
 
-#[derive(Debug, Serialize)]
+/// The roll-up of one region.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Group {
     /// The region; `null` for the nodes that report none.
     pub region: Option<String>,
@@ -256,12 +274,16 @@ pub struct Group {
     pub rollup: Rollup,
 }
 
-#[derive(Debug, Serialize)]
+/// One page of the node list.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Page {
+    /// The nodes of this page.
     pub items: Vec<Node>,
     /// Nodes the filter selects, across all pages.
     pub total: usize,
+    /// This page's number, from 1.
     pub page: usize,
+    /// The page size in use.
     pub size: usize,
     /// Over every node the filter selects, not just this page.
     pub rollup: Rollup,

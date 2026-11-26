@@ -26,7 +26,7 @@ Statistics are kept in memory only. A restart of the aggregator starts the chart
 
 ## Act on the fleet
 
-Every verb below is sent to the instances and answers `{"results": [...]}` with one entry per known instance. An instance that cannot be reached has `status: null`. One that refuses carries `detail`, the first 200 bytes of its answer. A broadcast never fails or stalls because of one bad instance.
+The verbs on a pool, a backend, a route hint or a sniffer module are sent to every known instance and answer `{"results": [...]}` with one entry per instance. Drain and undrain name one instance and pass that instance's own answer back unchanged. An instance that cannot be reached has `status: null`. One that refuses carries `detail`, the first 200 bytes of its answer. A broadcast never fails or stalls because of one bad instance. Every route, with its parameters and answers, is in the [Aggregator API reference](../../reference/index.md).
 
 | Endpoint                                         | Body                                       | What it does                                                                                |
 | ------------------------------------------------ | ------------------------------------------ | ------------------------------------------------------------------------------------------- |

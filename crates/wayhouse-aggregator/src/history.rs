@@ -222,68 +222,129 @@ impl History {
     }
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+/// Fleet-wide rates and gauges per minute. Aggregates only: there is no series per node.
+#[derive(Serialize, Debug, PartialEq, utoipa::ToSchema)]
+#[schema(example = json!({
+    "generated_at_ms": 1795690800000u64,
+    "range_sec": 300,
+    "fleet": {
+        "resolution_sec": 60,
+        "last_sample_ms": 1795690795000u64,
+        "points": [{"t_ms": 1795690740000u64, "partial": false, "accepted_per_sec": 4.2, "blocked_per_sec": 0.1,
+                    "bytes_per_sec": 1250000.0, "packets_per_sec": 0.0, "tcp_sessions": 112, "udp_sessions": 0}]
+    },
+    "listeners": [{
+        "name": "minecraft", "resolution_sec": 60, "last_sample_ms": 1795690795000u64,
+        "points": [{"t_ms": 1795690740000u64, "partial": false, "accepted_per_sec": 4.2, "blocked_per_sec": 0.1,
+                    "bytes_c2s_per_sec": 250000.0, "bytes_s2c_per_sec": 1000000.0, "packets_per_sec": 0.0}]
+    }],
+    "pools": [{
+        "name": "survival", "resolution_sec": 60, "last_sample_ms": 1795690795000u64,
+        "points": [{"t_ms": 1795690740000u64, "partial": false, "healthy_backends": 3, "backends": 3}]
+    }],
+    "regions": [{
+        "name": "eu-central", "resolution_sec": 60, "last_sample_ms": 1795690795000u64,
+        "points": [{"t_ms": 1795690740000u64, "partial": false, "bytes_per_sec": 1250000.0}]
+    }]
+}))]
 pub struct Stats {
+    /// When this answer was built, in milliseconds since the Unix epoch.
     pub generated_at_ms: u64,
+    /// The range covered, in seconds (300, 900 or 3600).
     pub range_sec: u64,
+    /// The sum over every listener.
     pub fleet: Series<FleetPoint>,
+    /// One series per listener name.
     pub listeners: Vec<Named<ListenerPoint>>,
+    /// One series per pool name.
     pub pools: Vec<Named<PoolPoint>>,
+    /// One series per region.
     pub regions: Vec<Named<RegionPoint>>,
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+/// A run of points one minute apart.
+#[derive(Serialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct Series<P> {
-    /// Seconds between points; widgets use it with `last_sample_ms` for freshness.
+    /// Seconds between points (60). Together with `last_sample_ms` it tells how fresh the
+    /// series is.
     pub resolution_sec: u64,
+    /// When the newest sample arrived, in milliseconds since the Unix epoch; absent when there
+    /// is none yet.
     pub last_sample_ms: Option<u64>,
+    /// The points, oldest first.
     pub points: Vec<P>,
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+/// A series with the name of what it measures.
+#[derive(Serialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct Named<P> {
+    /// The listener, pool or region the series belongs to.
     pub name: String,
     #[serde(flatten)]
     pub series: Series<P>,
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+/// One minute of the fleet total.
+#[derive(Serialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct FleetPoint {
+    /// The start of the minute, in milliseconds since the Unix epoch.
     pub t_ms: u64,
-    /// The open minute: rates cover the time elapsed in it so far.
+    /// `true` for the open minute: its rates cover only the time elapsed in it so far.
     pub partial: bool,
+    /// TCP connections accepted per second.
     pub accepted_per_sec: f64,
+    /// Connections and new UDP sessions dropped by the pre-routing filters per second.
     pub blocked_per_sec: f64,
+    /// TCP bytes relayed per second, both directions.
     pub bytes_per_sec: f64,
+    /// UDP datagrams forwarded per second.
     pub packets_per_sec: f64,
-    /// `None` for a minute no instance pushed in (only a gap spread reached it).
+    /// Open TCP sessions, absent for a minute no instance pushed in.
     pub tcp_sessions: Option<u64>,
+    /// Open UDP sessions, absent for a minute no instance pushed in.
     pub udp_sessions: Option<u64>,
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+/// One minute of one listener.
+#[derive(Serialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct ListenerPoint {
+    /// The start of the minute, in milliseconds since the Unix epoch.
     pub t_ms: u64,
+    /// `true` for the open minute.
     pub partial: bool,
+    /// TCP connections accepted per second.
     pub accepted_per_sec: f64,
+    /// Connections and new UDP sessions dropped per second.
     pub blocked_per_sec: f64,
+    /// TCP bytes per second from clients to backends.
     pub bytes_c2s_per_sec: f64,
+    /// TCP bytes per second from backends to clients.
     pub bytes_s2c_per_sec: f64,
+    /// UDP datagrams per second.
     pub packets_per_sec: f64,
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+/// One minute of one pool.
+#[derive(Serialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct PoolPoint {
+    /// The start of the minute, in milliseconds since the Unix epoch.
     pub t_ms: u64,
+    /// `true` for the open minute.
     pub partial: bool,
+    /// Backends passing their health check, summed over the instances.
     pub healthy_backends: u32,
+    /// All backends, summed over the instances.
     pub backends: u32,
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+/// One minute of one region.
+#[derive(Serialize, Debug, PartialEq, utoipa::ToSchema)]
 pub struct RegionPoint {
+    /// The start of the minute, in milliseconds since the Unix epoch.
     pub t_ms: u64,
+    /// `true` for the open minute.
     pub partial: bool,
+    /// Bytes per second relayed by the region's instances.
     pub bytes_per_sec: f64,
 }
 

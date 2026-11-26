@@ -5,7 +5,7 @@ sidebar:
     order: 6
 ---
 
-Every wayhouse program that you can reach over the network speaks plain HTTP (or HTTPS) with a bearer token. This page is what they have in common. The per-route detail, with request and response shapes and a `curl` example for each route, is in the Reference: the proxy admin API (Reference, "Proxy admin API", see the [Reference overview](../../reference/index.md)) and the Controller API are written that way; the aggregator and console routes are described in [Config revisions](config-revisions.md) and [Operate the whole fleet](fleet-api.md).
+Every wayhouse program that you can reach over the network speaks plain HTTP (or HTTPS) with a bearer token. This page is what they have in common. The per-route detail, with request and response shapes and a `curl` example for each route, is in the [Reference](../../reference/index.md): the proxy admin API, the Controller API and the Aggregator API are written that way; the console routes are described in [Config revisions](config-revisions.md) and [Operate the whole fleet](fleet-api.md).
 
 ## Who serves what
 

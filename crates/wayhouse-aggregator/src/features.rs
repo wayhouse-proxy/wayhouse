@@ -14,25 +14,31 @@ const MAX_LISTED: usize = 50;
 /// Most distinct flag names a roll-up lists; proxies self-report names, so the answer stays bounded.
 const MAX_FLAGS: usize = 256;
 
-#[derive(Debug, Default, Serialize, PartialEq, Eq)]
+/// How one feature flag stands across the fleet.
+#[derive(Debug, Default, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct FlagRollup {
+    /// The flag's name.
+    #[schema(example = "gossip_verdicts")]
     pub name: String,
     /// Instances whose build has the flag and whose effective value is on / off.
     pub on: usize,
     pub off: usize,
     /// Instances whose build lacks the code behind the flag.
     pub unavailable: usize,
-    /// Up to [`MAX_LISTED`] instances that run the flag off, by name.
+    /// Up to 50 instances that run the flag off, by name; the counts are always complete.
     pub off_instances: Vec<String>,
-    /// Up to [`MAX_LISTED`] instances whose value comes from an override.
+    /// Up to 50 instances whose value comes from an override, by name.
     pub overridden_instances: Vec<String>,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+/// The per-flag roll-up of what the proxies report.
+#[derive(Debug, Serialize, PartialEq, Eq, utoipa::ToSchema)]
 pub struct FeatureRollup {
-    /// Instances that reported flags (an older build reports none) out of `total`.
+    /// Instances that reported flags (an older build reports none), out of `total`.
     pub reporting: usize,
+    /// All known instances.
     pub total: usize,
+    /// One entry per flag name, at most 256 distinct names.
     pub flags: Vec<FlagRollup>,
 }
 
