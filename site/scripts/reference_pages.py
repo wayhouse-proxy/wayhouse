@@ -90,10 +90,11 @@ def api_endpoints():
         rows.append("| %s | `%s` | %s |" % (r["crate"], r["path"], ", ".join("`%s`" % m for m in r["methods"]) or "any"))
     return _page(
         "HTTP API endpoints", "Every HTTP route of every program.",
-        "Every route registered by the proxy's admin API, the controller, the aggregator and the UI backend, "
+        "A compact index of every route registered by the proxy's admin API, the controller, the aggregator and the UI backend, "
         "extracted from the router definitions. A `{name}` segment is a path parameter; `{*rest}` matches "
-        "the remaining path. Each route's request and response shapes are described in the "
-        "[Manual](/manual/) page for its task.", "\n".join(rows))
+        "the remaining path. Parameters, bodies, answers and status codes are on the full pages: "
+        "[Proxy admin API](/reference/proxy-admin-api/), [Controller API](/reference/controller-api/), "
+        "[Aggregator API](/reference/aggregator-api/) and [Console API](/reference/console-api/).", "\n".join(rows))
 
 
 def ui_screens():
