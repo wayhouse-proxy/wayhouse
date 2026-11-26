@@ -52,7 +52,7 @@ ROOTS = {
 RUSTWIDE = re.compile(r"^(Cargo\.toml|rust-toolchain\.toml)$|^\.cargo/")
 
 # A change touching only these needs no code job (test, audit, ...); they only
-# exist as a PR gate. Mirrors the push trigger's paths-ignore in ci.yml.
+# exist as a PR gate. Mirrors cache-warm.yml's push paths-ignore.
 DOCS_ONLY = re.compile(r"\.md$|^docs/|^LICENSE-")
 
 # Non-Cargo paths per area, on top of the package graph.
@@ -216,7 +216,7 @@ def areas(files: List[str], g: Graph) -> Dict[str, bool]:
     return {a: out.get(a, False) for a in AREAS}
 
 
-# What the `docs` CI job (Prettier, the link check and the documentation coverage check)
+# What the docs steps of the `checks` CI job (Prettier, the link check and the coverage check)
 # depends on. The coverage check reads the Rust sources and the config schema, so a new flag,
 # metric or feature starts it. The Makefile holds the Prettier pin. `.prettierrc.json` and `.prettierignore` are not in DOCS_ONLY on purpose:
 # they are config, so a PR touching only them also runs the code jobs.
