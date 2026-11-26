@@ -10,7 +10,7 @@
 >   **can change in any minor release, with no compatibility guarantee**. Each release's
 >   upgrade steps are in [docs/upgrading.md](docs/upgrading.md), but the rolling-upgrade
 >   paths there are only partly tested. Coming from 0.2.0? Read the
->   [0.2.0 to 0.3.0 migration guide](docs/migrating-0.2-to-0.3.md) first: the controller's
+>   [migration guide](docs/migrating.md#from-020-to-030) first: the controller's
 >   database changed and is not migrated.
 > - Everything below is covered by automated tests, but **none of it has run in
 >   production**. Parts of the deployment story (the Docker images on a developer
@@ -270,9 +270,8 @@ All roadmap phases 0 to 14 are implemented and covered by `make check`: the data
 (phases 0 to 9), the distributed control plane (10 to 13) and the WireGuard backend transport
 (14). "Implemented" means built and tested, not battle-tested; see the notice at the top.
 
-Open follow-ups, known limitations and decisions still pending live in
-[`HANDOVER.md`](HANDOVER.md); per-phase detail is in
-[docs/08-roadmap.md](docs/08-roadmap.md).
+Current state and traps are in [`HANDOVER.md`](HANDOVER.md); what is built and what is
+ahead is in [docs/08-roadmap.md](docs/08-roadmap.md).
 
 ## Contributing
 

@@ -30,8 +30,8 @@ the guidance here, not in them.
 > for the e2e tests). *Plugins* are
 > integrations with other systems (e.g. the Pelican panel) and live in
 > [`wayhouse-proxy/plugins`](https://github.com/wayhouse-proxy/plugins); design:
-> [plugin system](docs/superpowers/specs/2026-10-07-plugin-system-design.md) and
-> [automation hooks](docs/superpowers/specs/2026-10-07-plugin-automation-hooks-design.md).
+> plugin system and
+> automation hooks.
 
 A **game-agnostic game server reverse proxy**: one entry point in front of arbitrary
 game servers, forwarding TCP (and later UDP) transparently to backend pools without
@@ -100,7 +100,7 @@ crates/
     live_interface.rs       the running WireGuard interface; `readdress` deletes the old tunnel address and assigns a new controller-assigned one, keeping key, port and peers (`docs/11` "Address changes"), via `netlink_addr.rs` (the delete the library lacks). Mirrored in `wayhouse-agent`
   wayhouse-controller/            binary — Tier-1 config distribution (phases 10–14, docs/10 "The controller" + docs/11: `standalone`/`slave` roles, Raft HA, canary rollout, backend/proxy-peers registries)
     store.rs                `Store` — embedded KV (ADR 20, redb since ADR 32; `kv.rs` is the sled-shaped wrapper): revisions + current-pointer trees, catch-up range scan
-    kv.rs                   the redb-backed `Db`/`Tree`/transaction surface every store sits on; refuses a `sled` directory (`Error::LegacySled`, no migration, see `docs/migrating-0.2-to-0.3.md`)
+    kv.rs                   the redb-backed `Db`/`Tree`/transaction surface every store sits on; refuses a `sled` directory (`Error::LegacySled`, no migration, see `docs/migrating.md`)
     init.rs                 `wayhouse-controller init --target systemd|compose|k8s-secret` (dispatched from `main` before any flag parsing): random tokens, UI password, a private CA and the controller/aggregator leaf certificates; refuses to overwrite, files 0600, prints no secret (`deploy/solo/init.sh` is a wrapper). A new secret the bundles need goes here, in the three targets and in the tests
     acme/                   controller-managed ACME (`--acme`, `acme` cargo feature): `store.rs` (sites, sealed account and certificate keys, replicated), `runner.rs` (leader-side issuance and renewal), `dns_plugin.rs` (the `on_acme_dns` solver), `challenge.rs` (HTTP-01), `bundles.rs` (`GET /acme/bundles` for `wayhouse-certsync`, per-source rate limit), `api.rs` (`/acme/*`, `/admin/acme/rewrap`)
     relay.rs                the upward relays' shared part: `RelayError`, `propose` (a `RelayConfig`/`RelayIntent` Raft entry), `wait_until_leader`; the relay cursor itself is `store::RelayCursor`, beside each log
@@ -200,7 +200,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
 | wayhouse-ui frontend | `make ui` (needs Node/npm; builds `crates/wayhouse-ui/web/` to `dist/`, served by `wayhouse-ui --static-dir`; see `crates/wayhouse-ui/web/README.md`) |
 | wayhouse-ui frontend tests | `make ui-test` (vitest) and `make ui-e2e` (Playwright, backend stubbed; both in the `ui` CI job) |
 | Markdown | `make docs-fmt` (Prettier, writes) / `make docs-fmt-check` and `make docs-links` (relative links and anchors); both checks are the `docs` CI job. AGENTS.md, HANDOVER.md and `docs/NN-*.md` are in `.prettierignore` for now |
-| Website | `site/` (landing page + `book.toml`) and `docs/SUMMARY.md` (the book's table of contents) are built by `.github/workflows/pages.yml` into <https://wayhouse-proxy.dev> (mdBook, pinned by digest; deploys on pushes to `main`). Build locally with `mdbook build site && python3 site/fix_links.py target/site/docs`; `fix_links.py` points links that leave `docs/` at GitHub and fails on any broken link |
+| Website | `site/` (Starlight/Astro, pinned in `site/package-lock.json`) is built by `.github/workflows/pages.yml` into <https://wayhouse-proxy.dev> (deploys on pushes to `main`). The pages are generated from the Markdown in `docs/` by `site/scripts/sync_docs.py` (title from the first `# ` heading, GitHub alerts become asides, relative links are rewritten); sections: `docs/manual/` (everyday use), `docs/deep-dive/` (developer documentation), `docs/reference/`, and the old top-level chapters/guides, which the script places. Never edit `site/src/content/docs/`. Build with `make site`; Starlight fails the build on any broken internal link or anchor |
 | Run | `cargo run -p wayhouse -- --config config.example.yaml` |
 | Validate a config | `cargo run -p wayhouse -- --config <file> --check` |
 | Reload a running proxy | edit the config file, or `kill -HUP <pid>` |
@@ -218,15 +218,14 @@ client from `crates/wayhouse/proto/resolver.proto`.
    without a one-line justification comment. Run `cargo fmt --all` (the writing form)
    as its own step immediately before that `make check` / commit — a fmt pass from
    earlier in the session does not cover edits made after it, and `--check` only
-   reports diffs, it never fixes them. See HANDOVER.md "Workflow gotcha" for a case
-   where skipping this let a `cargo fmt --all --check` failure reach CI.
+   reports diffs, it never fixes them. Skipping it has let a `cargo fmt --all --check` failure reach CI.
    The curated clippy lints live in the root `[workspace.lints.clippy]`; a new crate
    opts in with `[lints] workspace = true`.
 2. **Keep `unsafe` out of the host crates.** `socket2`/`nix` give safe wrappers for the
    syscalls we need. The only `unsafe` today is the guest-side raw-pointer glue in
    `wayhouse-sniffer-abi` and `wayhouse-plugin-abi` and a counting allocator in a
    `wayhouse-core` test. New `unsafe` needs a `// SAFETY:` comment *and* a note in
-   `HANDOVER.md`.
+   `HANDOVER.md`'s invariants.
 3. **The `Snapshot` is immutable after `Snapshot::build`.** Never mutate it in place.
    A config/backend change = build a new `Snapshot` and `ArcSwap::store` it. Only
    `reload.rs` writes the swap; everything else reads.
@@ -262,7 +261,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
 
 - **Latency first.** Every design choice is weighed against added RTT (see NFR N1/N2
   in [`docs/01-requirements.md`](docs/01-requirements.md)). If you spawn a task or add
-  a hop per connection, say so in the PR/commit and in `HANDOVER.md`.
+  a hop per connection, say so in the PR/commit and in `docs/latency-ledger.md`.
 - **Agnostic core.** Game-specific knowledge only ever lives in optional
   sniffers or in an external resolver — never in `wayhouse-core`'s routing/forwarding paths.
 - **Incremental, vertical slices.** Follow the phase plan in
@@ -275,10 +274,11 @@ client from `crates/wayhouse/proto/resolver.proto`.
 - **Pre-1.0: prefer clean breaks over compatibility shims.** When you change the
   config schema, touch everything in the "Config schema" and "Config field" rows of the
   table below.
-- **Larger work.** Write the design down first: a spec in `docs/superpowers/specs/` and a
-  plan in `docs/superpowers/plans/`, both committed. Implement test-first (show the failing
+- **Larger work.** Write the design down first (an issue or the PR description) and put what
+  stays true into the matching chapter under `docs/`. Implement test-first (show the failing
   run, then the passing one) and verify before claiming done. `.superpowers/` is git-ignored
-  scratch. Review findings that are deferred go into a GitHub issue, never silently dropped.
+  scratch. Older dated specs and plans (formerly `docs/superpowers/`) were removed; recover
+  one with `git show bb7822170:docs/superpowers/specs/<file>`. Review findings that are deferred go into a GitHub issue, never silently dropped.
 - **CI runs are slow** (the repo is public, so hosted minutes are free, but a full run
   takes ~10 min warm and ~22 min cold). Batch pushes, remember that docs-only pushes
   skip CI (`paths-ignore`; a PR always starts the workflow and `ci-ok` still reports,
@@ -299,20 +299,20 @@ client from `crates/wayhouse/proto/resolver.proto`.
 | New metric | `metrics_defs.rs`, `docs/06` |
 | Wire format of a component protocol (HTTP/JSON, SSE, raft RPC, gossip frame) | breaking change: bump `PROTOCOL_MAJOR` (additive: `PROTOCOL_MINOR`) in `wayhouse-http/src/protocol.rs`; a breaking *gossip frame* change bumps `GOSSIP_VERSION` in `wayhouse-core/src/gossip.rs` instead (not `PROTOCOL_MAJOR`: gossip is UDP and has no N / N-1 window); a new component-facing route goes behind `wayhouse_http::protocol::gate`; `docs/10` "Versioning"; add or update the newest row of the version table in `docs/upgrading.md` (checked by `.github/scripts/check_upgrading_doc.py`); the N / N-1 window is in `docs/superpowers/specs/2026-10-05-component-versioning-design.md` |
 | Config field (even optional) | bump `CONFIG_SCHEMA_VERSION` and add the dotted path to `FIELD_SINCE` in `wayhouse-config/src/version.rs` (`docs/05` "Schema version") |
-| Controller store layout | bump `STORE_FORMAT` in `wayhouse-controller/src/store.rs`, migrate older formats in `Store::open`, and add the row to `docs/upgrading.md`; a change that cannot be migrated (the 0.3.0 `sled` to `redb` switch) also needs an operator guide like `docs/migrating-0.2-to-0.3.md` |
+| Controller store layout | bump `STORE_FORMAT` in `wayhouse-controller/src/store.rs`, migrate older formats in `Store::open`, and add the row to `docs/upgrading.md`; a change that cannot be migrated (the 0.3.0 `sled` to `redb` switch) also needs a section in `docs/migrating.md` |
 | New admin UI route (BFF) | the handler in `wayhouse-ui/src/controller_proxy.rs` (viewer or admin router), the operator-forbidden list in `wayhouse-ui/src/api.rs` if it is admin-only, the typed client in `web/src/api.ts` and `types.ts`, and the demo mock (`web/src/demo/mock.ts`) |
 | UI page or component | a vitest next to it (`make ui-test`), a Playwright journey when it adds a flow (`make ui-e2e`), the rules in `docs/design-system/` (tokens, accessibility), `aria-disabled` not `disabled` on `Button`; `make ui` must build |
 | Compose or systemd bundle (`deploy/`) | `deploy/lint.sh` (pins the flags and mounts), `deploy/solo-smoke.sh` / `smoke.sh`, `deploy/README.md`, `docs/12-deployment.md`, and `wayhouse-controller/src/init.rs` when the bundle reads a new secret or file (the solo bundle is https from the `init` certificates and sets no `--allow-insecure-*` flag) |
 | A controller or aggregator client call that carries a token | `wayhouse_http::bearer::check_bearer_transport` at start (or `check_bearer_transport_global` where there is no `Args`), so plain `http://` beyond loopback is refused unless `--allow-insecure-controller`; `crates/wayhouse-fleet-tests/tests/plain_http_token.rs` lists the binaries |
-| New page under `docs/` (not `docs/superpowers/`) | a line in `docs/SUMMARY.md`, or it is not on the website |
+| New page under `docs/` | a line in `docs/SUMMARY.md`, or it is not on the website |
 | New routing matcher / balancer | `docs/03`, `config.example.yaml`, tests |
 | Registry index / manifest format or the sniffer ABI version rules | `wayhouse-registry` (`index.rs`, `plugin_index.rs`, `catalog.rs`, `compat.rs`), `wayhouse-ui` (`registry_client.rs`, `registry_api.rs`, `plugin_registry_api.rs`) and the web registry views, the golden `tests/golden/index.json`, `docs/sniffers.md`, the registry spec |
 | New / changed sniffer seam | `wayhouse_core::sniff`, `docs/03`, `docs/08` (Phase 9). NB: no game sniffers are compiled in — they load as sniffers (Phase 9), never as core code or a fork. |
 | Sniffer ABI (wire format or `wayhouse.abi` version) | `crates/wayhouse-sniffer-abi`, `HOST_ABI` in `sniffer_loader.rs`, the rev pinned in the sniffers repo's `Cargo.toml`, rebuilt sniffer releases, then `sniffers.lock` (`docs/sniffers.md`) |
-| Plugin ABI (imports, exports, capability format or `wayhouse.plugin-abi` version) | `crates/wayhouse-plugin-abi` constants, `HOST_ABI` in `wayhouse-plugin-host`, `docs/plugins.md`, the automation hooks spec |
+| Plugin ABI (imports, exports, capability format or `wayhouse.plugin-abi` version) | `crates/wayhouse-plugin-abi` constants, `HOST_ABI` in `wayhouse-plugin-host`, `docs/plugins.md` |
 | New optional `wayhouse` cargo feature | `crates/wayhouse/Cargo.toml` `[features]` (on by default), a `*_disabled.rs` stub that fails startup with a message naming the feature when the config needs it, a `--no-default-features` test, the AGENTS.md command table |
-| Finished a roadmap item | status legend in `docs/08-roadmap.md`, `README.md` status block, `HANDOVER.md` |
-| New per-connection task or hop | `HANDOVER.md` "latency ledger" note |
+| Finished a roadmap item | status legend in `docs/08-roadmap.md`, `README.md` status block |
+| New per-connection task or hop | `docs/latency-ledger.md` |
 | Architectural decision | ADR table in `docs/09-technology-choices.md` |
 | Release or version change | `RELEASING.md`, `CONTRIBUTING.md` (conventions), `deploy/README.md`, `.github/scripts/check_version_policy.py` (never reach 1.0 by tooling) |
 
@@ -349,7 +349,7 @@ RBAC, regional health gossip — [`docs/10`](docs/10-distributed-control-plane.m
 and the WireGuard backend transport (14 — [`docs/11`](docs/11-backend-transport.md)).
 No slice is in flight; remaining work is the open GitHub issues.
 
-For what shipped, what's deferred, and per-feature latency cost, see
-[`HANDOVER.md`](HANDOVER.md); for the full phase-by-phase plan and status,
-[`docs/08-roadmap.md`](docs/08-roadmap.md); for locked architectural decisions,
+For current state and traps, see [`HANDOVER.md`](HANDOVER.md) (capped at 16 KB by CI);
+for per-feature latency cost, [`docs/latency-ledger.md`](docs/latency-ledger.md); for what is
+built and what is ahead, [`docs/08-roadmap.md`](docs/08-roadmap.md); for locked architectural decisions,
 the ADR table in [`docs/09-technology-choices.md`](docs/09-technology-choices.md).

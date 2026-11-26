@@ -1,8 +1,8 @@
 # Plugins
 
 A **plugin** is a WASM module that reacts to a trigger and acts through capabilities
-the operator approved (design: [plugin system](superpowers/specs/2026-10-07-plugin-system-design.md)
-and [automation hooks](superpowers/specs/2026-10-07-plugin-automation-hooks-design.md)).
+the operator approved (design: plugin system
+and automation hooks).
 Plugins are not [sniffers](sniffers.md): sniffers run on the proxy data path.
 
 **Status.** The host runtime is built (`crates/wayhouse-plugin-host`) and a standalone
