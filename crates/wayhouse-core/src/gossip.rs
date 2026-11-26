@@ -1038,11 +1038,12 @@ mod tests {
         window: std::time::Duration,
         expect_join: bool,
     ) -> (usize, usize) {
-        let free = || async {
-            let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-            s.local_addr().unwrap()
-        };
-        let (addr_a, addr_b) = (free().await, free().await);
+        // Both sockets stay open until both ports are picked, so the kernel cannot hand the
+        // same port out twice; they close just before the mesh nodes bind.
+        let held_a = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let held_b = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (addr_a, addr_b) = (held_a.local_addr().unwrap(), held_b.local_addr().unwrap());
+        drop((held_a, held_b));
         let cfg = |bind, seeds| GossipConfig {
             bind,
             seeds,
