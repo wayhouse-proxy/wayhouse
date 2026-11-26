@@ -3,7 +3,7 @@
 # source file belongs to no topic, or a `written` topic has no page.
 # Columns (tab-separated): slug, title, status (todo|written), comma-separated path globs.
 # A page lives at docs/deep-dive/topics/<slug>.md. A file may belong to several topics.
-data-plane-listeners	Listeners: accept loops, SO_REUSEPORT and port ranges	todo	crates/wayhouse-core/src/listener.rs,crates/wayhouse-core/src/listeners.rs,crates/wayhouse-core/src/net.rs,crates/wayhouse-core/src/runtime.rs,crates/wayhouse-core/src/util.rs,crates/wayhouse-core/src/lib.rs
+data-plane-listeners	Listeners: accept loops, SO_REUSEPORT and port ranges	written	crates/wayhouse-core/src/listener.rs,crates/wayhouse-core/src/listeners.rs,crates/wayhouse-core/src/net.rs,crates/wayhouse-core/src/runtime.rs,crates/wayhouse-core/src/util.rs,crates/wayhouse-core/src/lib.rs
 udp-sessions	UDP: session tables, recvmmsg batching and the amplification guard	written	crates/wayhouse-core/src/listener_udp.rs
 connection-pump	The TCP byte pump: splice, draining and connection tracking	written	crates/wayhouse-core/src/proxy.rs,crates/wayhouse-core/src/drain.rs
 snapshot-and-hot-reload	Immutable snapshots and hot reload	written	crates/wayhouse-core/src/snapshot.rs,crates/wayhouse/src/reload.rs,crates/wayhouse/src/config_file.rs,crates/wayhouse/src/main.rs
@@ -27,22 +27,22 @@ tunnel-registry	The tunnel registry: leases, addresses and origins	written	crate
 controller-core	The controller: store, roles and the API shell	written	crates/wayhouse-controller/src/store.rs,crates/wayhouse-controller/src/kv.rs,crates/wayhouse-controller/src/slot.rs,crates/wayhouse-controller/src/role.rs,crates/wayhouse-controller/src/lib.rs,crates/wayhouse-controller/src/main.rs,crates/wayhouse-controller/src/serve.rs,crates/wayhouse-controller/src/api.rs
 controller-ha	Controller HA: Raft, snapshots and membership	written	crates/wayhouse-controller/src/ha/**,crates/wayhouse-controller/src/registry/**
 config-rollout	Config distribution: intents, canaries and confirm windows	written	crates/wayhouse-controller/src/intent.rs,crates/wayhouse-controller/src/intent/**,crates/wayhouse-controller/src/confirm.rs,crates/wayhouse-controller/src/relay.rs,crates/wayhouse-controller/src/parent_client.rs,crates/wayhouse-controller/src/adopt.rs,crates/wayhouse-controller/src/peers.rs,crates/wayhouse-controller/src/peers/**,crates/wayhouse-controller/src/proxy_peers.rs,crates/wayhouse-controller/src/proxy_peers/**,crates/wayhouse/src/intent_client.rs,crates/wayhouse/src/controller_client.rs,crates/wayhouse/src/proxy_register.rs,crates/wayhouse/src/plugin_overlay.rs
-enrollment	Enrollment: join codes, step-up approvals and scoped tokens	todo	crates/wayhouse-enroll/src/**,crates/wayhouse-controller/src/enroll.rs,crates/wayhouse-controller/src/step_up_cli.rs,crates/wayhouse-controller/src/scoped_auth.rs,crates/wayhouse-controller/src/init.rs,crates/wayhouse-controller/src/cert_cli.rs
-ui-data	Stored UI data: dashboards, themes and filters	todo	crates/wayhouse-controller/src/ui_data.rs,crates/wayhouse-controller/src/ui_data/**
-acme	Certificates: ACME issuance, renewal and distribution	todo	crates/wayhouse-controller/src/acme/**,crates/wayhouse-acme/src/**,crates/wayhouse-web-sync/src/acme_forward.rs,crates/wayhouse-certsync/src/**,crates/wayhouse-plugin-host/src/acme_dns.rs
-plugin-host	Plugins: the WASM host, capabilities and bounds	todo	crates/wayhouse-plugin-host/src/**,crates/wayhouse-plugin-abi/**
-plugin-runtime-in-controller	Plugins in the controller: timers, events, hooks and routes	todo	crates/wayhouse-controller/src/plugins.rs,crates/wayhouse-controller/src/plugins/**
-aggregator	The aggregator: fleet reads, history and fan-out	todo	crates/wayhouse-aggregator/src/**,crates/wayhouse/src/aggregator_client.rs
-ui-backend	The UI backend: sessions, auth and proxying	todo	crates/wayhouse-ui/src/**
-ui-frontend	The UI frontend	todo	crates/wayhouse-ui/web/src/**
-web-gateway	The web gateway: Caddy, wayhouse-web-sync and site rendering	todo	crates/wayhouse-web-sync/src/**,deploy/caddy/**,crates/wayhouse-config/src/web.rs,crates/wayhouse-config/src/web/**
-http-toolkit	The shared HTTP toolkit: bearer auth, TLS, SSE and policy	todo	crates/wayhouse-http/src/bearer.rs,crates/wayhouse-http/src/conn.rs,crates/wayhouse-http/src/json.rs,crates/wayhouse-http/src/policy.rs,crates/wayhouse-http/src/protocol.rs,crates/wayhouse-http/src/public_ip.rs,crates/wayhouse-http/src/rotating.rs,crates/wayhouse-http/src/server.rs,crates/wayhouse-http/src/sse.rs,crates/wayhouse-http/src/tls.rs,crates/wayhouse-http/src/lib.rs
-registries-and-release-feed	Registries, signing and the release feed	todo	crates/wayhouse-registry/**
-all-in-one-control	The all-in-one control process	todo	crates/wayhouse-control/**
-ci-pipeline	The CI pipeline	todo	.github/workflows/ci.yml,.github/workflows/cache-warm.yml,.github/workflows/pr-title.yml,.github/scripts/**,.github/actions/**,.github/dependabot.yml
-release-pipeline	Releases: release-please, images and signing	todo	.github/workflows/release.yml,.github/workflows/release-please.yml,release-please-config.json,RELEASING.md,crates/wayhouse-http/build.rs,crates/wayhouse-http/build_sha.rs,crates/wayhouse/build.rs
-deployment-artifacts	Container images, Compose, Kubernetes and systemd	todo	deploy/**
+enrollment	Enrollment: join codes, step-up approvals and scoped tokens	written	crates/wayhouse-enroll/src/**,crates/wayhouse-controller/src/enroll.rs,crates/wayhouse-controller/src/step_up_cli.rs,crates/wayhouse-controller/src/scoped_auth.rs,crates/wayhouse-controller/src/init.rs,crates/wayhouse-controller/src/cert_cli.rs
+ui-data	Stored UI data: dashboards, themes and filters	written	crates/wayhouse-controller/src/ui_data.rs,crates/wayhouse-controller/src/ui_data/**
+acme	Certificates: ACME issuance, renewal and distribution	written	crates/wayhouse-controller/src/acme/**,crates/wayhouse-acme/src/**,crates/wayhouse-web-sync/src/acme_forward.rs,crates/wayhouse-certsync/src/**,crates/wayhouse-plugin-host/src/acme_dns.rs
+plugin-host	Plugins: the WASM host, capabilities and bounds	written	crates/wayhouse-plugin-host/src/**,crates/wayhouse-plugin-abi/**
+plugin-runtime-in-controller	Plugins in the controller: timers, events, hooks and routes	written	crates/wayhouse-controller/src/plugins.rs,crates/wayhouse-controller/src/plugins/**
+aggregator	The aggregator: fleet reads, history and fan-out	written	crates/wayhouse-aggregator/src/**,crates/wayhouse/src/aggregator_client.rs
+ui-backend	The UI backend: sessions, auth and proxying	written	crates/wayhouse-ui/src/**
+ui-frontend	The UI frontend	written	crates/wayhouse-ui/web/src/**
+web-gateway	The web gateway: Caddy, wayhouse-web-sync and site rendering	written	crates/wayhouse-web-sync/src/**,deploy/caddy/**,crates/wayhouse-config/src/web.rs,crates/wayhouse-config/src/web/**
+http-toolkit	The shared HTTP toolkit: bearer auth, TLS, SSE and policy	written	crates/wayhouse-http/src/bearer.rs,crates/wayhouse-http/src/conn.rs,crates/wayhouse-http/src/json.rs,crates/wayhouse-http/src/policy.rs,crates/wayhouse-http/src/protocol.rs,crates/wayhouse-http/src/public_ip.rs,crates/wayhouse-http/src/rotating.rs,crates/wayhouse-http/src/server.rs,crates/wayhouse-http/src/sse.rs,crates/wayhouse-http/src/tls.rs,crates/wayhouse-http/src/lib.rs
+registries-and-release-feed	Registries, signing and the release feed	written	crates/wayhouse-registry/**
+all-in-one-control	The all-in-one control process	written	crates/wayhouse-control/**
+ci-pipeline	The CI pipeline	written	.github/workflows/ci.yml,.github/workflows/cache-warm.yml,.github/workflows/pr-title.yml,.github/scripts/**,.github/actions/**,.github/dependabot.yml
+release-pipeline	Releases: release-please, images and signing	written	.github/workflows/release.yml,.github/workflows/release-please.yml,release-please-config.json,RELEASING.md,crates/wayhouse-http/build.rs,crates/wayhouse-http/build_sha.rs,crates/wayhouse/build.rs
+deployment-artifacts	Container images, Compose, Kubernetes and systemd	written	deploy/**
 docs-site	The documentation site	written	site/**,.github/workflows/pages.yml
-testing-and-benchmarks	Fleet tests, benchmarks, fuzzing and load tests	todo	crates/wayhouse-fleet-tests/**,crates/wayhouse-bench/**,crates/*/fuzz/**,.github/workflows/load-test.yml
+testing-and-benchmarks	Fleet tests, benchmarks, fuzzing and load tests	written	crates/wayhouse-fleet-tests/**,crates/wayhouse-bench/**,crates/*/fuzz/**,.github/workflows/load-test.yml
 
-process-settings	Process settings: editing launch flags from the UI with a trial and undo	todo	crates/wayhouse-settings/**
+process-settings	Process settings: editing launch flags from the UI with a trial and undo	written	crates/wayhouse-settings/**
