@@ -14,7 +14,7 @@ filters-and-limits	The filter chain: ACLs, GeoIP, rate limits and caps	written	c
 runtime-feature-flags	Runtime feature flags and kill switches	todo	crates/wayhouse-core/src/flags.rs,crates/wayhouse-config/src/features.rs,crates/wayhouse/src/features.rs,crates/wayhouse-controller/src/features.rs,crates/wayhouse-aggregator/src/features.rs
 routing-and-matchers	Route matching: CIDR sets, SNI peeking and route hints	written	crates/wayhouse-config/src/matcher.rs,crates/wayhouse-config/src/cidr.rs,crates/wayhouse-core/src/route_hint.rs
 external-resolvers	External resolvers: HTTP and gRPC with a result cache	todo	crates/wayhouse-core/src/resolver.rs,crates/wayhouse/src/resolver.rs,crates/wayhouse/src/grpc_resolver*.rs
-sniffers	WASM sniffers: the sandbox, the ABI and the loader	todo	crates/wayhouse-core/src/sniff.rs,crates/wayhouse/src/sniffer_loader*.rs,crates/wayhouse-sniffer-abi/**
+sniffers	WASM sniffers: the sandbox, the ABI and the loader	written	crates/wayhouse-core/src/sniff.rs,crates/wayhouse/src/sniffer_loader*.rs,crates/wayhouse-sniffer-abi/**
 backend-discovery	Backend discovery: DNS SRV, Consul, Kubernetes and static	todo	crates/wayhouse-core/src/discovery.rs,crates/wayhouse-core/src/sources.rs,crates/wayhouse/src/discovery.rs,crates/wayhouse/src/dns_srv*.rs
 gossip-health	Regional health: a SWIM gossip fabric	todo	crates/wayhouse-core/src/gossip*.rs
 admin-api	The admin API	todo	crates/wayhouse/src/admin.rs,crates/wayhouse/src/live_interface.rs,crates/wayhouse/src/procinfo.rs
