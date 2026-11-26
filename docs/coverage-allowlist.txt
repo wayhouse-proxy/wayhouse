@@ -15,3 +15,4 @@ api /release-feed.json.minisig
 api /slow
 api /sniffers/demo.json
 api /x
+env WAYHOUSE_UPDATE_OPENAPI

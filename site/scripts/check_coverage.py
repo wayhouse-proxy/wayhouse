@@ -26,6 +26,11 @@ SKIP = ("superpowers", "design-system", "reference")
 
 def corpus():
     parts = []
+    # The OpenAPI documents are generated from the handlers' own annotations and rendered as the
+    # per-route API reference, so a route in one of them counts as documented.
+    for path in glob.glob(os.path.join(DOCS, "reference", "openapi", "*.json")):
+        with open(path, encoding="utf-8") as f:
+            parts.append(f.read())
     for path in glob.glob(os.path.join(DOCS, "**", "*.md"), recursive=True):
         if os.path.relpath(path, DOCS).split(os.sep)[0] in SKIP:
             continue

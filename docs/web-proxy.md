@@ -4,8 +4,7 @@ Wayhouse stays an L4 proxy. To publish web sites (a Pelican panel, Wings, any we
 the same entry node as the game traffic, it forwards ports 80 and 443 to a packaged
 [Caddy](https://caddyserver.com) and keeps the real client address with PROXY protocol v2.
 `wayhouse-web-sync` turns the `web:` section of the Wayhouse config into Caddy's configuration.
-Design: issue #297, the spike findings (#355) and the
-web routing spec.
+Design: issue #297 and the spike findings (#355).
 
 ```
 client ──► wayhouse :80/:443 ──PROXY v2──► Caddy (127.0.0.1:8080 / :8443) ──► site upstreams

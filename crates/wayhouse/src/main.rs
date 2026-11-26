@@ -5,6 +5,7 @@
 //! reload on SIGHUP / file change, and shut down cleanly on SIGINT/SIGTERM.
 
 mod admin;
+mod admin_openapi;
 mod aggregator_client;
 mod config_file;
 mod controller_client;

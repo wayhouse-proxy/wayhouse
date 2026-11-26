@@ -24,7 +24,89 @@ use wayhouse_core::pool::AdminState as BackendState;
 use wayhouse_core::sniff::Sniffers;
 use wayhouse_core::RuntimeHandle;
 
+use crate::admin_openapi::{ConfigSaved, ErrorBody, FeaturesReply, ValidateOk, WebReply};
 use crate::config_file::ConfigFile;
+
+/// The OpenAPI description of the admin API. Its paths are the handlers' own
+/// `#[utoipa::path]` attributes, so the description lives next to the code it describes;
+/// `docs/reference/openapi/proxy-admin.json` is a checked-in rendering of it (see the test
+/// `the_checked_in_spec_is_current`).
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    info(
+        title = "wayhouse proxy admin API",
+        description = "The HTTP API every `wayhouse` proxy serves on `settings.admin.listen` \
+        (default `127.0.0.1:9900`). It reads the live state, changes backends, drains the instance, \
+        and reads or replaces the config file.",
+        license(name = "MIT OR Apache-2.0"),
+    ),
+    paths(
+        healthz, readyz, metrics, openapi_spec, pools, add_backend, patch_backend, delete_backend, config,
+        config_schema, validate_config, get_config_file, put_config_file, web, features, sessions,
+        drain, undrain, route_hint, list_sniffers, upload_sniffer, delete_sniffer, rollback_sniffer
+    ),
+    components(schemas(ErrorBody)),
+    modifiers(&BearerAuth),
+    tags(
+        (name = "Health", description = "Liveness and readiness, for load balancers."),
+        (name = "Observability", description = "Metrics."),
+        (name = "Pools", description = "Read pools and change backends at runtime."),
+        (name = "Configuration", description = "Read, validate and replace the running config."),
+        (name = "Web proxy", description = "What `wayhouse-web-sync` reads."),
+        (name = "Feature flags", description = "The proxy's feature flags and their effective values."),
+        (name = "Sessions", description = "Live connections and UDP sessions."),
+        (name = "Lifecycle", description = "Take the instance out of rotation and back."),
+        (name = "Routing", description = "Push route hints."),
+        (name = "Sniffers", description = "Manage WASM sniffer modules."),
+    ),
+)]
+pub struct AdminApi;
+
+/// Adds the bearer scheme every route except `/healthz` is behind (the token is
+/// `settings.admin.auth_token`; with none set the API is open).
+struct BearerAuth;
+
+impl utoipa::Modify for BearerAuth {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{
+            HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme,
+        };
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "bearer",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .description(Some(
+                        "`Authorization: Bearer <token>`, the value of `settings.admin.auth_token`. \
+                         With no token configured the API is open.",
+                    ))
+                    .build(),
+            ),
+        );
+        openapi.security = Some(vec![SecurityRequirement::new(
+            "bearer",
+            Vec::<String>::new(),
+        )]);
+    }
+}
+
+/// The OpenAPI description as JSON.
+pub(crate) fn openapi_json() -> serde_json::Value {
+    use utoipa::OpenApi;
+    serde_json::to_value(AdminApi::openapi()).expect("the spec serializes")
+}
+
+#[utoipa::path(
+    get, path = "/openapi.json", tag = "Observability",
+    summary = "This API's OpenAPI description",
+    description = "The OpenAPI 3.1 document these pages are generated from, as served by the build you are talking to. \
+Use it to generate a client or to check what a particular version supports.",
+    responses((status = 200, description = "An OpenAPI 3.1 document.", content_type = "application/json", body = serde_json::Value))
+)]
+async fn openapi_spec() -> Json<serde_json::Value> {
+    Json(openapi_json())
+}
 
 #[derive(Clone)]
 struct AdminState {
@@ -62,6 +144,7 @@ fn router(state: AdminState) -> Router {
     let gated = Router::new()
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
+        .route("/openapi.json", get(openapi_spec))
         .route("/pools", get(pools))
         .route(
             "/pools/{pool}/backends",
@@ -225,10 +308,28 @@ pub async fn serve(
     }
 }
 
+#[utoipa::path(
+    get, path = "/healthz", tag = "Health",
+    summary = "Liveness probe",
+    description = "Answers `ok` while the process runs. It is the only route that needs no bearer \
+token, so a load balancer or a container runtime can probe it.",
+    security(()),
+    responses((status = 200, description = "The process is alive.", body = String, content_type = "text/plain", example = "ok"))
+)]
 async fn healthz() -> &'static str {
     "ok"
 }
 
+#[utoipa::path(
+    get, path = "/readyz", tag = "Health",
+    summary = "Readiness probe",
+    description = "`200` when at least one listener is configured and the instance is not draining; \
+`503` otherwise. Point a load balancer's health check here: `POST /admin/drain` makes it fail on purpose.",
+    responses(
+        (status = 200, description = "Ready to take new connections.", body = String, content_type = "text/plain", example = "ready"),
+        (status = 503, description = "Draining (`draining`) or no listener configured (`not ready`).", body = String, content_type = "text/plain", example = "draining"),
+    )
+)]
 async fn readyz(State(s): State<AdminState>) -> impl IntoResponse {
     if s.runtime.ready() {
         (StatusCode::OK, "ready")
@@ -242,6 +343,16 @@ async fn readyz(State(s): State<AdminState>) -> impl IntoResponse {
 /// `POST /admin/drain` — take this instance out of LB rotation (`readyz` starts
 /// failing) without stopping the data path. In-flight sessions keep running;
 /// operators wait for `active_conns` to fall, then send `SIGTERM`.
+#[utoipa::path(
+    post, path = "/admin/drain", tag = "Lifecycle",
+    summary = "Take the instance out of rotation",
+    description = "Marks the instance draining: `/readyz` starts failing so a load balancer stops sending new \
+clients, while the data path keeps serving. Sessions in flight are never closed by this. Wait for `active_conns` \
+to fall, then stop the process (`SIGTERM`). Undo it with `POST /admin/undrain`.",
+    responses(
+        (status = 200, description = "Draining.", body = String, content_type = "text/plain", example = "draining; active_conns=42\n"),
+    )
+)]
 async fn drain(State(s): State<AdminState>) -> (StatusCode, String) {
     s.runtime.set_draining(true);
     let n = s.runtime.active_conns();
@@ -250,6 +361,14 @@ async fn drain(State(s): State<AdminState>) -> (StatusCode, String) {
 }
 
 /// `POST /admin/undrain` — put the instance back into rotation.
+#[utoipa::path(
+    post, path = "/admin/undrain", tag = "Lifecycle",
+    summary = "Put the instance back into rotation",
+    description = "Clears the draining mark; `/readyz` passes again if a listener is configured.",
+    responses(
+        (status = 200, description = "Back in rotation.", body = String, content_type = "text/plain", example = "ready\n"),
+    )
+)]
 async fn undrain(State(s): State<AdminState>) -> (StatusCode, &'static str) {
     s.runtime.set_draining(false);
     tracing::info!("instance returned to rotation via admin API");
@@ -260,6 +379,16 @@ async fn undrain(State(s): State<AdminState>) -> (StatusCode, &'static str) {
 /// Caddy listens, and per site its hosts, upstreams in final form (`addr`; `pool` with
 /// `via: direct`; `pool` plus the generated loopback `local` address with
 /// `via: wayhouse`) and TLS settings. `404` when the config has no `web:` section.
+#[utoipa::path(
+    get, path = "/web", tag = "Web proxy",
+    summary = "The resolved web: section",
+    description = "What `wayhouse-web-sync` reads to build Caddy's configuration: where Caddy listens and, per site, \
+its hosts, upstreams in final form and TLS settings. `404` when the config has no `web:` section.",
+    responses(
+        (status = 200, description = "The resolved section.", body = WebReply),
+        (status = 404, description = "No `web:` section is configured.", body = String, content_type = "text/plain"),
+    )
+)]
 async fn web(State(s): State<AdminState>) -> Response {
     match &s.runtime.snapshot().web {
         Some(w) => axum::Json(w.view()).into_response(),
@@ -268,6 +397,13 @@ async fn web(State(s): State<AdminState>) -> Response {
 }
 
 /// `GET /features`: every proxy feature flag with its effective value and where it comes from.
+#[utoipa::path(
+    get, path = "/features", tag = "Feature flags",
+    summary = "List the feature flags",
+    description = "Every proxy feature flag with its effective value and where the value comes from. \
+The flags and what they do are in the Manual.",
+    responses((status = 200, description = "All flags of the proxy scope.", body = FeaturesReply))
+)]
 async fn features(State(s): State<AdminState>) -> Response {
     let rows = crate::features::effective(&s.runtime.snapshot().features);
     axum::Json(serde_json::json!({ "flags": rows })).into_response()
@@ -275,6 +411,17 @@ async fn features(State(s): State<AdminState>) -> Response {
 
 /// `GET /config/schema`: the JSON Schema of a config document, as the controller serves it, so a
 /// UI on a file-config proxy (no controller) can build its forms from the proxy it talks to.
+#[utoipa::path(
+    get, path = "/config/schema", tag = "Configuration",
+    summary = "JSON Schema of a config document",
+    description = "The JSON Schema the config is validated against, the same one the controller serves. The header \
+`X-Config-Schema-Version` carries the highest `schema_version` this build accepts.",
+    responses(
+        (status = 200, description = "A JSON Schema document.", content_type = "application/json",
+            headers(("X-Config-Schema-Version" = String, description = "Highest accepted `schema_version`.")),
+            body = serde_json::Value),
+    )
+)]
 async fn config_schema() -> Response {
     (
         [
@@ -291,6 +438,18 @@ async fn config_schema() -> Response {
 
 /// `POST /config/validate`: a raw YAML config document is parsed and validated and nothing is
 /// applied. `200 {"ok":true,"schema_version":N}` or `422 {"error":...}`, the controller's shapes.
+#[utoipa::path(
+    post, path = "/config/validate", tag = "Configuration",
+    summary = "Validate a config document",
+    description = "Parses and validates the YAML in the body with the same code as a reload, and applies nothing. \
+Nothing is read from the running config: a pool a listener names has to be in the document itself.",
+    request_body(content = String, content_type = "text/yaml", description = "A complete config document."),
+    responses(
+        (status = 200, description = "The document is valid.", body = ValidateOk),
+        (status = 422, description = "The document does not parse or fails validation; `error` names the key and the reason.", body = ErrorBody,
+            example = json!({"error": "invalid configuration: listener game: route 0: unknown pool survival"})),
+    )
+)]
 async fn validate_config(body: String) -> Response {
     match wayhouse_config::parse_str(&body) {
         Ok(cfg) => {
@@ -316,6 +475,24 @@ fn no_config_file() -> Response {
 
 /// `GET /config/file`: the config file, with its etag (`?previous=1`: the copy a write
 /// kept of the file before it). Always on. Inline secrets are masked in the body.
+#[utoipa::path(
+    get, path = "/config/file", tag = "Configuration",
+    summary = "Read the config file",
+    description = "The config file the proxy runs from, with its ETag. Inline secrets are masked in the body (a value such as `__wayhouse_redacted_admin_token__` stands in for the secret), \
+and saving the shown text keeps them. A proxy started with `--controller` has no file and answers `404`.",
+    params(("previous" = Option<String>, Query, description = "`1` (or `true`) returns the copy the last write kept of the file before it.")),
+    responses(
+        (status = 200, description = "The YAML text.", body = String, content_type = "text/yaml",
+            headers(
+                ("ETag" = String, description = "Send it as `If-Match` when you save an edit of this text."),
+                ("X-Config-Revision" = u64, description = "The file's revision counter; the alternative to the ETag, as `?base=` on a save."),
+                ("X-Config-Schema-Version" = String, description = "Highest accepted `schema_version`."),
+            )),
+        (status = 404, description = "This proxy has no config file, or `previous=1` and no earlier version is kept yet.", body = ErrorBody),
+        (status = 422, description = "The file does not parse, so its secrets cannot be masked; fix it on the host.", body = ErrorBody),
+        (status = 500, description = "The file cannot be read.", body = ErrorBody),
+    )
+)]
 async fn get_config_file(
     State(s): State<AdminState>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -372,6 +549,25 @@ const APPLY_WAIT: Duration = Duration::from_millis(300);
 
 /// `PUT /config/file`: replace the config file (raw YAML body) if it is still the version named by
 /// `If-Match`; the proxy then reloads it like any edit. Off unless `--allow-config-write`.
+#[utoipa::path(
+    put, path = "/config/file", tag = "Configuration",
+    summary = "Replace the config file",
+    description = "Replaces the file with the YAML body if it is still the version you read, then triggers a reload. \
+Off unless the proxy was started with `--allow-config-write`. Name the version you edited with `If-Match` (the ETag \
+of the read) or `?base=` (its `X-Config-Revision`). The old file is kept and can be read with `GET /config/file?previous=1`. \
+The body is limited to 1 MiB.",
+    params(("base" = Option<u64>, Query, description = "The `X-Config-Revision` of the version you edited, instead of `If-Match`.")),
+    request_body(content = String, content_type = "text/yaml", description = "The complete new config file."),
+    responses(
+        (status = 200, description = "Saved. `applied` says whether the reload took it within five seconds.", body = ConfigSaved),
+        (status = 403, description = "Config writes are switched off: start the proxy with `--allow-config-write`.", body = ErrorBody),
+        (status = 404, description = "This proxy has no config file.", body = ErrorBody),
+        (status = 409, description = "The file changed since you read it (`code: stale`). Read it again and redo the edit.", body = ErrorBody),
+        (status = 422, description = "The new text does not validate; the file is unchanged.", body = ErrorBody),
+        (status = 428, description = "Neither `If-Match` nor `?base=` was sent.", body = ErrorBody),
+        (status = 503, description = "The file or its directory is not writable.", body = ErrorBody),
+    )
+)]
 async fn put_config_file(
     State(s): State<AdminState>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -467,6 +663,16 @@ async fn put_config_file(
 }
 
 /// `GET /config` — a plaintext view of the active snapshot (listeners + pools).
+#[utoipa::path(
+    get, path = "/config", tag = "Configuration",
+    summary = "Summary of the running configuration",
+    description = "A plain-text view of the live snapshot: the global limits, each listener with its bind address, \
+protocol, route count and the options it has switched on, and each pool with its backends. It is a summary for \
+people; use `GET /config/file` for the file itself.",
+    responses(
+        (status = 200, description = "Plain text.", body = String, content_type = "text/plain"),
+    )
+)]
 async fn config(State(s): State<AdminState>) -> impl IntoResponse {
     fn opt(v: Option<impl std::fmt::Display>) -> String {
         v.map_or_else(|| "-".to_string(), |n| n.to_string())
@@ -578,14 +784,34 @@ async fn config(State(s): State<AdminState>) -> impl IntoResponse {
 /// filter the list (exact match on `listener` / `pool`, transport on `proto`,
 /// source IP on `src`). Point-in-time; a session already gone by the time you
 /// read this is simply absent.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct SessionsQuery {
+    /// Only sessions of this listener (exact name).
+    #[param(example = "game")]
     listener: Option<String>,
+    /// Only sessions routed to this pool (exact name).
     pool: Option<String>,
+    /// Only this transport: `tcp` or `udp`.
+    #[param(example = "udp")]
     proto: Option<String>,
+    /// Only sessions from this client IP address.
+    #[param(example = "203.0.113.9")]
     src: Option<String>,
 }
 
+#[utoipa::path(
+    get, path = "/sessions", tag = "Sessions",
+    summary = "List live sessions",
+    description = "Every live proxied TCP connection and UDP session, oldest id first: id, transport, listener, \
+client and local address, the pool and backend chosen, and the age. A point-in-time list; a session that has \
+ended is absent. The filters match exactly.",
+    params(SessionsQuery),
+    responses(
+        (status = 200, description = "Plain text. The first line is `sessions=<count>`; each session follows on its own line, tab separated.", body = String, content_type = "text/plain",
+            example = "sessions=1\n  7\ttcp\tgame\tpeer=203.0.113.9:51234\tlocal=198.51.100.1:7777\tpool=game\tbackend=10.0.0.5:7777\tage=12.3s\n"),
+    )
+)]
 async fn sessions(
     State(s): State<AdminState>,
     Query(q): Query<SessionsQuery>,
@@ -622,18 +848,31 @@ async fn sessions(
     out
 }
 
+#[utoipa::path(
+    get, path = "/metrics", tag = "Observability",
+    summary = "Prometheus metrics",
+    description = "Every `wayhouse_*` series in the Prometheus text exposition format. The series are listed in the Reference.",
+    responses(
+        (status = 200, description = "Prometheus text format.", body = String, content_type = "text/plain; version=0.0.4"),
+    )
+)]
 async fn metrics(State(s): State<AdminState>) -> impl IntoResponse {
     s.prometheus.render()
 }
 
-/// `POST /route-hint` — the launcher / control-plane push resolver (scheme C).
-/// Records a short-lived `src_ip → pool` hint that listeners with
+/// The body of `POST /route-hint`: a short-lived `src_ip` to pool mapping that listeners with
 /// `route_hint: true` consult before their route list.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::ToSchema)]
 struct RouteHintReq {
+    /// The client address the hint is for.
+    #[schema(example = "203.0.113.9")]
     src_ip: String,
+    /// The pool to send that client's next connection to.
+    #[schema(example = "survival")]
     pool: String,
+    /// How long the hint lives, 1 to 3600 seconds.
     #[serde(default = "default_ttl_sec")]
+    #[schema(example = 30, default = 30, minimum = 1, maximum = 3600)]
     ttl_sec: u64,
 }
 
@@ -641,6 +880,19 @@ fn default_ttl_sec() -> u64 {
     30
 }
 
+#[utoipa::path(
+    post, path = "/route-hint", tag = "Routing",
+    summary = "Push a route hint for a client address",
+    description = "Records a short-lived `src_ip` to pool mapping, which listeners with `route_hint: true` consult before \
+their route list. A launcher or control plane calls it just before it sends a player to the proxy. The hint expires on its own. \
+Needs the feature flag `admin_write.route_hint`.",
+    request_body(content = RouteHintReq, description = "The client address, the pool, and how long the hint lives."),
+    responses(
+        (status = 200, description = "Recorded.", body = String, content_type = "text/plain", example = "ok\n"),
+        (status = 400, description = "`src_ip` is not an IP address, `ttl_sec` is outside 1 to 3600, or the pool does not exist.", body = String, content_type = "text/plain"),
+        (status = 403, description = "Writes are switched off by `admin_write.route_hint`.", body = String, content_type = "text/plain"),
+    )
+)]
 async fn route_hint(
     State(s): State<AdminState>,
     Json(req): Json<RouteHintReq>,
@@ -666,6 +918,16 @@ async fn route_hint(
     (StatusCode::OK, "ok\n")
 }
 
+#[utoipa::path(
+    get, path = "/pools", tag = "Pools",
+    summary = "List pools and backends",
+    description = "One block per pool: the pool name and balancer, then each backend with its health, \
+operator state (`enabled`, `draining`, `disabled`) and the number of live sessions.",
+    responses(
+        (status = 200, description = "Plain text, one line per pool and per backend, tab separated.", body = String, content_type = "text/plain",
+            example = "game\tbalancer=LeastConn\n  10.0.0.5:7777\thealthy\tstate=enabled\tactive=12\n"),
+    )
+)]
 async fn pools(State(s): State<AdminState>) -> impl IntoResponse {
     let snap = s.runtime.snapshot();
     let mut out = String::new();
@@ -688,14 +950,33 @@ async fn pools(State(s): State<AdminState>) -> impl IntoResponse {
     out
 }
 
-/// `PATCH /pools/{pool}/backends/{addr}` `{ "state": "enabled"|"draining"|"disabled" }`
-/// — set an operator backend state. `draining` / `disabled` stop new-session
-/// selection while existing sessions keep running.
-#[derive(Deserialize)]
+/// The body of `PATCH /pools/{pool}/backends/{addr}`: the new operator state, one of `enabled`,
+/// `draining` or `disabled`. `draining` and `disabled` stop new-session selection while existing
+/// sessions keep running.
+#[derive(Deserialize, utoipa::ToSchema)]
 struct BackendPatch {
+    /// The new operator state.
+    #[schema(example = "draining")]
     state: String,
 }
 
+#[utoipa::path(
+    patch, path = "/pools/{pool}/backends/{addr}", tag = "Pools",
+    summary = "Set a backend's operator state",
+    description = "`draining` and `disabled` stop new sessions from choosing the backend; sessions already on it keep running. \
+`enabled` puts it back. Needs the feature flag `admin_write.backends`.",
+    params(
+        ("pool" = String, Path, description = "The pool name."),
+        ("addr" = String, Path, description = "The backend address as `ip:port` (URL-encode an IPv6 address's brackets and colons).", example = "10.0.0.5:7777"),
+    ),
+    request_body(content = BackendPatch, description = "The new state."),
+    responses(
+        (status = 200, description = "State changed.", body = String, content_type = "text/plain", example = "10.0.0.5:7777 -> draining\n"),
+        (status = 400, description = "`state` is not one of enabled, draining, disabled, or `addr` is not an `ip:port`.", body = String, content_type = "text/plain"),
+        (status = 403, description = "Writes are switched off by `admin_write.backends`.", body = String, content_type = "text/plain"),
+        (status = 404, description = "Unknown pool, or the backend is not in the pool.", body = String, content_type = "text/plain"),
+    )
+)]
 async fn patch_backend(
     State(s): State<AdminState>,
     Path((pool, addr)): Path<(String, String)>,
@@ -725,15 +1006,29 @@ async fn patch_backend(
     (StatusCode::OK, format!("{addr} -> {}\n", state.as_str()))
 }
 
-/// `POST /pools/{pool}/backends` `{ "addr": "10.0.0.5:7777" }` — add a backend
-/// to a pool at runtime. The edit lives in the runtime overlay (it survives a
-/// file reload); the snapshot is rebuilt so the backend joins immediately and
-/// the health checker corrects its state within one interval.
-#[derive(Deserialize)]
+/// The body of `POST /pools/{pool}/backends`: the backend to add to the pool at runtime.
+#[derive(Deserialize, utoipa::ToSchema)]
 struct BackendAdd {
+    /// The backend address as `ip:port`.
+    #[schema(example = "10.0.0.5:7777")]
     addr: String,
 }
 
+#[utoipa::path(
+    post, path = "/pools/{pool}/backends", tag = "Pools",
+    summary = "Add a backend to a pool",
+    description = "Adds the address to the pool at runtime. The edit lives in the runtime overlay, so it \
+survives a config reload. The call requests a reload and returns; the backend joins when that reload completes \
+(normally within a moment, so an immediate `PATCH` of it can still answer `404`), and the health checker corrects its state within one interval. Needs the feature flag `admin_write.backends` (on by default).",
+    params(("pool" = String, Path, description = "The pool name, as in the config.")),
+    request_body(content = BackendAdd, description = "The backend to add."),
+    responses(
+        (status = 200, description = "Added.", body = String, content_type = "text/plain", example = "added 10.0.0.5:7777 to game\n"),
+        (status = 400, description = "`addr` is not a valid `ip:port`.", body = String, content_type = "text/plain"),
+        (status = 403, description = "Writes are switched off by `admin_write.backends`.", body = String, content_type = "text/plain"),
+        (status = 404, description = "No such pool.", body = String, content_type = "text/plain"),
+    )
+)]
 async fn add_backend(
     State(s): State<AdminState>,
     Path(pool): Path<String>,
@@ -757,6 +1052,22 @@ async fn add_backend(
 /// `DELETE /pools/{pool}/backends/{addr}` — remove a backend from a pool at
 /// runtime (works whether it came from the file or a prior `POST`). Existing
 /// sessions on it keep running; it just stops being selected.
+#[utoipa::path(
+    delete, path = "/pools/{pool}/backends/{addr}", tag = "Pools",
+    summary = "Remove a backend from a pool",
+    description = "Works whether the backend came from the config file or from an earlier `POST`. Sessions already \
+on it keep running; it just stops being chosen. Needs the feature flag `admin_write.backends`.",
+    params(
+        ("pool" = String, Path, description = "The pool name."),
+        ("addr" = String, Path, description = "The backend address as `ip:port`.", example = "10.0.0.5:7777"),
+    ),
+    responses(
+        (status = 200, description = "Removed.", body = String, content_type = "text/plain", example = "removed 10.0.0.5:7777 from game\n"),
+        (status = 400, description = "`addr` is not an `ip:port`.", body = String, content_type = "text/plain"),
+        (status = 403, description = "Writes are switched off by `admin_write.backends`.", body = String, content_type = "text/plain"),
+        (status = 404, description = "No such pool.", body = String, content_type = "text/plain"),
+    )
+)]
 async fn delete_backend(
     State(s): State<AdminState>,
     Path((pool, addr)): Path<(String, String)>,
@@ -788,10 +1099,14 @@ fn valid_module_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, utoipa::ToSchema)]
 struct SnifferInfo {
+    /// The module name (the file stem).
+    #[schema(example = "a2s")]
     name: String,
+    /// SHA-256 of the file, lowercase hex.
     sha256: String,
+    /// File size in bytes.
     size_bytes: u64,
     /// Whether this module is actually loaded into the live registry right
     /// now (a file can exist on disk but have failed its last scan — e.g. a
@@ -810,6 +1125,17 @@ struct SnifferInfo {
 /// (name, sha256, size), plus whether it's currently loaded into the live
 /// registry. `409` if this instance has no `settings.sniffers` configured at
 /// all.
+#[utoipa::path(
+    get, path = "/admin/sniffers", tag = "Sniffers",
+    summary = "List the sniffer modules",
+    description = "Every `.wasm` file in `settings.sniffers.dir` with its SHA-256, size, and whether it is loaded now. \
+A file can exist but not be loaded, for example after a hash-pin mismatch.",
+    responses(
+        (status = 200, description = "The modules, sorted by name.", body = Vec<SnifferInfo>),
+        (status = 409, description = "This instance has no `settings.sniffers` block; turning sniffing on from nothing needs a restart.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The directory cannot be read.", body = String, content_type = "text/plain"),
+    )
+)]
 async fn list_sniffers(State(s): State<AdminState>) -> Response {
     let Some(dir) = &s.sniffers_dir else {
         return sniffers_disabled();
@@ -862,8 +1188,11 @@ async fn list_sniffers(State(s): State<AdminState>) -> Response {
 /// same hot mechanism `POST /pools/{pool}/backends` uses for the runtime
 /// overlay. Nothing is written when any check fails. Updating the pin list
 /// itself is a config change, out of scope for this endpoint.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct SnifferUploadQuery {
+    /// The module name: letters, digits, `-` and `_`. The file is stored as `<name>.wasm`.
+    #[param(example = "a2s")]
     name: String,
 }
 
@@ -885,6 +1214,24 @@ fn sha_of_file(path: &std::path::Path) -> Option<String> {
 /// Uniquifies upload temp files so concurrent uploads never share one.
 static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+#[utoipa::path(
+    post, path = "/admin/sniffers", tag = "Sniffers",
+    summary = "Upload a sniffer module",
+    description = "The body is the raw bytes of a `.wasm` module, at most 8 MiB. It is validated, checked against the \
+`settings.sniffers.modules` pins when the instance has any, written atomically to `settings.sniffers.dir/<name>.wasm`, \
+and a reload picks it up. The module it replaces is kept for `rollback`. Nothing is written when a check fails. \
+Needs the feature flag `admin_write.sniffer_upload`.",
+    params(SnifferUploadQuery),
+    request_body(content = Vec<u8>, content_type = "application/octet-stream", description = "The module bytes."),
+    responses(
+        (status = 200, description = "Stored.", body = String, content_type = "text/plain", example = "uploaded a2s.wasm (24576 bytes)\n"),
+        (status = 400, description = "The name is invalid, or the bytes are not a loadable sniffer module.", body = String, content_type = "text/plain"),
+        (status = 403, description = "Writes are switched off by `admin_write.sniffer_upload`.", body = String, content_type = "text/plain"),
+        (status = 409, description = "No `settings.sniffers` block, or the instance pins its modules and this name or hash is not listed (`pinned:`).", body = String, content_type = "text/plain"),
+        (status = 413, description = "The body is larger than the module limit.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The file could not be written.", body = String, content_type = "text/plain"),
+    )
+)]
 async fn upload_sniffer(
     State(s): State<AdminState>,
     Query(q): Query<SnifferUploadQuery>,
@@ -1026,6 +1373,21 @@ async fn upload_sniffer(
 /// `DELETE /admin/sniffers/{name}` — removes a `.wasm` module from
 /// `settings.sniffers.dir` and requests a reload so the next rescan drops it
 /// from the live registry.
+#[utoipa::path(
+    delete, path = "/admin/sniffers/{name}", tag = "Sniffers",
+    summary = "Remove a sniffer module",
+    description = "Removes `<name>.wasm` and the kept previous version, then a reload drops it from the live registry. \
+Needs the feature flag `admin_write.sniffer_upload`.",
+    params(("name" = String, Path, description = "The module name (letters, digits, `-` and `_`).")),
+    responses(
+        (status = 200, description = "Removed.", body = String, content_type = "text/plain", example = "removed a2s.wasm\n"),
+        (status = 400, description = "Invalid module name.", body = String, content_type = "text/plain"),
+        (status = 403, description = "Writes are switched off by `admin_write.sniffer_upload`.", body = String, content_type = "text/plain"),
+        (status = 404, description = "No such module.", body = String, content_type = "text/plain"),
+        (status = 409, description = "No `settings.sniffers` block on this instance.", body = String, content_type = "text/plain"),
+        (status = 500, description = "The file could not be removed.", body = String, content_type = "text/plain"),
+    )
+)]
 async fn delete_sniffer(State(s): State<AdminState>, Path(name): Path<String>) -> Response {
     let Some(dir) = &s.sniffers_dir else {
         return sniffers_disabled();
@@ -1091,6 +1453,22 @@ async fn delete_sniffer(State(s): State<AdminState>, Path(name): Path<String>) -
 /// previous is ever kept). `404` without a previous version. On a pinned
 /// instance only when the previous version's sha256 equals the pin (`409
 /// pinned:`), because anything else would make the next rescan reject the file.
+#[utoipa::path(
+    post, path = "/admin/sniffers/{name}/rollback", tag = "Sniffers",
+    summary = "Roll a sniffer module back",
+    description = "Swaps `<name>.wasm` with the kept previous version, so a second rollback undoes the first. Exactly one \
+previous version is kept. On an instance that pins its modules it only works when the previous version's SHA-256 is pinned. \
+Needs the feature flag `admin_write.sniffer_upload`.",
+    params(("name" = String, Path, description = "The module name.")),
+    responses(
+        (status = 200, description = "Rolled back.", body = String, content_type = "text/plain", example = "rolled back a2s.wasm\n"),
+        (status = 400, description = "Invalid module name.", body = String, content_type = "text/plain"),
+        (status = 403, description = "Writes are switched off by `admin_write.sniffer_upload`.", body = String, content_type = "text/plain"),
+        (status = 404, description = "No previous version is kept.", body = String, content_type = "text/plain"),
+        (status = 409, description = "No `settings.sniffers` block, or the previous version's hash is not pinned (`pinned:`).", body = String, content_type = "text/plain"),
+        (status = 500, description = "The swap failed.", body = String, content_type = "text/plain"),
+    )
+)]
 async fn rollback_sniffer(State(s): State<AdminState>, Path(name): Path<String>) -> Response {
     let Some(dir) = &s.sniffers_dir else {
         return sniffers_disabled();
@@ -1185,6 +1563,27 @@ fn sniffers_disabled() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `docs/reference/openapi/proxy-admin.json` is the rendering of [`AdminApi`] the docs site is
+    /// built from. Regenerate it with `WAYHOUSE_UPDATE_OPENAPI=1 cargo test -p wayhouse openapi`.
+    #[test]
+    fn the_checked_in_spec_is_current() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/reference/openapi/proxy-admin.json");
+        let mut want = serde_json::to_string_pretty(&openapi_json()).unwrap();
+        want.push('\n');
+        if std::env::var_os("WAYHOUSE_UPDATE_OPENAPI").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &want).unwrap();
+            return;
+        }
+        let have = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            have == want,
+            "{} is out of date; run `WAYHOUSE_UPDATE_OPENAPI=1 cargo test -p wayhouse openapi` and commit it",
+            path.display()
+        );
+    }
     use std::time::Duration;
 
     use metrics_exporter_prometheus::PrometheusBuilder;

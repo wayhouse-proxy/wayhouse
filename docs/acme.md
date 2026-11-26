@@ -130,10 +130,10 @@ validation. The leader waits two seconds after publishing so a follower has appl
 The expiry is set by the leader's clock and checked on each serving node's, which the five
 minutes of slack covers as long as the nodes run NTP.
 
-Rolling upgrade: the cluster-wide ACME level is now 4, so while any member still runs an older
-build, **all** ACME writes and issuance (DNS-01 renewals and gateway changes included) pause,
-as for the earlier levels. Once an HTTP-01 site exists, an older build cannot decode its
-entries, so do not downgrade past this release.
+Rolling upgrade: the cluster-wide ACME level is 5 (HTTP-01 sites arrived at level 4, key rotation
+at 5), so while any member still runs an older build, **all** ACME writes and issuance (DNS-01
+renewals and gateway changes included) pause, as for the earlier levels. Once an HTTP-01 site
+exists, an older build cannot decode its entries, so do not downgrade past the release that added them.
 
 A site whose gateways do not forward the path fails the order with the CA's own message (usually
 `unauthorized` or `connection`) in the site's `last_error`, and it counts toward the hourly
@@ -369,8 +369,8 @@ until `notAfter`, negative once expired), `wayhouse_acme_issue_total{result="ok|
 Keys are sealed with XChaCha20-Poly1305 under the cluster keyring, bound to their site and
 version, replicated only as ciphertext, and appear in plaintext only in the issuing leader's
 memory. Losing every copy of the keyring loses the sealed keys: certificates are then
-reissued (the CA does not care), so keep the key backup the secret-storage design asks for
-anyway.
+reissued (the CA does not care), so keep a backup of the keyring anyway (plugin
+secrets and `{ secret: name }` config references need it too).
 
 **Rotating the key.** The steps are those of plugin secrets
 ([`plugins.md`](plugins.md), [how the host seals them](deep-dive/topics/plugin-host.md)), but the rewrap is a separate call for the ACME keys: (1) append the new key to the
