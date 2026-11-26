@@ -16,6 +16,10 @@ on:
       - "**.md"
       - "docs/**"
       - "LICENSE-*"
+  # The cache key carries the ISO week, so every namespace starts cold on Monday
+  # 00:00 UTC; this warms them before the first working-hours PR.
+  schedule:
+    - cron: "5 0 * * 1"
   workflow_dispatch:
 
 # Warm-ups queue (GitHub keeps only the newest waiting one) instead of cancelling a
