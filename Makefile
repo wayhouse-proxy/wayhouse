@@ -44,7 +44,7 @@ build:
 
 ## run: run the proxy against the example config
 run:
-	cargo run -p wayhouse -- --config config.example.yaml
+	cargo run -p wayhouse -- --config deploy/config.example.yaml
 
 ## bench: latency / load harness vs. the NFR N1/N2 targets (see crates/wayhouse-bench)
 BENCH_ARGS ?=

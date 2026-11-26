@@ -14,7 +14,7 @@ Last updated: 2026-11-26 (0.4.0 released).
 **Released: 0.4.0.** All roadmap phases (0–14) are built, individually verified live, and
 covered by `make check`. "Built" means built and tested, not battle-tested: there are no
 production users yet, so breaking changes are fine until 1.0. Releases are manual tags
-(`vX.Y.Z`, steps in [`RELEASING.md`](RELEASING.md)); release-please only opens the release
+(`vX.Y.Z`, steps in [`RELEASING.md`](.github/RELEASING.md)); release-please only opens the release
 PR and never tags. `release.yml` publishes eight images (amd64 + arm64) to GHCR, but only
 if the tag equals the workspace version, CI is green on main, and the whole set built and
 passed the compose smoke test.
@@ -68,7 +68,7 @@ so hosted Actions minutes are free; the cost is wall time and queue waits.
 
 - **Run `cargo fmt --all` as its own step before `make check`.** `make check` only reports
   formatting diffs, and piping it through `tail` hides an early `fmt-check` failure: read
-  from the top or check the exit code ([`CONTRIBUTING.md`](CONTRIBUTING.md#build-and-test)).
+  from the top or check the exit code ([`CONTRIBUTING.md`](.github/CONTRIBUTING.md#build-and-test)).
 - **Disk fills up in long sessions.** `target/debug` can reach tens of GB and the linker
   then fails with a bare exit 1. `rm -rf target/debug/incremental` is the cheap fix.
 - **`protoc` is a build requirement** (gRPC resolver codegen); CI installs `protobuf-compiler`.

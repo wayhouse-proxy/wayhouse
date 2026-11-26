@@ -4,7 +4,7 @@ How to move a running deployment to a newer version one component at a time, wit
 flag day. The design and its reasoning are in the
 component versioning spec;
 this page is the operator's view of what is built. Releases and tags are in
-[`RELEASING.md`](../RELEASING.md).
+[`RELEASING.md`](../.github/RELEASING.md).
 
 ## Compatibility rules
 

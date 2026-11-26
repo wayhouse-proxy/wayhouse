@@ -144,13 +144,17 @@ class RealRepo(unittest.TestCase):
     def test_makefile_runs_tunnel_and_deploy(self):
         self.assertEqual(self.areas("Makefile"), {"tunnel", "deploy", "release"})
 
-    def test_deploy_dir_dockerignore_and_trivyignore(self):
-        for f in ("deploy/compose/wayhouse.yaml", ".dockerignore", ".trivyignore"):
+    def test_deploy_dir_and_dockerignore(self):
+        for f in ("deploy/compose/wayhouse.yaml", "deploy/.trivyignore", ".dockerignore"):
             with self.subTest(f=f):
                 self.assertEqual(self.areas(f), {"deploy", "release"})
 
     def test_workflow_edit_runs_everything(self):
         self.assertEqual(self.areas(".github/workflows/ci.yml"), ALL)
+
+    def test_community_markdown_under_github_runs_nothing(self):
+        self.assertEqual(self.areas(".github/CONTRIBUTING.md"), set())
+        self.assertEqual(self.areas(".github/release-please/config.json"), ALL)
 
     def test_mixed_ui_web_and_deploy(self):
         self.assertEqual(

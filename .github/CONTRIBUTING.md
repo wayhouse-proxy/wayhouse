@@ -1,8 +1,8 @@
 # Contributing
 
 Thanks for helping. This is the short path from a clean checkout to a merged pull request.
-Agents follow [`AGENTS.md`](AGENTS.md) on top of this; current state and open decisions are in
-[`HANDOVER.md`](HANDOVER.md).
+Agents follow [`AGENTS.md`](../AGENTS.md) on top of this; current state and open decisions are in
+[`HANDOVER.md`](../HANDOVER.md).
 
 ## Build and test
 
@@ -30,23 +30,23 @@ Other targets (`make help` lists all):
 | `make docs-fmt-check`      | check Markdown formatting (needs Node; see below)                    |
 
 The full command table (tunnel e2e, deploy images, audit, and so on) is in
-[`AGENTS.md`](AGENTS.md#commands).
+[`AGENTS.md`](../AGENTS.md#commands).
 
 ### Repository layout
 
-| Crate                                                        | Responsibility                                                                    |
-| ------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| [`crates/wayhouse-config`](crates/wayhouse-config)           | YAML config types, parsing and validation                                         |
-| [`crates/wayhouse-core`](crates/wayhouse-core)               | Data plane: config snapshot, backend pools, TCP and UDP listeners, session tables |
-| [`crates/wayhouse`](crates/wayhouse)                         | The proxy binary: CLI, admin API, controller/aggregator/tunnel clients            |
-| [`crates/wayhouse-controller`](crates/wayhouse-controller)   | Config and intent distribution (revision store, SSE, Raft HA, canary rollout)     |
-| [`crates/wayhouse-aggregator`](crates/wayhouse-aggregator)   | Fleet-state fan-in and intent fan-out                                             |
-| [`crates/wayhouse-ui`](crates/wayhouse-ui)                   | Admin GUI backend plus the React/Vite/TS frontend in `web/`                       |
-| [`crates/wayhouse-agent`](crates/wayhouse-agent)             | Origin-side WireGuard agent                                                       |
-| [`crates/wayhouse-http`](crates/wayhouse-http)               | Shared HTTP client and TLS server helpers                                         |
-| [`crates/wayhouse-fleet-tests`](crates/wayhouse-fleet-tests) | Multi-process integration tests over the real binaries                            |
-| [`crates/wayhouse-bench`](crates/wayhouse-bench)             | Latency / load harness                                                            |
-| [`crates/wayhouse-sniffer-abi`](crates/wayhouse-sniffer-abi) | Guest-side ABI crate the official sniffers link (they live in the sniffers repo)  |
+| Crate                                                           | Responsibility                                                                    |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| [`crates/wayhouse-config`](../crates/wayhouse-config)           | YAML config types, parsing and validation                                         |
+| [`crates/wayhouse-core`](../crates/wayhouse-core)               | Data plane: config snapshot, backend pools, TCP and UDP listeners, session tables |
+| [`crates/wayhouse`](../crates/wayhouse)                         | The proxy binary: CLI, admin API, controller/aggregator/tunnel clients            |
+| [`crates/wayhouse-controller`](../crates/wayhouse-controller)   | Config and intent distribution (revision store, SSE, Raft HA, canary rollout)     |
+| [`crates/wayhouse-aggregator`](../crates/wayhouse-aggregator)   | Fleet-state fan-in and intent fan-out                                             |
+| [`crates/wayhouse-ui`](../crates/wayhouse-ui)                   | Admin GUI backend plus the React/Vite/TS frontend in `web/`                       |
+| [`crates/wayhouse-agent`](../crates/wayhouse-agent)             | Origin-side WireGuard agent                                                       |
+| [`crates/wayhouse-http`](../crates/wayhouse-http)               | Shared HTTP client and TLS server helpers                                         |
+| [`crates/wayhouse-fleet-tests`](../crates/wayhouse-fleet-tests) | Multi-process integration tests over the real binaries                            |
+| [`crates/wayhouse-bench`](../crates/wayhouse-bench)             | Latency / load harness                                                            |
+| [`crates/wayhouse-sniffer-abi`](../crates/wayhouse-sniffer-abi) | Guest-side ABI crate the official sniffers link (they live in the sniffers repo)  |
 
 ## Conventions
 
@@ -57,8 +57,8 @@ The full command table (tunnel e2e, deploy images, audit, and so on) is in
   a hop per connection, say so in the PR.
 - **Agnostic core.** Game-specific knowledge lives only in sniffers or an external resolver.
 - **Pre-1.0: clean breaks over shims.** When the config schema changes, update the
-  `wayhouse-config` types and `validate()`, `config.example.yaml` and `docs/05-configuration.md`.
-  [`AGENTS.md`](AGENTS.md#when-you-touch-x-also-touch-y) lists what else to touch for other changes.
+  `wayhouse-config` types and `validate()`, `deploy/config.example.yaml` and `docs/05-configuration.md`.
+  [`AGENTS.md`](../AGENTS.md#when-you-touch-x-also-touch-y) lists what else to touch for other changes.
 - **Design first for larger work.** Write the design down before the code (an issue or the PR
   description), and put what stays true into the matching chapter under `docs/`.
 - **Commits and PR titles** use conventional commits (`feat:`, `fix:`, `docs:`, `ci:`, ...); the

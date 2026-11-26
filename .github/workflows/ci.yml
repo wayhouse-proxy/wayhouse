@@ -812,7 +812,7 @@ jobs:
   #   as a table on the run's summary page and as warning annotations, and the
   #   JSON is in the cargo-audit artifact. Accepted advisories:
   #   .cargo/audit.toml ([advisories] ignore = [...], each with a reason). Licenses,
-  #   registries and git sources (deny.toml) do fail the run.
+  #   registries and git sources (.cargo/deny.toml) do fail the run.
   checks:
     needs: changes
     runs-on: ubuntu-24.04   # pinned: see the comment above `jobs:`
@@ -843,7 +843,7 @@ jobs:
         run: sh .github/scripts/cargo_audit.sh target/cargo-audit
       - name: cargo deny (licenses, sources, bans)
         if: needs.changes.outputs.code == 'true'
-        run: cargo deny check licenses sources bans
+        run: cargo deny --config .cargo/deny.toml check licenses sources bans
       - name: cargo audit report
         if: always() && needs.changes.outputs.code == 'true'
         run: |

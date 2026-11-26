@@ -70,7 +70,7 @@ EXTRA = {
     # image's bundle, and the deploy job's Trivy scan checks them.
     "deploy": re.compile(
         r"^deploy/|^\.dockerignore$|^Makefile$|^Cargo\.(toml|lock)$"
-        r"|^crates/wayhouse-ui/web/package-lock\.json$|^\.trivyignore$"
+        r"|^crates/wayhouse-ui/web/package-lock\.json$"
     ),
 }
 
@@ -187,7 +187,8 @@ def _roots(area: str, g: Graph) -> Set[str]:
 
 def areas(files: List[str], g: Graph) -> Dict[str, bool]:
     files = [f for f in files if f]
-    if any(f.startswith(".github/") for f in files):
+    # Workflows, scripts and actions run everything; the community Markdown files there do not.
+    if any(f.startswith(".github/") and not DOCS_ONLY.search(f) for f in files):
         return {a: True for a in AREAS}
     # Documentation builds and scans nothing, even under a scoped dir (deploy/README.md).
     files = [f for f in files if not DOCS_ONLY.search(f)]

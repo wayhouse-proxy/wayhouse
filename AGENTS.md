@@ -2,7 +2,7 @@
 
 Guidance for any AI coding agent working in this repository, following the
 [agents.md](https://agents.md) convention.
-Humans: start with [`CONTRIBUTING.md`](CONTRIBUTING.md); this file is the agent working agreement
+Humans: start with [`CONTRIBUTING.md`](.github/CONTRIBUTING.md); this file is the agent working agreement
 and the full command table.
 
 Tool-specific entry points (e.g. `CLAUDE.md`) are thin pointers to this file — keep
@@ -48,10 +48,9 @@ changes. Current progress and the next step are in [`HANDOVER.md`](HANDOVER.md).
 ```
 Cargo.toml                  workspace (resolver 2, edition 2021)
 rust-toolchain.toml         pins stable
-config.example.yaml         reduced v0 config schema
 Makefile                    make check / test / run / fmt / lint
 docs/                       the plan (00–12) — source of truth for design
-deploy/                     reference Dockerfile (5 targets), compose demo, k8s manifests, smoke.sh (docs/12)
+deploy/                     reference Dockerfile (5 targets), compose demo, k8s manifests, smoke.sh (docs/12), config.example.yaml (annotated reference config)
 crates/
   wayhouse-config/               YAML config: raw types, validation, resolved `Config`
     src/                     lib.rs (entry points + re-exports), schema.rs (raw YAML types), validate.rs (`validate()`; tests in validate/tests.rs), parse.rs (value parsers), resolved.rs (validated `Config` & friends), cidr.rs (`Cidr`/`CidrSet`/`Acl`/`GeoAcl`), matcher.rs (`Matcher`, `extract_sni`), keys.rs (`base64_decode_32`)
@@ -201,7 +200,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
 | wayhouse-ui frontend tests | `make ui-test` (vitest) and `make ui-e2e` (Playwright, backend stubbed; both in the `ui` CI job) |
 | Markdown | `make docs-fmt` (Prettier, writes) / `make docs-fmt-check` and `make docs-links` (relative links and anchors); both checks are the `docs` CI job. AGENTS.md, HANDOVER.md and `docs/NN-*.md` are in `.prettierignore` for now |
 | Website | `site/` (Starlight/Astro, pinned in `site/package-lock.json`) is built by `.github/workflows/pages.yml` into <https://wayhouse-proxy.dev> (deploys on pushes to `main`). The pages are generated from the Markdown in `docs/` by `site/scripts/sync_docs.py` (title from the first `# ` heading, GitHub alerts become asides, relative links are rewritten); sections: `docs/manual/` (everyday use), `docs/deep-dive/` (developer documentation), `docs/reference/`, and the old top-level chapters/guides, which the script places. Never edit `site/src/content/docs/`. Build with `make site`; Starlight fails the build on any broken internal link or anchor |
-| Run | `cargo run -p wayhouse -- --config config.example.yaml` |
+| Run | `cargo run -p wayhouse -- --config deploy/config.example.yaml` |
 | Validate a config | `cargo run -p wayhouse -- --config <file> --check` |
 | Reload a running proxy | edit the config file, or `kill -HUP <pid>` |
 
@@ -250,7 +249,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
    guarded state here is plain data, so one panicked task must not cascade into
    every later caller.
 8. **Work on a branch, never directly on `main`.** `main` takes changes only through a
-   pull request and the merge queue (required check: `ci-ok`; see `CONTRIBUTING.md`).
+   pull request and the merge queue (required check: `ci-ok`; see `.github/CONTRIBUTING.md`).
    Commit a finished slice, a spec or plan, or a green docs sweep whenever it is useful,
    after `make check` (rule 1). End commit messages with a `Co-Authored-By:` trailer
    identifying the agent that made the change, plus a session/trace trailer (e.g.
@@ -314,7 +313,7 @@ client from `crates/wayhouse/proto/resolver.proto`.
 | Finished a roadmap item | status legend in `docs/08-roadmap.md`, `README.md` status block |
 | New per-connection task or hop | `docs/latency-ledger.md` |
 | Architectural decision | ADR table in `docs/09-technology-choices.md` |
-| Release or version change | `RELEASING.md`, `CONTRIBUTING.md` (conventions), `deploy/README.md`, `.github/scripts/check_version_policy.py` (never reach 1.0 by tooling) |
+| Release or version change | `.github/RELEASING.md`, `.github/CONTRIBUTING.md` (conventions), `deploy/README.md`, `.github/scripts/check_version_policy.py` (never reach 1.0 by tooling) |
 
 ---
 
