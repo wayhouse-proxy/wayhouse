@@ -1,0 +1,1670 @@
+{
+  "components": {
+    "schemas": {
+      "BackendAdd": {
+        "description": "The body of `POST /pools/{pool}/backends`: the backend to add to the pool at runtime.",
+        "properties": {
+          "addr": {
+            "description": "The backend address as `ip:port`.",
+            "example": "10.0.0.5:7777",
+            "type": "string"
+          }
+        },
+        "required": [
+          "addr"
+        ],
+        "type": "object"
+      },
+      "BackendPatch": {
+        "description": "The body of `PATCH /pools/{pool}/backends/{addr}`: the new operator state, one of `enabled`,\n`draining` or `disabled`. `draining` and `disabled` stop new-session selection while existing\nsessions keep running.",
+        "properties": {
+          "state": {
+            "description": "The new operator state.",
+            "example": "draining",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
+      "ConfigSaved": {
+        "description": "What `PUT /config/file` answers once the file is written.",
+        "properties": {
+          "applied": {
+            "description": "Whether the reload took the new file within the wait (5 s).",
+            "type": "boolean"
+          },
+          "etag": {
+            "description": "The ETag of the file as saved; send it as `If-Match` on the next edit.",
+            "example": "\"fdee278e74f64af6b5db0b9baf6dd2bd865cded805a982bc8af39270b16d4166\"",
+            "type": "string"
+          },
+          "note": {
+            "description": "Present when `applied` is false: what that does and does not mean.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "description": "Always `true` on a `200`.",
+            "type": "boolean"
+          },
+          "revision": {
+            "description": "The revision counter of the file as saved; the `base` of the next edit.",
+            "example": 279199307691254,
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "saved": {
+            "description": "The file was written. It is the file that changed, whether or not the reload took it (`applied`).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "saved",
+          "applied",
+          "etag",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "ErrorBody": {
+        "description": "The JSON error shape the config routes use.",
+        "properties": {
+          "code": {
+            "description": "A stable code for the cases a client branches on; today only `stale`.",
+            "example": "stale",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "What went wrong, in one sentence.",
+            "example": "the config file changed since you read it",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "FeatureApply": {
+        "enum": [
+          "live",
+          "startup"
+        ],
+        "type": "string"
+      },
+      "FeatureOverride": {
+        "enum": [
+          "both",
+          "off_only"
+        ],
+        "type": "string"
+      },
+      "FeatureRow": {
+        "description": "One feature flag, as `GET /features` lists it.",
+        "properties": {
+          "apply": {
+            "$ref": "#/components/schemas/FeatureApply",
+            "description": "When a change takes effect: `live` or only at the next `startup`."
+          },
+          "available": {
+            "description": "Whether this build contains the code the flag switches.",
+            "type": "boolean"
+          },
+          "default": {
+            "description": "The built-in value.",
+            "type": "boolean"
+          },
+          "impact": {
+            "description": "What happens to connections that are already open.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The flag's name, for example `admin_write.backends`.",
+            "example": "admin_write.backends",
+            "type": "string"
+          },
+          "override": {
+            "$ref": "#/components/schemas/FeatureOverride",
+            "description": "Which way a controller override may flip the flag. `off_only` flags open new network\nexposure, so a stolen token cannot switch them on."
+          },
+          "protection": {
+            "description": "Turning the flag off removes a protection (rate limits, ACLs), so an override of it needs an expiry.",
+            "type": "boolean"
+          },
+          "risk": {
+            "description": "What turning the flag off costs, in one sentence.",
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/FeatureScope",
+            "description": "Which program reads the flag."
+          },
+          "since": {
+            "description": "The config `schema_version` that introduced the flag.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/FeatureSource",
+            "description": "Where `value` comes from: the built-in `default`, the `features:` section of the config\n(`config`), a controller `override`, or the `build` (the binary was built without the code\nthe flag switches)."
+          },
+          "value": {
+            "description": "The value in force now.",
+            "type": "boolean"
+          },
+          "wired": {
+            "description": "Whether the runtime consults the flag yet. An unwired flag is accepted and reported but changes nothing.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "value",
+          "source",
+          "default",
+          "scope",
+          "apply",
+          "override",
+          "protection",
+          "wired",
+          "available",
+          "since",
+          "risk",
+          "impact"
+        ],
+        "type": "object"
+      },
+      "FeatureScope": {
+        "enum": [
+          "proxy",
+          "controller"
+        ],
+        "type": "string"
+      },
+      "FeatureSource": {
+        "enum": [
+          "default",
+          "config",
+          "override",
+          "build"
+        ],
+        "type": "string"
+      },
+      "FeaturesReply": {
+        "description": "The envelope `GET /features` answers.",
+        "properties": {
+          "flags": {
+            "items": {
+              "$ref": "#/components/schemas/FeatureRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "flags"
+        ],
+        "type": "object"
+      },
+      "RouteHintReq": {
+        "description": "The body of `POST /route-hint`: a short-lived `src_ip` to pool mapping that listeners with\n`route_hint: true` consult before their route list.",
+        "properties": {
+          "pool": {
+            "description": "The pool to send that client's next connection to.",
+            "example": "survival",
+            "type": "string"
+          },
+          "src_ip": {
+            "description": "The client address the hint is for.",
+            "example": "203.0.113.9",
+            "type": "string"
+          },
+          "ttl_sec": {
+            "default": 30,
+            "description": "How long the hint lives, 1 to 3600 seconds.",
+            "example": 30,
+            "format": "int64",
+            "maximum": 3600,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "src_ip",
+          "pool"
+        ],
+        "type": "object"
+      },
+      "SnifferInfo": {
+        "properties": {
+          "fallback": {
+            "description": "The live instance runs the previous version because the current file\nfailed validation at the last scan.",
+            "type": "boolean"
+          },
+          "has_previous": {
+            "description": "A previous version is kept (`POST /admin/sniffers/{name}/rollback`).",
+            "type": "boolean"
+          },
+          "loaded": {
+            "description": "Whether this module is actually loaded into the live registry right\nnow (a file can exist on disk but have failed its last scan — e.g. a\nhash-pin mismatch — in which case this is `false`).",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The module name (the file stem).",
+            "example": "a2s",
+            "type": "string"
+          },
+          "sha256": {
+            "description": "SHA-256 of the file, lowercase hex.",
+            "type": "string"
+          },
+          "size_bytes": {
+            "description": "File size in bytes.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "sha256",
+          "size_bytes",
+          "loaded"
+        ],
+        "type": "object"
+      },
+      "ValidateOk": {
+        "description": "What `POST /config/validate` answers on success.",
+        "properties": {
+          "ok": {
+            "description": "Always `true`: a failure is a `422` with an `ErrorBody` instead.",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "description": "The `schema_version` of the document that was checked.",
+            "example": 4,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ok",
+          "schema_version"
+        ],
+        "type": "object"
+      },
+      "WebListen": {
+        "properties": {
+          "http": {
+            "example": "127.0.0.1:8080",
+            "type": "string"
+          },
+          "https": {
+            "example": "127.0.0.1:8443",
+            "type": "string"
+          }
+        },
+        "required": [
+          "http",
+          "https"
+        ],
+        "type": "object"
+      },
+      "WebReply": {
+        "description": "The resolved `web:` section, as `wayhouse-web-sync` reads it.",
+        "properties": {
+          "internal_bind": {
+            "description": "Loopback address of the generated `via: wayhouse` listeners.",
+            "example": "127.0.0.1",
+            "type": "string"
+          },
+          "listen": {
+            "$ref": "#/components/schemas/WebListen",
+            "description": "Where Caddy listens."
+          },
+          "pool": {
+            "description": "The pool the entry node's :80/:443 listeners send to (Caddy's).",
+            "example": "web",
+            "type": "string"
+          },
+          "sites": {
+            "items": {
+              "$ref": "#/components/schemas/WebSite"
+            },
+            "type": "array"
+          },
+          "trusted_proxy": {
+            "description": "CIDRs Caddy trusts PROXY headers from, besides loopback.",
+            "example": [
+              "10.1.0.2/32"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "pool",
+          "listen",
+          "trusted_proxy",
+          "internal_bind",
+          "sites"
+        ],
+        "type": "object"
+      },
+      "WebSite": {
+        "properties": {
+          "health_path": {
+            "description": "Path for the active health check, when set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "hosts": {
+            "example": [
+              "panel.example.com"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tls": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/WebSiteTls",
+                "description": "The certificate and key files of the site, when it has them."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "upstream_tls": {
+            "description": "`\"verify\"`, `\"skip\"` or `{\"ca_file\": path}`; absent means plain HTTP to the upstream."
+          },
+          "upstreams": {
+            "description": "Each upstream is `{\"addr\": \"ip:port\"}`, or `{\"pool\": name, \"via\": \"direct\"|\"wayhouse\"}`\n(`via: wayhouse` also carries `local`, the generated loopback listener).",
+            "example": [
+              {
+                "addr": "10.0.0.9:8080"
+              }
+            ],
+            "items": {},
+            "type": "array"
+          }
+        },
+        "required": [
+          "hosts",
+          "upstreams"
+        ],
+        "type": "object"
+      },
+      "WebSiteTls": {
+        "properties": {
+          "cert": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cert",
+          "key"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "description": "`Authorization: Bearer <token>`, the value of `settings.admin.auth_token`. With no token configured the API is open.",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "The HTTP API every `wayhouse` proxy serves on `settings.admin.listen` (default `127.0.0.1:9900`). It reads the live state, changes backends, drains the instance, and reads or replaces the config file.",
+    "license": {
+      "name": "MIT OR Apache-2.0"
+    },
+    "title": "wayhouse proxy admin API",
+    "version": "0.4.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/admin/drain": {
+      "post": {
+        "description": "Marks the instance draining: `/readyz` starts failing so a load balancer stops sending new clients, while the data path keeps serving. Sessions in flight are never closed by this. Wait for `active_conns` to fall, then stop the process (`SIGTERM`). Undo it with `POST /admin/undrain`.",
+        "operationId": "drain",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "draining; active_conns=42\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Draining."
+          }
+        },
+        "summary": "Take the instance out of rotation",
+        "tags": [
+          "Lifecycle"
+        ]
+      }
+    },
+    "/admin/sniffers": {
+      "get": {
+        "description": "Every `.wasm` file in `settings.sniffers.dir` with its SHA-256, size, and whether it is loaded now. A file can exist but not be loaded, for example after a hash-pin mismatch.",
+        "operationId": "list_sniffers",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SnifferInfo"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "The modules, sorted by name."
+          },
+          "409": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "This instance has no `settings.sniffers` block; turning sniffing on from nothing needs a restart."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The directory cannot be read."
+          }
+        },
+        "summary": "List the sniffer modules",
+        "tags": [
+          "Sniffers"
+        ]
+      },
+      "post": {
+        "description": "The body is the raw bytes of a `.wasm` module, at most 8 MiB. It is validated, checked against the `settings.sniffers.modules` pins when the instance has any, written atomically to `settings.sniffers.dir/<name>.wasm`, and a reload picks it up. The module it replaces is kept for `rollback`. Nothing is written when a check fails. Needs the feature flag `admin_write.sniffer_upload`.",
+        "operationId": "upload_sniffer",
+        "parameters": [
+          {
+            "description": "The module name: letters, digits, `-` and `_`. The file is stored as `<name>.wasm`.",
+            "example": "a2s",
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "items": {
+                  "format": "int32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              }
+            }
+          },
+          "description": "The module bytes.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "uploaded a2s.wasm (24576 bytes)\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Stored."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The name is invalid, or the bytes are not a loadable sniffer module."
+          },
+          "403": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Writes are switched off by `admin_write.sniffer_upload`."
+          },
+          "409": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "No `settings.sniffers` block, or the instance pins its modules and this name or hash is not listed (`pinned:`)."
+          },
+          "413": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The body is larger than the module limit."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file could not be written."
+          }
+        },
+        "summary": "Upload a sniffer module",
+        "tags": [
+          "Sniffers"
+        ]
+      }
+    },
+    "/admin/sniffers/{name}": {
+      "delete": {
+        "description": "Removes `<name>.wasm` and the kept previous version, then a reload drops it from the live registry. Needs the feature flag `admin_write.sniffer_upload`.",
+        "operationId": "delete_sniffer",
+        "parameters": [
+          {
+            "description": "The module name (letters, digits, `-` and `_`).",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "removed a2s.wasm\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Removed."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid module name."
+          },
+          "403": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Writes are switched off by `admin_write.sniffer_upload`."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "No such module."
+          },
+          "409": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "No `settings.sniffers` block on this instance."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The file could not be removed."
+          }
+        },
+        "summary": "Remove a sniffer module",
+        "tags": [
+          "Sniffers"
+        ]
+      }
+    },
+    "/admin/sniffers/{name}/rollback": {
+      "post": {
+        "description": "Swaps `<name>.wasm` with the kept previous version, so a second rollback undoes the first. Exactly one previous version is kept. On an instance that pins its modules it only works when the previous version's SHA-256 is pinned. Needs the feature flag `admin_write.sniffer_upload`.",
+        "operationId": "rollback_sniffer",
+        "parameters": [
+          {
+            "description": "The module name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "rolled back a2s.wasm\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Rolled back."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Invalid module name."
+          },
+          "403": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Writes are switched off by `admin_write.sniffer_upload`."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "No previous version is kept."
+          },
+          "409": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "No `settings.sniffers` block, or the previous version's hash is not pinned (`pinned:`)."
+          },
+          "500": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The swap failed."
+          }
+        },
+        "summary": "Roll a sniffer module back",
+        "tags": [
+          "Sniffers"
+        ]
+      }
+    },
+    "/admin/undrain": {
+      "post": {
+        "description": "Clears the draining mark; `/readyz` passes again if a listener is configured.",
+        "operationId": "undrain",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "ready\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Back in rotation."
+          }
+        },
+        "summary": "Put the instance back into rotation",
+        "tags": [
+          "Lifecycle"
+        ]
+      }
+    },
+    "/config": {
+      "get": {
+        "description": "A plain-text view of the live snapshot: the global limits, each listener with its bind address, protocol, route count and the options it has switched on, and each pool with its backends. It is a summary for people; use `GET /config/file` for the file itself.",
+        "operationId": "config",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Plain text."
+          }
+        },
+        "summary": "Summary of the running configuration",
+        "tags": [
+          "Configuration"
+        ]
+      }
+    },
+    "/config/file": {
+      "get": {
+        "description": "The config file the proxy runs from, with its ETag. Inline secrets are masked in the body (a value such as `__wayhouse_redacted_admin_token__` stands in for the secret), and saving the shown text keeps them. A proxy started with `--controller` has no file and answers `404`.",
+        "operationId": "get_config_file",
+        "parameters": [
+          {
+            "description": "`1` (or `true`) returns the copy the last write kept of the file before it.",
+            "in": "query",
+            "name": "previous",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/yaml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The YAML text.",
+            "headers": {
+              "ETag": {
+                "description": "Send it as `If-Match` when you save an edit of this text.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Config-Revision": {
+                "description": "The file's revision counter; the alternative to the ETag, as `?base=` on a save.",
+                "schema": {
+                  "format": "int64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "X-Config-Schema-Version": {
+                "description": "Highest accepted `schema_version`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "This proxy has no config file, or `previous=1` and no earlier version is kept yet."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The file does not parse, so its secrets cannot be masked; fix it on the host."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The file cannot be read."
+          }
+        },
+        "summary": "Read the config file",
+        "tags": [
+          "Configuration"
+        ]
+      },
+      "put": {
+        "description": "Replaces the file with the YAML body if it is still the version you read, then triggers a reload. Off unless the proxy was started with `--allow-config-write`. Name the version you edited with `If-Match` (the ETag of the read) or `?base=` (its `X-Config-Revision`). The old file is kept and can be read with `GET /config/file?previous=1`. The body is limited to 1 MiB.",
+        "operationId": "put_config_file",
+        "parameters": [
+          {
+            "description": "The `X-Config-Revision` of the version you edited, instead of `If-Match`.",
+            "in": "query",
+            "name": "base",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "text/yaml": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "The complete new config file.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigSaved"
+                }
+              }
+            },
+            "description": "Saved. `applied` says whether the reload took it within five seconds."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Config writes are switched off: start the proxy with `--allow-config-write`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "This proxy has no config file."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The file changed since you read it (`code: stale`). Read it again and redo the edit."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The new text does not validate; the file is unchanged."
+          },
+          "428": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Neither `If-Match` nor `?base=` was sent."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The file or its directory is not writable."
+          }
+        },
+        "summary": "Replace the config file",
+        "tags": [
+          "Configuration"
+        ]
+      }
+    },
+    "/config/schema": {
+      "get": {
+        "description": "The JSON Schema the config is validated against, the same one the controller serves. The header `X-Config-Schema-Version` carries the highest `schema_version` this build accepts.",
+        "operationId": "config_schema",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "A JSON Schema document.",
+            "headers": {
+              "X-Config-Schema-Version": {
+                "description": "Highest accepted `schema_version`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "summary": "JSON Schema of a config document",
+        "tags": [
+          "Configuration"
+        ]
+      }
+    },
+    "/config/validate": {
+      "post": {
+        "description": "Parses and validates the YAML in the body with the same code as a reload, and applies nothing. Nothing is read from the running config: a pool a listener names has to be in the document itself.",
+        "operationId": "validate_config",
+        "requestBody": {
+          "content": {
+            "text/yaml": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "A complete config document.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidateOk"
+                }
+              }
+            },
+            "description": "The document is valid."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "error": "invalid configuration: listener game: route 0: unknown pool survival"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "The document does not parse or fails validation; `error` names the key and the reason."
+          }
+        },
+        "summary": "Validate a config document",
+        "tags": [
+          "Configuration"
+        ]
+      }
+    },
+    "/features": {
+      "get": {
+        "description": "Every proxy feature flag with its effective value and where the value comes from. The flags and what they do are in the Manual.",
+        "operationId": "features",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeaturesReply"
+                }
+              }
+            },
+            "description": "All flags of the proxy scope."
+          }
+        },
+        "summary": "List the feature flags",
+        "tags": [
+          "Feature flags"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "description": "Answers `ok` while the process runs. It is the only route that needs no bearer token, so a load balancer or a container runtime can probe it.",
+        "operationId": "healthz",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "ok",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The process is alive."
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "Liveness probe",
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/metrics": {
+      "get": {
+        "description": "Every `wayhouse_*` series in the Prometheus text exposition format. The series are listed in the Reference.",
+        "operationId": "metrics",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain; version=0.0.4": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Prometheus text format."
+          }
+        },
+        "summary": "Prometheus metrics",
+        "tags": [
+          "Observability"
+        ]
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "description": "The OpenAPI 3.1 document these pages are generated from, as served by the build you are talking to. Use it to generate a client or to check what a particular version supports.",
+        "operationId": "openapi_spec",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "An OpenAPI 3.1 document."
+          }
+        },
+        "summary": "This API's OpenAPI description",
+        "tags": [
+          "Observability"
+        ]
+      }
+    },
+    "/pools": {
+      "get": {
+        "description": "One block per pool: the pool name and balancer, then each backend with its health, operator state (`enabled`, `draining`, `disabled`) and the number of live sessions.",
+        "operationId": "pools",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "game\tbalancer=LeastConn\n  10.0.0.5:7777\thealthy\tstate=enabled\tactive=12\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Plain text, one line per pool and per backend, tab separated."
+          }
+        },
+        "summary": "List pools and backends",
+        "tags": [
+          "Pools"
+        ]
+      }
+    },
+    "/pools/{pool}/backends": {
+      "post": {
+        "description": "Adds the address to the pool at runtime. The edit lives in the runtime overlay, so it survives a config reload. The call requests a reload and returns; the backend joins when that reload completes (normally within a moment, so an immediate `PATCH` of it can still answer `404`), and the health checker corrects its state within one interval. Needs the feature flag `admin_write.backends` (on by default).",
+        "operationId": "add_backend",
+        "parameters": [
+          {
+            "description": "The pool name, as in the config.",
+            "in": "path",
+            "name": "pool",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackendAdd"
+              }
+            }
+          },
+          "description": "The backend to add.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "added 10.0.0.5:7777 to game\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Added."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`addr` is not a valid `ip:port`."
+          },
+          "403": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Writes are switched off by `admin_write.backends`."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "No such pool."
+          }
+        },
+        "summary": "Add a backend to a pool",
+        "tags": [
+          "Pools"
+        ]
+      }
+    },
+    "/pools/{pool}/backends/{addr}": {
+      "delete": {
+        "description": "Works whether the backend came from the config file or from an earlier `POST`. Sessions already on it keep running; it just stops being chosen. Needs the feature flag `admin_write.backends`.",
+        "operationId": "delete_backend",
+        "parameters": [
+          {
+            "description": "The pool name.",
+            "in": "path",
+            "name": "pool",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The backend address as `ip:port`.",
+            "example": "10.0.0.5:7777",
+            "in": "path",
+            "name": "addr",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "removed 10.0.0.5:7777 from game\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Removed."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`addr` is not an `ip:port`."
+          },
+          "403": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Writes are switched off by `admin_write.backends`."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "No such pool."
+          }
+        },
+        "summary": "Remove a backend from a pool",
+        "tags": [
+          "Pools"
+        ]
+      },
+      "patch": {
+        "description": "`draining` and `disabled` stop new sessions from choosing the backend; sessions already on it keep running. `enabled` puts it back. Needs the feature flag `admin_write.backends`.",
+        "operationId": "patch_backend",
+        "parameters": [
+          {
+            "description": "The pool name.",
+            "in": "path",
+            "name": "pool",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The backend address as `ip:port` (URL-encode an IPv6 address's brackets and colons).",
+            "example": "10.0.0.5:7777",
+            "in": "path",
+            "name": "addr",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackendPatch"
+              }
+            }
+          },
+          "description": "The new state.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "10.0.0.5:7777 -> draining\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "State changed."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`state` is not one of enabled, draining, disabled, or `addr` is not an `ip:port`."
+          },
+          "403": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Writes are switched off by `admin_write.backends`."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Unknown pool, or the backend is not in the pool."
+          }
+        },
+        "summary": "Set a backend's operator state",
+        "tags": [
+          "Pools"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "description": "`200` when at least one listener is configured and the instance is not draining; `503` otherwise. Point a load balancer's health check here: `POST /admin/drain` makes it fail on purpose.",
+        "operationId": "readyz",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "ready",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Ready to take new connections."
+          },
+          "503": {
+            "content": {
+              "text/plain": {
+                "example": "draining",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Draining (`draining`) or no listener configured (`not ready`)."
+          }
+        },
+        "summary": "Readiness probe",
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/route-hint": {
+      "post": {
+        "description": "Records a short-lived `src_ip` to pool mapping, which listeners with `route_hint: true` consult before their route list. A launcher or control plane calls it just before it sends a player to the proxy. The hint expires on its own. Needs the feature flag `admin_write.route_hint`.",
+        "operationId": "route_hint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouteHintReq"
+              }
+            }
+          },
+          "description": "The client address, the pool, and how long the hint lives.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "ok\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Recorded."
+          },
+          "400": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "`src_ip` is not an IP address, `ttl_sec` is outside 1 to 3600, or the pool does not exist."
+          },
+          "403": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Writes are switched off by `admin_write.route_hint`."
+          }
+        },
+        "summary": "Push a route hint for a client address",
+        "tags": [
+          "Routing"
+        ]
+      }
+    },
+    "/sessions": {
+      "get": {
+        "description": "Every live proxied TCP connection and UDP session, oldest id first: id, transport, listener, client and local address, the pool and backend chosen, and the age. A point-in-time list; a session that has ended is absent. The filters match exactly.",
+        "operationId": "sessions",
+        "parameters": [
+          {
+            "description": "Only sessions of this listener (exact name).",
+            "example": "game",
+            "in": "query",
+            "name": "listener",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only sessions routed to this pool (exact name).",
+            "in": "query",
+            "name": "pool",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only this transport: `tcp` or `udp`.",
+            "example": "udp",
+            "in": "query",
+            "name": "proto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only sessions from this client IP address.",
+            "example": "203.0.113.9",
+            "in": "query",
+            "name": "src",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "example": "sessions=1\n  7\ttcp\tgame\tpeer=203.0.113.9:51234\tlocal=198.51.100.1:7777\tpool=game\tbackend=10.0.0.5:7777\tage=12.3s\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Plain text. The first line is `sessions=<count>`; each session follows on its own line, tab separated."
+          }
+        },
+        "summary": "List live sessions",
+        "tags": [
+          "Sessions"
+        ]
+      }
+    },
+    "/web": {
+      "get": {
+        "description": "What `wayhouse-web-sync` reads to build Caddy's configuration: where Caddy listens and, per site, its hosts, upstreams in final form and TLS settings. `404` when the config has no `web:` section.",
+        "operationId": "web",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebReply"
+                }
+              }
+            },
+            "description": "The resolved section."
+          },
+          "404": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "No `web:` section is configured."
+          }
+        },
+        "summary": "The resolved web: section",
+        "tags": [
+          "Web proxy"
+        ]
+      }
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "tags": [
+    {
+      "description": "Liveness and readiness, for load balancers.",
+      "name": "Health"
+    },
+    {
+      "description": "Metrics.",
+      "name": "Observability"
+    },
+    {
+      "description": "Read pools and change backends at runtime.",
+      "name": "Pools"
+    },
+    {
+      "description": "Read, validate and replace the running config.",
+      "name": "Configuration"
+    },
+    {
+      "description": "What `wayhouse-web-sync` reads.",
+      "name": "Web proxy"
+    },
+    {
+      "description": "The proxy's feature flags and their effective values.",
+      "name": "Feature flags"
+    },
+    {
+      "description": "Live connections and UDP sessions.",
+      "name": "Sessions"
+    },
+    {
+      "description": "Take the instance out of rotation and back.",
+      "name": "Lifecycle"
+    },
+    {
+      "description": "Push route hints.",
+      "name": "Routing"
+    },
+    {
+      "description": "Manage WASM sniffer modules.",
+      "name": "Sniffers"
+    }
+  ]
+}

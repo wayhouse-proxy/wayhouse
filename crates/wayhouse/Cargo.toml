@@ -76,6 +76,7 @@ netlink-packet-route = { workspace = true, optional = true }
 netlink-sys = { workspace = true, optional = true }
 # `--tunnel-*`: the per-process boot id `proxy_register` sends.
 rand = { workspace = true, optional = true }
+utoipa = "6"
 
 [build-dependencies]
 tonic-prost-build = { workspace = true, optional = true }
