@@ -51,6 +51,19 @@ Bearer tokens are only sent over `https://`. Plain `http://` to a host that is n
 | `--namespace`       | `k8s-secret` only: the namespace of the Secrets and of the service names in the certificates. Default `wayhouse`.                                              |
 | `--control`         | Lay out for `wayhouse-control` (controller, aggregator and UI in one process): one `control.pem` valid for all three.                                          |
 
+## Cluster secrets in the console and API
+
+Secrets that a config refers to as `{ secret: name }` are sealed by the controller. The console page `/settings/secrets` and the API show **names, key ids and times, and never values**.
+
+| Request                      | Role  | What it does                                                                                 |
+| ---------------------------- | ----- | -------------------------------------------------------------------------------------------- |
+| `GET /api/secrets`           | admin | The secret names with their key id and when each was set.                                    |
+| `PUT /api/secrets/{name}`    | admin | Seals a new value. The body carries the value, and the UI backend neither logs nor keeps it. |
+| `DELETE /api/secrets/{name}` | admin | Removes the secret.                                                                          |
+| `POST /api/secrets/rewrap`   | admin | Re-seals the cluster secrets under the current key, as a step of a key rotation.             |
+
+The sealed form that proxies fetch is not reachable through the UI.
+
 ## Related
 
 - [Protect a listener](protect-a-listener.md) for limits and filters on the data path.

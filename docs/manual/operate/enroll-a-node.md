@@ -60,6 +60,12 @@ If none of these gives a code, the command stops with an error that names the op
 
 A value that cannot be written safely into a unit file (for instance one with a line break) is refused. `%` and `$` in the arguments are escaped, so systemd does not expand them.
 
+## Revoke a code and sign a mint
+
+A code can be revoked whether or not it was spent. Over the API it is `DELETE /api/enrollments/{id}` with the admin role. Revoking a spent code also revokes the token it produced.
+
+A controller holds the keys of the fleet, so minting a code for the roles `proxy`, `ui` or `controller` needs the admin token **and** a **step-up assertion**, signed over the exact request with a 60 second expiry. A mint made with the UI token needs one for every role. Without `--enroll-step-up-pubkey-file` those mints cannot be made at all. The signing key is derived from a passphrase and a salt, and the salt is not a secret. `GET /enrollments/step-up` on the controller returns it, and answers `409` when the controller has no step-up key. When you send `"step_up": "<passphrase>"` in the body of `POST /api/enrollments`, the UI backend fetches the salt, signs the request and forwards it, so the passphrase never reaches the controller. `wayhouse-controller step-up sign` does the same from a shell.
+
 ## Related
 
 - [Configuration](../../05-configuration.md) for the settings the node reads once it runs.

@@ -37,6 +37,8 @@ Every verb below is sent to the instances and answers `{"results": [...]}` with 
 | `DELETE /api/fleet/pools/{pool}/backends/{addr}` |                                            | Removes the backend from the pool on every instance.                                        |
 | `POST /api/fleet/route-hint`                     | `{"src_ip", "pool", "ttl_sec"}`            | Pushes a route hint to every instance. Only listeners with `route_hint: true` apply it.     |
 
+Against the aggregator directly the same calls are `POST /fleet/instances/{instance}/drain` and `POST /fleet/instances/{instance}/undrain`.
+
 The per-instance versions of these calls are the admin API verbs described in [Drain and maintain](drain-and-maintain.md).
 
 ## Sniffer modules

@@ -64,3 +64,7 @@ A good first alert set: no healthy backend in a pool, `readyz` failing, `wayhous
 near `wayhouse_fd_limit`, and a sudden rise in `wayhouse_filter_blocked_total`. The
 [operations chapter](../../06-operations-observability.md) lists dashboards and alert ideas in
 detail.
+
+## How a proxy names itself
+
+A proxy that runs with `--controller` reports the health of its backends under a name: the value of the environment variable `HOSTNAME` when it is set and at most 128 characters, otherwise a random `proxy-...` id that changes at every start. In containers and Kubernetes `HOSTNAME` is the container or pod name, so the name is stable per pod. Set it yourself on a plain host if you want one that survives restarts.

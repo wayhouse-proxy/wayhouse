@@ -26,7 +26,10 @@ variable.
   [keep the client IP](routing/keep-client-ip.md).
 - **Security and limits:** [protect a listener](security/protect-a-listener.md).
 - **Operating:** [drain and maintain](operate/drain-and-maintain.md),
-  [monitor](operate/monitor.md), upgrading.
+  [monitor](operate/monitor.md), [the admin console](operate/console.md),
+  [process flags](operate/process-settings.md), [feature flags](operate/feature-flags.md),
+  upgrading.
+- **Extending:** [registries and update checks](extend/registries.md).
 - **Certificates, plugins, sniffers, web sites and the admin UI** have their own sections.
 
 > [!NOTE]
