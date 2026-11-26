@@ -44,12 +44,12 @@ One row per release, newest first. A CI check
 constants in the source, so a protocol, schema, store or ABI change cannot land without
 its row. Use `unreleased` for the product column until the release is tagged.
 
-| Release    | Protocol | Config schema | Store format | Sniffer ABI |
-| ---------- | -------- | ------------- | ------------ | ----------- |
-| unreleased | 1.3      | 4             | 2            | 0.1         |
-| 0.3.0      | 1.2      | 3             | 1            | 0.1         |
-| 0.2.0      | 1.1      | 2             | 1            | 0.1         |
-| 0.1.0      | 1.0      | 1             | 1            | 0.1         |
+| Release | Protocol | Config schema | Store format | Sniffer ABI |
+| ------- | -------- | ------------- | ------------ | ----------- |
+| 0.4.0   | 1.3      | 4             | 2            | 0.1         |
+| 0.3.0   | 1.2      | 3             | 1            | 0.1         |
+| 0.2.0   | 1.1      | 2             | 1            | 0.1         |
+| 0.1.0   | 1.0      | 1             | 1            | 0.1         |
 
 ## Upgrading from 0.3.0 to 0.4.0
 
