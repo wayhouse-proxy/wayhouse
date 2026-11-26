@@ -56,6 +56,10 @@ def main(argv):
         covered |= hits
         if t["status"] == "written" and not os.path.exists(os.path.join(REPO, "docs", "deep-dive", "topics", t["slug"] + ".md")):
             errors.append("topic %s is written but docs/deep-dive/topics/%s.md does not exist" % (t["slug"], t["slug"]))
+    config = open(os.path.join(REPO, "site", "astro.config.mjs"), encoding="utf-8").read()
+    for t in topics:
+        if t["status"] == "written" and 'slug: "deep-dive/topics/%s"' % t["slug"] not in config:
+            errors.append("topic %s is not in a Deep dive section of site/astro.config.mjs" % t["slug"])
     for f in sorted(set(files) - covered):
         errors.append("no Deep dive topic covers %s (add it to docs/deep-dive/topics.tsv)" % f)
     done = sum(t["status"] == "written" for t in topics)
