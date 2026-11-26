@@ -1,11 +1,11 @@
 # 11 – Backend transport
 
-**Status: built (2026-09-06).** All 7 Phase 14 slices are implemented and
-verified live end-to-end in Docker (the slice-by-slice record is in `git log`).
-This chapter remains the design source of truth for the mechanism. The design
-was locked in a 2026-09-05 session at the depth of the phase-12/13 pre-build
-sessions; the "Locked decisions" and "Open questions" sections below are kept
-as written then.
+**Status: built.** This chapter is the design record for the mechanism, and
+[the tunnel on the proxy side](deep-dive/topics/tunnel-client.md),
+[the agent](deep-dive/topics/tunnel-agent.md) and
+[the registry](deep-dive/topics/tunnel-registry.md) explain how it works today. The "Locked
+decisions" and "Open questions" sections below are kept as they were written when the design was
+decided.
 
 ## Problem
 
@@ -13,18 +13,18 @@ Every requirement and architecture decision so far assumes what
 [`docs/01-requirements.md`](01-requirements.md) states outright under
 Assumptions: *"Backends are reachable over a trusted internal network."*
 That's true for a single-region deployment (proxy and game servers in the
-same DC/VPC). It stops being true the moment the fleet is what phase 10–13
-were actually built for: **proxy instances distributed globally** (edge
+same DC/VPC). It stops being true the moment the fleet is what the
+control plane is built for: **proxy instances distributed globally** (edge
 PoPs, one per region) in front of game servers that are **not** on those
 proxies' local network — a different DC, a different cloud, a rented box at
 a small hosting provider, sometimes behind a home NAT.
 
-Today `connect_backend` (`crates/wayhouse-core/src/proxy.rs:138`) and
+Before the tunnel, `connect_backend` (`crates/wayhouse-core/src/proxy.rs:138`) and
 `connect_upstream` (`crates/wayhouse-core/src/listener_udp.rs:844`) do a plain
 `TcpStream::connect`/`UdpSocket::connect` to a bare `SocketAddr` — there is no
 seam between "route resolved to this address" and "dial it" for anything
 else to hook into. `health.rs`'s active checks dial the same way
-independently. Closing this gap is Phase 14.
+independently. The tunnel closes this gap.
 
 ## Don't reinvent the wheel
 
@@ -177,7 +177,7 @@ routing, neither a reimplementation of cryptography or tunnel framing.
 - **Key material stays out of the config-revision log.** A peer table is
   security-sensitive, high-churn (origins come and go), and has nothing to
   do with routing/pool structure — it belongs in its own resource on the
-  same Tier-1 store, mirroring how the intent log (phase 12) already lives
+  same Tier-1 store, mirroring how the intent log already lives
   alongside the config log rather than inside it.
 - **Config schema: an origin is a new `BackendSource` (locked)** — reuses
   the existing level-triggered discovery seam (ADR 12a: `fetch() -> Vec
@@ -239,9 +239,7 @@ agents; proxies still share one token).
 
 `wayhouse-controller` allocates tunnel-internal addresses, so no operator chooses (or
 mis-chooses) one. Design and decisions:
-`docs/superpowers/specs/2026-10-02-tunnel-address-authority-design.md`;
-IPv6 (built 2026-10-03):
-`docs/superpowers/specs/2026-10-03-ipv6-tunnel-design.md`.
+[the tunnel registry](deep-dive/topics/tunnel-registry.md), which also covers IPv6.
 
 - **Allocation.** Start the controller with `--tunnel-network fd49:89c1:4b5e:60::/64`
   (IPv6, `/64` to `/120`; the default in the docs and examples, and a ULA cannot clash

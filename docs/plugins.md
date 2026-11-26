@@ -62,8 +62,7 @@ and leaves the host running.
 
 An official, prebuilt plugin cannot know the panel host or the node network of every operator.
 ABI 0.2 lets a module declare **options** the operator fills in at install, and bind some
-capability values to them (design:
-`docs/superpowers/specs/2026-10-28-plugin-manifest-and-bindings.md`).
+capability values to them (see [the plugin host](deep-dive/topics/plugin-host.md)).
 
 An optional custom section, `wayhouse.plugin-manifest` (JSON, up to 16 KiB), holds a `name`, an
 `options` schema and the `bindings`:
@@ -251,8 +250,7 @@ Rules:
 ## Port routes
 
 Games on UDP have no hostname to route by. The `port_routes` capability lets a plugin route by
-**entry port** instead (design: `docs/superpowers/specs/2026-10-22-port-based-plugin-routing-design.md`,
-#403). The operator opens one port range once; the plugin never picks a port.
+**entry port** instead (see [plugins in the controller](deep-dive/topics/plugin-runtime-in-controller.md), #403). The operator opens one port range once; the plugin never picks a port.
 
 ```json
 "port_routes": { "ports": ["30000-30999"], "proto": ["udp", "tcp"], "backends": ["10.0.0.0/16"], "max_entries": 256 }

@@ -87,19 +87,24 @@ struct, the rest is shared).
   keeps running.
 
 ### 7. Admin API
-- `GET /config` (active snapshot, plaintext — implemented, phase 5), `GET /pools`,
-  `GET /sessions[?listener=&pool=&proto=&src=]` (live connection / session list —
-  implemented)
-- `POST /admin/drain` / `POST /admin/undrain` (flip `readyz` for the LB —
-  implemented, phase 5)
+The proxy's own HTTP API, bound to an internal interface. Full list in
+[the admin API](deep-dive/topics/admin-api.md).
+- Reads: `GET /config` (the active snapshot, plaintext), `GET /config/schema`, `GET /pools`,
+  `GET /sessions[?listener=&pool=&proto=&src=]` (the live connection and session list),
+  `GET /web`, `GET /features`, `GET /metrics`, `GET /healthz`, `GET /readyz`.
+- `POST /admin/drain` and `POST /admin/undrain` flip `readyz` for the load balancer.
 - `PATCH /pools/{p}/backends/{addr} {state: enabled|draining|disabled}`,
-  `POST /pools/{p}/backends {addr}`, `DELETE /pools/{p}/backends/{addr}` — all
-  implemented (phase 5). Add/remove edits live in a runtime overlay layered on
-  the file config, so they survive a file reload.
-- `POST /route-hint` – push resolver: `{src_ip, pool|target, ttl_sec}` for games with
-  no protocol hint, set by launcher/matchmaker (scheme C in [03](03-routing.md))
-- `POST /reload`, `GET /healthz`, `GET /readyz`, `GET /metrics`
-- Auth: mTLS or bearer token, bound to an internal interface only.
+  `POST /pools/{p}/backends {addr}` and `DELETE /pools/{p}/backends/{addr}`. Add and remove edit a
+  runtime overlay layered on the file config, so they survive a file reload.
+- `POST /route-hint` is the push resolver: `{src_ip, pool|target, ttl_sec}` for games with no
+  protocol hint, set by a launcher or matchmaker (scheme C in [03](03-routing.md)).
+- `POST /config/validate` checks a document, and `GET`/`PUT /config/file` read and replace the
+  config file when `--allow-config-write` is on. A reload has no endpoint of its own: it starts
+  on `SIGHUP`, on a change to the file, after a `PUT /config/file` and when the controller
+  pushes a revision.
+- `GET /admin/sniffers` and the upload, delete and rollback routes under `/admin/sniffers`
+  manage the sniffer modules (see [sniffers](sniffers.md)).
+- Auth: a bearer token and optional TLS (`settings.admin.tls`), bound to an internal interface.
 
 ## Threading / runtime model
 
@@ -128,7 +133,7 @@ struct, the rest is shared).
   another backend if no affinity is required.
 - Proxy instance fails: clients reconnect; an L4 LB / anycast in front of the proxy
   spreads them onto the remaining instances. No shared session state (v1, and no
-  shared *session* state in v2 either — see below).
+  shared *session* state with the control plane either, see below).
 - Overload: early rate limits + `accept` throttling + load shedding with a metric,
   before the latency of existing sessions suffers.
 
@@ -146,21 +151,21 @@ struct, the rest is shared).
 - **Filter chain** before routing (ACL, rate limit, geo) as an ordered, configurable
   list.
 
-## Multi-instance & the distributed control plane (v2)
+## Multi-instance and the distributed control plane
 
 The diagram above is **one instance**. Production runs many identical, independent
 instances across hosts / AZs / regions, fronted by anycast or an L4 LB; they share
 nothing on the data path (ADR 4).
 
-[10-distributed-control-plane.md](10-distributed-control-plane.md) plans the v2
+[10-distributed-control-plane.md](10-distributed-control-plane.md) describes the
 additions that give a fleet operator (and a management GUI) one authoritative
 config, persisted operator intent, and multi-vantage health — **without touching
 the hot path**. In brief:
 
 - **Tier 1** — a global, ordered, durable store for structural config *and*
-  operator intent (the phase-5 overlay, admin state, route hints). Instances
+  operator intent (the runtime backend overlay, admin state, route hints). Instances
   **pull** revisions and feed them through the same `validate() → Snapshot::build
-  → ArcSwap::store` path a file reload uses. Written by a new optional
+  → ArcSwap::store` path a file reload uses. Written by the optional
   `wayhouse-controller`, which also aggregates fleet reads and hosts the GUI + auth.
 - **Tier 2** — a per-failure-domain gossip fabric for observed backend
   reachability. Advisory and rebuildable: each instance's own checks still

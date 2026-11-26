@@ -1,41 +1,23 @@
-# 10 – Distributed control plane (v2)
+# 10 – Distributed control plane
 
 ## Status
 
-**Phases 10 through 13 are all now built** — see the phase-by-phase status
-notes below and [08-roadmap.md](08-roadmap.md) for the slice-by-slice
-record. This chapter remains the design source of truth for the mechanisms
-those phases implement. The v1 data plane and the single-instance
-control plane (chapters [02](02-architecture.md), [05](05-configuration.md),
-[06](06-operations-observability.md)) are unchanged by this: every mechanism
-below is either an **additional writer** feeding the same validated `Snapshot`
-swap, or an **additional input** to the same per-backend health flag. The hot
-path gains no network call and no lock.
+All of this is built: the controller, the aggregator and the console, the hierarchy, intra-tier HA,
+adoption, shared intent, staged rollout, RBAC and audit, and the Tier 2 regional health fabric.
+This chapter is the design record for those mechanisms, and each one has a write-up of how it works
+today in the [Deep dive](deep-dive/topics/controller-core.md). The data plane and the
+single-instance control plane (chapters [02](02-architecture.md), [05](05-configuration.md),
+[06](06-operations-observability.md)) are unchanged by this: every mechanism below is either an
+**additional writer** feeding the same validated `Snapshot` swap, or an **additional input** to the
+same per-backend health flag. The hot path gains no network call and no lock.
 
-The controller and aggregator are each a **recursive tree of tiers** (one
-tier per failure domain, down to as small as one instance), so the same
-design covers a single-instance install and a globally distributed fleet with
-no separate mechanism per size — see "Fleet topology" below. Control (Tier 1)
-pulls root → leaf with a static `standalone`/`slave` role per tier; the
-aggregator pushes leaf → root with a homogeneous schema at every hop.
-**Locked for the first release** (phase 10+11 in `docs/08-roadmap.md`): one
-`standalone` controller tier + one aggregator tier, `replicas: 1` each, no
-`slave` role, no HA, no adoption, operator intent stays per-instance as it is
-today (only structural config moves into the controller). The hierarchy,
-intra-tier HA, adoption, and shared intent are phase 12 — a real, already
-fully designed extension, deliberately built *after* something works
-end-to-end, not before.
-
-**Phase 12 status (2026-09-05): fully built**, all 8 slices (hierarchy, both
-relay logs, adoption, intra-tier HA, staged/canary rollout, RBAC + audit) —
-see `docs/08-roadmap.md`.
-
-**Phase 13 status (2026-09-05): fully built**, all 5 slices (config schema,
-SWIM membership via embedded `foca`, the per-backend health broadcast,
-`Backend`/`health.rs` integration, and multi-process live verification in
-`crates/wayhouse-fleet-tests`) — see "Mechanism (built)" under "Tier 2 —
-regional health fabric" below, ADR 24 in `docs/09`, and
-`docs/08-roadmap.md` for the slice-by-slice build record.
+The controller and aggregator are each a **recursive tree of tiers** (one tier per failure domain,
+down to as small as one instance), so the same design covers a single-instance install and a
+globally distributed fleet with no separate mechanism per size, see "Fleet topology" below. Control
+(Tier 1) pulls root to leaf with a static `standalone`/`slave` role per tier. The aggregator pushes
+leaf to root with a homogeneous schema at every hop. Tier 2, the regional health fabric, is described
+in "Tier 2" below, in [gossip health](deep-dive/topics/gossip-health.md) and in ADR 24 in
+[09](09-technology-choices.md).
 
 ---
 
@@ -77,7 +59,7 @@ touching the data path or the "one immutable snapshot" invariant.
 3. **Level-triggered everywhere.** Sources publish *the current value*; the
    instance reconciles by diffing against what it holds. Idempotent, and the
    same shape as `ListenerManager::reconcile` and the discovery adapters
-   (phase 8).
+  .
 4. **Degrade to last-known-good.** A control-plane outage *freezes* state, it
    never *clears* it — the same rule a flapping discovery source already has to
    obey ("don't nuke the pool").
@@ -410,7 +392,7 @@ the software. A lone proxy: `standalone` + 1. A globally distributed fleet: a
 `standalone` Raft group at the root, `slave` groups (sized to taste) at each
 region.
 
-### Adoption (built — phase 12 slice 5)
+### Adoption
 
 > **Status:** built (phase 12 slice 5, 2026-09-05) — `POST /admin/adopt`, see
 > `docs/06` "Adoption" and ADR 21/`docs/09`. Was not part of the phase 10/11
@@ -675,7 +657,7 @@ what order," which a stateless replica set cannot give.
   the leader, which first asks the node who it is (`/raft/whoami`) so a node id is
   never pointed at another node's address; remove a node, or `PUT` a new address
   (including an `https://` one), the same way. Design:
-  `docs/superpowers/specs/2026-10-03-ha-replicated-address-allocation-design.md`,
+  [controller HA](deep-dive/topics/controller-ha.md),
   recipe in docs/12 "HA membership".
 - **The tunnel registries are replicated state too (built 2026-10-03).** The
   backend-peers and proxy-peers registries and the address book are applied by the
@@ -712,7 +694,7 @@ correctly scopes it as an explicit later slice, opted into per tier via
 
 ## Staged / canary rollout (design)
 
-> **Status:** built (phase 12 slice 7) on the **controller** side —
+> **Status:** built on the **controller** side —
 > `POST /config?stage=canary&group=<name>`, `GET /config?group=<name>`,
 > `GET /config/subscribe?since=<rev>&group=<name>`, `POST
 > /config/promote/{revision}`, and the `{promoted, canary_groups}` `stage`
@@ -821,7 +803,7 @@ surfaces; not designed here.
 
 ## RBAC and audit (design)
 
-> **Status:** built (phase 12 slice 8) — `wayhouse-ui --users-file` (argon2 hashes,
+> **Status:** built — `wayhouse-ui --users-file` (argon2 hashes,
 > `viewer`/`operator`/`admin`), `--ui-password` kept as legacy single-secret
 > mode, `X-Actor` on every proxied write, and the controller's per-revision
 > `actors` `redb` tree (`GET /config/revisions` gained an `actor` field). See
@@ -1022,7 +1004,7 @@ from nothing is still startup-only, per its existing design.
 Every surface that two components share carries a version, and a node that cannot
 understand its peer says so instead of misbehaving. The design (the N / N-1 window,
 the upgrade order) is in
-`docs/superpowers/specs/2026-10-05-component-versioning-design.md`;
+[the shared HTTP toolkit](deep-dive/topics/http-toolkit.md);
 this is what is built.
 
 | Surface | Carrier | Rule |
@@ -1127,7 +1109,7 @@ Still open:
   when its parent link is down before it starts dropping — a fixed ring
   buffer sized in the same spirit as the existing recv-buffer caps
   (`docs/06`), not unbounded growth.
-- **Dynamic Raft membership** was deferred here and is built (2026-10-03): see
+- **Dynamic Raft membership** was deferred here and is built: see
   "Intra-tier HA (design)" above and docs/12 "HA membership".
 - **A durable, fleet-wide audit *log*** (as opposed to the per-revision
   `actor` field this session's RBAC design adds, which is durable but lives

@@ -3,59 +3,57 @@
 Goal: map an incoming connection/session to a **pool** (and optionally an affinity
 key) — ideally without game-protocol knowledge, with optional sniffers where needed.
 
-> **Implementation status (phase 3, partial).** `listeners[].routes` is a
-> priority-ordered `[{ match, action }]` list, first match wins, with
-> `action: { pool: <name> }`. Implemented matchers: `always`, `client_cidr`
-> (source IP), `dst` (destination IP the client connected to, via
-> `getsockname` / the bind address, against a `cidrs` list — see the caveat
-> below), `port` (destination port from the accepting socket), `first-bytes`
-> (a `prefix` — `"hex:..." | "ascii:..."`, ≤ 512 B — and/or a
-> `length: { min, max }` byte-count window; on TCP `length` sees only what one
-> peek returned, on UDP the exact datagram length), and `sni`
-> (`host` patterns: exact, `*.suffix`, `.suffix` — matched against `server_name`
-> from the peeked, non-terminated TLS ClientHello; TCP listeners only). The
-> `sniffer` matcher exists (`{ type: sniffer, sniffer: <name>, host: [...] }`,
-> several per listener) but **no sniffers are built in** — a `sniffer:`
-> route never matches until a sniffer is loaded (Phase 9). The TCP path
-> `MSG_PEEK`s up to 4096 B (250 ms budget) before routing, only when a route
-> needs bytes; UDP inspects the first datagram it already holds. A ClientHello
-> split across TCP segments is reassembled: the path re-peeks every 5 ms until
-> the whole first TLS record is buffered or the 250 ms budget expires, so `sni`
-> still matches a multi-segment ClientHello. (`first-bytes` `length` on TCP is
-> still "what has been peeked so far" — a `prefix` fits in the first segment.)
-> The `consistent_hash` balancer is implemented (`balancer: consistent_hash`,
-> pool-level `hash_on: src_ip | src_ip_port`; rendezvous/HRW hash over the
-> healthy backends); so is `weighted` (`balancer: weighted` + a `weights:` map).
-> **`dst` — two forms:** a normally-bound TCP/UDP listener sees
-> only its own bind IP (useful across addresses the host serves separately; TCP
-> can bind a non-local address with `freebind: true`). A UDP listener with
-> `prefix: <cidr>` runs in **prefix mode** — one wildcard socket with
-> `IP_PKTINFO` / `IPV6_RECVPKTINFO` serves the whole routed prefix (scheme A
-> below): the real per-datagram destination feeds `dst`, replies go out from
-> that address, and datagrams outside the prefix are dropped
-> (`wayhouse_datagrams_dropped_total{reason="outside_prefix"}`). The sniffer **seam**
-> is `wayhouse_core::sniff::Sniffer` → `RouteHint { host, key, reject }`, fed into
-> routing before matchers run — a `reject` hint drops the connection / datagram
-> outright (`result="sniffer_reject"` / `reason="sniffer_reject"`); loading real
-> sniffers (sandboxed, from a separate repo) is Phase 9. The **push resolver** (`POST /route-hint`) is implemented:
-> a listener with `route_hint: true` checks a short-lived `src_ip → pool` table
-> before its route list (`wayhouse_route_hints_applied_total{listener}` counts hits).
-> The **external resolver** (`action: { resolver: <name> }`, `resolvers:`
-> section) is implemented — **phase 4 slices 1–4**: HTTP **and gRPC** transports
-> (`type: http | grpc`), `pool` **and `target`** results (`target` = connect
-> straight to a resolver-named instance, no pool / health / cap), `on_error:
-> reject | fallback_route | stale_ok`, and a TTL'd LRU result cache (`cache: {
-> key, positive_ttl_sec, negative_ttl_sec, max_entries }`; key parts `src_ip` /
-> `src_ip_port` / `sni` / `routing_key` / `first_bytes:a:b`). Only
-> The resolver has no affinity key (`sticky_key` was removed, #54): affinity
-> comes from `consistent_hash` pools and the request-keyed cache.
-> Still pending elsewhere: the TCP side of prefix binding beyond `freebind` and
-> the `first_available` balancer. The `weighted` balancer is implemented
-> (`balancer: weighted` + a `weights:` map of `"ip:port"` → share, default 1) —
-> weighted round-robin over the healthy set, one atomic tick per selection.
-> Regex-over-first-bytes is folded into the Phase 9 sniffer layer, not a
-> `first-bytes` sub-form. A listener with a bare `pool:` is normalised to one
-> `always` route.
+## What a route is
+
+`listeners[].routes` is a priority-ordered list of `{ match, action }`, and the first match wins. A
+listener with a bare `pool:` is normalised to one `always` route. An action is `{ pool: <name> }`
+or `{ resolver: <name> }`.
+
+**Matchers**
+
+- `always` matches everything.
+- `client_cidr` matches the source IP.
+- `port` matches the destination port of the accepting socket.
+- `dst` matches the destination IP the client connected to, against a `cidrs` list. A normally bound
+  listener sees only its own bind IP, which is useful across addresses the host serves separately
+  (a TCP listener can bind a non-local address with `freebind: true`). A UDP listener with
+  `prefix: <cidr>` runs in **prefix mode**: one wildcard socket with `IP_PKTINFO` or
+  `IPV6_RECVPKTINFO` serves the whole routed prefix (scheme A below). The real per-datagram
+  destination feeds `dst`, replies leave from that address, and datagrams outside the prefix are
+  dropped (`wayhouse_datagrams_dropped_total{reason="outside_prefix"}`).
+- `first-bytes` takes a `prefix` (`"hex:..."` or `"ascii:..."`, at most 512 bytes) and/or a
+  `length: { min, max }` window. On UDP `length` is the exact datagram length. On TCP it sees only
+  what one peek returned, so a `prefix` is the dependable form.
+- `sni` takes `host` patterns (exact, `*.suffix` or `.suffix`) matched against the `server_name`
+  of the peeked, not terminated, TLS ClientHello. TCP listeners only.
+- `sniffer` (`{ type: sniffer, sniffer: <name>, host: [...] }`, several per listener) matches a
+  verdict from a WASM sniffer. It never matches until that sniffer is loaded.
+
+**Peeking.** The TCP path peeks at up to 4096 bytes, with a 250 ms budget, only when a route needs
+bytes. UDP inspects the first datagram it already holds. A ClientHello split across TCP segments is
+reassembled: the path peeks again every 5 ms until the whole first TLS record is buffered or the
+budget ends.
+
+**Sniffer seam.** `wayhouse_core::sniff::Sniffer` returns a `RouteHint { host, key, reject }` that is
+fed into routing before the matchers run. A `reject` hint drops the connection or datagram
+(`result="sniffer_reject"` or `reason="sniffer_reject"`). There is no regex over first bytes,
+because that is a sniffer's job.
+
+**Push resolver.** A listener with `route_hint: true` checks a short-lived `src_ip` to pool table
+before its route list. `POST /route-hint` fills it, and
+`wayhouse_route_hints_applied_total{listener}` counts hits.
+
+**External resolver.** `action: { resolver: <name> }` points at an entry in the top-level
+`resolvers:` list: HTTP or gRPC (`type: http | grpc`) and a result of a `pool` or a `target`
+(connect straight to a named instance, with no pool, health or cap). `on_error` is `reject`,
+`fallback_route` or `stale_ok`. Results are cached in a TTL'd LRU
+(`cache: { key, positive_ttl_sec, negative_ttl_sec, max_entries }`, key parts `src_ip`, `src_ip_port`,
+`sni`, `routing_key` and `first_bytes:a:b`). The resolver has no affinity key of its own: affinity
+comes from `consistent_hash` pools and the cache key.
+
+**Balancers.** `consistent_hash` uses `hash_on: src_ip | src_ip_port` and a rendezvous hash over the
+healthy backends. `weighted` takes a `weights:` map of `"ip:port"` to a share, default 1, and is a
+weighted round robin over the healthy set with one atomic tick per selection.
 
 ## Evaluation order
 
@@ -129,7 +127,7 @@ short-lived `src_ip → pool` mapping.
   - `raknet` → RakNet offline handshake recognized by its magic (Minecraft Bedrock and other RakNet games; key `raknet`)
   - `teamspeak3` → TeamSpeak 3 `TS3INIT1` client init recognized (key `teamspeak3`)
 - Sniffer contract: **read-only**, receives up to `peek_max_bytes`, returns
-  `Option<RouteHint { key?: String, pool_hint?: String, reject?: bool }>`. No access to
+  `Option<RouteHint { host?: String, key?: String, reject?: bool }>`. No access to
   later bytes, no writing.
 
 ### `external` (resolver)
@@ -165,7 +163,6 @@ short-lived `src_ip → pool` mapping.
 | `least_conn` | long-lived sessions of uneven duration |
 | `weighted` | heterogeneous hardware / canary; `weights: { "ip:port": N }`, default 1, weighted round-robin |
 | `consistent_hash` | affinity without a sticky table; hash key = client IP or routing key |
-| `first_available` | active/passive, a backend fills up to its cap, then the next *(not yet implemented)* |
 
 ## Session affinity
 

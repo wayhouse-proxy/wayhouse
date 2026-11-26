@@ -74,6 +74,7 @@ Under high availability only the **leader** runs the relay. If every follower su
 ## What was traded away
 
 - **A parent that went back is a problem.** A relay cursor above what the parent now sends means the parent's counter went backwards, because it was wiped or restored, and the tier skips the entries. Tiers do not paper over a parent whose history was rewritten.
+- **No proxy can join a canary group yet.** The controller serves a group view, but `wayhouse --controller` does not report a group when it subscribes, so a canary revision stays invisible to proxies until it is promoted. Only a hand written subscribe, or a client of the API, sees it.
 - **One group per canary submission.** The type allows several, but a submission takes one `group`.
 - **Clock dependence for windows.** The confirm deadline is a wall clock value, and the 10 second floor is the margin for skew.
 - **A short list of risks.** Only changes known to lock out an operator open an automatic window. Other mistakes are caught by validation or by an operator asking for a window explicitly.

@@ -16,8 +16,7 @@
 
 ## Schema (reference)
 
-> **Implemented subset (roadmap phase 2 + phase 3 routing, partial).**
-> `wayhouse-config` currently accepts a reduced, flatter schema: `pools[].targets`
+> **Pools, listeners and routes.** The schema is flat: `pools[].targets`
 > or a `pools[].source` naming a `backend_sources[]` entry
 > (`static` / `dns_srv` / `consul` / `kubernetes` / `tunnel`, flat fields,
 > `refresh_interval_sec`); `balancer: round_robin | least_conn | consistent_hash
@@ -47,12 +46,11 @@
 > and `{ type: sni, host: ["exact", "*.suffix", ".suffix"] }` — the `server_name`
 > from the peeked (not terminated) TLS ClientHello, TCP listeners only. The
 > `{ type: sniffer, sniffer: <name>, host: [...] }` matcher parses (a listener
-> may use several sniffers, see `docs/03-routing.md`) but matches nothing until a sniffer is loaded — no
-> sniffers are built in; the name is checked at listener start, not by
-> `validate()`. The sniffer loader is Phase 9; regex-over-first-bytes is a Phase
-> 9 sniffer concern, not a `first_bytes` sub-form.
+> may use several sniffers, see `docs/03-routing.md`) but matches nothing until a sniffer of that name is loaded; the name is checked at listener start, not by
+> `validate()`. Regex over the first bytes is a sniffer's job, not a `first_bytes`
+> sub-form.
 >
-> **External resolver** (phase 4, slices 1–4): a top-level `resolvers:` list of
+> **External resolver:** a top-level `resolvers:` list of
 > `{ name, type: http|grpc, endpoint, timeout_ms, on_error: reject|fallback_route|stale_ok,
 > proxy_protocol?, target_connect_timeout_ms?, target_idle_timeout_sec?, cache? }`
 > and a route `action: { resolver: <name> }` (exactly
@@ -90,7 +88,7 @@
 > source (needs `CAP_NET_ADMIN`; mutually exclusive with `prefix`);
 > `route_hint: true` → consult the push resolver.
 >
-> **Filter chain (phase 7):** `allow: [<cidr>, …]` / `deny: [<cidr>, …]` on a
+> **Filter chain:** `allow: [<cidr>, …]` / `deny: [<cidr>, …]` on a
 > listener (TCP or UDP) are checked against the client source IP before routing.
 > `deny` is checked first and wins; a non-empty `allow` makes the listener
 > default-deny for any source it does not cover. A blocked connection / new UDP
@@ -133,8 +131,7 @@
 > `wayhouse_filter_blocked_total{listener,filter="geo"}`. Startup-only, like
 > `settings.workers`.
 >
-> **Sniffer loader** (phase 9; config schema slice 2, the `wasmtime`
-> loader slice 3, live `dir` rescanning slice 4 — all landed):
+> **Sniffer loader** (the `wasmtime` loader, with live rescanning of `dir`):
 > `settings.sniffers: { dir, call_timeout_ms, max_memory_bytes, modules: [{
 > name, sha256, config? }] }`. Absent ⇒ no sniffers load and a `sniffer:` route
 > never matches. `dir` is a directory of `*.wasm` modules, scanned at startup and
@@ -173,7 +170,7 @@
 > `POST/DELETE /fleet/sniffers[/{name}]` and the admin GUI's Sniffers page —
 > see `docs/sniffers.md` "Installing by hand".
 >
-> **Tier-2 regional health fabric** (phase 13, docs/10 "Tier 2" — built):
+> **Tier-2 regional health fabric** (see [10](10-distributed-control-plane.md), "Tier 2"):
 > `settings.failure_domain` (a string identity — this instance's
 > reachability-equivalence class, e.g. an AZ or region) and
 > `settings.gossip: { bind, seeds?, quorum_fraction?, psk }` must be set
@@ -290,8 +287,7 @@
 > Flags the build does not enforce yet (`wired: false`) are listed by name only.
 >
 > **Web sites (schema 3):** the optional top-level `web:` section describes HTTP(S) sites
-> published through a Caddy that sits behind a Wayhouse pool (design: issue #297, spec
-> `docs/superpowers/specs/2026-10-15-web-routing-design.md`). It is validated and resolved
+> published through a Caddy that sits behind a Wayhouse pool (see [the web gateway](deep-dive/topics/web-gateway.md)). It is validated and resolved
 > as `Config.web` and needs `schema_version: 3`. The only routing it adds are the
 > loopback listeners for `via: wayhouse` upstreams (below); everything else is read by
 > [`wayhouse-web-sync`](web-proxy.md) through `GET /web` (`docs/06`) and rendered into Caddy.
@@ -403,17 +399,17 @@
 > `balancer: consistent_hash` (`hash_on: src_ip`), so a reopened session still
 > reaches the same backend. The check goes by the sniffer's module name.
 >
-> **Admin API auth** (phase 10+11 slice 10): `settings.admin.auth_token`
+> **Admin API auth:** `settings.admin.auth_token`
 > (a flat string, not the target schema's `auth: { mode, token }` object
 > below) gates every admin API request except `GET /healthz` with a bearer
 > check. `None` (the default) leaves the API open — network-boundary-only
-> auth, same as always. A single shared secret, not RBAC/mTLS — appropriate
+> auth, same as always. A single shared secret, not RBAC — appropriate
 > for gating a control-plane API that's meant to stay behind its own network
 > boundary regardless; needed once something calls in from outside that
 > boundary, which today means `wayhouse-aggregator`'s intent-verb fan-out
 > (`docs/10` "The aggregator"), given the same token to present.
 >
-> **Admin API TLS** (2026-10-02): `settings.admin.tls: { cert, key }` (PEM chain,
+> **Admin API TLS**: `settings.admin.tls: { cert, key }` (PEM chain,
 > leaf first; PEM private key — both required) serves the admin API over HTTPS.
 > Startup-only like `listen`; the files are re-read every 30 s, so a renewed
 > certificate needs no restart. `wayhouse --check` loads the pair; errors name
@@ -461,7 +457,7 @@ filters:
     new_per_sec: 50
     burst: 100
 
-# backend sources (phase 8) — a pool takes its backends from `targets:` OR a
+# backend sources — a pool takes its backends from `targets:` OR a
 # named `source:`, never both. Level-triggered: the adapter returns the current
 # address set; the runtime diffs it against the live set. A refresh that errors
 # or returns empty keeps the last-known-good set. `static` is folded into the
@@ -490,7 +486,7 @@ backend_sources:
     record: "_game._udp.us.internal.example.com"
     refresh_interval_sec: 10
   - name: home-origin
-    type: tunnel               # phase 14 (built) — the `tunnel` BackendSource.
+    type: tunnel               # the `tunnel` BackendSource.
                                 # Resolves backend addresses a `wayhouse-agent`-managed
                                 # origin behind a WireGuard tunnel has registered
                                 # with the controller's backend-peers registry.
@@ -798,7 +794,7 @@ The schema is generated from the raw config types and checked in as
 | `settings.limits.*` changed | requires a restart — the live counters / token bucket are built once at startup (like `workers`) |
 | `settings.admin.*` changed (`listen`, `tls`) | requires a restart — the admin API is bound once at startup; a reload silently keeps the old values. `auth_token` is the exception: a changed or rotated token applies on reload (the old one works for 5 more minutes, see Secrets above). Adding or removing it needs a restart. With `tls` set, the certificate **files** are still re-read every 30 s, so renewal needs no restart |
 | `settings.geo_db` changed | requires a restart — the MaxMind DB is opened once at startup (a listener's `geo` codes are reloadable, the DB path is not) |
-| `settings.sniffers.dir` contents changed (module added / removed / recompiled), or a `modules[].config` string changed | live — rescanned on every reload (phase 9 slice 4) and swapped in like the snapshot |
+| `settings.sniffers.dir` contents changed (module added / removed / recompiled), or a `modules[].config` string changed | live — rescanned on every reload and swapped in like the snapshot |
 | `settings.sniffers` block added / removed, or `call_timeout_ms` / `max_memory_bytes` changed | requires a restart — the `wasmtime::Engine` and its epoch-ticker thread are built once at startup, like `settings.workers` |
 | Invalid file (including a `schema_version` newer than this build supports) | reload rejected, metric `config_reload_failed_total++`, old config stays active |
 
