@@ -195,7 +195,19 @@ impl PluginStore {
     }
 }
 
+/// The OpenAPI paths of the plugin route overlay.
+#[derive(utoipa::OpenApi)]
+#[openapi(paths(show, subscribe))]
+pub(crate) struct PluginRoutesDoc;
+
 /// `GET /plugin-routes`: the current overlay.
+#[utoipa::path(
+    get, path = "/plugin-routes", tag = "Plugins",
+    summary = "The routes plugins have set",
+    description = "The overlay of routes and port routes that plugins currently claim: each host or entry port, where it points and which install owns it, \
+plus the claims that lost to an earlier install. Proxies receive the same document from `GET /plugin-routes/subscribe`.",
+    responses((status = 200, description = "The overlay.", body = serde_json::Value))
+)]
 pub async fn show(State(st): State<PluginsState>) -> Response {
     match st.store.overlay() {
         Ok(o) => Json(o).into_response(),
@@ -204,6 +216,17 @@ pub async fn show(State(st): State<PluginsState>) -> Response {
 }
 
 /// `GET /plugin-routes/subscribe`: the overlay now, then again whenever it changes.
+#[utoipa::path(
+    get, path = "/plugin-routes/subscribe", tag = "Plugins",
+    summary = "Stream the plugin routes (server-sent events)",
+    description = "A long-lived stream that sends the routes overlay whenever it changes (the first event is the current one). It is what proxies follow \
+with `--plugin-overlay-url`. At most 1024 streams are served at once; one more gets `503` with `Retry-After: 5`. Gated on the `x-wayhouse-protocol` header.",
+    responses(
+        (status = 200, description = "The event stream; each event's data is the overlay document.", body = String, content_type = "text/event-stream"),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "Too many subscribers.", body = crate::openapi::ErrorBody),
+    )
+)]
 pub async fn subscribe(State(st): State<PluginsState>) -> Response {
     let Some(slot) = crate::slot::Slot::take(&SUBSCRIBERS) else {
         tracing::warn!(

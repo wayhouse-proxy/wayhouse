@@ -173,6 +173,15 @@ impl IntentState {
     }
 }
 
+/// The OpenAPI paths of the operator intent routes.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(submit_intent, subscribe),
+    components(schemas(crate::openapi::ErrorBody, crate::intent::IntentOp)),
+    tags((name = "Operator intent", description = "Fleet-wide backend and route-hint changes, kept in a log every proxy follows.")),
+)]
+pub(crate) struct IntentApiDoc;
+
 pub fn router(state: IntentState) -> Router {
     let routes = Router::new()
         .route("/intent", axum::routing::post(submit_intent))
@@ -184,8 +193,11 @@ pub fn router(state: IntentState) -> Router {
     wayhouse_http::protocol::gate(routes, "controller").with_state(state)
 }
 
-#[derive(Serialize)]
+/// The revision an op was stored as.
+#[derive(Serialize, utoipa::ToSchema)]
 struct SubmitResponse {
+    /// The op's number in the intent log.
+    #[schema(example = 4)]
     revision: u64,
 }
 
@@ -197,6 +209,22 @@ struct ErrorResponse {
 /// `POST /intent` — body is one JSON [`IntentOp`]. Validated
 /// ([`IntentOp::validate`]) and structurally parsed before it ever reaches
 /// the store — a malformed or invalid op is rejected here, never broadcast.
+#[utoipa::path(
+    post, path = "/intent", tag = "Operator intent",
+    summary = "Submit an operator intent op",
+    description = "Appends one operation to the fleet-wide intent log: the pool-scoped verbs of the proxy admin API (add, \
+remove or patch a backend; push a route hint). Every proxy that runs the named pool applies it, and the log \
+survives restarts. The op is checked here (a valid `ip:port`, a known `state`, a `ttl_sec` of 1 to 3600) so a \
+malformed op is never broadcast. Whole-instance drain is not part of this log: it targets one instance, through the \
+aggregator or that proxy's own admin API. A slave tier refuses writes (`403`). Gated on the `x-wayhouse-protocol` header.",
+    request_body = IntentOp,
+    responses(
+        (status = 200, description = "Accepted. `revision` is the op's number in the intent log.", body = SubmitResponse),
+        (status = 403, description = "This controller is a slave tier and does not accept intent writes.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "The body is not a known op, or a field fails its check.", body = crate::openapi::ErrorBody),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn submit_intent(
     State(state): State<IntentState>,
     headers: axum::http::HeaderMap,
@@ -258,14 +286,30 @@ async fn submit_intent(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 struct SubscribeParams {
+    /// Send only ops after this revision (default `0`: the whole log).
     since: Option<u64>,
 }
 
 /// `GET /intent/subscribe?since=<revision>` — the exact catch-up-then-tail
 /// shape `crate::api::subscribe` uses for config, applied to the intent log
 /// instead.
+#[utoipa::path(
+    get, path = "/intent/subscribe", tag = "Operator intent",
+    summary = "Stream intent ops (server-sent events)",
+    description = "The intent log as a long-lived server-sent-event stream, in the same catch-up-then-tail shape as `GET /config/subscribe`: \
+every op after `since`, then each new one. Each event's data is `{\"revision\": 4, \"op\": {...}}`. At most 1024 streams are \
+served at once; one more gets `503`. A reverse proxy in front of it must not buffer. Gated on the `x-wayhouse-protocol` header.",
+    params(SubscribeParams),
+    responses(
+        (status = 200, description = "The event stream.", body = String, content_type = "text/event-stream",
+            example = "data: {\"revision\":4,\"op\":{\"op\":\"backend_add\",\"pool\":\"mc\",\"addr\":\"10.0.0.7:25565\"}}\n\n"),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "Too many subscribers.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn subscribe(
     State(state): State<IntentState>,
     Query(params): Query<SubscribeParams>,

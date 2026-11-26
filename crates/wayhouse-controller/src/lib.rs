@@ -36,6 +36,7 @@ pub mod init;
 pub mod intent;
 pub mod kv;
 pub mod lease;
+pub mod openapi;
 pub mod origin;
 pub mod parent_client;
 pub mod peers;

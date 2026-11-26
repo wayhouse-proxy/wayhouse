@@ -71,6 +71,64 @@ pub fn hash_token(token: &str) -> String {
         .collect()
 }
 
+/// The OpenAPI paths of the gateway bundle routes.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(list, fetch),
+    modifiers(&GatewayAuth),
+    tags((name = "ACME gateways", description = "What a gateway calls with its own token to get certificates.")),
+)]
+pub(crate) struct BundlesDoc;
+
+/// Adds the gateway token scheme.
+struct GatewayAuth;
+
+impl utoipa::Modify for GatewayAuth {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+        openapi
+            .components
+            .get_or_insert_with(Default::default)
+            .add_security_scheme(
+                "gateway",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .description(Some("A gateway token from `POST /acme/gateways`."))
+                        .build(),
+                ),
+            );
+    }
+}
+
+/// The sites a gateway can fetch.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `list`
+struct BundleList {
+    /// One entry per site: `site`, `version` and `not_after` (Unix seconds).
+    #[schema(value_type = Vec<Object>, example = json!([{"site": "panel", "version": 3, "not_after": 1771000000}]))]
+    sites: Vec<serde_json::Value>,
+}
+
+/// A certificate and its key.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `fetch`
+struct Bundle {
+    /// The certificate version.
+    #[schema(example = 3)]
+    version: u64,
+    /// The certificate chain, PEM.
+    chain_pem: String,
+    /// The private key, PEM. A secret.
+    key_pem: String,
+    /// When the certificate expires, Unix seconds.
+    not_after: u64,
+    /// The certificate's serial number.
+    serial: String,
+    /// Issued by a CA that is not publicly trusted (a staging CA).
+    untrusted: bool,
+}
+
 pub fn router(state: BundleState) -> Router {
     Router::new()
         .route("/acme/bundles", get(list))
@@ -120,6 +178,18 @@ fn authenticate(st: &BundleState, headers: &HeaderMap) -> Result<Gateway, Box<Re
     found.ok_or_else(denied)
 }
 
+#[utoipa::path(
+    get, path = "/acme/bundles", tag = "ACME gateways",
+    summary = "List the certificates a gateway may fetch",
+    description = "Authenticated with a gateway token (`Authorization: Bearer gwt_...`, from `POST /acme/gateways`) instead of the admin token: the admin token does not work here. \
+Lists the sites that name this gateway and already have a certificate, with the version and expiry. Limited per source address (5 a second, burst 20).",
+    security(("gateway" = [])),
+    responses(
+        (status = 200, description = "The sites.", body = BundleList),
+        (status = 401, description = "No token, a malformed one, or an unknown gateway.", body = crate::openapi::ErrorBody),
+        (status = 429, description = "Too many requests from this address. `Retry-After: 1`.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn list(
     State(st): State<BundleState>,
     peer: ConnectInfo<wayhouse_http::tls::PeerAddr>,
@@ -164,6 +234,23 @@ fn matches_etag(headers: &HeaderMap, version: u64) -> bool {
     })
 }
 
+#[utoipa::path(
+    get, path = "/acme/bundles/{site}", tag = "ACME gateways",
+    summary = "Fetch a site's certificate and key",
+    description = "Authenticated with a gateway token, as `GET /acme/bundles`. Returns the certificate chain and the private key. The answer carries `ETag: \"<version>\"`; send it back as `If-None-Match` and an unchanged \
+certificate answers `304`. A site this gateway is not listed on looks the same as one that does not exist. The answer carries `Cache-Control: no-store`; serve it over TLS.",
+    security(("gateway" = [])),
+    params(("site" = String, Path, description = "The site's name.", example = "panel")),
+    responses(
+        (status = 200, description = "The bundle.", body = Bundle,
+            headers(("ETag" = String, description = "The certificate version in quotes."), ("Cache-Control" = String, description = "`no-store`."))),
+        (status = 304, description = "The certificate has not changed since `If-None-Match`."),
+        (status = 401, description = "No token, a malformed one, or an unknown gateway.", body = crate::openapi::ErrorBody),
+        (status = 404, description = "No such bundle for this gateway, or no certificate has been issued yet.", body = crate::openapi::ErrorBody),
+        (status = 429, description = "Too many requests from this address. `Retry-After: 1`.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "This controller cannot open the certificate key (is the cluster secret key loaded?).", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn fetch(
     State(st): State<BundleState>,
     peer: ConnectInfo<wayhouse_http::tls::PeerAddr>,

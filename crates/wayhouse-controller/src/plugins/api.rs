@@ -131,6 +131,18 @@ impl PluginsState {
     }
 }
 
+/// The OpenAPI paths of the plugin routes.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(
+        upload_module, delete_upload, install, list, get_one, remove, status, enable, disable,
+        put_suspended, put_config, enable_webhook, revoke_webhook, list_secrets, put_secret,
+        delete_secret, rewrap_secrets, secret_keys, backend_health
+    ),
+    tags((name = "Plugins", description = "Install and operate WebAssembly plugins, their secrets and webhooks.")),
+)]
+pub(crate) struct PluginsDoc;
+
 pub fn router(state: PluginsState) -> Router {
     // Component-facing: the proxies' stream of plugin routes.
     let component = wayhouse_http::protocol::gate(
@@ -180,22 +192,44 @@ pub fn router(state: PluginsState) -> Router {
         .with_state(state)
 }
 
-#[derive(Deserialize)]
+/// A proxy's view of its backends.
+#[derive(Deserialize, utoipa::ToSchema)]
 struct HealthReport {
+    /// The proxy's name.
+    #[schema(example = "edge-1")]
     proxy: String,
+    /// `true`: this is the complete list. `false` (default): only the backends that changed.
     #[serde(default)]
     full: bool,
+    /// The backends.
     backends: Vec<HealthItem>,
 }
 
-#[derive(Deserialize)]
+/// One backend's health.
+#[derive(Deserialize, utoipa::ToSchema)]
 struct HealthItem {
+    /// The backend, `ip:port`.
+    #[schema(example = "10.0.0.7:25565")]
     addr: String,
+    /// Whether it is up.
     up: bool,
 }
 
 /// `POST /backend-health`: a proxy's view of its backends (ABI 0.3). The leader keeps the
 /// board, so a follower forwards.
+#[utoipa::path(
+    post, path = "/backend-health", tag = "Plugins",
+    summary = "A proxy reports its backends' health",
+    description = "A proxy tells the controller which of its backends are up, so plugins with the `backends` capability see `backend_health` events. \
+`full: true` means the list is the complete view, otherwise it is a change. The leader keeps the board, so a follower forwards. \
+Gated on the `x-wayhouse-protocol` header; at most 512 KiB.",
+    request_body = HealthReport,
+    responses(
+        (status = 204, description = "Taken."),
+        (status = 400, description = "A malformed report.", body = crate::openapi::ErrorBody),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn backend_health(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -233,17 +267,168 @@ pub fn disabled_router(reason: &'static str) -> Router {
         .route("/plugins/{*rest}", axum::routing::any(refuse))
 }
 
-#[derive(Serialize)]
+/// What an upload answers: what the module declares.
+#[derive(Serialize, utoipa::ToSchema)]
 struct UploadResponse {
+    /// The module's SHA-256, lowercase hex: its identity for `POST /plugins`.
+    #[schema(example = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")]
     sha256: String,
+    /// The module's size in bytes.
     size: usize,
+    /// The plugin ABI version the module was built for.
+    #[schema(example = "0.3")]
     abi: String,
-    /// What the module asks for regardless of options; a module with placeholders asks for
-    /// more, which depends on the install's options (see `manifest`).
+    /// What the module asks for regardless of options. A module with option placeholders asks for
+    /// more, which depends on the install's options (see `manifest`). The object has the keys
+    /// `triggers`, `tick_interval_secs`, `log`, `state`, `http`, `secrets`, `routes`, `port_routes`
+    /// and `backends`; the Manual's plugin pages describe each.
+    #[schema(value_type = Object)]
     capabilities: Capabilities,
+    /// The module's option manifest (its option names, types and defaults), or `null` when it has none.
+    #[schema(value_type = Option<Object>)]
     manifest: Option<wayhouse_plugin_host::Manifest>,
 }
 
+/// One installed plugin.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real type is `InstallRecord`
+struct InstallView {
+    /// The random install id.
+    #[schema(example = "3f9c1d0a7b2e4c58")]
+    id: String,
+    /// The install's name.
+    #[schema(example = "dns-sync")]
+    name: String,
+    /// The module's SHA-256.
+    sha256: String,
+    /// The module's size in bytes.
+    size: usize,
+    /// The capability set the operator approved for this module (same shape as `capabilities` of an upload).
+    #[schema(value_type = Object)]
+    approved: serde_json::Value,
+    /// The options handed to the plugin's `init`.
+    #[schema(value_type = Object)]
+    config: serde_json::Value,
+    /// Whether triggers are delivered.
+    enabled: bool,
+    /// When it was installed, Unix seconds.
+    created_at: u64,
+    /// Who installed it (the console's user, or `plugins-file` when the plugins file declared it).
+    created_by: Option<String>,
+    /// Present while the webhook is enabled; only the token's hash is kept.
+    #[schema(value_type = Option<Object>, example = json!({"token_hash": "e3b0c44298fc1c14..."}))]
+    webhook: Option<serde_json::Value>,
+    /// Capabilities switched off with `PUT /plugins/{id}/suspended`. Absent when none.
+    suspended: Option<Vec<String>>,
+    /// Only on `GET /plugins/{id}`: the module's option manifest, `null` without one.
+    #[schema(value_type = Option<Object>)]
+    manifest: Option<serde_json::Value>,
+    /// Only on an install that succeeded with something to flag.
+    warning: Option<String>,
+}
+
+/// The answer to a dry run.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `install_inner`
+struct DryRunAnswer {
+    /// The capability set the options resolve to: the set to send as `approved`.
+    #[schema(value_type = Object)]
+    effective: serde_json::Value,
+}
+
+/// A `409` that names its reason.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real bodies are built inline
+struct ManagedError {
+    /// `managed_by_file`, `stale` or `needs_approval`.
+    #[schema(example = "managed_by_file")]
+    reason: String,
+    /// What went wrong, in one sentence.
+    error: String,
+    /// `needs_approval` only: the approved set now.
+    #[schema(value_type = Option<Object>)]
+    approved: Option<serde_json::Value>,
+    /// `needs_approval` only: the set the new options resolve to.
+    #[schema(value_type = Option<Object>)]
+    effective: Option<serde_json::Value>,
+}
+
+/// The answer to enabling a webhook.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline
+struct WebhookAnswer {
+    /// The bearer token callers present. Shown only here.
+    token: String,
+    /// The path the webhook is served at on `--plugin-webhook-listen`.
+    #[schema(example = "/plugins/3f9c1d0a7b2e4c58/hook")]
+    path: String,
+}
+
+/// The secret slots of an install.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `list_secrets`
+struct SecretSlots {
+    /// One entry per approved slot: `slot`, `set`, and for a slot that is set `key_id`, `updated_at` and whether this node can use it.
+    #[schema(value_type = Vec<Object>, example = json!([{"slot": "API_KEY", "set": false}]))]
+    secrets: Vec<serde_json::Value>,
+}
+
+/// The answer to setting a secret.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `put_secret`
+struct SecretSet {
+    /// The slot.
+    #[schema(example = "API_KEY")]
+    slot: String,
+    /// Always `true`.
+    set: bool,
+    /// The key the value is sealed under.
+    key_id: String,
+    /// When it was set, Unix seconds.
+    updated_at: u64,
+}
+
+/// The answer to a re-wrap.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `rewrap_secrets`
+struct RewrapAnswer {
+    /// How many secrets were sealed again.
+    rewrapped: u64,
+    /// `install/slot` names that changed while the re-wrap ran and were left as they are.
+    skipped: Vec<String>,
+    /// `install/slot` names this node could not open.
+    unreadable: Vec<String>,
+    /// The key id everything is sealed under now.
+    active_key_id: String,
+}
+
+/// Which secret keys the nodes hold.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `secret_keys`
+struct SecretKeys {
+    /// This node's key ids.
+    key_ids: Vec<String>,
+    /// The active key id, if there is one.
+    active: Option<String>,
+    /// Under HA, each member's key ids (or `{"error": ...}`) by node id; empty without HA.
+    #[schema(value_type = Object)]
+    nodes: serde_json::Value,
+}
+
+#[utoipa::path(
+    post, path = "/plugins/modules", tag = "Plugins",
+    summary = "Upload a plugin module",
+    description = "Stores a WebAssembly plugin module (up to 8 MiB) and answers what it declares: its ABI, the capabilities it asks \
+for and its option manifest. The module is not installed yet; install it with `POST /plugins` using the returned `sha256`. A \
+module that no install uses is an orphan: there is a cap, and when it is full an upload answers `507` until you delete one \
+(`DELETE /plugins/modules/{sha256}`) or install one. In an HA cluster a follower forwards the upload to the leader.",
+    request_body(content = Vec<u8>, content_type = "application/octet-stream", description = "The `.wasm` module."),
+    responses(
+        (status = 201, description = "Stored.", body = UploadResponse),
+        (status = 400, description = "Not a valid plugin module (not WebAssembly, no ABI or capabilities section, too large).", body = crate::openapi::ErrorBody),
+        (status = 507, description = "Too many uploaded modules wait for an install.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn upload_module(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -293,6 +478,18 @@ async fn upload_module(
 
 /// `DELETE /plugins/modules/{sha256}`: drops an uploaded module no install uses, the way out
 /// of a full orphan cap (`507` on upload).
+#[utoipa::path(
+    delete, path = "/plugins/modules/{sha256}", tag = "Plugins",
+    summary = "Delete an uploaded module",
+    description = "Drops an uploaded module that no install uses: the way out of a full orphan cap.",
+    params(("sha256" = String, Path, description = "The module's SHA-256, lowercase hex.", example = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")),
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 400, description = "Not a SHA-256 digest.", body = crate::openapi::ErrorBody),
+        (status = 404, description = "No such uploaded module.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "An install uses it.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn delete_upload(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -323,15 +520,24 @@ async fn delete_upload(
     }
 }
 
-#[derive(Deserialize)]
+/// The body of `POST /plugins`.
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct InstallRequest {
+    /// A name for the install.
+    #[schema(example = "dns-sync")]
     name: String,
+    /// The uploaded module's SHA-256.
+    #[schema(example = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")]
     sha256: String,
-    /// What the operator approves; the module's declaration must be within it.
+    /// What the operator approves; the module's declaration, resolved against `config`, must be within it.
+    #[schema(value_type = Object, example = json!({"log": true}))]
     approved: Capabilities,
+    /// The plugin's options (up to 64 KiB of JSON). Default `{}`.
     #[serde(default)]
+    #[schema(value_type = Object)]
     config: serde_json::Value,
+    /// Whether to start delivering triggers. Default `true`.
     #[serde(default = "yes")]
     enabled: bool,
     /// Checks the module and options and answers `{"effective": ...}` (the set to approve)
@@ -401,6 +607,25 @@ fn pool_error(e: PoolError) -> ApiError {
     }
 }
 
+#[utoipa::path(
+    post, path = "/plugins", tag = "Plugins",
+    summary = "Install a plugin",
+    description = "Installs an uploaded module under the capabilities you approve. The module's declaration, resolved against \
+your `config`, must be within `approved`. With `dry_run` nothing is installed and the answer is `{\"effective\": ...}`, \
+the capability set to approve for those options. The install is recorded even when something about it needs your attention: \
+the answer then carries a `warning` beside the record. A plugin declared in the plugins file is managed there and cannot be \
+changed through this API (`409` with `reason: managed_by_file`). In an HA cluster a follower forwards the request to the leader.",
+    request_body = InstallRequest,
+    responses(
+        (status = 201, description = "Installed. The install record, with an optional `warning`.", body = InstallView),
+        (status = 200, description = "A dry run: the capability set the options resolve to.", body = DryRunAnswer),
+        (status = 400, description = "A malformed body or config, or `approved` is not exactly the capability set the options resolve to (the body then carries `effective`).", body = crate::openapi::ErrorBody),
+        (status = 404, description = "The module was never uploaded.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "The module's bytes are missing, or an install with that id exists.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "The module or its options are invalid, or the module asks for more than `approved`.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The compile pool is busy or the plugin service is not ready; retry.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn install(State(st): State<PluginsState>, headers: HeaderMap, body: Bytes) -> Response {
     match install_inner(&st, &headers, body).await {
         Ok(r) | Err(r) => r,
@@ -628,12 +853,28 @@ fn unexpected(resp: &WriteResponse) -> Response {
     }
 }
 
+#[utoipa::path(
+    get, path = "/plugins", tag = "Plugins",
+    summary = "List installs",
+    description = "Every installed plugin.",
+    responses((status = 200, description = "The installs.", body = Vec<InstallView>))
+)]
 async fn list(State(st): State<PluginsState>) -> Result<Json<Vec<InstallRecord>>, ApiError> {
     Ok(Json(blocking(&st, |s| s.list()).await.map_err(internal)?))
 }
 
 /// The install plus its module's manifest (`null` without one), so a client can render the
 /// options form without keeping the upload response around.
+#[utoipa::path(
+    get, path = "/plugins/{id}", tag = "Plugins",
+    summary = "Read one install",
+    description = "The install plus its module's manifest (`null` without one), so a client can render the options form without keeping the upload answer around.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58")),
+    responses(
+        (status = 200, description = "The install and its manifest.", body = InstallView),
+        (status = 404, description = "No such install.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn get_one(
     State(st): State<PluginsState>,
     Path(id): Path<String>,
@@ -660,6 +901,16 @@ async fn get_one(
 
 /// What the install's ticks have done (empty before the first one). Under HA only the
 /// leader ticks, so a follower forwards the read.
+#[utoipa::path(
+    get, path = "/plugins/{id}/status", tag = "Plugins",
+    summary = "What an install's ticks have done",
+    description = "The runner's own status of the install: its last runs and their outcome (empty before the first tick). In an HA cluster only the leader ticks, so a follower forwards the read.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58")),
+    responses(
+        (status = 200, description = "The status, a JSON object.", body = serde_json::Value),
+        (status = 404, description = "No such install.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn status(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -735,6 +986,17 @@ pub(super) async fn set_enabled(
     }
 }
 
+#[utoipa::path(
+    post, path = "/plugins/{id}/enable", tag = "Plugins",
+    summary = "Enable an install",
+    description = "Starts delivering triggers to the plugin. The approval is untouched.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58")),
+    responses(
+        (status = 200, description = "The updated install.", body = InstallView),
+        (status = 404, description = "No such install.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "The install is managed by the plugins file.", body = ManagedError),
+    )
+)]
 async fn enable(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -743,6 +1005,17 @@ async fn enable(
     set_enabled(&st, &headers, id, true).await
 }
 
+#[utoipa::path(
+    post, path = "/plugins/{id}/disable", tag = "Plugins",
+    summary = "Disable an install",
+    description = "Stops delivering triggers to the plugin. Its record, state and approval stay.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58")),
+    responses(
+        (status = 200, description = "The updated install.", body = InstallView),
+        (status = 404, description = "No such install.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "The install is managed by the plugins file.", body = ManagedError),
+    )
+)]
 async fn disable(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -751,7 +1024,8 @@ async fn disable(
     set_enabled(&st, &headers, id, false).await
 }
 
-#[derive(Deserialize)]
+/// The body of `PUT /plugins/{id}/suspended`.
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct SuspendedRequest {
     /// The whole set of switched-off capabilities; empty resumes. Names from `SUSPENDABLE`.
@@ -760,6 +1034,21 @@ struct SuspendedRequest {
 
 /// Switches capabilities of an install off or on again without touching its approval, so
 /// resuming needs no new approval. The runner applies the set before its next call.
+#[utoipa::path(
+    put, path = "/plugins/{id}/suspended", tag = "Plugins",
+    summary = "Switch capabilities off or on",
+    description = "Sets the whole set of capabilities that are switched off, without touching the approval, so resuming needs no new \
+approval. Names come from `log`, `state`, `http`, `routes`, `port_routes` and `backends`; an empty set resumes everything. The \
+runner applies the set before its next call. Unlike other changes, suspending is allowed on an install the plugins file manages.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58")),
+    request_body = SuspendedRequest,
+    responses(
+        (status = 200, description = "The updated install.", body = InstallView),
+        (status = 400, description = "A name that cannot be suspended.", body = crate::openapi::ErrorBody),
+        (status = 404, description = "No such install.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "A cluster member runs a build that cannot apply it yet.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn put_suspended(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -834,18 +1123,39 @@ async fn put_suspended(
     }
 }
 
-#[derive(Deserialize)]
+/// The body of `PUT /plugins/{id}/config`.
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct ConfigRequest {
+    /// The new options.
+    #[schema(value_type = Object)]
     config: serde_json::Value,
     /// Required when the new config changes what the options resolve to, and then exactly
     /// that set; otherwise absent or equal to the current one.
+    #[schema(value_type = Option<Object>)]
     approved: Option<Capabilities>,
 }
 
 /// Replaces an install's config. A module whose options are bound to capabilities is
 /// approved as the set the options resolve to, so an edit that moves that set is refused
 /// with both sets (`409`) until the same call carries the new one as `approved`.
+#[utoipa::path(
+    put, path = "/plugins/{id}/config", tag = "Plugins",
+    summary = "Replace an install's config",
+    description = "Replaces the options handed to the plugin's `init`. For a module whose options are bound to capabilities, the approval is the set \
+the options resolve to: an edit that moves that set is refused with `409` and `reason: needs_approval` (the body carries both \
+sets) until the same call sends the new set as `approved`. A `409` with `reason: stale` means the install changed while you edited it.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58")),
+    request_body = ConfigRequest,
+    responses(
+        (status = 200, description = "The updated install.", body = InstallView),
+        (status = 400, description = "A malformed body or config, or an `approved` that is not the set the options resolve to.", body = crate::openapi::ErrorBody),
+        (status = 404, description = "No such install.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "`needs_approval`, `stale`, or `managed_by_file`.", body = ManagedError),
+        (status = 422, description = "The options are invalid for the module.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The compile pool is busy or the module is missing; retry.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn put_config(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -1034,6 +1344,17 @@ pub(super) async fn put_config_inner(
     }
 }
 
+#[utoipa::path(
+    delete, path = "/plugins/{id}", tag = "Plugins",
+    summary = "Remove an install",
+    description = "Removes the install with its stored state, its secrets and its port assignments. The module's bytes go too when no other install uses them. An install managed by the plugins file is removed from the file instead.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58")),
+    responses(
+        (status = 204, description = "Removed."),
+        (status = 404, description = "No such install.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "The install is managed by the plugins file.", body = ManagedError),
+    )
+)]
 pub(super) async fn remove(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -1077,6 +1398,20 @@ pub(super) async fn remove(
 
 /// Turns the install's webhook on with a fresh token (enable and rotate are the same call).
 /// The token is in this answer only; the store keeps its hash.
+#[utoipa::path(
+    post, path = "/plugins/{id}/webhook", tag = "Plugins",
+    summary = "Enable an install's webhook (or rotate its token)",
+    description = "Turns the install's inbound webhook on with a fresh bearer token; calling it again rotates the token and the old one stops \
+working at once. The token is in this answer only: the store keeps its hash. The webhook is served on the separate \
+`--plugin-webhook-listen` address at `path`, not on this API's port.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58")),
+    responses(
+        (status = 200, description = "The token and the path it is valid on.", body = WebhookAnswer),
+        (status = 400, description = "The install did not approve the `on_webhook` trigger.", body = crate::openapi::ErrorBody),
+        (status = 404, description = "No such install.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "A cluster member runs a build that cannot apply it yet.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn enable_webhook(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -1158,6 +1493,16 @@ async fn enable_webhook(
 }
 
 /// Turns the install's webhook off; the old token stops working at once.
+#[utoipa::path(
+    delete, path = "/plugins/{id}/webhook", tag = "Plugins",
+    summary = "Turn an install's webhook off",
+    description = "The old token stops working at once.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58")),
+    responses(
+        (status = 204, description = "Turned off."),
+        (status = 404, description = "No such install.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn revoke_webhook(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -1238,11 +1583,14 @@ async fn approved_slot(st: &PluginsState, id: &str, slot: &str) -> Result<Instal
 }
 
 /// `{"value": "..."}`. Deliberately no `Debug`, and a parse failure never echoes the body.
-#[derive(Deserialize)]
+/// The body of `PUT /plugins/{id}/secrets/{slot}`.
+#[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct SecretBody {
+    /// The secret's value.
     value: String,
 }
+type SecretValue = SecretBody;
 
 /// Maps a secret write's Raft answer to a response.
 fn secret_answer(resp: &WriteResponse) -> Result<(), ApiError> {
@@ -1259,6 +1607,22 @@ fn secret_answer(resp: &WriteResponse) -> Result<(), ApiError> {
     }
 }
 
+#[utoipa::path(
+    put, path = "/plugins/{id}/secrets/{slot}", tag = "Plugins",
+    summary = "Set a secret slot",
+    description = "Seals a value (at most 16 KiB body) under the controller's active secret key for a slot the install's approval declares. The \
+plugin reads it only as `${secret:NAME}` in request headers to the hosts the slot is bound to. Needs `--plugin-secret-key-file` on \
+the controller. The value is never logged or returned.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58"), ("slot" = String, Path, description = "The slot's name.", example = "API_KEY")),
+    request_body = SecretValue,
+    responses(
+        (status = 200, description = "Stored.", body = SecretSet),
+        (status = 400, description = "The body is not `{\"value\": \"...\"}`, the value's size is out of range, or the slot name is not valid.", body = crate::openapi::ErrorBody),
+        (status = 404, description = "No such install, or the approval declares no such slot.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "The controller has no secret key, or an HA member lacks the active key or runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn put_secret(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -1357,6 +1721,17 @@ async fn put_secret(
     }
 }
 
+#[utoipa::path(
+    delete, path = "/plugins/{id}/secrets/{slot}", tag = "Plugins",
+    summary = "Clear a secret slot",
+    description = "Removes the stored value.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58"), ("slot" = String, Path, description = "The slot's name.", example = "API_KEY")),
+    responses(
+        (status = 204, description = "Cleared."),
+        (status = 404, description = "No such install or slot.", body = crate::openapi::ErrorBody),
+        (status = 409, description = "An HA member runs an older build.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn delete_secret(
     State(st): State<PluginsState>,
     headers: HeaderMap,
@@ -1432,6 +1807,16 @@ pub(crate) fn unreadable(
 
 /// Per approved slot: whether it is set, under which key, and whether this node can use it.
 /// Never a value.
+#[utoipa::path(
+    get, path = "/plugins/{id}/secrets", tag = "Plugins",
+    summary = "List an install's secret slots",
+    description = "Per slot the install's approval declares: whether it is set, under which key and when, and whether this node can use it. Never a value.",
+    params(("id" = String, Path, description = "The install id.", example = "3f9c1d0a7b2e4c58")),
+    responses(
+        (status = 200, description = "The slots.", body = SecretSlots),
+        (status = 404, description = "No such install.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn list_secrets(
     State(st): State<PluginsState>,
     Path(id): Path<String>,
@@ -1475,6 +1860,17 @@ async fn list_secrets(
 
 /// Re-encrypts every secret under the active key (step 2 of a rotation). Runs on the
 /// leader; refuses while a member lacks the active key.
+#[utoipa::path(
+    post, path = "/admin/plugins/secrets/rewrap", tag = "Plugins",
+    summary = "Re-encrypt every plugin secret under the active key",
+    description = "Step 2 of a key rotation: every secret that is sealed under an older key is opened and sealed again under the active one. \
+It runs on the leader and is refused while a member lacks the active key.",
+    responses(
+        (status = 200, description = "What was done.", body = RewrapAnswer),
+        (status = 409, description = "The controller has no secret key, or a member lacks the active key or runs an older build.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "The cluster could not take the write.", body = crate::openapi::ErrorBody),
+    )
+)]
 async fn rewrap_secrets(State(st): State<PluginsState>, headers: HeaderMap) -> Response {
     if let Some(forwarded) = st
         .to_leader(
@@ -1569,6 +1965,12 @@ async fn rewrap_secrets(State(st): State<PluginsState>, headers: HeaderMap) -> R
 }
 
 /// The key ids this node holds and, under HA, each member's (never key material).
+#[utoipa::path(
+    get, path = "/admin/plugins/secrets/keys", tag = "Plugins",
+    summary = "The secret key ids each node holds",
+    description = "Key ids only, never key material: this node's, and under HA each member's, so you can check that every node has the new key before a rotation.",
+    responses((status = 200, description = "The key ids.", body = SecretKeys))
+)]
 async fn secret_keys(State(st): State<PluginsState>) -> Json<serde_json::Value> {
     let mut nodes = serde_json::Map::new();
     if let Some(ha) = &st.ha {

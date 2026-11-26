@@ -1006,6 +1006,222 @@ pub(crate) fn event_payload(revision: u64, bytes: &[u8]) -> serde_json::Value {
     }
 }
 
+// ---- OpenAPI description ----
+
+#[utoipa::path(
+    post, path = "/peers", tag = "Tunnel",
+    summary = "Register an origin",
+    description = "A `wayhouse-agent` registers the origin it fronts: its WireGuard public key, an optional endpoint and the backends it serves. The registration is checked first (a name that is valid for a tunnel, a 32-byte base64 WireGuard \
+public key, an `ip:port` endpoint). The controller allocates a tunnel address from `--tunnel-network` (or checks the \
+`tunnel_address` the caller asks for) and answers with it; sending the same registration again is how a caller \
+refreshes it. A public key can be held by one name only. New names are refused with `503` when the feature flag \
+`tunnel_registration` is off. Gated on the `x-wayhouse-protocol` header: an other-major caller gets `426`. A caller on \
+protocol 1.1 or later also receives `capabilities`.",
+    request_body = crate::peers::PeerRegistration,
+    responses(
+        (status = 200, description = "Registered.", body = RegisterAnswer),
+        (status = 409, description = "The address is held by another owner, the owner already has a different address, or the public key is held by another name.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "The registration is malformed or invalid, the address is outside the network or not a host address, or a backend host does not fit.", body = crate::openapi::ErrorBody),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "New registrations are switched off, the network is exhausted, or the address book is full.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn peer_register() {}
+
+#[utoipa::path(
+    get, path = "/peers", tag = "Tunnel",
+    summary = "List origin registrations",
+    description = "Every name's current registration. Gated on the `x-wayhouse-protocol` header.",
+    responses(
+        (status = 200, description = "The registrations.", body = Vec<crate::peers::PeerRegistration>),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn peer_list() {}
+
+#[utoipa::path(
+    get, path = "/peers/{name}", tag = "Tunnel",
+    summary = "Read one registration",
+    description = "The current registration of `name`. Gated on the `x-wayhouse-protocol` header.",
+    params(("name" = String, Path, description = "The registered name.", example = "game-host-1")),
+    responses(
+        (status = 200, description = "The registration.", body = crate::peers::PeerRegistration),
+        (status = 404, description = "That name never registered.", body = crate::openapi::ErrorBody),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn peer_get() {}
+
+#[utoipa::path(
+    delete, path = "/peers/{name}", tag = "Tunnel",
+    summary = "Release a name",
+    description = "Releases the name's tunnel address and tells subscribers (with a tombstone) to drop its WireGuard peer. It answers \
+`404` only when the name is unknown everywhere, so a retry after a crash still completes. The console's own token may do this too; it also revokes the origin's token and tunnel keys. Gated on the `x-wayhouse-protocol` header.",
+    params(("name" = String, Path, description = "The registered name.", example = "game-host-1")),
+    responses(
+        (status = 200, description = "Released. `released` is the address that was freed, if there was one.", body = ReleaseAnswer),
+        (status = 404, description = "The name is unknown.", body = crate::openapi::ErrorBody),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn peer_release() {}
+
+#[utoipa::path(
+    get, path = "/peers/subscribe", tag = "Tunnel",
+    summary = "Stream registrations (server-sent events)",
+    description = "A long-lived stream in the same catch-up-then-tail shape as `GET /config/subscribe`: every registration log entry after `since`, then each new \
+one. An event's data is `{\"revision\": N, \"registration\": {...}}`, or `{\"revision\": N, \"removed\": {\"name\": \"...\"}}` \
+for a release. A subscriber keeps its own latest-by-name view. At most 1024 streams are served at once; one more gets `503` with `Retry-After: 5`. Gated on the `x-wayhouse-protocol` header.",
+    params(RegistrySubscribeParams),
+    responses(
+        (status = 200, description = "The event stream.", body = String, content_type = "text/event-stream"),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "Too many subscribers.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn peer_subscribe() {}
+
+#[utoipa::path(
+    post, path = "/proxy-peers", tag = "Tunnel",
+    summary = "Register a proxy",
+    description = "A proxy with a tunnel registers itself so agents can find it: its WireGuard public key and public endpoint. The registration is checked first (a name that is valid for a tunnel, a 32-byte base64 WireGuard \
+public key, an `ip:port` endpoint). The controller allocates a tunnel address from `--tunnel-network` (or checks the \
+`tunnel_address` the caller asks for) and answers with it; sending the same registration again is how a caller \
+refreshes it. A public key can be held by one name only. New names are refused with `503` when the feature flag \
+`tunnel_registration` is off. Gated on the `x-wayhouse-protocol` header: an other-major caller gets `426`. A caller on \
+protocol 1.1 or later also receives `capabilities`.",
+    request_body = crate::proxy_peers::ProxyRegistration,
+    responses(
+        (status = 200, description = "Registered.", body = RegisterAnswer),
+        (status = 409, description = "The address is held by another owner, the owner already has a different address, or the public key is held by another name.", body = crate::openapi::ErrorBody),
+        (status = 422, description = "The registration is malformed or invalid, the address is outside the network or not a host address, or a backend host does not fit.", body = crate::openapi::ErrorBody),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "New registrations are switched off, the network is exhausted, or the address book is full.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn proxy_peer_register() {}
+
+#[utoipa::path(
+    get, path = "/proxy-peers", tag = "Tunnel",
+    summary = "List proxy registrations",
+    description = "Every name's current registration. Gated on the `x-wayhouse-protocol` header.",
+    responses(
+        (status = 200, description = "The registrations.", body = Vec<crate::proxy_peers::ProxyRegistration>),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn proxy_peer_list() {}
+
+#[utoipa::path(
+    get, path = "/proxy-peers/{name}", tag = "Tunnel",
+    summary = "Read one registration",
+    description = "The current registration of `name`. Gated on the `x-wayhouse-protocol` header.",
+    params(("name" = String, Path, description = "The registered name.", example = "edge-1")),
+    responses(
+        (status = 200, description = "The registration.", body = crate::proxy_peers::ProxyRegistration),
+        (status = 404, description = "That name never registered.", body = crate::openapi::ErrorBody),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn proxy_peer_get() {}
+
+#[utoipa::path(
+    delete, path = "/proxy-peers/{name}", tag = "Tunnel",
+    summary = "Release a name",
+    description = "Releases the name's tunnel address and tells subscribers (with a tombstone) to drop its WireGuard peer. It answers \
+`404` only when the name is unknown everywhere, so a retry after a crash still completes. Gated on the `x-wayhouse-protocol` header.",
+    params(("name" = String, Path, description = "The registered name.", example = "edge-1")),
+    responses(
+        (status = 200, description = "Released. `released` is the address that was freed, if there was one.", body = ReleaseAnswer),
+        (status = 404, description = "The name is unknown.", body = crate::openapi::ErrorBody),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn proxy_peer_release() {}
+
+#[utoipa::path(
+    get, path = "/proxy-peers/subscribe", tag = "Tunnel",
+    summary = "Stream registrations (server-sent events)",
+    description = "A long-lived stream in the same catch-up-then-tail shape as `GET /config/subscribe`: every registration log entry after `since`, then each new \
+one. An event's data is `{\"revision\": N, \"registration\": {...}}`, or `{\"revision\": N, \"removed\": {\"name\": \"...\"}}` \
+for a release. A subscriber keeps its own latest-by-name view. At most 1024 streams are served at once; one more gets `503` with `Retry-After: 5`. Gated on the `x-wayhouse-protocol` header.",
+    params(RegistrySubscribeParams),
+    responses(
+        (status = 200, description = "The event stream.", body = String, content_type = "text/event-stream"),
+        (status = 426, description = "The caller speaks an incompatible protocol major.", body = crate::openapi::ErrorBody),
+        (status = 503, description = "Too many subscribers.", body = crate::openapi::ErrorBody),
+    )
+)]
+#[allow(dead_code)]
+async fn proxy_peer_subscribe() {}
+
+/// What a registration answers.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real type is `registry::SubmitResponse`
+struct RegisterAnswer {
+    /// The registration's number in the log.
+    #[schema(example = 12)]
+    revision: u64,
+    /// The tunnel address allocated or confirmed.
+    #[schema(example = "fd49:89c1:4b5e:60::2")]
+    tunnel_address: String,
+    /// The network addresses come from, when the controller has one.
+    #[schema(example = "fd49:89c1:4b5e:60::/64")]
+    tunnel_network: Option<String>,
+    /// Features this controller supports; present for a caller on protocol 1.1 or later.
+    #[schema(example = json!(["protocol-gating"]))]
+    capabilities: Option<Vec<String>>,
+}
+
+/// What a release answers.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real type is `registry::DeleteResponse`
+struct ReleaseAnswer {
+    /// The tombstone's number in the log.
+    #[schema(example = 13)]
+    revision: u64,
+    /// The address that was freed, if the name held one.
+    released: Option<String>,
+}
+
+#[derive(utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+#[allow(dead_code)] // documentation type: the real type is `SubscribeParams`
+struct RegistrySubscribeParams {
+    /// Send only log entries after this revision (default `0`).
+    since: Option<u64>,
+}
+
+/// The OpenAPI paths of the tunnel registration routes. The routes are generic over the
+/// registration type (`router::<R>` serves both `/peers` and `/proxy-peers`), so they are described
+/// by the functions above, which are never called.
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    paths(
+        peer_register,
+        peer_list,
+        peer_get,
+        peer_release,
+        peer_subscribe,
+        proxy_peer_register,
+        proxy_peer_list,
+        proxy_peer_get,
+        proxy_peer_release,
+        proxy_peer_subscribe
+    ),
+    components(schemas(crate::peers::PeerRegistration, crate::proxy_peers::ProxyRegistration))
+)]
+pub(crate) struct RegistriesDoc;
+
 #[allow(clippy::needless_pass_by_value)] // used as a `map_err` callback, which hands the error over by value
 fn store_error_response(registry: &str, e: StoreError) -> Response {
     tracing::error!(error = %e, "store error serving the {registry} API");

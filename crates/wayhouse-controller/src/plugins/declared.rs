@@ -503,15 +503,40 @@ pub fn spawn(reconciler: Reconciler) -> tokio::task::JoinHandle<()> {
 }
 
 /// `GET /plugins/file/plan`: the dry run, computed now from the file as it is on disk.
-pub fn router(reconciler: Reconciler, auth_token: Option<&str>) -> Router {
-    async fn show(State(r): State<Reconciler>) -> Response {
-        match r.plan().await {
-            Ok(p) => {
-                Json(serde_json::json!({ "applied": false, "plugins": p.rows })).into_response()
-            }
-            Err(why) => api::err(StatusCode::UNPROCESSABLE_ENTITY, why),
-        }
+#[utoipa::path(
+    get, path = "/plugins/file/plan", tag = "Plugins",
+    summary = "Dry-run the plugins file",
+    description = "What the next reconcile of the plugins file would do, computed now from the file as it is on disk: per entry `create`, `update`, \
+`remove`, `unchanged` or `refused` (with the reason, and for a refusal over the capability hash the real hash to paste into the file). Nothing is applied.",
+    responses(
+        (status = 200, description = "The plan.", body = PlanAnswer),
+        (status = 422, description = "The file cannot be read or does not parse.", body = crate::openapi::ErrorBody),
+    )
+)]
+async fn show(State(r): State<Reconciler>) -> Response {
+    match r.plan().await {
+        Ok(p) => Json(serde_json::json!({ "applied": false, "plugins": p.rows })).into_response(),
+        Err(why) => api::err(StatusCode::UNPROCESSABLE_ENTITY, why),
     }
+}
+
+/// The answer to `GET /plugins/file/plan`.
+#[derive(utoipa::ToSchema)]
+#[allow(dead_code)] // documentation type: the real body is built inline in `show`
+struct PlanAnswer {
+    /// Always `false`: a plan applies nothing.
+    applied: bool,
+    /// One row per entry of the file and per install the file owns that no entry names. A row has `name`, `id`, `action` and, when relevant, `reason`, `effective_sha256` and `error`.
+    #[schema(value_type = Vec<Object>, example = json!([{"name": "dns-sync", "id": null, "action": "create"}]))]
+    plugins: Vec<serde_json::Value>,
+}
+
+/// The OpenAPI path of the plugins file plan.
+#[derive(utoipa::OpenApi)]
+#[openapi(paths(show))]
+pub(crate) struct PlanDoc;
+
+pub fn router(reconciler: Reconciler, auth_token: Option<&str>) -> Router {
     Router::new()
         .route("/plugins/file/plan", get(show))
         .route_layer(axum::middleware::from_fn_with_state(

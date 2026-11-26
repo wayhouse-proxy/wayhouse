@@ -125,15 +125,36 @@ def proxy_admin_api():
         "It reads the live state, changes backends at runtime, drains the instance, and reads or replaces the config "
         "file. How tokens, errors and versions work is on [HTTP API basics](/manual/operate/http-apis/).\n\n"
         "These pages are generated from the OpenAPI document in `docs/reference/openapi/proxy-admin.json`, which is "
-        "itself generated from the handlers' own annotations and checked by a test, so a route cannot be added or "
-        "changed without this page changing. A running proxy serves the same document at `GET /openapi.json`; "
+        "itself generated from the handlers' own annotations and checked by a test that fails when the "
+        "checked-in document no longer matches the annotations of the routes that carry one. A running proxy serves the same document at `GET /openapi.json`; "
         "use it to generate a client. The examples assume `TOKEN` holds `settings.admin.auth_token`; leave the "
         "header out when the API has no token.",
         "http://127.0.0.1:9900")
 
 
+def controller_api():
+    import os
+    import openapi_pages
+    return openapi_pages.render(
+        os.path.join(openapi_pages.DOCS, "reference", "openapi", "controller.json"),
+        "Controller API",
+        "Every route of the HTTP API wayhouse-controller serves: what it does, which tokens may call it, its parameters, bodies and answers.",
+        "The API `wayhouse-controller` serves (default `http://127.0.0.1:9901`). The admin token works on every route; "
+        "each route also lists the scoped tokens (proxy, agent, UI, origin) that may call it. How tokens, errors and "
+        "versions work is on [HTTP API basics](/manual/operate/http-apis/). With no `--auth-token` set the API is open, "
+        "which is only meant for local trials. The `/raft/*` routes are the controllers' peer-to-peer channel inside an HA "
+        "cluster; they are not an operator API and are not listed here. Routes of an optional part answer when that part is "
+        "off: the plugin and ACME routes with `501` and a reason (a few with `404`), the HA routes (`/admin/ha/*`) with `404` on a controller "
+        "that does not run HA.\n\n"
+        "These pages are generated from the OpenAPI document in `docs/reference/openapi/controller.json`, which is "
+        "itself generated from the handlers' own annotations and checked by a test that fails when the "
+        "checked-in document no longer matches the annotations of the routes that carry one. The examples assume `TOKEN` holds the admin token.",
+        "http://127.0.0.1:9901")
+
+
 PAGES = {
     "reference/proxy-admin-api": proxy_admin_api,
+    "reference/controller-api": controller_api,
     "reference/api-endpoints": api_endpoints,
     "reference/ui-screens": ui_screens,
     "reference/env-vars": env_vars,
