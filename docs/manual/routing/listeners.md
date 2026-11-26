@@ -53,7 +53,7 @@ A route's `match` takes a `type` and the keys that type uses:
 | `sniffer`     | `sniffer`: the sniffer's name, and `host`: host patterns              |
 
 A route's `action` is exactly one of `pool` (a fixed pool) or `resolver` (ask an external
-service, see [Route players by rules](route-by-rules.md)).
+service, see [Resolvers](../extend/resolvers.md)).
 
 ## Protection
 

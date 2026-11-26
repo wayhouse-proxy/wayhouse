@@ -109,9 +109,6 @@ flag --tunnel-register-interval-sec
 flag --unit-dir
 screen /certificates
 screen /config-history
-screen /config/pools
-screen /config/resolvers
-screen /config/sources
 screen /config/web
 screen /dashboard
 screen /fleet
