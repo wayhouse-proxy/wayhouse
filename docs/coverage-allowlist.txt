@@ -52,7 +52,6 @@ api /release-feed.json.minisig
 api /slow
 api /sniffers/demo.json
 api /x
-cargo-feature dns-srv
 env HOSTNAME
 env WAYHOUSE_SNIFFERS_DIR
 flag --ha-snapshot-after

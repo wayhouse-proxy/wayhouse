@@ -15,7 +15,7 @@ runtime-feature-flags	Runtime feature flags and kill switches	written	crates/way
 routing-and-matchers	Route matching: CIDR sets, SNI peeking and route hints	written	crates/wayhouse-config/src/matcher.rs,crates/wayhouse-config/src/cidr.rs,crates/wayhouse-core/src/route_hint.rs
 external-resolvers	External resolvers: HTTP and gRPC with a result cache	written	crates/wayhouse-core/src/resolver.rs,crates/wayhouse/src/resolver.rs,crates/wayhouse/src/grpc_resolver*.rs
 sniffers	WASM sniffers: the sandbox, the ABI and the loader	written	crates/wayhouse-core/src/sniff.rs,crates/wayhouse/src/sniffer_loader*.rs,crates/wayhouse-sniffer-abi/**
-backend-discovery	Backend discovery: DNS SRV, Consul, Kubernetes and static	todo	crates/wayhouse-core/src/discovery.rs,crates/wayhouse-core/src/sources.rs,crates/wayhouse/src/discovery.rs,crates/wayhouse/src/dns_srv*.rs
+backend-discovery	Backend discovery: DNS SRV, Consul, Kubernetes and static	written	crates/wayhouse-core/src/discovery.rs,crates/wayhouse-core/src/sources.rs,crates/wayhouse/src/discovery.rs,crates/wayhouse/src/dns_srv*.rs
 gossip-health	Regional health: a SWIM gossip fabric	todo	crates/wayhouse-core/src/gossip*.rs
 admin-api	The admin API	todo	crates/wayhouse/src/admin.rs,crates/wayhouse/src/live_interface.rs,crates/wayhouse/src/procinfo.rs
 metrics-and-logs	Metrics, connection logs and error types	todo	crates/wayhouse-core/src/metrics_defs.rs,crates/wayhouse-core/src/error.rs,crates/wayhouse-http/src/metrics.rs,crates/wayhouse-http/src/labels.rs
